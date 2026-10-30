@@ -29,7 +29,8 @@ class TaskStore {
     folder.createSync(recursive: true);
     db = sqlite3.open('${folder.path}/history.sqlite');
     db.execute('PRAGMA journal_mode = WAL');
-    db.execute('PRAGMA synchronous = FULL');
+    db.execute('PRAGMA synchronous = NORMAL');
+    db.execute('PRAGMA foreign_keys = ON');
     db.execute('PRAGMA cache_size = -512');
     db.execute('PRAGMA busy_timeout = 0');
     db.execute('''

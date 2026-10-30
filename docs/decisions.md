@@ -691,7 +691,7 @@ the storage owner receives cancellation while processing a paged operation.
 On macOS arm64, Dart 3.13.7, 10 logical CPUs, both JIT and the AOT bundle completed
 1,000 cells with SQLite commits at approximately 100 cells/second over ten seconds.
 All 100 agents completed their burst work while an additional SQLite owner's
-single recursive statement was still running. The benchmark uses WAL and
+single recursive statement was still running. These benchmark runs used WAL and
 `synchronous=FULL`. Raw reports: [JIT](evidence/runtime-jit.json),
 [AOT](evidence/runtime-aot.json).
 
@@ -808,3 +808,26 @@ fixtures verify implementation behavior independently of the live access limit.
 Validation: all 32 repository tests passed; the 18 focused DeepSeek tests passed
 after the final adjustment. Formatting, `dart analyze`, and whitespace checks are
 clean. Commands are listed in [verification.md](verification.md).
+
+## 2026-10-30 — SQLite connection settings
+
+User decision: every task database connection uses `journal_mode=WAL`,
+`synchronous=NORMAL`, and `foreign_keys=ON`. Set them immediately after opening
+the connection, before schema changes or transactions. The same `TaskStore`
+constructor handles creation, reopening, fork staging, and history imports.
+
+This replaces the previous `synchronous=FULL` setting. With WAL, NORMAL reduces
+sync operations while preserving database consistency; recently committed
+transactions can be lost after a power failure or operating-system crash.
+Foreign-key enforcement is enabled explicitly on each connection rather than
+depending on SQLite's default. See SQLite's
+[synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous) and
+[foreign_keys](https://www.sqlite.org/pragma.html#pragma_foreign_keys) documentation.
+
+Verification on macOS arm64, Dart 3.13.7, `sqlite3` package 3.8.0:
+`dart test test/storage_test.dart` queries the effective pragmas on new and
+reopened databases and verifies rejection of a delete that violates a foreign
+key. Before this change it reported `wal`, `2` (FULL), `0` (foreign keys off);
+the required values are `wal`, `1` (NORMAL), `1` (foreign keys on). Existing
+benchmark reports retain their original FULL setting; performance and power-loss
+behavior under the new settings have not been measured.

@@ -6,6 +6,49 @@ import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'new and reopened databases use WAL, NORMAL, and enforce foreign keys',
+    () async {
+      final root = await Directory.systemTemp.createTemp('storage-pragmas-');
+      final id = newId();
+      addTearDown(() => root.delete(recursive: true));
+      for (final create in [true, false]) {
+        final store = TaskStore(root.path, id, create: create);
+        try {
+          expect(
+            {
+              for (final pragma in [
+                'journal_mode',
+                'synchronous',
+                'foreign_keys',
+              ])
+                pragma: store.db.select('PRAGMA $pragma').single[pragma],
+            },
+            {'journal_mode': 'wal', 'synchronous': 1, 'foreign_keys': 1},
+          );
+          store.db.execute('''
+          CREATE TEMP TABLE fk_parent (id INTEGER PRIMARY KEY);
+          CREATE TEMP TABLE fk_child (parent_id INTEGER REFERENCES fk_parent(id));
+          INSERT INTO fk_parent VALUES (1);
+          INSERT INTO fk_child VALUES (1);
+        ''');
+          expect(
+            () => store.db.execute('DELETE FROM fk_parent WHERE id IS 1'),
+            throwsA(
+              isA<Exception>().having(
+                (error) => error.toString(),
+                'constraint error',
+                contains('FOREIGN KEY constraint failed'),
+              ),
+            ),
+          );
+        } finally {
+          store.close();
+        }
+      }
+    },
+  );
+
   test('cancelling paged history work preserves the writer and never publishes a partial fork', () async {
     final root = await Directory.systemTemp.createTemp('history-cancel-');
     final owner = await startStore(root.path, newId());
