@@ -1,0 +1,51 @@
+{
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "os": "macos",
+  "cpus": 10,
+  "fresh_runtime_context_us": {
+    "count": 1000,
+    "p50": 232,
+    "p95": 387,
+    "p99": 507,
+    "max": 13372,
+    "sum": 265931
+  },
+  "retained_runtime_fresh_context_us": {
+    "count": 1000,
+    "p50": 191,
+    "p95": 289,
+    "p99": 406,
+    "max": 850,
+    "sum": 205676
+  },
+  "start_100_agents_and_100_writers_ms": 218,
+  "rss_200_isolates_bytes": 30162944,
+  "os_threads_before_work": 30,
+  "os_threads_during_work": 30,
+  "100_agents_20_cells_each_ms": 2114,
+  "ordinary_agent_ms": {
+    "count": 99,
+    "p50": 421,
+    "p95": 491,
+    "p99": 508,
+    "max": 508,
+    "sum": 42514
+  },
+  "slow_agent_ms": 2108,
+  "rss_peak_bytes": 422412288,
+  "observed_js_os_threads": 17,
+  "slow_sql": {
+    "elapsed_ms": 2789,
+    "thread_id": 87088375
+  },
+  "agents_finished_while_sql_blocked": 100,
+  "heartbeat_intervals_us": {
+    "count": 276,
+    "p50": 10090,
+    "p95": 13900,
+    "p99": 59600,
+    "max": 76908,
+    "sum": 3113079
+  },
+  "rss_after_cleanup_bytes": 327122944
+}

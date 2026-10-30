@@ -1,0 +1,31 @@
+name: agent_workspace
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+workspace:
+  - packages/protocol
+  - packages/telemetry
+  - packages/ai
+  - packages/gpt
+  - packages/deepseek
+  - packages/mcp
+  - packages/storage
+  - packages/code_mode
+  - packages/agent
+  - packages/server
+dependencies:
+  args: ^2.7.0
+  ai: any
+  gpt: any
+  deepseek: any
+  mcp: any
+  protocol: any
+  server: any
+  agent: any
+  storage: any
+  code_mode: any
+  telemetry: any
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.26.3

@@ -1,0 +1,15 @@
+name: server
+publish_to: none
+version: 0.1.0
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+dependencies:
+  protocol: any
+  gpt: any
+  deepseek: any
+  mcp: any
+  ai: any
+  agent: any
+  storage: any
+  telemetry: any

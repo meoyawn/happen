@@ -1,0 +1,50 @@
+{
+  "model": "gpt-6.1-sol",
+  "baseline_effort": "low",
+  "changed_effort": "high",
+  "endpoint": "chatgpt_subscription",
+  "initial_usage": {
+    "input_tokens": 46,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 5,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 51
+  },
+  "compaction_item_types": [
+    "compaction"
+  ],
+  "compaction_usage": {
+    "input_tokens": 96,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 117,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 213
+  },
+  "continuation_text": "The project code is `maple-47`, the required filename is `result.txt`, and the output file must end with a newline.",
+  "continuation_usage": {
+    "input_tokens": 157,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 32,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 189
+  },
+  "passed": true,
+  "elapsed_ms": 9908,
+  "date": "2026-10-30",
+  "scope": "Protocol smoke test only; three remembered facts, one native compaction. Not a long-context recall or cache-performance benchmark."
+}

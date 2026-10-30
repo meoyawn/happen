@@ -1,0 +1,24 @@
+.dart_tool/
+build/
+.agent/
+*.dylib
+*.so
+*.dll
+coverage/
+
+# Local credentials and environment overrides.
+.env
+.env.*
+!.env.example
+!.env.sample
+auth.json
+credentials.json
+.auth-*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# macOS metadata.
+.DS_Store
+._*
