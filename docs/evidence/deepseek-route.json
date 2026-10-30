@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-10-30T09:01:48.343871+00:00",
+  "opencode_revision": "fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e",
+  "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+  "model": "deepseek-v4.1-flash-free",
+  "credential_mode": "documented anonymous public access",
+  "max_output_tokens": 32,
+  "status": 429,
+  "content_type": "application/json",
+  "failure": "http_error",
+  "evidence": {
+    "source_base_revision": "ae3665f33be01828e624df0e57602a9bf863c283",
+    "source_state": "uncommitted implementation and verification changes",
+    "macos_version": "26.4",
+    "recorded_at": "2026-10-30T09:01:49.144064+00:00"
+  }
+}

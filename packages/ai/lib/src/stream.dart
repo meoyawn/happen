@@ -15,8 +15,9 @@ Stream<Map<String, dynamic>> decodeSse(
         final payload = data.join('\n');
         if (payload == '[DONE]') return;
         final value = jsonDecode(payload);
-        if (value is! Map)
+        if (value is! Map) {
           throw const FormatException('Expected an SSE JSON object');
+        }
         yield Map<String, dynamic>.from(value);
       }
       data = [];
@@ -24,15 +25,17 @@ Stream<Map<String, dynamic>> decodeSse(
     } else if (line.startsWith('data:')) {
       final value = line.substring(5).replaceFirst(RegExp(r'^ '), '');
       size += utf8.encode(value).length;
-      if (size > maxEventBytes)
+      if (size > maxEventBytes) {
         throw const FormatException('SSE event too large');
+      }
       data.add(value);
     }
   }
   if (data.isNotEmpty && data.join('\n') != '[DONE]') {
     final value = jsonDecode(data.join('\n'));
-    if (value is! Map)
+    if (value is! Map) {
       throw const FormatException('Expected an SSE JSON object');
+    }
     yield Map<String, dynamic>.from(value);
   }
 }

@@ -32,17 +32,25 @@ class GptProvider implements ModelProvider {
       'compaction_headroom',
       'reasoning_summary',
     };
-    if (selected.keys.any((key) => !allowed.contains(key)))
+    if (selected.keys.any((key) => !allowed.contains(key))) {
       throw ArgumentError('Unsupported GPT setting');
+    }
     final reasoning = selected['reasoning'] ?? info.defaultReasoning;
-    if (!info.reasoningLevels.contains(reasoning))
+    if (!info.reasoningLevels.contains(reasoning)) {
       throw ArgumentError('Unsupported single-agent GPT reasoning effort');
+    }
     final verbosity = selected['verbosity'] ?? info.verbosity;
-    if (!{'low', 'medium', 'high'}.contains(verbosity))
+    if (!{'low', 'medium', 'high'}.contains(verbosity)) {
       throw ArgumentError('Unsupported GPT verbosity');
+    }
     final transport = selected['transport'] ?? 'http';
-    if (!{'http', 'websocket'}.contains(transport))
+    if (!{'http', 'websocket'}.contains(transport)) {
       throw ArgumentError('Unsupported GPT transport');
+    }
+    final summary = selected['reasoning_summary'] ?? info.reasoningSummary;
+    if (!{'none', 'concise', 'detailed', 'auto'}.contains(summary)) {
+      throw ArgumentError('Unsupported GPT reasoning summary');
+    }
     final context = selected['context_limit'] ?? info.contextWindow;
     final headroom = selected['compaction_headroom'] ?? 32000;
     if (context is! int ||
@@ -61,16 +69,17 @@ class GptProvider implements ModelProvider {
       'transport': transport,
       'context_limit': context,
       'compaction_headroom': headroom,
-      'reasoning_summary':
-          selected['reasoning_summary'] ?? info.reasoningSummary,
+      'reasoning_summary': summary,
     };
   }
 
   void _validate(ModelRequest request) {
-    if (!models.contains(request.model))
+    if (!models.contains(request.model)) {
       throw ArgumentError('Unsupported GPT model');
-    if (!efforts.contains(request.effectiveReasoning))
+    }
+    if (!efforts.contains(request.effectiveReasoning)) {
       throw ArgumentError('Unsupported GPT reasoning effort');
+    }
     final info = GptModel(request.model);
     resolveSettings(request.settings, model: request.model);
     if (!info.reasoningUpdates &&
@@ -168,8 +177,9 @@ class GptProvider implements ModelProvider {
     for (final item in request.input.reversed) {
       if (item.kind != 'message' ||
           item.role != 'user' ||
-          item.native.containsKey('harness'))
+          item.native.containsKey('harness')) {
         continue;
+      }
       final size = estimateTokens([item]);
       if (size > remaining) break;
       retained.add(item);

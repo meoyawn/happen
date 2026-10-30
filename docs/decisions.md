@@ -665,10 +665,146 @@ servers launched through SSH. We adopt its transport arrangement, not its daemon
 updater, compression, or remote client implementation. Reproduce with
 `git show COMMIT:PATH` in the Codex checkout.
 
-## Pending verification
+## 2026-10-30 — Runtime and interoperability verification
 
-- AOT runtime measurements and sustained 100-cell/second run.
-- End-to-end WebSocket/tool-loop, cancellation, restart, and portable history tests.
-- Live ChatGPT subscription execution compared with the installed Codex CLI,
-  same model/effort, isolated workspaces, no skills/plugins.
-- Transport failure and worker lifecycle supervision.
+The following evidence supersedes the implementation-pending statements recorded
+earlier in this document. Reproduction procedures are in
+[verification.md](verification.md); the implemented API is in [api.md](api.md).
+
+The local suite has 23 behavior tests. It covers native provider state and ordered
+updates, cancellation and incomplete responses, MCP process sharing and restart,
+HTTP event activation/routing/reconnection/cursors/deduplication, polling, signed
+webhooks, client-tool ownership and disconnects over loopback and UDS, compaction
+failure/cancellation, bounded overflow recovery, restart, and durable history
+fork/export/import. These are local protocol fixtures, distinct from live provider
+verification. MCP Events interoperability with an independently deployed server
+has not been measured.
+
+Cancellation testing found that wrapping `Future.delayed` in a cancelled future
+does not stop its underlying timer. Runtime delays now use the package's
+`CancellableCompleter` with explicit timer cleanup. This also avoids a completion
+race in version 2.0.1's synchronous delayed-future completer. Model response readers have explicit transport
+ownership so cancelling an SSE read releases the request without closing the
+shared HTTP pool. Transfer cancellation removes staged files before publishing;
+the storage owner receives cancellation while processing a paged operation.
+
+On macOS arm64, Dart 3.13.7, 10 logical CPUs, both JIT and the AOT bundle completed
+1,000 cells with SQLite commits at approximately 100 cells/second over ten seconds.
+All 100 agents completed their burst work while an additional SQLite owner's
+single recursive statement was still running. The benchmark uses WAL and
+`synchronous=FULL`. Raw reports: [JIT](evidence/runtime-jit.json),
+[AOT](evidence/runtime-aot.json).
+
+| Observation | JIT | AOT |
+| --- | ---: | ---: |
+| Start 100 agents plus 100 writers | 377 ms | 209 ms |
+| RSS increase after creating those owners | 26.5 MiB | 31.9 MiB |
+| OS threads during burst work | 30 | 27 |
+| Sustained cell latency, median / p99 | 1.03 / 2.26 ms | 0.91 / 2.59 ms |
+| Sustained heartbeat interval p99, 10 ms target | 11.23 ms | 11.27 ms |
+| Burst/startup heartbeat interval maximum | 171.2 ms | 128.2 ms |
+| Observed process peak RSS before sustained phase | 426.1 MiB | 101.1 MiB |
+
+The observed startup jitter rules out a hard realtime guarantee. The ten-second
+phase is a throughput check, not a long soak or evidence under disk stalls and
+swapping. AOT must be built with `dart build cli` so the SQLite and QuickJS native
+assets accompany the executable; a bare executable without those assets is not a
+valid measurement.
+
+The [live GPT comparison](evidence/live-gpt-comparison.json) used `gpt-6.1-sol`,
+low effort, isolated temporary workspaces, and disabled Codex skills/plugins.
+Happen HTTP, Happen upstream WebSocket, and the installed Codex CLI each produced
+a working CSV program. Independent checks covered the initial result, an empty
+input, exact decimal arithmetic, and filtering unpaid rows. Elapsed times were
+42.1, 39.4, and 41.7 seconds respectively. This single small task establishes
+functional execution; it does not rank harness quality or latency.
+
+The [live context check](evidence/live-context.json) passed over both GPT
+transports. It changed low effort to high, installed a native checkpoint,
+restarted the server, forked, exported/imported, and continued. The random tool
+receipt was absent from the replacement context's visible text; the model called
+history tools to recover it, completed the unfinished file action, and followed
+the restored `AGENTS.md` instruction. Historical event identity survived transfer.
+
+On HTTP, both the unchanged-effort and changed-effort continuations reported
+6,272 cached input tokens. On WebSocket, those observations were 0 and 6,272.
+Thus effort updates can coexist with cache hits, but cache behavior varied even
+on the unchanged-effort request. These sequential short checks are not a
+controlled cache-performance benchmark or a long-context quality evaluation.
+
+The DeepSeek package's nine local adapter tests pass. The initial anonymous OpenCode route
+from its pinned checkout returned HTTP 429 for `deepseek-v4.1-flash-free`; see the
+[sanitized result](evidence/deepseek-route.json). That route's model identifier is
+different from the supported native `deepseek-flash`. No silent alias or account
+change was introduced. Live DeepSeek execution and an OpenCode quality comparison
+remain unverified; the local tests do not substitute for them. The subsequent
+Console login and authenticated route results are recorded below.
+
+## Remaining verification limits
+
+- Successful live Happen inference through OpenCode Console and a live tool-task
+  comparison; device authorization itself now passes.
+- Long tasks, repeated compactions, controlled cache comparisons, and long soaks.
+- Independently deployed MCP Events servers and public webhook delivery.
+- Other operating systems, hardware, disk stalls, and simultaneous blocked writers.
+- A real remote SSH deployment; the loopback protocol and UDS paths are tested
+  locally, while SSH forwarding itself remains client infrastructure.
+
+## 2026-10-30 — OpenCode Console access from the DeepSeek package
+
+User requirement: `packages/deepseek` must authenticate with OpenCode Console and
+use the explicitly selected `deepseek-v4.1-flash-free` route. This extends the
+earlier native-only model selection. Keep native DeepSeek API-key access available;
+select the Console backend explicitly and never substitute a paid model.
+
+The DeepSeek package owns Console device authorization, private credential
+persistence, coalesced token refresh, and inference headers. Follow the pinned
+OpenCode source's `opencode-cli` device client, organization-scoped authorization,
+`/auth/device/code` and `/auth/device/token` endpoints, and `Authorization` plus
+`x-org-id` inference headers. Use a Happen User-Agent. Each application owns its
+refresh token; Happen must not rotate the CLI's credential or copy browser cookies
+into task data. Errors, history, telemetry, and evidence must exclude credentials.
+
+Source: OpenCode `fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`,
+`packages/core/src/plugin/provider/opencode.ts`, `packages/core/src/console-access.ts`,
+and `packages/cli/src/commands/handlers/auth/login.ts`. Reproduce with
+`git show COMMIT:PATH`. The published OpenCode 2.2.2 CLI's device flow was approved
+in the user's Chrome session, and its authenticated free-model request returned
+`READY`. Package authentication and inference are verified separately; CLI success
+alone does not establish direct Happen access.
+
+Tradeoff: Console's Chat Completions route has different capabilities from native
+DeepSeek Messages. The provider adapter must preserve the common tool contract,
+fixed effort, and durable state within the selected route's capabilities. A hosted
+route rejection must be reported as such, without disguising Happen as OpenCode
+or silently changing models.
+
+Implementation uses `DeepSeekProvider.opencode` and `login --provider opencode`.
+The network owner selects it through `providers.deepseek.backend: "opencode"`
+and shares its HTTP pool with the other providers. The free model's 200,000-token
+context and 32,000-token output cap come from the pinned OpenCode
+`packages/core/src/models-dev/snapshot.txt`; these differ from the native model's
+limits. The model name is never translated to a paid route. Chat has one tool
+catalog per request, so it sends the latest schemas and keeps chronological
+text notices for tool additions. Native Messages retains its protocol-level
+ordered additions. OpenCode's `packages/ai/src/protocols/openai-chat.ts` also
+serializes the request's current tool catalog.
+
+Live evidence on macOS arm64, Dart 3.13.7:
+[Console authorization and route check](evidence/deepseek-console.json).
+Happen's independent device login succeeded in the selected Personal workspace.
+Its authenticated request with the Happen User-Agent received HTTP 429 and
+`FreeUsageLimitError`; the service reported that free models work in OpenCode and
+returned a retry interval. The separately authorized OpenCode 2.2.2 CLI returned
+`READY`. This establishes working authentication and different observed inference
+outcomes, not the service's internal cause or a successful live Happen tool run.
+No client identity substitution or paid fallback was used.
+
+Local HTTP fixtures exercise authorization, private persistence, organization
+selection, refresh coalescing, cancellation, exact route selection, request limits,
+tool conversion, and sanitized hosted denials. The UDS server fixture executes a
+real code cell and writes a file through the configured Console adapter. These
+fixtures verify implementation behavior independently of the live access limit.
+Validation: all 32 repository tests passed; the 18 focused DeepSeek tests passed
+after the final adjustment. Formatting, `dart analyze`, and whitespace checks are
+clean. Commands are listed in [verification.md](verification.md).

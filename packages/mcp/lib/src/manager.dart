@@ -27,15 +27,18 @@ class McpManager {
   Future<void> _configure(Json config, CancellationToken cancellation) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
-    if (config.length > 64)
+    if (config.length > 64) {
       throw ArgumentError('At most 64 global MCP servers are supported');
+    }
     final normalized = <String>{};
     for (final entry in config.entries) {
-      if (!normalized.add(_safeName(entry.key)))
+      if (!normalized.add(_safeName(entry.key))) {
         throw ArgumentError('MCP server names collide after normalization');
+      }
       final value = jsonObject(entry.value);
-      if ((value['command'] == null) == (value['url'] == null))
+      if ((value['command'] == null) == (value['url'] == null)) {
         throw ArgumentError('MCP server needs exactly one command or URL');
+      }
     }
     for (final entry in _servers.entries.toList()) {
       if (jsonEncode(config[entry.key]) != jsonEncode(entry.value.config)) {
@@ -51,8 +54,9 @@ class McpManager {
       }
     }
     for (final entry in config.entries) {
-      if (_servers.containsKey(entry.key) || entry.value['enabled'] == false)
+      if (_servers.containsKey(entry.key) || entry.value['enabled'] == false) {
         continue;
+      }
       final server = _Server(entry.key, jsonObject(entry.value), http);
       _servers[entry.key] = server;
       server.start();
@@ -147,35 +151,40 @@ class McpManager {
     Json params,
     CancellationToken cancellation,
   ) async {
-    if (method == 'resources/read')
+    if (method == 'resources/read') {
       return request(requiredString(params, 'server'), method, {
         'uri': requiredString(params, 'uri'),
       }, cancellation);
+    }
     final server = params['server'] as String?;
     if (server != null) {
       return request(server, method, {
         if (params['cursor'] != null) 'cursor': params['cursor'],
       }, cancellation);
     }
-    if (params['cursor'] != null)
+    if (params['cursor'] != null) {
       throw ArgumentError('A resource cursor requires its server name');
+    }
     final key = method == 'resources/list' ? 'resources' : 'resourceTemplates';
     final values = <Json>[];
     final cursors = <String, String>{};
     for (final entry in _servers.entries) {
       if (entry.value.connection?.discovery['capabilities']?['resources'] ==
-          null)
+          null) {
         continue;
+      }
       final result = await entry.value.request(method, {}, cancellation);
       for (final value in result[key] as List? ?? []) {
         values.add({...jsonObject(value), 'server': entry.key});
       }
-      if (result['nextCursor'] is String)
+      if (result['nextCursor'] is String) {
         cursors[entry.key] = result['nextCursor'] as String;
-      if (values.length > 1000)
+      }
+      if (values.length > 1000) {
         throw const McpFailure(
           'Resource catalog exceeds the result limit; select a server',
         );
+      }
     }
     return {key: values, if (cursors.isNotEmpty) 'next_cursors': cursors};
   }
@@ -217,8 +226,9 @@ class McpManager {
               (value != 'webhook' || publicUrl != null),
           orElse: () => throw const McpFailure('No usable event delivery mode'),
         );
-    if (!supported.contains(mode))
+    if (!supported.contains(mode)) {
       throw ArgumentError('Event does not support the requested delivery mode');
+    }
     final subscription = McpEventSubscription(
       id: newId(),
       owner: owner,
@@ -253,8 +263,9 @@ class McpManager {
   Future<void> unsubscribe(String owner, String id) async {
     final subscription = _subscriptions[id];
     if (subscription == null) return;
-    if (subscription.owner != owner)
+    if (subscription.owner != owner) {
       throw ArgumentError('Subscription belongs to another client');
+    }
     await subscription.stop();
     _subscriptions.remove(id);
   }
@@ -342,9 +353,10 @@ class _Server {
       state = failures == 6 ? 'failed' : 'reconnecting';
       if (failures < 6) {
         try {
-          await Future<void>.delayed(
+          await cancellableDelay(
             Duration(milliseconds: 250 * (1 << (failures - 1))),
-          ).asCancellable(lifetime);
+            lifetime,
+          );
         } on CancelledException {
           break;
         }
@@ -357,8 +369,9 @@ class _Server {
     cancellation.throwIfCancelled();
     await initial.future.asCancellable(cancellation);
     final value = connection;
-    if (state != 'ready' || value == null || value.lifetime.isCancelled)
+    if (state != 'ready' || value == null || value.lifetime.isCancelled) {
       throw const McpFailure('MCP server is unavailable or reconnecting');
+    }
     return value;
   }
 
@@ -396,19 +409,19 @@ class _Server {
     for (var page = 0; page < 20; page++) {
       final value = connecting
           ? await connection!.request(method, {
-              if (cursor != null) 'cursor': cursor,
+              'cursor': ?cursor,
             }, cancellation: cancellation)
-          : await request(method, {
-              if (cursor != null) 'cursor': cursor,
-            }, cancellation);
+          : await request(method, {'cursor': ?cursor}, cancellation);
       result.addAll((value[key] as List? ?? []).map(jsonObject));
       if (result.length > 1000 ||
-          utf8.encode(jsonEncode(result)).length > maxFrameBytes)
+          utf8.encode(jsonEncode(result)).length > maxFrameBytes) {
         throw const McpFailure('MCP catalog exceeds the configured bound');
+      }
       cursor = value['nextCursor'] as String?;
       if (cursor == null) return result;
-      if (!seen.add(cursor))
+      if (!seen.add(cursor)) {
         throw const McpFailure('MCP catalog cursor repeated');
+      }
     }
     throw const McpFailure('MCP catalog exceeds 20 pages');
   }
@@ -438,12 +451,14 @@ class _Server {
       }
       final callable =
           'mcp__${_safeName(name)}__${_safeName(requiredString(tool, 'name'))}';
-      if (next.containsKey(callable))
+      if (next.containsKey(callable)) {
         throw const McpFailure('MCP tool names collide after normalization');
+      }
       next[callable] = tool;
     }
-    if (identical(connection, current) && !current.lifetime.isCancelled)
+    if (identical(connection, current) && !current.lifetime.isCancelled) {
       tools = next;
+    }
   }
 
   void _notification(Json notification) {
@@ -458,8 +473,9 @@ class _Server {
 
   Future<void> _listen(McpConnection current) async {
     if (!current.modern ||
-        current.discovery['capabilities']?['tools']?['listChanged'] != true)
+        current.discovery['capabilities']?['tools']?['listChanged'] != true) {
       return;
+    }
     var delay = 250;
     while (!lifetime.isCancelled && !current.lifetime.isCancelled) {
       final attempt = CancellationToken();
@@ -486,10 +502,11 @@ class _Server {
               acknowledged =
                   notification['params']?['notifications']?['toolsListChanged'] ==
                   true;
-              if (!acknowledged)
+              if (!acknowledged) {
                 attempt.cancel(
                   const McpFailure('MCP server declined catalog notifications'),
                 );
+              }
             } else if (acknowledged) {
               _notification(notification);
             }
@@ -502,11 +519,14 @@ class _Server {
         attempt.cancel();
       }
       if (token.isCancelled &&
-          (lifetime.isCancelled || current.lifetime.isCancelled))
+          (lifetime.isCancelled || current.lifetime.isCancelled)) {
         return;
+      }
       try {
-        await Future<void>.delayed(Duration(milliseconds: delay))
-            .asCancellable(lifetime.merge(current.lifetime));
+        await cancellableDelay(
+          Duration(milliseconds: delay),
+          lifetime.merge(current.lifetime),
+        );
         await _refresh();
       } catch (_) {
         return;

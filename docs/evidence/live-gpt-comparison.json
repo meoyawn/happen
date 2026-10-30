@@ -1,0 +1,244 @@
+{
+  "timestamp": "2026-10-30T09:30:07.740309Z",
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "os": "macos",
+  "model": "gpt-6.1-sol",
+  "reasoning": "low",
+  "task": "Create summarize.py using Python's standard library. Its two positional\narguments are an input CSV path and an output text path. Read UTF-8 CSV with columns\nproduct,quantity,unit_price,status. Sum quantity * unit_price only for rows whose\nstatus is paid, using exact decimal arithmetic. Write a fixed two-decimal total\nfollowed by one newline. Handle an input with only a header by writing 0.00.\nRun it on orders.csv to create total.txt and verify your result. Do not use network,\nskills, plugins, or delegated agents.",
+  "results": [
+    {
+      "harness": "happen",
+      "model_transport": "http",
+      "client_transport": "uds",
+      "status": "turn.completed",
+      "elapsed_ms": 42103,
+      "telemetry": {
+        "counters": {
+          "model_requests": 5,
+          "input_tokens": 35401,
+          "cached_input_tokens": 20480,
+          "cache_write_tokens": 0,
+          "output_tokens": 1524,
+          "code_cells": 4
+        },
+        "timings_us": {
+          "model": {
+            "count": 5,
+            "sum": 41381794,
+            "max": 24942162,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              4,
+              1
+            ]
+          },
+          "code": {
+            "count": 4,
+            "sum": 578803,
+            "max": 402662,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              3,
+              1,
+              0,
+              0
+            ]
+          },
+          "turn": {
+            "count": 1,
+            "sum": 42022808,
+            "max": 42022808,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1
+            ]
+          }
+        }
+      },
+      "artifacts": {
+        "passed": true,
+        "initial_total": true,
+        "header_only": true,
+        "decimal_and_status": true
+      }
+    },
+    {
+      "harness": "happen",
+      "model_transport": "websocket",
+      "client_transport": "uds",
+      "status": "turn.completed",
+      "elapsed_ms": 39438,
+      "telemetry": {
+        "counters": {
+          "model_requests": 5,
+          "input_tokens": 35130,
+          "cached_input_tokens": 27776,
+          "cache_write_tokens": 0,
+          "output_tokens": 1284,
+          "code_cells": 4
+        },
+        "timings_us": {
+          "model": {
+            "count": 5,
+            "sum": 38986375,
+            "max": 16595623,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              4,
+              1
+            ]
+          },
+          "code": {
+            "count": 4,
+            "sum": 405295,
+            "max": 223521,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              2,
+              2,
+              0,
+              0
+            ]
+          },
+          "turn": {
+            "count": 1,
+            "sum": 39424170,
+            "max": 39424170,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1
+            ]
+          }
+        }
+      },
+      "artifacts": {
+        "passed": true,
+        "initial_total": true,
+        "header_only": true,
+        "decimal_and_status": true
+      }
+    },
+    {
+      "harness": "codex",
+      "exit_code": 0,
+      "elapsed_ms": 41707,
+      "usage": {
+        "input_tokens": 41710,
+        "cached_input_tokens": 39808,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1105,
+        "reasoning_output_tokens": 251
+      },
+      "tool_failures": 0,
+      "artifacts": {
+        "passed": true,
+        "initial_total": true,
+        "header_only": true,
+        "decimal_and_status": true
+      },
+      "isolation_options": [
+        "exec",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--disable",
+        "plugins",
+        "-c",
+        "skills.bundled.enabled=false",
+        "-c",
+        "skills.include_instructions=false",
+        "-c",
+        "cloud.skills.enabled=false",
+        "-c",
+        "orchestrator.mcp.enabled=false",
+        "-c",
+        "model_reasoning_effort=\"low\"",
+        "--sandbox",
+        "danger-full-access",
+        "-m",
+        "gpt-6.1-sol",
+        "--json"
+      ]
+    }
+  ],
+  "evidence": {
+    "source_base_revision": "ae3665f33be01828e624df0e57602a9bf863c283",
+    "source_state": "uncommitted implementation and verification changes",
+    "macos_version": "26.4",
+    "recorded_at": "2026-10-30T09:32:11.572069+00:00",
+    "commands": [
+      "dart run tool/verify_live.dart"
+    ]
+  }
+}

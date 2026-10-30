@@ -57,8 +57,9 @@ class AgentServer {
         'A bearer token is required for a non-loopback listener',
       );
     }
-    if (maxAgents < 1 || maxAgents > 1024)
+    if (maxAgents < 1 || maxAgents > 1024) {
       throw ArgumentError('maxAgents must be 1..1024');
+    }
     await Directory(directory).create(recursive: true);
     if (socketPath != null) {
       socketPath = File(socketPath).absolute.path;
@@ -100,8 +101,9 @@ class AgentServer {
         events,
       );
       server.socketPath = socketPath;
-      if (socketPath != null)
+      if (socketPath != null) {
         server._socketStat = await File(socketPath).stat();
+      }
       events.listen((raw) {
         final message = jsonObject(raw);
         for (final client in server._clients.where(
@@ -116,8 +118,9 @@ class AgentServer {
           if (!server._closing) {
             for (final task in server._tasks.values) {
               final agent = task.agent;
-              if (agent != null)
+              if (agent != null) {
                 agent.port.send({'method': 'cancel', 'params': {}});
+              }
             }
           }
         }),
@@ -140,8 +143,9 @@ class AgentServer {
     final sockets = await Directory.systemTemp.createTemp('happen-');
     try {
       final permissions = await Process.run('chmod', ['700', sockets.path]);
-      if (permissions.exitCode != 0)
+      if (permissions.exitCode != 0) {
         throw StateError('Could not restrict socket directory permissions');
+      }
       final server = await start(
         directory: directory,
         socketPath: '${sockets.path}/s',
@@ -196,8 +200,9 @@ class AgentServer {
       (raw) async {
         Object? id;
         try {
-          if (raw is! String || utf8.encode(raw).length > maxFrameBytes)
+          if (raw is! String || utf8.encode(raw).length > maxFrameBytes) {
             throw const FormatException('Invalid or oversized frame');
+          }
           final request = jsonObject(jsonDecode(raw));
           id = request['id'];
           if (request['method'] == null &&
@@ -217,8 +222,9 @@ class AgentServer {
             return;
           }
           if (id == null) throw const FormatException('Request ID is required');
-          if (client.inFlight >= 32)
+          if (client.inFlight >= 32) {
             throw StateError('Too many outstanding requests');
+          }
           client.inFlight++;
           try {
             final result = await _dispatch(
@@ -246,12 +252,13 @@ class AgentServer {
     if (!_clients.remove(client)) return;
     client.cancellation.cancel();
     _clientTools.detach(client.id);
-    if (!_networkExited)
+    if (!_networkExited) {
       unawaited(
         callIsolate(network.port, 'mcp.detach', {
           'owner': client.id,
         }).catchError((Object _) => null),
       );
+    }
   }
 
   Future<void> _webhook(HttpRequest request) async {
@@ -343,18 +350,21 @@ class AgentServer {
         }
         final task = _tasks[id] = _Task(id, config);
         client.subscriptions.add(id);
-        _begin(task, requiredString(params, 'prompt'), settings: params);
+        _begin(
+          task,
+          requiredString(params, 'prompt'),
+          settings: {...params}..remove('settings'),
+        );
         return {'task_id': id};
       case 'history.import':
         final targetDirectory = directory;
         final source = requiredString(params, 'path');
         final operationId = params['operation_id'] as String?;
-        final id = await Isolate.run(
-          () => TaskStore.importFrom(
-            targetDirectory,
-            source,
-            operationId: operationId,
-          ),
+        final id = await importHistory(
+          targetDirectory,
+          source,
+          operationId: operationId,
+          cancellation: client.cancellation,
         );
         return {'task_id': id};
       default:
@@ -392,7 +402,7 @@ class AgentServer {
             (writer) => callIsolate(writer.port, 'history', {
               'after': params['after'] ?? 0,
               'limit': params['limit'] ?? 100,
-            }),
+            }, cancellation: client.cancellation),
           );
         }
         if (method == 'history.export') {
@@ -401,7 +411,7 @@ class AgentServer {
             task,
             (writer) => callIsolate(writer.port, 'export', {
               'path': requiredString(params, 'path'),
-            }),
+            }, cancellation: client.cancellation),
           );
         }
         if (method == 'task.fork') {
@@ -411,7 +421,7 @@ class AgentServer {
             (writer) => callIsolate(writer.port, 'fork', {
               'id': child,
               'through': params['through'],
-            }),
+            }, cancellation: client.cancellation),
           );
           return {'task_id': child};
         }
@@ -423,8 +433,9 @@ class AgentServer {
     final cwd = Directory(input['cwd'] as String? ?? Directory.current.path)
         .absolute
         .path;
-    if (!Directory(cwd).existsSync())
+    if (!Directory(cwd).existsSync()) {
       throw ArgumentError('Working directory does not exist');
+    }
     final provider = jsonObject(
       await callIsolate(network.port, 'configure', input),
     );
@@ -441,20 +452,24 @@ class AgentServer {
     bool compact = false,
     Json settings = const {},
   }) {
-    if (_networkExited)
+    if (_networkExited) {
       throw StateError(
         'Network worker exited; restart the server before starting a turn',
       );
+    }
     if (task.busy || task.maintenance) throw StateError('Task is busy');
-    if (!compact && prompt.isEmpty)
+    if (!compact && prompt.isEmpty) {
       throw const FormatException('Prompt is required');
-    if (_tasks.values.where((task) => task.busy).length >= maxAgents)
+    }
+    if (_tasks.values.where((task) => task.busy).length >= maxAgents) {
       throw StateError('Active agent limit reached');
+    }
     final effective = {...settings};
     if (effective['cwd'] != null) {
       final cwd = Directory(effective['cwd'] as String).absolute;
-      if (!cwd.existsSync())
+      if (!cwd.existsSync()) {
         throw ArgumentError('Working directory does not exist');
+      }
       effective['cwd'] = cwd.path;
     }
     task.busy = true;
@@ -554,8 +569,9 @@ class AgentServer {
     _Task task,
     Future<Object?> Function(IsolateOwner) operation,
   ) async {
-    if (task.maintenance)
+    if (task.maintenance) {
       throw StateError('Task has a pending maintenance operation');
+    }
     if (task.busy) {
       final writer = task.writer;
       if (writer == null) throw StateError('Task is starting; retry shortly');
@@ -590,14 +606,16 @@ class AgentServer {
     _clientTools.close();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
-      if (!_networkExited)
+      if (!_networkExited) {
         await callIsolate(network.port, 'mcp.detach', {'owner': client.id});
+      }
     }
     await http.close(force: true);
     for (final task in _tasks.values) {
       task.cancelled = true;
-      if (task.agent != null)
+      if (task.agent != null) {
         unawaited(callIsolate(task.agent!.port, 'cancel', {}));
+      }
     }
     await Future.wait(
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
@@ -701,8 +719,9 @@ class AgentClient {
     final hook = CancellationHook(lifetime, () => http.close(force: true));
     try {
       if (uri.scheme == 'unix') {
-        if (uri.path.isEmpty || !uri.path.startsWith('/'))
+        if (uri.path.isEmpty || !uri.path.startsWith('/')) {
           throw ArgumentError('Unix socket address must be absolute');
+        }
         http.findProxy = (_) => 'DIRECT';
         http.connectionFactory = (_, _, _) => Socket.startConnect(
           InternetAddress(uri.path, type: InternetAddressType.unix),
@@ -727,8 +746,9 @@ class AgentClient {
   }
 
   Future<Object?> request(String method, [Json params = const {}]) async {
-    if (socket.readyState != WebSocket.open)
+    if (socket.readyState != WebSocket.open) {
       throw StateError('Connection is closed');
+    }
     final id = ++_next, result = Completer<Object?>();
     _pending[id] = result;
     socket.add(jsonEncode({'id': id, 'method': method, 'params': params}));

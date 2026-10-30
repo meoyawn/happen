@@ -12,8 +12,10 @@ coverage/
 !.env.example
 !.env.sample
 auth.json
+opencode-auth.json
 credentials.json
 .auth-*
+.opencode-auth-*
 *.pem
 *.key
 *.p12

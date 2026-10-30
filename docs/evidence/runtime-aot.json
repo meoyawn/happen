@@ -1,0 +1,94 @@
+{
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "os": "macos",
+  "cpus": 10,
+  "mode": "aot",
+  "fresh_runtime_context_us": {
+    "count": 1000,
+    "p50": 232,
+    "p95": 815,
+    "p99": 2123,
+    "max": 21233,
+    "sum": 398686
+  },
+  "retained_runtime_fresh_context_us": {
+    "count": 1000,
+    "p50": 207,
+    "p95": 364,
+    "p99": 547,
+    "max": 779,
+    "sum": 232485
+  },
+  "start_100_agents_and_100_writers_ms": 209,
+  "rss_200_isolates_bytes": 33439744,
+  "os_threads_before_work": 27,
+  "os_threads_during_work": 27,
+  "100_agents_20_cells_each_ms": 2183,
+  "ordinary_agent_ms": {
+    "count": 99,
+    "p50": 658,
+    "p95": 728,
+    "p99": 753,
+    "max": 753,
+    "sum": 64198
+  },
+  "slow_agent_ms": 2177,
+  "rss_peak_bytes": 106053632,
+  "observed_js_os_threads": 17,
+  "slow_sql": {
+    "elapsed_ms": 3155,
+    "thread_id": 95585175
+  },
+  "agents_finished_while_sql_blocked": 100,
+  "heartbeat_intervals_us": {
+    "count": 299,
+    "p50": 10090,
+    "p95": 18301,
+    "p99": 43972,
+    "max": 128212,
+    "sum": 3379973
+  },
+  "sustained": {
+    "target_cells_per_second": 100,
+    "completed_cells": 1000,
+    "elapsed_ms": 9993,
+    "completed_cells_per_second": 100.06561302245882,
+    "maximum_in_flight": 1,
+    "latency_us": {
+      "count": 1000,
+      "p50": 909,
+      "p95": 1260,
+      "p99": 2585,
+      "max": 5602,
+      "sum": 975108
+    },
+    "schedule_lag_us": {
+      "count": 1000,
+      "p50": 522,
+      "p95": 1974,
+      "p99": 2093,
+      "max": 4683,
+      "sum": 768527
+    },
+    "heartbeat_intervals_us": {
+      "count": 999,
+      "p50": 9955,
+      "p95": 11048,
+      "p99": 11265,
+      "max": 62629,
+      "sum": 10044470
+    }
+  },
+  "rss_after_cleanup_bytes": 74891264,
+  "evidence": {
+    "source_base_revision": "ae3665f33be01828e624df0e57602a9bf863c283",
+    "source_state": "uncommitted implementation and verification changes",
+    "macos_version": "26.4",
+    "recorded_at": "2026-10-30T09:40:29.894345+00:00",
+    "commands": [
+      "dart build cli --target=tool/bench_runtime.dart --output=/tmp/happen-aot-bundle",
+      "ulimit -n 4096",
+      "/tmp/happen-aot-bundle/bundle/bin/bench_runtime"
+    ]
+  }
+}

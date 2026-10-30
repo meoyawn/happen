@@ -6,7 +6,7 @@ import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-export 'src/owner.dart' show startStore;
+export 'src/owner.dart' show startStore, importHistory;
 
 typedef LegacyRecordDecoder = ConversationItem Function(
   Json wire, {
@@ -46,10 +46,12 @@ class TaskStore {
         .select('PRAGMA table_info(events)')
         .map((row) => row['name'])
         .toSet();
-    if (!columns.contains('id'))
+    if (!columns.contains('id')) {
       db.execute('ALTER TABLE events ADD COLUMN id TEXT');
-    if (!columns.contains('window_id'))
+    }
+    if (!columns.contains('window_id')) {
       db.execute('ALTER TABLE events ADD COLUMN window_id TEXT');
+    }
     db.execute('UPDATE events SET id = ? || seq WHERE id IS NULL', [
       '$taskId:',
     ]);
@@ -75,8 +77,9 @@ class TaskStore {
       ], metadata: metadata).single;
 
   List<Json> appendBatch(List<Json> events, {Json metadata = const {}}) {
-    if (events.isEmpty)
+    if (events.isEmpty) {
       throw const FormatException('Empty history transaction');
+    }
     db.execute('BEGIN');
     try {
       final now = DateTime.now().toUtc().toIso8601String();
@@ -130,8 +133,9 @@ class TaskStore {
   }
 
   List<Json> history({int after = 0, int limit = 100, int? through}) {
-    if (limit < 1 || limit > 500)
+    if (limit < 1 || limit > 500) {
       throw const FormatException('History limit must be 1..500');
+    }
     final rows = db.select(
       'SELECT seq, id, window_id, type, created_at, data FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?',
       [after, through ?? lastSequence, limit],
@@ -174,8 +178,9 @@ class TaskStore {
         ),
       );
       bytes += (compacted.first['data'] as String).length;
-      if (bytes > maxBytes)
+      if (bytes > maxBytes) {
         throw StateError('Compacted context exceeds the byte budget');
+      }
     }
     while (true) {
       final page = history(after: after);
@@ -201,10 +206,11 @@ class TaskStore {
         for (final raw in items) {
           final item = decode(raw, '${event['id']}:${index++}');
           bytes += utf8.encode(jsonEncode(item)).length;
-          if (bytes > maxBytes)
+          if (bytes > maxBytes) {
             throw StateError(
               'Active context exceeds the byte budget; compact before continuing.',
             );
+          }
           result.add(item);
         }
       }
@@ -235,13 +241,27 @@ class TaskStore {
         .toList();
   }
 
-  List<Json> listItems(Json params) => _historySelection(params);
-  List<Json> searchContents(Json params) {
+  Future<List<Json>> listItems(
+    Json params, {
+    CancellationToken? cancellation,
+  }) => _historySelection(params, cancellation: cancellation);
+  Future<List<Json>> searchContents(
+    Json params, {
+    CancellationToken? cancellation,
+  }) {
     requiredString(params, 'query');
-    return _historySelection(params, search: params['query'] as String);
+    return _historySelection(
+      params,
+      search: params['query'] as String,
+      cancellation: cancellation,
+    );
   }
 
-  List<Json> _historySelection(Json params, {String? search}) {
+  Future<List<Json>> _historySelection(
+    Json params, {
+    String? search,
+    CancellationToken? cancellation,
+  }) async {
     _validateHistoryAgent(params);
     final limit = (params['limit'] as int? ?? 20).clamp(1, 200);
     final chars = (params['max_chars_per_item'] as int? ?? 1500).clamp(
@@ -254,6 +274,7 @@ class TaskStore {
     var remaining = 60000;
     final result = <Json>[];
     while (result.length < limit && remaining > 0) {
+      cancellation?.throwIfCancelled();
       final page = db.select(
         'SELECT seq, id, window_id, type, created_at, data FROM events '
         'WHERE seq ${recent ? '<' : '>'} ? AND (? IS NULL OR window_id IS ?) ORDER BY seq $order LIMIT 100',
@@ -266,13 +287,15 @@ class TaskStore {
         final content = item.remove('content') as String;
         if (params['role'] != null && params['role'] != item['role']) continue;
         if (params['tool_name'] != null &&
-            !(item['tool_names'] as List).contains(params['tool_name']))
+            !(item['tool_names'] as List).contains(params['tool_name'])) {
           continue;
+        }
         if (params['tool_namespace'] != null &&
             !(item['tool_namespaces'] as List).contains(
               params['tool_namespace'],
-            ))
+            )) {
           continue;
+        }
         final offset = search == null ? 0 : content.indexOf(search);
         if (offset < 0) continue;
         final start = search == null
@@ -290,6 +313,7 @@ class TaskStore {
         result.add(item);
         if (result.length == limit || remaining <= 0) break;
       }
+      await cancellableDelay(Duration.zero, cancellation);
     }
     return result;
   }
@@ -300,8 +324,9 @@ class TaskStore {
       'SELECT seq, id, window_id, type, created_at, data FROM events WHERE id IS ? AND window_id IS ?',
       [requiredString(params, 'item_id'), requiredString(params, 'window_id')],
     );
-    if (rows.isEmpty)
+    if (rows.isEmpty) {
       throw StateError('History item not found in the requested window');
+    }
     final item = _historyItem(rows.single);
     final text = item['content'] as String;
     final offset = params['offset_chars'] as int? ?? 0;
@@ -349,8 +374,9 @@ class TaskStore {
         }
       }
       if (item.kind == 'configuration') content.add(jsonEncode(item.settings));
-      if (item.kind == 'tools')
+      if (item.kind == 'tools') {
         content.add(jsonEncode(item.tools.map((v) => v.toJson()).toList()));
+      }
     }
 
     if (data['item'] is Map) record(jsonObject(data['item']));
@@ -367,11 +393,12 @@ class TaskStore {
       }
       content.add(jsonEncode(data));
     }
-    if (row['type'] == 'context.compacted')
+    if (row['type'] == 'context.compacted') {
       content.add(
         data['summary'] as String? ??
             'Context compacted. Original messages remain in earlier windows.',
       );
+    }
     return {
       'item_id': row['id'],
       'window_id': row['window_id'],
@@ -385,7 +412,12 @@ class TaskStore {
     };
   }
 
-  Future<void> fork(String childId, {int? through}) async {
+  Future<void> fork(
+    String childId, {
+    int? through,
+    CancellationToken? cancellation,
+  }) async {
+    cancellation?.throwIfCancelled();
     validateTaskId(childId);
     final cutoff = through ?? lastSequence;
     final boundary = db.select('SELECT type FROM events WHERE seq IS ?', [
@@ -401,18 +433,20 @@ class TaskStore {
         ].contains(boundary.first['type'])) {
       throw StateError('Forks require a terminal turn boundary');
     }
-    if (Directory('$directory/tasks/$childId').existsSync())
+    if (Directory('$directory/tasks/$childId').existsSync()) {
       throw StateError('Destination exists');
+    }
     final stage = Directory('$directory/staging/${newId()}')
       ..createSync(recursive: true);
     final child = TaskStore(stage.path, childId, legacyDecoder: legacyDecoder);
     try {
       var after = 0;
       while (after < cutoff) {
+        cancellation?.throwIfCancelled();
         final page = history(after: after, through: cutoff);
         child._copy(page);
         after = page.last['seq'] as int;
-        await Future<void>.delayed(Duration.zero);
+        await cancellableDelay(Duration.zero, cancellation);
       }
       child._rebuildMetadata();
       child.append(
@@ -421,6 +455,7 @@ class TaskStore {
         metadata: {'status': 'idle'},
       );
       child.close();
+      cancellation?.throwIfCancelled();
       Directory('${stage.path}/tasks/$childId')
           .renameSync('$directory/tasks/$childId');
     } finally {
@@ -488,11 +523,17 @@ class TaskStore {
     }
   }
 
-  Future<void> exportTo(String destination) async {
-    if (metadata('status') == 'running')
+  Future<void> exportTo(
+    String destination, {
+    CancellationToken? cancellation,
+  }) async {
+    cancellation?.throwIfCancelled();
+    if (metadata('status') == 'running') {
       throw StateError('Export requires an idle task');
-    if (File(destination).existsSync())
+    }
+    if (File(destination).existsSync()) {
       throw StateError('Export destination exists');
+    }
     final temporary = File('$destination.partial-${newId()}');
     temporary.parent.createSync(recursive: true);
     final sink = temporary.openWrite();
@@ -515,6 +556,7 @@ class TaskStore {
       });
       var after = 0;
       while (after < cutoff) {
+        cancellation?.throwIfCancelled();
         final page = history(after: after, through: cutoff);
         for (final event in page) {
           write(event);
@@ -522,6 +564,7 @@ class TaskStore {
         }
         after = page.last['seq'] as int;
         await sink.flush();
+        cancellation?.throwIfCancelled();
       }
       hasher.close();
       sink.write(
@@ -529,6 +572,7 @@ class TaskStore {
       );
       await sink.flush();
       await sink.close();
+      cancellation?.throwIfCancelled();
       await temporary.rename(destination);
     } catch (_) {
       await sink.close();
@@ -541,7 +585,9 @@ class TaskStore {
     String directory,
     String source, {
     String? operationId,
+    CancellationToken? cancellation,
   }) async {
+    cancellation?.throwIfCancelled();
     final id = operationId ?? newId();
     validateTaskId(id);
     if (File('$directory/tasks/$id/history.sqlite').existsSync()) {
@@ -562,44 +608,54 @@ class TaskStore {
     Json? header, footer;
     final batch = <Json>[];
     try {
-      await for (final line in File(
-        source,
-      ).openRead().transform(utf8.decoder).transform(const LineSplitter())) {
-        if (line.length > 8 * 1024 * 1024)
-          throw const FormatException('Import record too large');
-        final item = jsonObject(jsonDecode(line));
-        if (header == null) {
-          if (item['format'] != 'agent.history' ||
-              ![1, 2].contains(item['version']))
-            throw const FormatException('Unsupported history format');
-          header = item;
-        } else if (item.containsKey('sha256')) {
-          if (footer != null) throw const FormatException('Duplicate footer');
-          footer = item;
-          continue;
-        } else {
-          if (footer != null ||
-              item['seq'] != count + 1 ||
-              item['type'] is! String ||
-              item['created_at'] is! String ||
-              item['data'] is! Map) {
-            throw const FormatException('Invalid history record');
+      final input = ownStream(
+        File(source).openRead(),
+        cancellation ?? CancellationToken(),
+      );
+      try {
+        await for (final line in boundedLines(
+          input.stream,
+          maxBytes: 8 * 1024 * 1024,
+        )) {
+          cancellation?.throwIfCancelled();
+          final item = jsonObject(jsonDecode(line));
+          if (header == null) {
+            if (item['format'] != 'agent.history' ||
+                ![1, 2].contains(item['version'])) {
+              throw const FormatException('Unsupported history format');
+            }
+            header = item;
+          } else if (item.containsKey('sha256')) {
+            if (footer != null) throw const FormatException('Duplicate footer');
+            footer = item;
+            continue;
+          } else {
+            if (footer != null ||
+                item['seq'] != count + 1 ||
+                item['type'] is! String ||
+                item['created_at'] is! String ||
+                item['data'] is! Map) {
+              throw const FormatException('Invalid history record');
+            }
+            count++;
+            if (header['version'] == 1) {
+              item['id'] = '${header['source_task']}:$count';
+              item['window_id'] = '${header['source_task']}:0';
+            }
+            requiredString(item, 'id');
+            requiredString(item, 'window_id');
+            batch.add(item);
+            if (batch.length == 100) {
+              store._copy(batch);
+              batch.clear();
+            }
           }
-          count++;
-          if (header['version'] == 1) {
-            item['id'] = '${header['source_task']}:$count';
-            item['window_id'] = '${header['source_task']}:0';
-          }
-          requiredString(item, 'id');
-          requiredString(item, 'window_id');
-          batch.add(item);
-          if (batch.length == 100) {
-            store._copy(batch);
-            batch.clear();
-          }
+          hasher.add(utf8.encode('$line\n'));
         }
-        hasher.add(utf8.encode('$line\n'));
+      } finally {
+        await input.close();
       }
+      cancellation?.throwIfCancelled();
       hasher.close();
       if (footer == null ||
           footer['records'] != count ||
@@ -616,6 +672,7 @@ class TaskStore {
       );
       store.close();
       Directory('$directory/tasks').createSync(recursive: true);
+      cancellation?.throwIfCancelled();
       Directory('${stage.path}/tasks/$id').renameSync('$directory/tasks/$id');
       return id;
     } finally {

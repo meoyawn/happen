@@ -37,8 +37,10 @@ Future<Json> loadAgentsMd(
       cancellation.throwIfCancelled();
       for (final name in ['AGENTS.override.md', 'AGENTS.md']) {
         final file = File('${directory.path}/$name');
-        if (await FileSystemEntity.type(file.path) != FileSystemEntityType.file)
+        if (await FileSystemEntity.type(file.path) !=
+            FileSystemEntityType.file) {
           continue;
+        }
         final path = await file.resolveSymbolicLinks();
         if (!seen.add(path)) break;
         final bytes = <int>[];
@@ -88,10 +90,11 @@ ConversationItem instructionMessage(Json snapshot, {bool replacement = false}) {
   final text = StringBuffer(
     '# AGENTS.md instructions for ${snapshot['cwd']}\n\n',
   );
-  if (replacement)
+  if (replacement) {
     text.writeln(
       'These AGENTS.md instructions replace all previously provided AGENTS.md instructions.',
     );
+  }
   if (files.isEmpty) {
     text.writeln(
       'No automatically loaded AGENTS.md instructions currently apply.',
@@ -101,16 +104,18 @@ ConversationItem instructionMessage(Json snapshot, {bool replacement = false}) {
       text.writeln(
         '\nInstructions from ${file['path']} (scope: ${file['scope']}):\n${file['text']}',
       );
-      if (file['truncated'] == true)
+      if (file['truncated'] == true) {
         text.writeln(
           '[File truncated: read the full file before working in its scope.]',
         );
+      }
     }
   }
-  if (snapshot['truncated'] == true)
+  if (snapshot['truncated'] == true) {
     text.writeln(
       '[Instruction budget reached. Check applicable files for omitted instructions.]',
     );
+  }
   return ConversationItem(
     role: 'user',
     content: [
@@ -172,8 +177,9 @@ List<ConversationItem> restoreContext(
   var insertion = result.lastIndexWhere(
     (item) => item.role == 'user' && item.kind == 'message',
   );
-  if (insertion < 0)
+  if (insertion < 0) {
     insertion = result.lastIndexWhere((item) => item.kind == 'compaction');
+  }
   if (insertion < 0) insertion = result.length;
   result.insertAll(insertion, initial);
   if (reasoningUpdates && effectiveEffort != baselineEffort) {

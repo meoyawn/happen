@@ -181,15 +181,16 @@ void main() {
         );
         expect(second.text, 'Done ✓');
         expect((bodies[1]['input'] as List).sublist(1, 4), native);
-        expect(bodies[1]['reasoning'], {'effort': 'low', 'summary': 'none'});
+        expect(bodies[1]['reasoning'], {'effort': 'low'});
         expect(
           (bodies[1]['input'] as List).reversed.skip(1).first['type'],
           'configuration_update',
         );
         expect(bodies[1]['tools'][0]['name'], 'functions');
         expect(bodies[1]['tools'][0]['tools'][0]['type'], 'custom');
-        if (transport == 'websocket')
+        if (transport == 'websocket') {
           expect(bodies[1]['type'], 'response.create');
+        }
 
         final compacted = await provider.compact(
           request([...context, ...second.output]),

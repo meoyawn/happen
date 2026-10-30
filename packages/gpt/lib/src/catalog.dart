@@ -24,8 +24,9 @@ class GptModel {
     : data =
           _catalog[model] ??
           (throw ArgumentError('Unknown GPT model: $model')) {
-    if (!supportedGptModels.contains(model))
+    if (!supportedGptModels.contains(model)) {
       throw ArgumentError('GPT model is not supported by this harness: $model');
+    }
   }
   final Json data;
   String get id => data['slug'] as String;

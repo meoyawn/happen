@@ -113,8 +113,7 @@ class AuthManager {
       interval = interval.clamp(1, 30);
       final deadline = DateTime.now().add(const Duration(minutes: 15));
       while (DateTime.now().isBefore(deadline)) {
-        await Future<void>.delayed(Duration(seconds: interval))
-            .asCancellable(cancel);
+        await cancellableDelay(Duration(seconds: interval), cancel);
         final result = await _request('/api/accounts/deviceauth/token', {
           'device_auth_id': requiredString(info, 'device_auth_id'),
           'user_code': requiredString(info, 'user_code'),
@@ -298,8 +297,9 @@ class AuthManager {
           cancellation,
           onCancel: () => unawaited(iterator.cancel()),
         )) {
-          if (bytes.length + iterator.current.length > 1024 * 1024)
+          if (bytes.length + iterator.current.length > 1024 * 1024) {
             throw const FormatException('Authentication response too large');
+          }
           bytes.addAll(iterator.current);
         }
       } finally {

@@ -14,8 +14,9 @@ typedef HostTool = Future<Object?> Function(String name, Object? arguments);
 /// A runtime belongs to exactly one Dart isolate, never used concurrently.
 class QuickJs {
   QuickJs({int memoryLimit = 32 * 1024 * 1024}) : _handle = jsNew(memoryLimit) {
-    if (_handle == nullptr)
+    if (_handle == nullptr) {
       throw StateError('Could not allocate QuickJS runtime');
+    }
   }
   Pointer<Void> _handle;
   bool _running = false;
@@ -56,8 +57,9 @@ class QuickJs {
     int cpuBudgetMs = 1000,
   }) async {
     if (_running) throw StateError('Only one cell may run in a context');
-    if (source.length > 256 * 1024)
+    if (source.length > 256 * 1024) {
       throw const FormatException('Cell source too large');
+    }
     _running = true;
     final pending = <int, Future<void>>{};
     final replies = <Json>[];
@@ -72,8 +74,9 @@ class QuickJs {
       );
       while (true) {
         cancellation.throwIfCancelled();
-        if (clock.elapsed > timeout)
+        if (clock.elapsed > timeout) {
           throw TimeoutException('JavaScript cell timed out', timeout);
+        }
         while (replies.isNotEmpty) {
           evaluate(
             '__cell.resolve(${jsonEncode(replies.removeAt(0))}); null',
@@ -100,8 +103,9 @@ class QuickJs {
           unawaited(pending[id]!.whenComplete(() => pending.remove(id)));
         }
         if (state['done'] == true && pending.isEmpty && replies.isEmpty) {
-          if (state['error'] != null)
+          if (state['error'] != null) {
             throw StateError(state['error'] as String);
+          }
           return jsonObject(
             evaluate('({output: __cell.output, values: __cell.values})'),
           );
@@ -112,7 +116,7 @@ class QuickJs {
               .asCancellable(cancellation)
               .timeout(timeout - clock.elapsed);
         } else {
-          await Future<void>.delayed(Duration.zero).asCancellable(cancellation);
+          await cancellableDelay(Duration.zero, cancellation);
         }
       }
     } finally {

@@ -49,8 +49,9 @@ class McpConnection {
                 includeParentEnvironment: false,
               )
               .then((value) {
-                if (cancellation.isCancelled || lifetime.isCancelled)
+                if (cancellation.isCancelled || lifetime.isCancelled) {
                   value.kill(ProcessSignal.sigkill);
+                }
                 return value;
               })
               .asCancellable(cancellation);
@@ -94,12 +95,16 @@ class McpConnection {
       }
     } on McpFailure catch (error) {
       // Modern errors identify the era. They must never silently downgrade.
-      if (error.code != null && error.code! <= -32020 && error.code! >= -32029)
+      if (error.code != null &&
+          error.code! <= -32020 &&
+          error.code! >= -32029) {
         rethrow;
+      }
       if (error.status == 401 ||
           error.status == 403 ||
-          config['legacy_fallback'] == false)
+          config['legacy_fallback'] == false) {
         rethrow;
+      }
       await _legacy(cancellation);
     } on TimeoutException {
       if (_process == null || config['legacy_fallback'] == false) rethrow;
@@ -156,8 +161,9 @@ class McpConnection {
   }) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
-    if (_pending.length >= 256)
+    if (_pending.length >= 256) {
       throw const McpFailure('MCP pending request limit reached');
+    }
     final deadline = timeout == null
         ? CancellationToken()
         : TimeoutCancellationToken(timeout);
@@ -181,8 +187,9 @@ class McpConnection {
           },
       },
     };
-    if (utf8.encode(jsonEncode(body)).length > maxFrameBytes)
+    if (utf8.encode(jsonEncode(body)).length > maxFrameBytes) {
       throw const McpFailure('MCP request too large');
+    }
     try {
       if (_process != null) {
         final pending = _Pending(onNotification);
@@ -196,8 +203,9 @@ class McpConnection {
               'params': {'requestId': id},
             });
           }
-          if (!pending.result.isCompleted)
+          if (!pending.result.isCompleted) {
             pending.result.completeError(token.exception!);
+          }
         });
         try {
           token.throwIfCancelled();
@@ -220,14 +228,16 @@ class McpConnection {
   }
 
   void _receive(Json message) {
-    if (message['jsonrpc'] != '2.0')
+    if (message['jsonrpc'] != '2.0') {
       throw const FormatException('Invalid MCP envelope');
+    }
     if (message.containsKey('method')) {
       if (message.containsKey('id')) {
-        if (modern)
+        if (modern) {
           throw const FormatException(
             'Modern MCP servers cannot send requests',
           );
+        }
         _write({
           'jsonrpc': '2.0',
           'id': message['id'],
@@ -268,8 +278,9 @@ class McpConnection {
         data: error['data'] is Map ? jsonObject(error['data']) : null,
       );
     }
-    if (status != null && (status < 200 || status >= 300))
+    if (status != null && (status < 200 || status >= 300)) {
       throw McpFailure('MCP HTTP request failed ($status)', status: status);
+    }
     final result = jsonObject(message['result']);
     if (result['resultType'] != null &&
         !['complete', 'input_required'].contains(result['resultType'])) {
@@ -310,13 +321,15 @@ class McpConnection {
       }
       for (final entry in jsonObject(config['header_env'] ?? {}).entries) {
         final value = Platform.environment[entry.value];
-        if (value == null)
+        if (value == null) {
           throw StateError('MCP credential environment variable is missing');
+        }
         outgoing.headers.set(entry.key, value);
       }
       outgoing.headers.set('MCP-Protocol-Version', version);
-      if (_session != null && !modern)
+      if (_session != null && !modern) {
         outgoing.headers.set('Mcp-Session-Id', _session!);
+      }
       if (modern) {
         final method = body['method'] as String;
         final params = jsonObject(body['params']);
@@ -334,8 +347,9 @@ class McpConnection {
       }
       outgoing.write(jsonEncode(body));
       final response = await outgoing.close().asCancellable(token);
-      if (!modern && body['method'] == 'initialize')
+      if (!modern && body['method'] == 'initialize') {
         _session = response.headers.value('Mcp-Session-Id');
+      }
       if (!body.containsKey('id') && response.statusCode == 202) return {};
       if (response.headers.contentType?.mimeType != 'text/event-stream') {
         final bytes = <int>[];
@@ -346,8 +360,9 @@ class McpConnection {
             onCancel: () => unawaited(input.cancel()),
           )) {
             bytes.addAll(input.current);
-            if (bytes.length > maxFrameBytes)
+            if (bytes.length > maxFrameBytes) {
               throw const McpFailure('MCP response too large');
+            }
           }
         } finally {
           unawaited(input.cancel());
@@ -367,11 +382,12 @@ class McpConnection {
         }
         return _result(message, status: response.statusCode);
       }
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw McpFailure(
           'MCP stream failed (${response.statusCode})',
           status: response.statusCode,
         );
+      }
       final input = ownStream(response, token);
       closeBody = input.close;
       messages = StreamIterator(
@@ -383,8 +399,9 @@ class McpConnection {
       )) {
         final message = messages.current;
         if (message['id'] == body['id']) return _result(message);
-        if (message.containsKey('id'))
+        if (message.containsKey('id')) {
           throw const McpFailure('Unexpected MCP server request or response');
+        }
         final params = jsonObject(message['params'] ?? {});
         final method = message['method'] as String? ?? '';
         if (method.startsWith('notifications/events/') ||
@@ -403,8 +420,9 @@ class McpConnection {
       hook.dispose();
       await closeBody?.call();
       outgoing?.abort();
-      if (messages != null)
+      if (messages != null) {
         unawaited(messages.cancel().catchError((Object _) {}));
+      }
     }
   }
 
@@ -429,12 +447,13 @@ class McpConnection {
       ),
     );
     for (final pending in _pending.values.toList()) {
-      if (!pending.result.isCompleted)
+      if (!pending.result.isCompleted) {
         pending.result.completeError(
           const McpFailure(
             'MCP connection closed; an interrupted call may have taken effect',
           ),
         );
+      }
     }
     _pending.clear();
     final process = _process;
@@ -519,10 +538,11 @@ Map<String, String> schemaHeaders(Json schema, Object? arguments) {
     }
   }
 
-  if (schema.containsKey('x-mcp-header'))
+  if (schema.containsKey('x-mcp-header')) {
     throw const FormatException(
       'MCP header annotation cannot be on the schema root',
     );
+  }
   visit(schema, arguments, true);
   return output;
 }

@@ -50,6 +50,23 @@ class CancellationHook with Cancellable {
   void dispose() => detach();
 }
 
+/// Detach before completing: cancellation_token 2.0.1's delayed future uses a
+/// sync completer and detaches afterwards, so cancelling in the awaiting
+/// continuation can double-complete it. Its regular completer avoids that race.
+Future<void> cancellableDelay(
+  Duration duration,
+  CancellationToken? cancellation,
+) {
+  cancellation?.throwIfCancelled();
+  Timer? timer;
+  final result = CancellableCompleter<void>(
+    cancellation,
+    onCancel: () => timer?.cancel(),
+  );
+  timer = Timer(duration, result.complete);
+  return result.future;
+}
+
 class RemoteFailure implements Exception {
   const RemoteFailure(this.message, {this.code});
   final String message;
@@ -87,8 +104,9 @@ Stream<String> boundedLines(
         line = [];
         afterCr = byte == 13;
       } else {
-        if (line.length >= maxBytes)
+        if (line.length >= maxBytes) {
           throw const FormatException('Record exceeds byte limit');
+        }
         line.add(byte);
       }
     }
@@ -216,13 +234,15 @@ class IsolateOwner {
     final startup = Completer<SendPort>();
     final stopped = Completer<void>();
     errors.listen((error) {
-      if (!startup.isCompleted)
+      if (!startup.isCompleted) {
         startup.completeError(StateError('Worker failed during startup'));
+      }
       if (!stopped.isCompleted) stopped.complete();
     });
     exit.listen((_) {
-      if (!startup.isCompleted)
+      if (!startup.isCompleted) {
         startup.completeError(StateError('Worker exited during startup'));
+      }
       if (!stopped.isCompleted) stopped.complete();
     });
     final listener = ready.listen((message) {

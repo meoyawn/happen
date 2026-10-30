@@ -31,6 +31,7 @@ void _networkMain(List<Object?> args) async {
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
   final http = HttpClient()..connectionTimeout = const Duration(seconds: 30);
   final auth = AuthManager(directory, http: http);
+  final consoleAuth = OpenCodeAuthManager(directory, http: http);
   final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
   final gpt = GptProvider(
     ResponsesClient(
@@ -39,21 +40,35 @@ void _networkMain(List<Object?> args) async {
       endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
     ),
   );
-  final deepseek = DeepSeekProvider(
-    http: http,
-    credentials: () async {
-      final variable =
-          deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY';
-      final value = Platform.environment[variable];
-      if (value == null || value.isEmpty)
-        throw StateError('DeepSeek credential environment variable is missing');
-      return value;
-    },
-    endpoint: deepseekOptions['endpoint'] == null
-        ? null
-        : Uri.parse(deepseekOptions['endpoint'] as String),
-    transport: deepseekOptions['transport'] as String? ?? 'messages',
-  );
+  final backend = deepseekOptions['backend'] as String? ?? 'native';
+  if (!{'native', 'opencode'}.contains(backend)) {
+    throw ArgumentError('DeepSeek backend must be native or opencode');
+  }
+  final deepseekEndpoint = deepseekOptions['endpoint'] == null
+      ? null
+      : Uri.parse(deepseekOptions['endpoint'] as String);
+  final deepseek = backend == 'opencode'
+      ? DeepSeekProvider.opencode(
+          http: http,
+          auth: consoleAuth,
+          endpoint: deepseekEndpoint,
+        )
+      : DeepSeekProvider(
+          http: http,
+          credentials: () async {
+            final variable =
+                deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY';
+            final value = Platform.environment[variable];
+            if (value == null || value.isEmpty) {
+              throw StateError(
+                'DeepSeek credential environment variable is missing',
+              );
+            }
+            return value;
+          },
+          endpoint: deepseekEndpoint,
+          transport: deepseekOptions['transport'] as String? ?? 'messages',
+        );
   final providers = <String, ModelProvider>{'gpt': gpt, 'deepseek': deepseek};
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
@@ -196,7 +211,7 @@ void _networkMain(List<Object?> args) async {
         final model =
             modelInput ??
             defaults['model'] as String? ??
-            (lab == 'gpt' ? 'gpt-6.1-sol' : supportedDeepSeekModel);
+            (lab == 'gpt' ? 'gpt-6.1-sol' : deepseek.defaultModel);
         final selected = {
           ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
@@ -219,7 +234,7 @@ void _networkMain(List<Object?> args) async {
             'reasoning_updates': info?.reasoningUpdates ?? false,
             'catalog_revision': lab == 'gpt'
                 ? gptCatalogRevision
-                : deepseekCatalogRevision,
+                : deepseek.catalogRevision,
           },
         });
         return;
@@ -235,8 +250,9 @@ void _networkMain(List<Object?> args) async {
         reply?.send({'result': settings});
         return;
       }
-      if (!{'respond', 'compact'}.contains(request['method']))
+      if (!{'respond', 'compact'}.contains(request['method'])) {
         throw StateError('Unknown network operation');
+      }
       final lab = requiredString(params, 'provider');
       final provider = providers[lab];
       if (provider == null) throw ArgumentError('Unsupported provider');
@@ -283,6 +299,7 @@ void _networkMain(List<Object?> args) async {
         }
         await mcp.close();
         auth.close();
+        consoleAuth.close();
         http.close(force: true);
         await Future.wait(pending.toList());
         (request['reply'] as SendPort).send({'result': null});
@@ -292,8 +309,8 @@ void _networkMain(List<Object?> args) async {
         });
       } finally {
         port.close();
+        Isolate.exit();
       }
-      return;
     }
     final operation = handle(request);
     pending.add(operation);

@@ -6,8 +6,9 @@ class Telemetry {
   final _timings = <String, _Timing>{};
 
   void add(String name, [num value = 1]) {
-    if (enabled)
+    if (enabled) {
       _counters.update(name, (n) => n + value, ifAbsent: () => value);
+    }
   }
 
   void observe(String name, Duration duration) {

@@ -50,8 +50,9 @@ class ConversationItem {
   );
 
   factory ConversationItem.fromJson(Json json) {
-    if (json['version'] != 1)
+    if (json['version'] != 1) {
       throw const FormatException('Unsupported conversation record version');
+    }
     final kind = requiredString(json, 'kind');
     if (!{'message', 'configuration', 'tools', 'compaction'}.contains(kind)) {
       throw FormatException('Unsupported conversation record kind: $kind');
@@ -66,14 +67,16 @@ class ConversationItem {
       switch (part['type']) {
         case 'text':
         case 'reasoning':
-          if (part['text'] is! String)
+          if (part['text'] is! String) {
             throw const FormatException('Invalid text content');
+          }
         case 'tool_call':
           ToolCall.fromJson(part);
         case 'tool_result':
           requiredString(part, 'call_id');
-          if (part['output'] is! String)
+          if (part['output'] is! String) {
             throw const FormatException('Invalid tool output');
+          }
         default:
           throw FormatException('Unsupported content part: ${part['type']}');
       }

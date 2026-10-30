@@ -123,11 +123,12 @@ void main() {
           await observer.close();
           final path = server.socketPath;
           await server.close();
-          if (path != null)
+          if (path != null) {
             expect(
               await FileSystemEntity.type(path),
               FileSystemEntityType.notFound,
             );
+          }
           await provider.close(force: true);
           await root.delete(recursive: true);
         });

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
+import 'package:deepseek/deepseek.dart';
 import 'package:gpt/gpt.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -14,6 +15,7 @@ ArgParser parser() {
   parser.addCommand(
     'login',
     ArgParser()
+      ..addOption('provider', allowed: ['gpt', 'opencode'], defaultsTo: 'gpt')
       ..addFlag('device', negatable: false)
       ..addFlag('from-codex', negatable: false)
       ..addOption('codex-auth'),
@@ -66,13 +68,43 @@ Future<void> run(List<String> arguments) async {
   final command = parsed.command;
   if (parsed['help'] == true || command == null) {
     stdout.writeln(
-      'Agent server\n\n  agent login [--device | --from-codex]\n  agent serve [--port 8765]\n  agent exec [--url ws://127.0.0.1:8765/ws] "task"\n  agent request METHOD \'{"parameter":"value"}\'\n\n${options.usage}',
+      'Agent server\n\n  agent login [--device | --from-codex | --provider opencode]\n  agent serve [--port 8765]\n  agent exec [--url ws://127.0.0.1:8765/ws] "task"\n  agent request METHOD \'{"parameter":"value"}\'\n\n${options.usage}',
     );
     return;
   }
   final directory = Directory(parsed['data-dir'] as String).absolute.path;
   switch (command.name) {
     case 'login':
+      if (command['provider'] == 'opencode') {
+        if (command['from-codex'] == true || command.wasParsed('codex-auth')) {
+          throw ArgumentError(
+            'Codex credentials are only for the GPT provider',
+          );
+        }
+        final auth = OpenCodeAuthManager(directory);
+        final cancellation = CancellationToken();
+        final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
+            .map(
+              (signal) => signal.watch().listen((_) => cancellation.cancel()),
+            )
+            .toList();
+        try {
+          await auth.login(
+            cancellation: cancellation,
+            notify: (url, code) => stdout.writeln(
+              'Open this URL and authorize device $code:\n$url',
+            ),
+          );
+          stdout.writeln('OpenCode Console login ready.');
+        } finally {
+          cancellation.cancel();
+          for (final signal in signals) {
+            await signal.cancel();
+          }
+          auth.close();
+        }
+        return;
+      }
       final auth = AuthManager(directory);
       try {
         if (command['from-codex'] == true) {
@@ -124,8 +156,9 @@ Future<void> run(List<String> arguments) async {
       final prompt = command.rest.isEmpty
           ? (stdin.hasTerminal ? '' : await utf8.decoder.bind(stdin).join())
           : command.rest.join(' ');
-      if (prompt.trim().isEmpty)
+      if (prompt.trim().isEmpty) {
         throw ArgumentError('Provide a prompt or pipe it on stdin');
+      }
       AgentServer? embedded;
       AgentClient? client;
       StreamSubscription<Json>? events;
@@ -158,10 +191,11 @@ Future<void> run(List<String> arguments) async {
             }
           },
           onDone: () {
-            if (!terminal.isCompleted)
+            if (!terminal.isCompleted) {
               terminal.completeError(
                 StateError('Disconnected before turn completion'),
               );
+            }
           },
         );
         final result = jsonObject(
@@ -198,10 +232,11 @@ Future<void> run(List<String> arguments) async {
         await embedded?.close();
       }
     case 'request':
-      if (command.rest.isEmpty)
+      if (command.rest.isEmpty) {
         throw ArgumentError(
           'Provide a protocol method and optional JSON parameters',
         );
+      }
       final client = await AgentClient.connect(
         Uri.parse(command['url'] as String),
         token: command['token'] as String?,

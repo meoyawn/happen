@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,6 +10,10 @@ Future<void> main(List<String> arguments) async {
     arguments.isEmpty ? defaultDataDirectory() : arguments.single,
   );
   final client = ResponsesClient(credentials: auth.credentials);
+  final cancellation = TimeoutCancellationToken(const Duration(minutes: 5));
+  final signal = ProcessSignal.sigint.watch().listen(
+    (_) => cancellation.cancel(),
+  );
   final sessionId = newId();
   const instructions =
       'Follow the user instructions accurately. Keep answers brief.';
@@ -27,7 +32,7 @@ Future<void> main(List<String> arguments) async {
     tools: [],
     reasoning: 'low',
     sessionId: sessionId,
-    cancellation: CancellationToken(),
+    cancellation: cancellation,
   );
   try {
     final original = <Json>[
@@ -82,6 +87,8 @@ Future<void> main(List<String> arguments) async {
     result['error'] = error.toString();
     result['passed'] = false;
   } finally {
+    cancellation.cancel();
+    await signal.cancel();
     client.close();
     auth.close();
   }

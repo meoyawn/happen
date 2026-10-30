@@ -1,0 +1,183 @@
+{
+  "timestamp": "2026-10-30T09:40:42.994016Z",
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "os": "macos",
+  "model": "gpt-6.1-sol",
+  "baseline_effort": "low",
+  "changed_effort": "high",
+  "results": [
+    {
+      "model_transport": "http",
+      "client_transport": "uds",
+      "stages": [
+        {
+          "stage": "seed",
+          "status": "turn.completed",
+          "elapsed_ms": 6563,
+          "usage": {
+            "model_requests": 2,
+            "input_tokens": 12698,
+            "cached_input_tokens": 6272,
+            "cache_write_tokens": 0,
+            "output_tokens": 81,
+            "code_cells": 1
+          }
+        },
+        {
+          "stage": "same_effort",
+          "status": "turn.completed",
+          "elapsed_ms": 2615,
+          "usage": {
+            "model_requests": 1,
+            "input_tokens": 6435,
+            "cached_input_tokens": 6272,
+            "cache_write_tokens": 0,
+            "output_tokens": 9
+          }
+        },
+        {
+          "stage": "changed_effort",
+          "status": "turn.completed",
+          "elapsed_ms": 2432,
+          "usage": {
+            "model_requests": 1,
+            "input_tokens": 6465,
+            "cached_input_tokens": 6272,
+            "cache_write_tokens": 0,
+            "output_tokens": 9
+          }
+        },
+        {
+          "stage": "compact",
+          "status": "turn.completed",
+          "elapsed_ms": 13521,
+          "usage": {
+            "input_tokens": 6494,
+            "cached_input_tokens": 6400,
+            "cache_write_tokens": 0,
+            "output_tokens": 538,
+            "compactions": 1
+          }
+        },
+        {
+          "stage": "recall_after_restart_and_transfer",
+          "status": "turn.completed",
+          "elapsed_ms": 22162,
+          "usage": {
+            "model_requests": 5,
+            "input_tokens": 41132,
+            "cached_input_tokens": 23168,
+            "cache_write_tokens": 0,
+            "output_tokens": 456,
+            "code_cells": 4
+          }
+        }
+      ],
+      "checks": {
+        "native_checkpoint": true,
+        "receipt_removed_from_visible_context": true,
+        "instructions_restored": true,
+        "effective_effort_restored": true,
+        "unfinished_file_absent": true,
+        "historical_item_survives_transfer": true,
+        "history_tools_called": true,
+        "receipt_recalled": true,
+        "facts_recalled": true,
+        "instructions_followed": true,
+        "unfinished_action_completed": true
+      },
+      "passed": true
+    },
+    {
+      "model_transport": "websocket",
+      "client_transport": "uds",
+      "stages": [
+        {
+          "stage": "seed",
+          "status": "turn.completed",
+          "elapsed_ms": 6615,
+          "usage": {
+            "model_requests": 2,
+            "input_tokens": 12734,
+            "cached_input_tokens": 6144,
+            "cache_write_tokens": 0,
+            "output_tokens": 55,
+            "code_cells": 1
+          }
+        },
+        {
+          "stage": "same_effort",
+          "status": "turn.completed",
+          "elapsed_ms": 3356,
+          "usage": {
+            "model_requests": 1,
+            "input_tokens": 6466,
+            "cached_input_tokens": 0,
+            "cache_write_tokens": 0,
+            "output_tokens": 8
+          }
+        },
+        {
+          "stage": "changed_effort",
+          "status": "turn.completed",
+          "elapsed_ms": 3482,
+          "usage": {
+            "model_requests": 1,
+            "input_tokens": 6495,
+            "cached_input_tokens": 6272,
+            "cache_write_tokens": 0,
+            "output_tokens": 8
+          }
+        },
+        {
+          "stage": "compact",
+          "status": "turn.completed",
+          "elapsed_ms": 15074,
+          "usage": {
+            "input_tokens": 6523,
+            "cached_input_tokens": 0,
+            "cache_write_tokens": 0,
+            "output_tokens": 578,
+            "compactions": 1
+          }
+        },
+        {
+          "stage": "recall_after_restart_and_transfer",
+          "status": "turn.completed",
+          "elapsed_ms": 23613,
+          "usage": {
+            "model_requests": 4,
+            "input_tokens": 32823,
+            "cached_input_tokens": 23552,
+            "cache_write_tokens": 0,
+            "output_tokens": 551,
+            "code_cells": 3
+          }
+        }
+      ],
+      "checks": {
+        "native_checkpoint": true,
+        "receipt_removed_from_visible_context": true,
+        "instructions_restored": true,
+        "effective_effort_restored": true,
+        "unfinished_file_absent": true,
+        "historical_item_survives_transfer": true,
+        "history_tools_called": true,
+        "receipt_recalled": true,
+        "facts_recalled": true,
+        "instructions_followed": true,
+        "unfinished_action_completed": true
+      },
+      "passed": true
+    }
+  ],
+  "evidence": {
+    "source_base_revision": "ae3665f33be01828e624df0e57602a9bf863c283",
+    "source_state": "uncommitted implementation and verification changes",
+    "macos_version": "26.4",
+    "recorded_at": "2026-10-30T09:42:22.839125+00:00",
+    "commands": [
+      "dart run tool/verify_context.dart"
+    ]
+  }
+}

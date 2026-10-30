@@ -6,6 +6,7 @@ import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'catalog.dart';
+import '../opencode.dart';
 
 typedef DeepSeekCredentials = Future<String> Function();
 
@@ -14,10 +15,11 @@ typedef DeepSeekCredentials = Future<String> Function();
 class DeepSeekProvider implements ModelProvider {
   DeepSeekProvider({
     required this.http,
-    required this.credentials,
+    required DeepSeekCredentials this.credentials,
     Uri? endpoint,
     this.transport = 'messages',
-  }) : endpoint = _endpoint(endpoint, transport) {
+  }) : _console = null,
+       endpoint = _endpoint(endpoint, transport) {
     if (!{'messages', 'chat'}.contains(transport)) {
       throw ArgumentError.value(
         transport,
@@ -27,13 +29,32 @@ class DeepSeekProvider implements ModelProvider {
     }
   }
 
+  DeepSeekProvider.opencode({
+    required this.http,
+    required OpenCodeAuthManager auth,
+    Uri? endpoint,
+  }) : credentials = null,
+       _console = auth,
+       transport = 'chat',
+       endpoint = _endpoint(
+         endpoint ?? Uri.parse('https://opencode.ai/inference/openai/v1'),
+         'chat',
+       );
+
   final HttpClient http;
-  final DeepSeekCredentials credentials;
+  final DeepSeekCredentials? credentials;
+  final OpenCodeAuthManager? _console;
   final Uri endpoint;
   final String transport;
 
   @override
   String get id => 'deepseek';
+
+  String get defaultModel =>
+      _console == null ? supportedDeepSeekModel : openCodeDeepSeekModel;
+
+  String get catalogRevision =>
+      _console == null ? deepseekCatalogRevision : openCodeCatalogRevision;
 
   static Uri _endpoint(Uri? selected, String transport) {
     final uri =
@@ -63,7 +84,10 @@ class DeepSeekProvider implements ModelProvider {
 
   @override
   Json resolveSettings(Json selected, {String? model}) {
-    final info = deepseekModel(model ?? supportedDeepSeekModel);
+    if (model != null && model != defaultModel) {
+      throw ArgumentError('Selected DeepSeek backend supports $defaultModel');
+    }
+    final info = deepseekModel(model ?? defaultModel);
     const allowed = {
       'reasoning',
       'personality',
@@ -88,7 +112,16 @@ class DeepSeekProvider implements ModelProvider {
       'context_limit',
       info['contextWindow'] as int,
     );
-    final output = _positiveSetting(selected, 'max_output_tokens', 256000);
+    final outputCap = info['maxOutputTokens'] as int?;
+    final output = _positiveSetting(
+      selected,
+      'max_output_tokens',
+      outputCap ?? 256000,
+    );
+    if (context > (info['contextWindow'] as int) ||
+        (outputCap != null && output > outputCap)) {
+      throw ArgumentError('DeepSeek settings exceed the selected model limits');
+    }
     final headroom = _positiveSetting(selected, 'compaction_headroom', output);
     if (output >= context || headroom >= context) {
       throw ArgumentError(
@@ -340,10 +373,14 @@ class DeepSeekProvider implements ModelProvider {
     for (final item in request.input) {
       if (item.kind == 'configuration') continue;
       if (item.kind == 'tools') {
-        throw const ModelFailure(
-          'invalid_request',
-          'Chat transport cannot preserve ordered tool additions; use Messages',
-        );
+        // Chat has one catalog per request. Keep the update's position as text;
+        // _Catalog supplies the latest schemas in the top-level tools field.
+        messages.add({
+          'role': 'system',
+          'content':
+              'Tool definitions updated: ${item.tools.map(catalog.wire).join(', ')}.',
+        });
+        continue;
       }
       if (item.kind != 'message') {
         throw const ModelFailure(
@@ -444,7 +481,10 @@ class DeepSeekProvider implements ModelProvider {
     CancellationToken cancellation,
     void Function(Json)? onEvent,
   ) async {
-    final key = await credentials().asCancellable(cancellation);
+    final console = await _console?.credentials().asCancellable(cancellation);
+    final key = console == null
+        ? await credentials!().asCancellable(cancellation)
+        : console['access_token'] as String;
     cancellation.throwIfCancelled();
     if (key.isEmpty) {
       throw const ModelFailure('auth', 'DeepSeek credentials are missing');
@@ -461,7 +501,11 @@ class DeepSeekProvider implements ModelProvider {
       request.followRedirects = false;
       request.headers
         ..contentType = ContentType.json
-        ..set(HttpHeaders.acceptHeader, 'text/event-stream');
+        ..set(HttpHeaders.acceptHeader, 'text/event-stream')
+        ..set(HttpHeaders.userAgentHeader, 'happen/0.1.0 (Dart)');
+      if (console != null) {
+        request.headers.set('x-org-id', console['org_id'] as String);
+      }
       if (transport == 'messages') {
         request.headers.set('x-api-key', key);
         request.headers.set('anthropic-version', '2023-06-01');
@@ -1158,6 +1202,12 @@ void _mergeDetail(List<Json> details, Json fragment) {
 
 ModelFailure _providerFailure(Json raw, int? status) {
   final error = raw['error'] is Map ? jsonObject(raw['error']) : raw;
+  if (error['type'] == 'FreeUsageLimitError') {
+    return const ModelFailure(
+      'free_usage_limit',
+      'OpenCode Console rejected free-model access for this client (HTTP 429)',
+    );
+  }
   final detail =
       '${error['code'] ?? ''} ${error['type'] ?? ''} ${error['message'] ?? ''}'
           .toLowerCase();

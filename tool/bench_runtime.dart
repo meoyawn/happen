@@ -13,6 +13,7 @@ Future<void> main(List<String> args) async {
     'dart': Platform.version,
     'os': Platform.operatingSystem,
     'cpus': Platform.numberOfProcessors,
+    'mode': const bool.fromEnvironment('dart.vm.product') ? 'aot' : 'jit',
   };
   final baseline = ProcessInfo.currentRss;
   final delays = <int>[];
@@ -36,8 +37,9 @@ Future<void> main(List<String> args) async {
           tool: (_, _) async => null,
           cancellation: CancellationToken(),
         );
-        if ((result['output'] as List).single != '30')
+        if ((result['output'] as List).single != '30') {
           throw StateError('Wrong JS result');
+        }
         if (!reuse) js.close();
         elapsed.add(watch.elapsedMicroseconds);
       }
@@ -105,8 +107,45 @@ Future<void> main(List<String> args) async {
     report['agents_finished_while_sql_blocked'] =
         ordinaryFinishedWhileSqlBlocked;
     await slowWriter.close();
-    await Future.wait(agents.map((agent) => agent.close()));
     report['heartbeat_intervals_us'] = distribution(delays);
+    delays.clear();
+    final sustained = Stopwatch()..start();
+    final latencies = <int>[], scheduleLag = <int>[];
+    final scheduled = <Future<void>>[];
+    var active = 0, maximumActive = 0;
+    const cells = 1000, intervalUs = 10000;
+    for (var i = 0; i < cells; i++) {
+      final remaining = i * intervalUs - sustained.elapsedMicroseconds;
+      if (remaining > 0) {
+        await Future<void>.delayed(Duration(microseconds: remaining));
+      }
+      scheduleLag.add(sustained.elapsedMicroseconds - i * intervalUs);
+      final started = Stopwatch()..start();
+      active++;
+      if (active > maximumActive) maximumActive = active;
+      scheduled.add(
+        callIsolate(agents[i % agents.length].port, 'run', {
+          'cells': 1,
+          'delay_ms': 0,
+        }).then((_) {
+          active--;
+          latencies.add(started.elapsedMicroseconds);
+        }),
+      );
+    }
+    await Future.wait(scheduled);
+    report['sustained'] = {
+      'target_cells_per_second': 100,
+      'completed_cells': cells,
+      'elapsed_ms': sustained.elapsedMilliseconds,
+      'completed_cells_per_second':
+          cells * 1000000 / sustained.elapsedMicroseconds,
+      'maximum_in_flight': maximumActive,
+      'latency_us': distribution(latencies),
+      'schedule_lag_us': distribution(scheduleLag),
+      'heartbeat_intervals_us': distribution(delays),
+    };
+    await Future.wait(agents.map((agent) => agent.close()));
     report['rss_after_cleanup_bytes'] = ProcessInfo.currentRss;
     stdout.writeln(const JsonEncoder.withIndent('  ').convert(report));
   } finally {
@@ -180,7 +219,8 @@ void _benchmarkAgent(List<Object?> args) async {
     try {
       final watch = Stopwatch()..start();
       final threads = <int>{};
-      for (var i = 0; i < 20; i++) {
+      final params = jsonObject(request['params']);
+      for (var i = 0; i < (params['cells'] as int? ?? 20); i++) {
         final js = QuickJs();
         try {
           threads.add(nativeThreadId());
@@ -189,7 +229,11 @@ void _benchmarkAgent(List<Object?> args) async {
             cancellation: CancellationToken(),
             tool: (_, _) async {
               await Future<void>.delayed(
-                Duration(milliseconds: config['slow'] == true ? 100 : 10),
+                Duration(
+                  milliseconds:
+                      params['delay_ms'] as int? ??
+                      (config['slow'] == true ? 100 : 10),
+                ),
               );
               return 42;
             },

@@ -86,8 +86,9 @@ class ClientToolBridge {
         'Client tool request is unknown or belongs to another connection',
       );
     }
-    if (call.result.isCompleted)
+    if (call.result.isCompleted) {
       throw StateError('Client tool request is already complete');
+    }
     if (message.containsKey('error')) {
       call.result.completeError(
         StateError(
@@ -165,8 +166,9 @@ class ClientToolBridge {
         reply?.send({'result': snapshot(task)});
         return;
       }
-      if (request['method'] != 'call')
+      if (request['method'] != 'call') {
         throw StateError('Unknown client tool operation');
+      }
       final name = requiredString(params, 'name');
       final registration = _registrations[task];
       if (registration == null || !registration.tools.containsKey(name)) {

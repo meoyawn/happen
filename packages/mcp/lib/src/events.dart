@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:math';
 
@@ -24,10 +23,12 @@ class McpEventSubscription {
     this.ttlMs,
     this.publicUrl,
   }) {
-    if (!['push', 'poll', 'webhook'].contains(mode))
+    if (!['push', 'poll', 'webhook'].contains(mode)) {
       throw ArgumentError('Unknown MCP event delivery mode');
-    if (maxAgeMs != null && maxAgeMs! < 0 || ttlMs != null && ttlMs! < 1000)
+    }
+    if (maxAgeMs != null && maxAgeMs! < 0 || ttlMs != null && ttlMs! < 1000) {
       throw ArgumentError('Invalid MCP event lifetime');
+    }
     if (mode == 'webhook') {
       final base = Uri.parse(publicUrl ?? '');
       if (base.scheme != 'https' ||
@@ -52,7 +53,7 @@ class McpEventSubscription {
   final void Function(Json) onEvent;
   final lifetime = CancellationToken();
   final ready = Completer<void>();
-  final _seen = LinkedHashSet<String>();
+  final _seen = <String>{};
   String? cursor, callback, upstreamId;
   List<int>? secret;
   Future<void>? _running, _stopping;
@@ -100,8 +101,9 @@ class McpEventSubscription {
   }
 
   void _event(Json params) {
-    if (state != 'active')
+    if (state != 'active') {
       throw const McpFailure('MCP event arrived before activation');
+    }
     final eventId = requiredString(params, 'eventId');
     if (params['name'] != name ||
         params['data'] is! Map ||
@@ -129,9 +131,9 @@ class McpEventSubscription {
       state = 'terminated';
     } catch (error) {
       state = lifetime.isCancelled ? 'stopped' : 'failed';
-      if (!ready.isCompleted)
+      if (!ready.isCompleted) {
         ready.completeError(error);
-      else if (!lifetime.isCancelled && !_terminated) {
+      } else if (!lifetime.isCancelled && !_terminated) {
         _emit('notifications/events/terminated', {
           'error': {
             'message': 'MCP event subscription ended after a transport or protocol failure',
@@ -139,10 +141,11 @@ class McpEventSubscription {
         });
       }
     } finally {
-      if (!ready.isCompleted)
+      if (!ready.isCompleted) {
         ready.completeError(
           const McpFailure('MCP event subscription ended before activation'),
         );
+      }
     }
   }
 
@@ -188,20 +191,23 @@ class McpEventSubscription {
                   heartbeat();
                   _active(params);
                 case 'notifications/events/event':
-                  if (!active)
+                  if (!active) {
                     throw const McpFailure(
                       'MCP event arrived before activation',
                     );
+                  }
                   heartbeat();
                   _event(params);
                 case 'notifications/events/heartbeat':
-                  if (!active)
+                  if (!active) {
                     throw const McpFailure(
                       'MCP heartbeat arrived before activation',
                     );
+                  }
                   heartbeat();
-                  if (params.containsKey('cursor'))
+                  if (params.containsKey('cursor')) {
                     cursor = params['cursor'] as String?;
+                  }
                   _emit(method as String, params);
                 case 'notifications/events/error':
                   _emit(method as String, params);
@@ -223,8 +229,9 @@ class McpEventSubscription {
         if (_terminated) return;
         lifetime.throwIfCancelled();
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code))
+            [-32602, -32023, -32024, -32026].contains(error.code)) {
           rethrow;
+        }
       } finally {
         activation.cancel();
         liveness?.cancel();
@@ -232,13 +239,15 @@ class McpEventSubscription {
       }
       if (_terminated) return;
       if (connected.elapsed > const Duration(minutes: 1)) failures = 0;
-      if (++failures > 5)
+      if (++failures > 5) {
         throw const McpFailure('MCP event reconnect budget exhausted');
+      }
       state = 'reconnecting';
       _emit('connection/reconnecting', {'cursor': cursor, 'attempt': failures});
-      await Future<void>.delayed(
+      await cancellableDelay(
         Duration(milliseconds: 250 * (1 << (failures - 1))),
-      ).asCancellable(lifetime);
+        lifetime,
+      );
     }
   }
 
@@ -252,10 +261,12 @@ class McpEventSubscription {
           'maxEvents': 50,
         }, cancellation: lifetime);
         final events = result['events'];
-        if (events is! List || events.length > 50)
+        if (events is! List || events.length > 50) {
           throw const McpFailure('Invalid MCP poll result');
-        if (!ready.isCompleted || result['truncated'] == true)
+        }
+        if (!ready.isCompleted || result['truncated'] == true) {
           _active({'cursor': cursor, 'truncated': result['truncated'] == true});
+        }
         state = 'active';
         for (final raw in events) {
           _event(jsonObject(raw));
@@ -269,18 +280,19 @@ class McpEventSubscription {
                 1000,
                 86400000,
               );
-        await Future<void>.delayed(Duration(milliseconds: delay))
-            .asCancellable(lifetime);
+        await cancellableDelay(Duration(milliseconds: delay), lifetime);
       } catch (error) {
         lifetime.throwIfCancelled();
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code))
+            [-32602, -32023, -32024, -32026].contains(error.code)) {
           rethrow;
+        }
         if (++failures > 5) rethrow;
         state = 'reconnecting';
-        await Future<void>.delayed(
+        await cancellableDelay(
           Duration(milliseconds: 250 * (1 << (failures - 1))),
-        ).asCancellable(lifetime);
+          lifetime,
+        );
       }
     }
   }
@@ -301,8 +313,9 @@ class McpEventSubscription {
           'ttlMs': ttlMs,
         }, cancellation: lifetime);
         final id = requiredString(result, 'id');
-        if (upstreamId != null && upstreamId != id)
+        if (upstreamId != null && upstreamId != id) {
           throw const McpFailure('Webhook subscription identity changed');
+        }
         upstreamId = id;
         _active({
           'cursor': result['cursor'],
@@ -311,29 +324,34 @@ class McpEventSubscription {
         failures = 0;
         final refresh = result['refreshBefore'];
         if (refresh == null) {
-          if (ttlMs != null)
+          if (ttlMs != null) {
             throw const McpFailure(
               'MCP server granted an unsolicited indefinite subscription',
             );
+          }
           await Completer<void>().future.asCancellable(lifetime);
         } else {
           final expires = DateTime.parse(refresh as String);
           final wait = expires.difference(DateTime.now()).inMilliseconds;
-          if (wait <= 0)
+          if (wait <= 0) {
             throw const McpFailure('MCP webhook subscription already expired');
-          await Future<void>.delayed(
+          }
+          await cancellableDelay(
             Duration(milliseconds: (wait * .8).round().clamp(100, 86400000)),
-          ).asCancellable(lifetime);
+            lifetime,
+          );
         }
       } catch (error) {
         lifetime.throwIfCancelled();
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code))
+            [-32602, -32023, -32024, -32026].contains(error.code)) {
           rethrow;
+        }
         if (++failures > 5) rethrow;
-        await Future<void>.delayed(
+        await cancellableDelay(
           Duration(milliseconds: 250 * (1 << (failures - 1))),
-        ).asCancellable(lifetime);
+          lifetime,
+        );
       }
     }
   }
@@ -341,16 +359,18 @@ class McpEventSubscription {
   /// Runs only after the HTTP owner has enforced the body bound. Headers and
   /// signing material are never sent to model history or ordinary event output.
   Json webhook(Json headers, List<int> body) {
-    if (mode != 'webhook' || lifetime.isCancelled || _terminated)
+    if (mode != 'webhook' || lifetime.isCancelled || _terminated) {
       return {'status': 410};
+    }
     if (body.length > 256 * 1024) return {'status': 413};
     try {
       final eventId = requiredString(headers, 'webhook-id');
       final stamp = requiredString(headers, 'webhook-timestamp');
       final timestamp = int.parse(stamp);
       if ((DateTime.now().millisecondsSinceEpoch ~/ 1000 - timestamp).abs() >
-          300)
+          300) {
         return {'status': 401};
+      }
       final remote = requiredString(headers, 'x-mcp-subscription-id');
       if (upstreamId != null && upstreamId != remote) return {'status': 401};
       final expected = Hmac(

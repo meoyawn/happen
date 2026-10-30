@@ -40,8 +40,9 @@ void _agentMain(List<Object?> args) {
     try {
       switch (request['method']) {
         case 'turn':
-          if (running != null)
+          if (running != null) {
             throw StateError('Task already has an active turn');
+          }
           running = actor.turn(
             params['prompt'] as String? ?? '',
             (event) => reply?.send({'event': event}),
@@ -128,10 +129,11 @@ class _Agent {
       if (effort != previousEffort && config['reasoning_updates'] != true) {
         throw ArgumentError('Reasoning effort is fixed for this task');
       }
-      if (settings['settings'] != null)
+      if (settings['settings'] != null) {
         throw ArgumentError(
           'Provider settings are fixed at task creation; use reasoning for a supported effort update',
         );
+      }
       await callIsolate(network, 'validate_settings', {
         'provider': config['provider'],
         'model': config['model'],
@@ -209,7 +211,7 @@ class _Agent {
       if (persisted == null || previousCwd != cwd) {
         update('environment.updated', environmentMessage(cwd), {'cwd': cwd});
       }
-      if (settings['instructions'] != null)
+      if (settings['instructions'] != null) {
         update(
           'instructions.updated',
           ConversationItem.text(
@@ -217,7 +219,8 @@ class _Agent {
             requiredString(settings, 'instructions'),
           ),
         );
-      if (effort != previousEffort)
+      }
+      if (effort != previousEffort) {
         update(
           'configuration.updated',
           ConversationItem(
@@ -226,6 +229,7 @@ class _Agent {
           ),
           {'effort': effort},
         );
+      }
       if (!compact) {
         update('input.committed', ConversationItem.text('user', prompt));
       } else if (effort != previousEffort) {
@@ -478,8 +482,9 @@ class _Agent {
           final link = CancellationHook(cancellation, cellCancellation.cancel);
           try {
             if (call.namespace == 'client') {
-              if (clientTools == null)
+              if (clientTools == null) {
                 throw StateError('Client tools are unavailable');
+              }
               final output = jsonObject(
                 await callIsolate(clientTools, 'call', {
                   'task_id': taskId,
@@ -492,8 +497,9 @@ class _Agent {
                   : {'error': output};
             } else {
               if (call.name != 'exec' ||
-                  call.namespace != null && call.namespace != 'functions')
+                  call.namespace != null && call.namespace != 'functions') {
                 throw StateError('Unknown model tool');
+              }
               result = await const CodeMode().execute(
                 call.input,
                 catalog: [
@@ -524,8 +530,9 @@ class _Agent {
                         cancellation: cellCancellation,
                       );
                     } else if (name.startsWith('client__')) {
-                      if (clientTools == null)
+                      if (clientTools == null) {
                         throw StateError('Client tools are unavailable');
+                      }
                       output = await callIsolate(clientTools, 'call', {
                         'task_id': taskId,
                         'name': name.substring(8),

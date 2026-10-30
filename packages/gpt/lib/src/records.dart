@@ -120,11 +120,12 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
                 final text = part.remove(
                   part['type'] == 'refusal' ? 'refusal' : 'text',
                 );
-                if (text is! String)
+                if (text is! String) {
                   throw const ModelFailure(
                     'unsupported_content',
                     'GPT returned unsupported message content',
                   );
+                }
                 return <String, dynamic>{
                   'type': 'text',
                   'text': text,
@@ -279,11 +280,12 @@ List<ToolDefinition> gptToolsFromNative(
   Iterable<Json> tools, {
   String? namespace,
 }) => tools.expand((tool) {
-  if (tool['type'] == 'namespace')
+  if (tool['type'] == 'namespace') {
     return gptToolsFromNative(
       (tool['tools'] as List).map(jsonObject),
       namespace: tool['name'] as String,
     );
+  }
   return [
     ToolDefinition(
       name: requiredString(tool, 'name'),

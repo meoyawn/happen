@@ -61,7 +61,10 @@ class ResponsesClient {
       if (transport == 'http') 'stream': true,
       'include': ['reasoning.encrypted_content'],
       'prompt_cache_key': sessionId,
-      'reasoning': {'effort': reasoning, 'summary': reasoningSummary},
+      'reasoning': {
+        'effort': reasoning,
+        if (reasoningSummary != 'none') 'summary': reasoningSummary,
+      },
       'text': {'verbosity': verbosity},
       'max_output_tokens': ?maxOutputTokens,
     };
@@ -82,8 +85,9 @@ class ResponsesClient {
         'session-id': sessionId,
         'x-client-request-id': newId(),
       };
-      if (transport == 'websocket')
+      if (transport == 'websocket') {
         return _websocket(body, headers, cancellation, onEvent);
+      }
       HttpClientRequest? request;
       Future<void> Function()? closeBody;
       final hook = CancellationHook(
@@ -157,8 +161,9 @@ class ResponsesClient {
                 customClient: _http,
               )
               .then((value) {
-                if (cancellation.isCancelled || abandoned)
+                if (cancellation.isCancelled || abandoned) {
                   unawaited(value.close());
+                }
                 return value;
               })
               .timeout(const Duration(seconds: 30))
@@ -167,8 +172,9 @@ class ResponsesClient {
       socket.add(jsonEncode({'type': 'response.create', ...body}));
       final events = socket.timeout(const Duration(minutes: 3)).map((raw) {
         final text = raw is String ? raw : utf8.decode(raw as List<int>);
-        if (utf8.encode(text).length > 8 * 1024 * 1024)
+        if (utf8.encode(text).length > 8 * 1024 * 1024) {
           throw const FormatException('GPT event too large');
+        }
         return jsonObject(jsonDecode(text));
       });
       return await _consume(events, cancellation, onEvent);
@@ -216,8 +222,10 @@ class ResponsesClient {
           case 'response.completed':
           case 'response.done':
             final response = jsonObject(event['response']);
-            if (response['status'] != null && response['status'] != 'completed')
+            if (response['status'] != null &&
+                response['status'] != 'completed') {
               throw _failure(response);
+            }
             final indexes = items.keys.toList()..sort();
             final output = response['output'] is List
                 ? (response['output'] as List).map(jsonObject).toList()

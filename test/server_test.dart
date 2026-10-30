@@ -78,7 +78,7 @@ void main() {
                   {
                     'type': 'custom_tool_call',
                     'namespace': 'functions',
-                    'call_id': 'call_' + (++sequence).toString(),
+                    'call_id': 'call_${++sequence}',
                     'name': 'exec',
                     'input': prompt == 'continue'
                         ? 'text(load("sum"));'
@@ -97,16 +97,14 @@ void main() {
             );
           }
           final bytes = utf8.encode(
-            'data: ' +
-                jsonEncode({
-                  'type': 'response.completed',
-                  'response': {
-                    'status': 'completed',
-                    'output': output,
-                    'usage': {'input_tokens': 10, 'output_tokens': 5},
-                  },
-                }) +
-                '\r\n\r\n',
+            'data: ${jsonEncode({
+              'type': 'response.completed',
+              'response': {
+                'status': 'completed',
+                'output': output,
+                'usage': {'input_tokens': 10, 'output_tokens': 5},
+              },
+            })}\r\n\r\n',
           );
           for (var i = 0; i < bytes.length; i += 7) {
             request.response.add(
@@ -149,6 +147,7 @@ void main() {
       'executes tools, resumes after restart, forks and imports independently',
       () async {
         final first = await turn('task.start', {
+          'settings': {'verbosity': 'low'},
           'cwd': work.path,
           'prompt': 'calculate',
         });

@@ -379,11 +379,37 @@ void main() {
         ConversationItem.text('user', 'Recall'),
         ...restored.output,
         ConversationItem.toolResult(restored.calls.single, '42'),
+        ConversationItem(
+          kind: 'tools',
+          tools: const [
+            ToolDefinition(
+              name: 'browser_title',
+              namespace: 'client',
+              description: 'Read the tab title.',
+              parameters: {'type': 'object'},
+            ),
+          ],
+        ),
+        ConversationItem.text(
+          'user',
+          'Continue with the browser tool available.',
+        ),
       ]),
       cancellation: CancellationToken(),
     );
     expect(harness.paths, ['/v1/chat/completions', '/v1/chat/completions']);
     expect(harness.headers.first['uses-bearer'], true);
+    expect(
+      (harness.bodies.last['tools'] as List).last['function']['name'],
+      'client__browser_title',
+    );
+    expect(
+      (harness.bodies.last['messages'] as List)
+          .map(jsonObject)
+          .where((v) => v['role'] == 'system')
+          .last['content'],
+      contains('client__browser_title'),
+    );
     final assistant = (harness.bodies.last['messages'] as List)
         .map(jsonObject)
         .firstWhere((item) => item['role'] == 'assistant');

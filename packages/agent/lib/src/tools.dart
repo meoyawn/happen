@@ -19,19 +19,22 @@ class HostTools {
   Future<Object?> call(String name, Object? raw) async {
     cancellation.throwIfCancelled();
     if (name == 'apply_patch') {
-      if (raw is! String)
+      if (raw is! String) {
         throw const FormatException('apply_patch expects a raw patch string');
+      }
       return applyPatch(cwd, raw);
     }
     final input = jsonObject(raw);
     switch (name) {
       case 'exec_command':
-        if (_commands.length >= 32)
+        if (_commands.length >= 32) {
           throw StateError('Too many running command sessions');
-        if (input['tty'] == true)
+        }
+        if (input['tty'] == true) {
           throw UnsupportedError(
             'PTY allocation is not implemented; use tty:false',
           );
+        }
         if (input['sandbox_permissions'] != null &&
             input['sandbox_permissions'] != 'use_default') {
           throw UnsupportedError('Permission escalation is not implemented');
@@ -92,8 +95,9 @@ class HostTools {
     required int minWait,
   }) async {
     final command = _commands[id]!;
-    if (command.polling)
+    if (command.polling) {
       throw StateError('A poll is already pending for this command');
+    }
     command.polling = true;
     final watch = Stopwatch()..start();
     try {
@@ -155,8 +159,9 @@ class _Command {
   final _output = StringBuffer();
   void _append(String value) {
     final available = maxToolOutputBytes - _output.length;
-    if (available > 0)
+    if (available > 0) {
       _output.write(value.substring(0, value.length.clamp(0, available)));
+    }
     if (value.length > available) truncated = true;
   }
 

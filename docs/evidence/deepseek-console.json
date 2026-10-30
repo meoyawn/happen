@@ -1,0 +1,47 @@
+{
+  "recorded_at": "2026-10-30T13:18:08Z",
+  "source_base_revision": "ae3665f33be01828e624df0e57602a9bf863c283",
+  "source_state": "uncommitted implementation and verification changes",
+  "opencode_source_revision": "fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e",
+  "platform": "macOS arm64",
+  "dart_version": "3.13.7",
+  "model": "deepseek-v4.1-flash-free",
+  "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+  "happen_device_authorization": {
+    "result": "success",
+    "credential_owner": "Happen",
+    "organization_validated": true,
+    "credential_file_mode": "0600",
+    "credentials_recorded_in_evidence": false
+  },
+  "happen_inference": {
+    "prompt": "Reply exactly READY.",
+    "reasoning": "low",
+    "max_output_tokens": 1024,
+    "user_agent": "happen/0.1.0 (Dart)",
+    "authenticated": true,
+    "organization_header": true,
+    "status": 429,
+    "error_type": "FreeUsageLimitError",
+    "elapsed_ms": 832,
+    "result": "rejected before generation"
+  },
+  "diagnostic_response": {
+    "status": 429,
+    "error_type": "FreeUsageLimitError",
+    "message": "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go",
+    "retry_after_seconds": 38926
+  },
+  "opencode_reference": {
+    "version": "2.2.2",
+    "independent_login": true,
+    "command": "opencode run --standalone --log-level none --model opencode/deepseek-v4.1-flash-free --format json 'Reply with READY only. Do not use tools.'",
+    "result": "READY",
+    "completed_at_unix_ms": 1793365191989
+  },
+  "limitations": [
+    "No successful live Happen inference or tool-task comparison through this route.",
+    "The service's internal reason for the differing client outcomes is unknown.",
+    "Local fixtures are separate evidence, not live provider verification."
+  ]
+}
