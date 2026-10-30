@@ -45,6 +45,7 @@ void main() {
           'text',
           'event-stream',
         );
+        request.response.bufferOutput = false;
         if (prompt == 'hold') {
           request.response.write(
             'data: {"type":"response.output_text.delta","delta":"Waiting"}\n\n',

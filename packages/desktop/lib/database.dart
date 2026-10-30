@@ -19,7 +19,7 @@ void _databaseMain(List<Object?> args) async {
     db.execute('PRAGMA foreign_keys=ON');
     final version =
         db.select('PRAGMA user_version').single.values.single as int;
-    if (version > 1) {
+    if (version > 2) {
       throw StateError('Desktop database is from a newer version');
     }
     db.execute('''
@@ -33,7 +33,11 @@ void _databaseMain(List<Object?> args) async {
         checkout_key TEXT NOT NULL REFERENCES projects(checkout_key),
         title TEXT NOT NULL
       );
-      PRAGMA user_version=1;
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      PRAGMA user_version=2;
     ''');
     (args[0] as SendPort).send(port.sendPort);
     await for (final raw in port) {
@@ -45,6 +49,10 @@ void _databaseMain(List<Object?> args) async {
         switch (request['method']) {
           case 'load':
             result = {
+              'settings': {
+                for (final row in db.select('SELECT key, value FROM settings'))
+                  row['key'] as String: row['value'],
+              },
               'projects': db
                   .select(
                     'SELECT checkout_key, identity, path FROM projects ORDER BY rowid',
@@ -63,6 +71,10 @@ void _databaseMain(List<Object?> args) async {
               'INSERT INTO projects(checkout_key, identity, path) VALUES (?, ?, ?)',
               [params['checkout_key'], params['identity'], params['path']],
             );
+          case 'settings.set':
+            db.execute('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [
+              params['key'], params['value'],
+            ]);
           case 'project.identify':
             db.execute(
               'UPDATE projects SET identity = ? WHERE checkout_key IS ?',

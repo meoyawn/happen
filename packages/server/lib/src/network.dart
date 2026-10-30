@@ -301,47 +301,61 @@ void _networkMain(List<Object?> args) async {
         return;
       }
       if (request['method'] == 'providers.list') {
-        final deepseekKey = Platform.environment[
-          deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY'
-        ];
-        reply?.send({'result': {
-          'default_provider': global['default_provider'] ?? 'gpt',
-          'providers': [
-            {
-              'id': 'gpt',
-              'name': 'ChatGPT',
-              'status': await auth.status(),
-              'default_model': gptOptions['model'] ?? 'gpt-6.1-sol',
-              'models': [
-                for (final model in supportedGptModels)
+        final deepseekKey =
+            Platform.environment[deepseekOptions['api_key_env'] as String? ??
+                'DEEPSEEK_API_KEY'];
+        reply?.send({
+          'result': {
+            'default_provider': global['default_provider'] ?? 'gpt',
+            'providers': [
+              {
+                'id': 'gpt',
+                'name': 'ChatGPT',
+                'status': await auth.status(),
+                'default_model': gptOptions['model'] ?? 'gpt-6.1-sol',
+                'models': [
+                  for (final model in supportedGptModels)
+                    {
+                      'id': model,
+                      'name': GptModel(model).data['display_name'] ?? model,
+                      'reasoning_levels': GptModel(model).reasoningLevels,
+                      'default_reasoning':
+                          GptModel(model).reasoningLevels
+                              .contains(gptOptions['settings']?['reasoning'])
+                          ? gptOptions['settings']['reasoning']
+                          : GptModel(model).defaultReasoning,
+                      'reasoning_updates': GptModel(model).reasoningUpdates,
+                    },
+                ],
+              },
+              {
+                'id': 'deepseek',
+                'name': backend == 'opencode'
+                    ? 'DeepSeek · OpenCode'
+                    : 'DeepSeek',
+                'status': backend == 'opencode'
+                    ? await consoleAuth.status()
+                    : deepseekKey == null || deepseekKey.isEmpty
+                    ? 'signed_out'
+                    : 'api_key',
+                'default_model':
+                    deepseekOptions['model'] ?? deepseek.defaultModel,
+                'models': [
                   {
-                    'id': model,
-                    'name': GptModel(model).data['display_name'] ?? model,
-                    'reasoning_levels': GptModel(model).reasoningLevels,
-                    'default_reasoning': GptModel(model).reasoningLevels.contains(gptOptions['settings']?['reasoning'])
-                        ? gptOptions['settings']['reasoning'] : GptModel(model).defaultReasoning,
-                    'reasoning_updates': GptModel(model).reasoningUpdates,
+                    'id': deepseek.defaultModel,
+                    'name': deepseekModel(deepseek.defaultModel)['name'],
+                    'reasoning_levels': ['off', 'low', 'high', 'max'],
+                    'default_reasoning': deepseek.resolveSettings(
+                      jsonObject(deepseekOptions['settings'] ?? {}),
+                      model: deepseek.defaultModel,
+                    )['reasoning'],
+                    'reasoning_updates': false,
                   },
-              ],
-            },
-            {
-              'id': 'deepseek',
-              'name': backend == 'opencode' ? 'DeepSeek · OpenCode' : 'DeepSeek',
-              'status': backend == 'opencode' ? await consoleAuth.status()
-                  : deepseekKey == null || deepseekKey.isEmpty ? 'signed_out' : 'api_key',
-              'default_model': deepseekOptions['model'] ?? deepseek.defaultModel,
-              'models': [{
-                'id': deepseek.defaultModel,
-                'name': deepseekModel(deepseek.defaultModel)['name'],
-                'reasoning_levels': ['off', 'low', 'high', 'max'],
-                'default_reasoning': deepseek.resolveSettings(
-                  jsonObject(deepseekOptions['settings'] ?? {}), model: deepseek.defaultModel,
-                )['reasoning'],
-                'reasoning_updates': false,
-              }],
-            },
-          ],
-        }});
+                ],
+              },
+            ],
+          },
+        });
         return;
       }
       if (request['method'] == 'configure') {

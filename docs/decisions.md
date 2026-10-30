@@ -917,6 +917,8 @@ Evidence and reproduction, macOS arm64, Dart 3.13.7:
 - `dart run bin/agent.dart --help` and `dart run bin/agent.dart config-schema`
   verify CLI discovery and schema export. The full verification commands remain
   in [verification.md](verification.md).
+- The full `dart test -r expanded` run passes all 40 tests; `dart analyze`
+  reports no issues. Formatting and `git diff --check` are clean.
 
 Tradeoffs and limits: polling adds small recurring file I/O and reload latency is
 not a realtime guarantee. Validation protects against malformed configuration;

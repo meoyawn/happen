@@ -16,8 +16,62 @@ class DesktopView extends StatefulWidget {
 }
 
 class _DesktopViewState extends State<DesktopView> {
+  static const _desktop = MethodChannel('happen/desktop');
   DesktopSession get session => widget.session;
-  bool _picking = false;
+  bool _picking = false, _settingsOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _desktop.setMethodCallHandler((call) async {
+      if (call.method == 'showSettings') await _settings();
+    });
+  }
+
+  @override
+  void dispose() {
+    _desktop.setMethodCallHandler(null);
+    super.dispose();
+  }
+
+  Future<void> _settings() async {
+    if (_settingsOpen || !mounted) return;
+    _settingsOpen = true;
+    try {
+      await showDialog<void>(
+    context: context,
+    builder: (context) => ListenableBuilder(
+      listenable: session,
+      builder: (context, _) => AlertDialog(
+        title: const Text('App settings'),
+        content: SizedBox(width: 360, child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Default provider', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            const Text('Used for new tasks. Existing tasks keep their provider.',
+                style: TextStyle(fontSize: 12, color: Colors.black54)),
+            const SizedBox(height: 12),
+            for (final provider in session.providers)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(session.defaultProviderId == provider['id']
+                    ? Icons.radio_button_checked : Icons.radio_button_off),
+                title: Text(provider['name'] as String),
+                subtitle: Text(_authLabel(provider['status'] as String)),
+                onTap: () => _run(() => session.chooseProvider(provider['id'] as String)),
+              ),
+          ],
+        )),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Done'))],
+      ),
+    ),
+      );
+    } finally {
+      _settingsOpen = false;
+    }
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     try {
@@ -261,6 +315,13 @@ class _DesktopViewState extends State<DesktopView> {
                 Text(
                   session.connected ? 'Local' : 'Disconnected',
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'App settings',
+                  onPressed: _settings,
+                  icon: const Icon(Icons.settings_outlined, size: 18),
+                  visualDensity: VisualDensity.compact,
                 ),
               ],
             ),
@@ -612,29 +673,6 @@ class _ComposerState extends State<_Composer> {
                           spacing: 16,
                           crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
-                            Tooltip(
-                              message: session.task == null
-                                  ? 'Provider'
-                                  : 'Provider is fixed for this task',
-                              child: DropdownButton<String>(
-                                value: session.providerId,
-                                isDense: true,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.black87,
-                                ),
-                                onChanged: available && session.task == null
-                                    ? (value) => session.chooseProvider(value!)
-                                    : null,
-                                items: [
-                                  for (final p in session.providers)
-                                    DropdownMenuItem(
-                                      value: p['id'] as String,
-                                      child: Text(p['name'] as String),
-                                    ),
-                                ],
-                              ),
-                            ),
                             Tooltip(
                               message: session.task == null
                                   ? 'Model'

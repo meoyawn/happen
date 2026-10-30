@@ -342,8 +342,12 @@ class AgentServer {
       case 'ping':
         return {'version': '0.1.0'};
       case 'providers.list':
-        return callIsolate(network.port, 'providers.list', {},
-            cancellation: client.cancellation);
+        return callIsolate(
+          network.port,
+          'providers.list',
+          {},
+          cancellation: client.cancellation,
+        );
       case 'telemetry':
         return {
           'active_tasks': _tasks.values.where((task) => task.busy).length,

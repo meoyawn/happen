@@ -53,6 +53,7 @@ class DesktopSession extends ChangeNotifier {
   final _earlyEvents = <Json>[];
   List<Json> providers = [];
   String? _provider, _model, _reasoning;
+  String deliveryMode = 'steer';
   Project? project;
   DesktopTask? task;
   String? error;
@@ -60,6 +61,7 @@ class DesktopSession extends ChangeNotifier {
 
   String get draftKey => task?.id ?? project?.checkoutKey ?? '';
   String? get providerId => task?.provider ?? _provider;
+  String? get defaultProviderId => _provider;
   String? get modelId => task?.model ?? _model;
   String? get reasoning => task?.nextReasoning ?? task?.reasoning ?? _reasoning;
   Json? get providerInfo =>
@@ -76,16 +78,34 @@ class DesktopSession extends ChangeNotifier {
   Future<void> refreshProviders() async {
     final result = jsonObject(await _request('providers.list'));
     providers = (result['providers'] as List).map(jsonObject).toList();
-    if (_provider == null) chooseProvider(result['default_provider'] as String);
+    if (_model == null) _selectProvider(_provider ?? result['default_provider'] as String);
     notifyListeners();
   }
 
-  void chooseProvider(String id) {
-    if (task != null) return;
+  void _selectProvider(String id) {
     _provider = id;
-    _model = providerInfo?['default_model'] as String?;
-    _reasoning = modelInfo?['default_reasoning'] as String?;
+    final provider = providers.firstWhere((p) => p['id'] == id);
+    _model = provider['default_model'] as String;
+    _reasoning = (provider['models'] as List).map(jsonObject)
+        .firstWhere((m) => m['id'] == _model)['default_reasoning'] as String;
     notifyListeners();
+  }
+
+  Future<void> chooseProvider(String id) async {
+    await _setting('provider', id);
+    _selectProvider(id);
+  }
+
+  Future<void> chooseDeliveryMode(String mode) async {
+    if (!{'steer', 'queue'}.contains(mode)) throw ArgumentError('Invalid delivery mode');
+    await _setting('delivery_mode', mode);
+    deliveryMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> _setting(String key, String value) async {
+    await callIsolate(database.port, 'settings.set', {'key': key, 'value': value},
+        cancellation: _lifetime);
   }
 
   void chooseModel(String id) {
@@ -114,6 +134,9 @@ class DesktopSession extends ChangeNotifier {
     final saved = jsonObject(
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
+    final settings = jsonObject(saved['settings'] ?? {});
+    _provider = settings['provider'] as String?;
+    deliveryMode = settings['delivery_mode'] as String? ?? 'steer';
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
       final key = requiredString(value, 'checkout_key');
