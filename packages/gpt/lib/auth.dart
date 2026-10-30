@@ -28,6 +28,44 @@ class AuthManager {
   final _lifetime = CancellationToken();
   File get _file => File('$directory/auth.json');
 
+  /// Local credential state only; never refreshes or returns credential values.
+  Future<String> status() async {
+    _lifetime.throwIfCancelled();
+    try {
+      if (!await _file.exists()) return 'signed_out';
+      if ((await _file.stat()).size > 64 * 1024) return 'invalid';
+      final value = jsonObject(jsonDecode(await _file.readAsString()));
+      _lifetime.throwIfCancelled();
+      if (value['type'] == 'codex_reference') {
+        final source = File(requiredString(value, 'path'));
+        if ((await source.stat()).size > 64 * 1024) return 'invalid';
+        final saved = jsonObject(jsonDecode(await source.readAsString()));
+        final access = requiredString(
+          jsonObject(saved['tokens']),
+          'access_token',
+        );
+        final expires = (_claims(access)['exp'] as num?)?.toInt() ?? 0;
+        return expires > DateTime.now().millisecondsSinceEpoch ~/ 1000 + 30
+            ? 'signed_in'
+            : 'expired';
+      }
+      if (value['type'] != 'chatgpt') return 'invalid';
+      requiredString(value, 'access_token');
+      requiredString(value, 'account_id');
+      if ((value['expires_at'] as num? ?? 0) >
+          DateTime.now().millisecondsSinceEpoch + 60000) {
+        return 'signed_in';
+      }
+      return (value['refresh_token'] as String? ?? '').isNotEmpty
+          ? 'refresh_required'
+          : 'expired';
+    } on CancelledException {
+      rethrow;
+    } catch (_) {
+      return 'invalid';
+    }
+  }
+
   Future<Json> credentials({bool refresh = false}) {
     return _refreshing ??= _credentials(refresh)
         .whenComplete(() => _refreshing = null);

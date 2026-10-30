@@ -100,7 +100,10 @@ void main() {
       }
       await request.response.close();
     });
-    server = await AgentServer.startEmbedded(directory: root.path);
+    server = await AgentServer.startEmbedded(
+      directory: root.path,
+      configPath: '${root.path}/config.yaml',
+    );
     client = await AgentClient.connect(server.uri);
     Future<Json> turn(String method, Json params) async {
       final completion = client!.events.stream.firstWhere(

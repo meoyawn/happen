@@ -41,6 +41,8 @@ class McpManager {
       }
     }
     for (final entry in _servers.entries.toList()) {
+      cancellation.throwIfCancelled();
+      lifetime.throwIfCancelled();
       if (jsonEncode(config[entry.key]) != jsonEncode(entry.value.config)) {
         for (final subscription
             in _subscriptions.values
@@ -54,6 +56,8 @@ class McpManager {
       }
     }
     for (final entry in config.entries) {
+      cancellation.throwIfCancelled();
+      lifetime.throwIfCancelled();
       if (_servers.containsKey(entry.key) || entry.value['enabled'] == false) {
         continue;
       }
@@ -62,7 +66,7 @@ class McpManager {
       server.start();
     }
     await Future.wait(_servers.values.map((server) => server.initial.future))
-        .asCancellable(cancellation);
+        .asCancellable(cancellation.merge(lifetime));
   }
 
   List<Json> status() => [
@@ -287,6 +291,7 @@ class McpManager {
 
   Future<void> close() async {
     lifetime.cancel();
+    await _reload;
     await Future.wait(_subscriptions.values.toList().map((s) => s.stop()));
     _subscriptions.clear();
     await Future.wait(_servers.values.toList().map((s) => s.close()));

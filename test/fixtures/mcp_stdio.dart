@@ -21,7 +21,7 @@ void main() {
       .transform(utf8.decoder)
       .transform(const LineSplitter())
       .listen(
-        (line) {
+        (line) async {
           final request = jsonDecode(line) as Map<String, dynamic>;
           final id = request['id'] as String?;
           final params = request['params'] as Map<String, dynamic>;
@@ -41,6 +41,14 @@ void main() {
           }
           switch (request['method']) {
             case 'server/discover':
+              final delay =
+                  int.tryParse(
+                    Platform.environment['MCP_DISCOVERY_DELAY_MS'] ?? '',
+                  ) ??
+                  0;
+              if (delay > 0) {
+                await Future<void>.delayed(Duration(milliseconds: delay));
+              }
               send({
                 'id': id,
                 'result': {

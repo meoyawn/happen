@@ -9,16 +9,19 @@ workspace:
   - packages/ai
   - packages/gpt
   - packages/deepseek
+  - packages/config
   - packages/mcp
   - packages/storage
   - packages/code_mode
   - packages/agent
   - packages/server
+  - packages/desktop
 dependencies:
   args: ^2.7.0
   ai: any
   gpt: any
   deepseek: any
+  config: any
   mcp: any
   protocol: any
   server: any

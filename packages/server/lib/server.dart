@@ -45,6 +45,7 @@ class AgentServer {
     int port = 8765,
     String? token,
     String? endpoint,
+    String? configPath,
     String? socketPath,
     int maxAgents = 256,
     bool telemetry = true,
@@ -69,11 +70,18 @@ class AgentServer {
       }
     }
     final events = ReceivePort();
-    final network = await startNetwork(
-      directory,
-      endpoint: endpoint,
-      events: events.sendPort,
-    );
+    final IsolateOwner network;
+    try {
+      network = await startNetwork(
+        directory,
+        endpoint: endpoint,
+        configPath: configPath,
+        events: events.sendPort,
+      );
+    } catch (_) {
+      events.close();
+      rethrow;
+    }
     try {
       final http = await HttpServer.bind(
         socketPath == null
@@ -107,7 +115,7 @@ class AgentServer {
       events.listen((raw) {
         final message = jsonObject(raw);
         for (final client in server._clients.where(
-          (client) => client.id == message['owner'],
+          (client) => message['owner'] == null || client.id == message['owner'],
         )) {
           client.event(jsonObject(message['event']));
         }
@@ -138,6 +146,7 @@ class AgentServer {
   static Future<AgentServer> startEmbedded({
     required String directory,
     String? endpoint,
+    String? configPath,
     bool telemetry = true,
   }) async {
     final sockets = await Directory.systemTemp.createTemp('happen-');
@@ -150,6 +159,7 @@ class AgentServer {
         directory: directory,
         socketPath: '${sockets.path}/s',
         endpoint: endpoint,
+        configPath: configPath,
         telemetry: telemetry,
       );
       server._socketDirectory = sockets;
@@ -331,6 +341,9 @@ class AgentServer {
     switch (method) {
       case 'ping':
         return {'version': '0.1.0'};
+      case 'providers.list':
+        return callIsolate(network.port, 'providers.list', {},
+            cancellation: client.cancellation);
       case 'telemetry':
         return {
           'active_tasks': _tasks.values.where((task) => task.busy).length,

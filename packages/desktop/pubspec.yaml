@@ -1,0 +1,23 @@
+name: desktop
+description: "Happen desktop client"
+publish_to: 'none'
+version: 0.1.0+1
+resolution: workspace
+
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  macos_file_picker: ^2.0.0
+  protocol: any
+  server: any
+  sqlite3: ^3.8.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

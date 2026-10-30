@@ -473,6 +473,7 @@ class _Agent {
             await _append('tool.started', {
               'call_id': call.id,
               'name': call.name,
+              if (call.namespace != null) 'namespace': call.namespace,
               'input': call.input,
             }),
           );
@@ -515,11 +516,14 @@ class _Agent {
                 tool: (name, arguments) async {
                   cellCancellation.throwIfCancelled();
                   final id = newId();
-                  await _append('host_tool.started', {
-                    'id': id,
-                    'name': name,
-                    'arguments': arguments,
-                  });
+                  event(
+                    await _append('host_tool.started', {
+                      'id': id,
+                      'parent_call_id': call.id,
+                      'name': name,
+                      'arguments': arguments,
+                    }),
+                  );
                   try {
                     final Object? output;
                     if (name.startsWith('history__')) {
@@ -553,19 +557,25 @@ class _Agent {
                     } else {
                       output = await host!.call(name, arguments);
                     }
-                    await _append('host_tool.completed', {
-                      'id': id,
-                      'name': name,
-                      'output': output,
-                    });
+                    event(
+                      await _append('host_tool.completed', {
+                        'id': id,
+                        'parent_call_id': call.id,
+                        'name': name,
+                        'output': output,
+                      }),
+                    );
                     return output;
                   } catch (error) {
-                    if (error is CancelledException) rethrow;
-                    await _append('host_tool.completed', {
-                      'id': id,
-                      'name': name,
-                      'error': error.toString(),
-                    });
+                    event(
+                      await _append('host_tool.completed', {
+                        'id': id,
+                        'parent_call_id': call.id,
+                        'name': name,
+                        if (error is CancelledException) 'cancelled': true,
+                        'error': error.toString(),
+                      }),
+                    );
                     rethrow;
                   }
                 },

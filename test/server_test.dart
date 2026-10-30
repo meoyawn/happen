@@ -118,6 +118,7 @@ void main() {
       });
       server = await AgentServer.start(
         directory: root.path,
+        configPath: '${root.path}/config.yaml',
         port: 0,
         endpoint: 'http://127.0.0.1:${provider.port}/responses',
       );
@@ -184,6 +185,7 @@ void main() {
         await server.close();
         server = await AgentServer.start(
           directory: root.path,
+          configPath: '${root.path}/config.yaml',
           port: 0,
           endpoint: 'http://127.0.0.1:${provider.port}/responses',
         );

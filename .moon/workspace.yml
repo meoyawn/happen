@@ -1,0 +1,9 @@
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+versionConstraint: '>=2.6.0'
+projects:
+  happen: '.'
+defaultProject: happen
+telemetry: false
+pipeline:
+  syncProjects: false
+  syncWorkspace: false

@@ -831,3 +831,98 @@ key. Before this change it reported `wal`, `2` (FULL), `0` (foreign keys off);
 the required values are `wal`, `1` (NORMAL), `1` (foreign keys on). Existing
 benchmark reports retain their original FULL setting; performance and power-loss
 behavior under the new settings have not been measured.
+
+## 2026-10-31 — Global YAML configuration and live MCP reconciliation
+
+User requirements: configure global MCP servers in `~/.happen/config.yaml`, with
+local `command`/`args` entries and remote `url` entries in the same map; validate
+reloads in Dart; have a running server apply file edits by starting, stopping, or
+replacing shared local processes. Remote server processes remain externally owned.
+
+Put the reusable configuration boundary in `packages/config`. It depends on Dart
+libraries, not Flutter, providers, the agent loop, or MCP runtime code. It owns
+path discovery, bounded YAML loading, the embedded schema, and file notifications.
+`packages/server` owns applying validated snapshots in its shared network isolate.
+`packages/mcp` continues to own subprocesses, client connections, subscriptions,
+and the existing bounded crash/reconnection policy. Configuration is not task
+history, and task cancellation does not own these shared processes.
+
+Use `yaml` 3.1.4 and `json_schema` 5.2.2 with an embedded Draft 7 schema. The
+`config-schema` CLI command exports the same Dart constant used at runtime, so
+installed/AOT programs do not need a checkout or a schema-generation step.
+The schema validates supported fields and types, including exactly one command
+or URL, transport-specific fields, and string arguments/environment/headers.
+Additional semantic checks reject normalized server-name collisions and invalid
+HTTP URLs. Provider-specific settings/model limits remain provider-owned; provider
+configuration and webhook `public_url` remain startup settings.
+
+The config path is independent of the existing data directory, avoiding an
+implicit credential/history migration. `--config` and the embedding API's
+`configPath` override it. When YAML is missing, startup can read the old data
+directory's `config.json`, applying the same validation. Files are not merged and
+malformed YAML never falls back. Once YAML is selected in a running server, its
+temporary deletion does not reactivate legacy settings. Missing initial config
+is empty; deleting an already loaded file keeps the last configuration. An explicit
+`mcp_servers: {}` removes all entries. Empty/comment-only YAML is also empty config;
+an explicit null document is rejected. Config reads are limited to 1 MiB.
+
+Watch parent directories with `dart:io`, debounce notifications for 200 ms, and
+reconcile every two seconds to cover missed events and missing/recreated parents.
+This handles editor rename saves without watching a retired inode. Compare direct
+filenames within each watched parent because native events may resolve symlinks
+such as macOS `/var` to `/private/var`. Cancellation closes streams and timers and
+cancels an active read. The network owner serializes automatic and manual reloads,
+coalesces changes, and cancels superseded automatic work. An interrupted apply
+forces subsequent reconciliation even when the file reverts to its previous value.
+
+Validate the complete candidate before touching processes. Canonical mapping
+order makes comments and key reordering harmless to running connections. Added
+commands launch once per harness; changed process settings replace that process;
+removed/disabled entries close their subscriptions and stop their processes.
+Unchanged entries retain their PIDs and subscriptions. URL changes replace client
+connections without launching or shutting down remote servers. Shutdown waits for
+in-flight reconciliation, then closes connections and reaps local processes.
+
+Connected clients receive `mcp.config.reloaded` with server statuses or
+`mcp.config.error` with a sanitized diagnostic. Repeated unchanged errors are
+suppressed. YAML parser source excerpts and validator instance values are never
+included, since environment/header values may contain credentials. Neither event
+contains the configuration snapshot. `mcp.reload` remains an immediate manual
+reload through the same validation/apply path.
+
+Evidence and reproduction, macOS arm64, Dart 3.13.7:
+
+- Inspected [yaml documentation](https://pub.dev/packages/yaml),
+  [json_schema documentation](https://pub.dev/packages/json_schema), and their
+  resolved Dart sources, including YAML duplicate/recursive-alias handling and
+  schema validation diagnostics. Also inspected `cancellation_token` 2.0.1's
+  completer cleanup behavior. Versions and checksums are in `pubspec.lock`.
+- Consulted Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`,
+  `codex-rs/config/src/mcp_types.rs`, especially `McpServerTransportConfig`, with
+  `git show COMMIT:PATH`. Happen retains its implemented field names such as
+  `inherit_env` and `header_env`; this does not advertise Codex's OAuth/helper or
+  approval options. MCP wire protocols are unchanged by this config boundary.
+- Before the fix, the reload regression changed `args` to `[42]` and received a
+  reconnecting replacement with no PID: the healthy process had been stopped.
+  After validation was moved ahead of reconciliation, the request is rejected
+  with the field path and the original process remains callable.
+- `dart test test/config_test.dart test/config_reload_test.dart test/mcp_test.dart`
+  passes all nine focused tests. Real YAML writes and atomic replacements cover
+  adding processes, changing the executable, disabling/removing entries, retained
+  subscriptions, missing files, rapid edit/revert during discovery, and shutdown.
+  Tests inspect actual process identities and verify retired PIDs have exited.
+  A mixed command/HTTP fixture changes the remote URL and removes the connection,
+  then verifies that the remote server still serves requests. Existing MCP tests
+  cover crash supervision and independent request cancellation.
+- `dart run bin/agent.dart --help` and `dart run bin/agent.dart config-schema`
+  verify CLI discovery and schema export. The full verification commands remain
+  in [verification.md](verification.md).
+
+Tradeoffs and limits: polling adds small recurring file I/O and reload latency is
+not a realtime guarantee. Validation protects against malformed configuration;
+a well-formed command or URL can still be unavailable, and changing to it does
+not roll back a failed process launch or connection. A valid partial edit cannot
+be distinguished from an intentional complete config; use atomic saves for
+multi-step programmatic writes. The lifecycle evidence is from local subprocess
+and HTTP fixtures on macOS, not a new independently deployed MCP interoperability
+test or verification on other operating systems.

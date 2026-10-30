@@ -20,6 +20,10 @@ checkout. See [api.md](api.md) for configuration and the public API.
   independent forks, and validated export/import.
 - Verify global MCP processes are shared across tasks and supervised; task
   cancellation must not terminate unrelated calls or the shared server.
+- Run `dart test test/config_test.dart test/config_reload_test.dart test/mcp_test.dart`
+  for YAML validation, legacy fallback, automatic reloads through real file saves,
+  process replacement/removal, unchanged subscriptions, rapid edit/revert, and
+  URL connection changes without managing the remote server process.
 - Verify compaction preserves full searchable history, and failed/cancelled
   compaction leaves the active context intact.
 - Compare live ChatGPT execution with installed Codex using the same model and

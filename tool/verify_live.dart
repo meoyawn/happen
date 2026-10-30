@@ -47,7 +47,10 @@ Future<void> main(List<String> args) async {
       } finally {
         auth.close();
       }
-      final server = await AgentServer.startEmbedded(directory: data.path);
+      final server = await AgentServer.startEmbedded(
+        directory: data.path,
+        configPath: '${data.path}/config.yaml',
+      );
       final client = await AgentClient.connect(
         server.uri,
         cancellation: cancellation,

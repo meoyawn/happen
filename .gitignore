@@ -5,6 +5,7 @@ build/
 *.so
 *.dll
 coverage/
+.moon/cache/
 
 # Local credentials and environment overrides.
 .env

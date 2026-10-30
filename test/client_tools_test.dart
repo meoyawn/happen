@@ -109,10 +109,12 @@ void main() {
         final server = embedded
             ? await AgentServer.startEmbedded(
                 directory: root.path,
+                configPath: '${root.path}/config.yaml',
                 endpoint: endpoint,
               )
             : await AgentServer.start(
                 directory: root.path,
+                configPath: '${root.path}/config.yaml',
                 port: 0,
                 endpoint: endpoint,
               );

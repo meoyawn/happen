@@ -5,6 +5,7 @@ resolution: workspace
 environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
+  config: any
   protocol: any
   gpt: any
   deepseek: any

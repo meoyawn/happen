@@ -16,7 +16,8 @@ that login. `login` and `login --device` create an independently owned login.
 
 The default data directory is `~/.local/share/agent-server`. Set `AGENT_DATA_DIR`
 or pass the global `--data-dir PATH` option to select another directory. It holds
-global configuration, authentication references, `AGENTS.md`, and task databases.
+authentication references, `AGENTS.md`, and task databases. Global configuration
+defaults to `~/.happen/config.yaml`, independently of the data directory.
 
 For a remote server, run the loopback listener on the remote machine and forward
 its port with SSH:
@@ -46,42 +47,72 @@ Keep the resulting `bundle/bin` and `bundle/lib` directories together.
 
 ## Global configuration
 
-`config.json` in the data directory selects provider defaults and global MCP
-servers. For example:
+Create `~/.happen/config.yaml` with local commands, remote URLs, or both:
 
-```json
-{
-  "default_provider": "gpt",
-  "providers": {
-    "gpt": {
-      "model": "gpt-6.1-sol",
-      "settings": {"reasoning": "low", "transport": "http"}
-    },
-    "deepseek": {
-      "model": "deepseek-flash",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "transport": "messages"
-    }
-  },
-  "mcp_servers": {
-    "local": {
-      "command": "/absolute/path/to/mcp-server",
-      "args": [],
-      "inherit_env": ["SERVICE_API_KEY"]
-    },
-    "remote": {
-      "url": "https://example.com/mcp",
-      "header_env": {"Authorization": "MCP_AUTHORIZATION"}
-    }
-  }
-}
+```yaml
+mcp_servers:
+  dart:
+    command: dart
+    args: [mcp-server, --disable, analysis]
+  remote:
+    url: https://example.com/mcp
+    header_env:
+      Authorization: MCP_AUTHORIZATION
+
+# Optional provider defaults.
+default_provider: gpt
+providers:
+  gpt:
+    model: gpt-6.1-sol
+    settings: {reasoning: low, transport: http}
+  deepseek:
+    model: deepseek-flash
+    api_key_env: DEEPSEEK_API_KEY
+    transport: messages
 ```
 
+Use the global `--config PATH` option to select another YAML file, for example
+`dart run bin/agent.dart --config /path/config.yaml serve`. Embedded applications
+can pass `configPath` to `AgentServer.start` or `startEmbedded`; their default is
+also `~/.happen/config.yaml`. A missing file at startup means empty configuration.
+For compatibility, a missing YAML file falls back to the data directory's
+`config.json`, validated against the same schema. Files are never merged, and an
+invalid YAML file never falls back to JSON. Credentials and task data stay in
+their existing directory.
+
+The running server watches the file. Saving a valid edit adds new MCPs, stops
+removed or disabled local processes, and replaces a local process when its command,
+arguments, environment, or working directory changes. Unchanged entries keep their
+processes and subscriptions. URL entries own client connections only; edits update
+those connections without starting or stopping the remote server. Crashed local
+processes retain the existing bounded restart policy.
+
+Watching uses parent-directory notifications with a 200 ms debounce and a
+two-second fallback check. It handles atomic editor saves and files/directories
+created after startup. Invalid edits keep the running MCP configuration and send
+`mcp.config.error` to connected clients. Once a file has been loaded, deleting it
+keeps the running configuration; use `mcp_servers: {}` to remove all MCPs. After
+YAML has been selected, deletion also does not reactivate an old JSON config.
+`mcp.config.reloaded` reports applied MCP changes or recovery from a config error.
+`mcp.reload` remains available to request an immediate validated reload.
+
 `header_env` supplies the complete header value from the named environment
-variable. Local MCP servers also accept `cwd`, `env`, and `enabled`; subprocesses
-inherit a small standard environment plus `inherit_env`. Each configured process
-is shared across tasks. `mcp.reload` reloads MCP configuration. Provider defaults
-are read at server startup and resolved settings are saved when a task is created.
+variable; `headers` supplies literal HTTP header strings. Local MCP servers accept
+`cwd`, `env`, and `inherit_env`; subprocesses inherit a small standard environment
+plus `inherit_env`. Quote numeric or boolean environment values, such as
+`env: {PORT: "3000"}`. Commands execute directly with their argument list. Shell
+expansion requires an explicit shell command, such as `command: sh` with
+`args: [-c, "exec my-server"]`. Both transports accept `enabled` and
+`legacy_fallback`. A server needs exactly one of `command` or `url`.
+
+`packages/config` owns YAML parsing, the embedded JSON Schema, and file watching
+in Dart. Startup and reload validate types, supported fields, transport options,
+and server-name collisions before changing connections. Diagnostics omit config
+values. Export the schema for a YAML editor with
+`dart run bin/agent.dart config-schema > /path/happen.schema.json`.
+Provider-specific settings and model limits remain validated by their providers.
+Provider configuration and `public_url` take effect at server startup; resolved
+provider settings remain saved with each task.
 
 GPT supports `http` and `websocket` model transports. Its catalog supplies the
 model prompt, effort defaults, and context limits. DeepSeek supports the native
@@ -104,25 +135,21 @@ authorize the workspace. The DeepSeek package saves `opencode-auth.json` private
 and refreshes its own tokens. It does not require the OpenCode executable or use
 the CLI's refresh token.
 
-Select the Console backend in the data directory's `config.json`:
+Select the Console backend in `~/.happen/config.yaml`:
 
-```json
-{
-  "providers": {
-    "deepseek": {
-      "backend": "opencode",
-      "model": "deepseek-v4.1-flash-free",
-      "settings": {"reasoning": "low"}
-    }
-  }
-}
+```yaml
+providers:
+  deepseek:
+    backend: opencode
+    model: deepseek-v4.1-flash-free
+    settings: {reasoning: low}
 ```
 
 Then run `dart run bin/agent.dart exec --provider deepseek "Complete this task"`.
 The route uses Chat Completions, with a 200,000-token context and a maximum output
 of 32,000 tokens from the pinned OpenCode catalog. The exact free model is required;
 there is no automatic paid fallback. Native DeepSeek remains available with
-`"backend": "native"` (the default), `deepseek-flash`, and `DEEPSEEK_API_KEY`.
+`backend: native` (the default), `deepseek-flash`, and `DEEPSEEK_API_KEY`.
 
 Login and model availability are separate. In the recorded live check, Happen's
 device authorization succeeded, but its authenticated inference request received

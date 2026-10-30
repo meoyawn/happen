@@ -1,0 +1,14 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+language: dart
+toolchains:
+  default: system
+tasks:
+  dev:
+    description: Run the Flutter desktop with stateful hot reload
+    command: env -C packages/desktop flutter run -d macos --debug --hot --print-dtd
+    preset: server
+    inputs: []
+    options:
+      interactive: true
+      cache: false
+      shell: false

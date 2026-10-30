@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ai/ai.dart';
+import 'package:config/config.dart';
 import 'package:gpt/gpt.dart';
 import 'package:deepseek/deepseek.dart';
 import 'package:protocol/protocol.dart';
@@ -12,20 +13,31 @@ import 'package:mcp/mcp.dart';
 Future<IsolateOwner> startNetwork(
   String directory, {
   String? endpoint,
+  String? configPath,
   SendPort? events,
-}) => IsolateOwner.start(_networkMain, {
-  'directory': directory,
-  'endpoint': endpoint,
-  'events': events,
-});
+}) async {
+  configPath = File(configPath ?? defaultConfigPath()).absolute.path;
+  // Validate before spawning so startup errors reach the caller with a field
+  // path, instead of being reduced to an opaque isolate-startup failure.
+  final global = await loadConfig(
+    configPath,
+    legacyPath: '$directory/config.json',
+  );
+  return IsolateOwner.start(_networkMain, {
+    'directory': directory,
+    'endpoint': endpoint,
+    'config_path': configPath,
+    'config': global.values,
+    'loaded_config_path': global.path,
+    'events': events,
+  });
+}
 
 void _networkMain(List<Object?> args) async {
   final startup = jsonObject(args[1]);
   final directory = startup['directory'] as String;
-  final file = File('$directory/config.json');
-  final global = await file.exists()
-      ? jsonObject(jsonDecode(await file.readAsString()))
-      : <String, dynamic>{};
+  final configPath = startup['config_path'] as String;
+  final global = jsonObject(startup['config']);
   final providerOptions = jsonObject(global['providers'] ?? {});
   final gptOptions = jsonObject(providerOptions['gpt'] ?? {});
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
@@ -89,6 +101,102 @@ void _networkMain(List<Object?> args) async {
   // Capture startup failure for callers without an unhandled background error.
   unawaited(initialized.catchError((Object _) {}));
   var closing = false;
+  var loadedConfigPath = startup['loaded_config_path'] as String?;
+  String? appliedMcp = jsonEncode(global['mcp_servers'] ?? {});
+  String? configError;
+  Future<void> reloads = initialized.catchError((Object _) {});
+  void configEvent(String type, Json data) {
+    if (closing) return;
+    (startup['events'] as SendPort?)?.send({
+      'event': {'type': type, 'data': data},
+    });
+  }
+
+  Future<void> reload(CancellationToken cancellation) {
+    final next = reloads.then((_) async {
+      cancellation.throwIfCancelled();
+      lifetime.throwIfCancelled();
+      try {
+        final updated = await loadConfig(
+          configPath,
+          // Once YAML has been selected, deleting it must not restore an old
+          // legacy config during an editor's delete/rename save sequence.
+          legacyPath: loadedConfigPath == configPath
+              ? null
+              : '$directory/config.json',
+          cancellation: cancellation,
+        );
+        if (updated.path == null && loadedConfigPath != null) {
+          throw const FormatException(
+            'Configuration file is missing; keeping the running MCP servers',
+          );
+        }
+        final servers = jsonObject(updated.values['mcp_servers'] ?? {});
+        final encoded = jsonEncode(servers);
+        final changed = encoded != appliedMcp;
+        final recovered = configError != null;
+        if (changed) {
+          // Cancellation can interrupt process replacement. Force the next
+          // reload to reconcile even if the file reverts to the previous value.
+          appliedMcp = null;
+          await mcp.configure(servers, cancellation);
+        }
+        cancellation.throwIfCancelled();
+        lifetime.throwIfCancelled();
+        appliedMcp = encoded;
+        loadedConfigPath = updated.path;
+        configError = null;
+        if (changed || recovered) {
+          configEvent('mcp.config.reloaded', {'servers': mcp.status()});
+        }
+      } on CancelledException {
+        rethrow;
+      } catch (error) {
+        final message = error is FormatException
+            ? error.message
+            : 'Could not reload MCP configuration';
+        if (message != configError) {
+          configError = message;
+          configEvent('mcp.config.error', {'error': message});
+        }
+        rethrow;
+      }
+    });
+    reloads = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void>? automaticReload;
+  CancellationToken? automaticCancellation;
+  var reloadAgain = false;
+  void changed() {
+    if (closing || lifetime.isCancelled) return;
+    reloadAgain = true;
+    automaticCancellation?.cancel();
+    if (automaticReload != null) return;
+    automaticReload = () async {
+      do {
+        reloadAgain = false;
+        final cancellation = automaticCancellation = CancellationToken();
+        try {
+          await reload(cancellation.merge(lifetime));
+        } on CancelledException {
+          // A newer file change or shutdown superseded this reload.
+        } catch (_) {
+          // The sanitized failure was delivered through mcp.config.error.
+        } finally {
+          cancellation.cancel();
+          automaticCancellation = null;
+        }
+      } while (reloadAgain && !lifetime.isCancelled);
+    }().whenComplete(() => automaticReload = null);
+  }
+
+  final watcher = ConfigWatcher(
+    [configPath, '$directory/config.json'],
+    onChange: changed,
+    cancellation: lifetime,
+  );
   final port = ReceivePort();
   (args[0] as SendPort).send(port.sendPort);
   Future<void> handle(Json request) async {
@@ -184,18 +292,56 @@ void _networkMain(List<Object?> args) async {
               (params['body'] as List).cast<int>(),
             );
           case 'mcp.reload':
-            final updated = await file.exists()
-                ? jsonObject(jsonDecode(await file.readAsString()))
-                : <String, dynamic>{};
-            await mcp.configure(
-              jsonObject(updated['mcp_servers'] ?? {}),
-              cancellation,
-            );
+            await reload(cancellation);
             result = mcp.status();
           default:
             throw StateError('Unknown MCP operation');
         }
         reply?.send({'result': result});
+        return;
+      }
+      if (request['method'] == 'providers.list') {
+        final deepseekKey = Platform.environment[
+          deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY'
+        ];
+        reply?.send({'result': {
+          'default_provider': global['default_provider'] ?? 'gpt',
+          'providers': [
+            {
+              'id': 'gpt',
+              'name': 'ChatGPT',
+              'status': await auth.status(),
+              'default_model': gptOptions['model'] ?? 'gpt-6.1-sol',
+              'models': [
+                for (final model in supportedGptModels)
+                  {
+                    'id': model,
+                    'name': GptModel(model).data['display_name'] ?? model,
+                    'reasoning_levels': GptModel(model).reasoningLevels,
+                    'default_reasoning': GptModel(model).reasoningLevels.contains(gptOptions['settings']?['reasoning'])
+                        ? gptOptions['settings']['reasoning'] : GptModel(model).defaultReasoning,
+                    'reasoning_updates': GptModel(model).reasoningUpdates,
+                  },
+              ],
+            },
+            {
+              'id': 'deepseek',
+              'name': backend == 'opencode' ? 'DeepSeek · OpenCode' : 'DeepSeek',
+              'status': backend == 'opencode' ? await consoleAuth.status()
+                  : deepseekKey == null || deepseekKey.isEmpty ? 'signed_out' : 'api_key',
+              'default_model': deepseekOptions['model'] ?? deepseek.defaultModel,
+              'models': [{
+                'id': deepseek.defaultModel,
+                'name': deepseekModel(deepseek.defaultModel)['name'],
+                'reasoning_levels': ['off', 'low', 'high', 'max'],
+                'default_reasoning': deepseek.resolveSettings(
+                  jsonObject(deepseekOptions['settings'] ?? {}), model: deepseek.defaultModel,
+                )['reasoning'],
+                'reasoning_updates': false,
+              }],
+            },
+          ],
+        }});
         return;
       }
       if (request['method'] == 'configure') {
@@ -297,6 +443,9 @@ void _networkMain(List<Object?> args) async {
         for (final token in operations.values.toList()) {
           token.cancel();
         }
+        await watcher.close();
+        await automaticReload;
+        await reloads;
         await mcp.close();
         auth.close();
         consoleAuth.close();

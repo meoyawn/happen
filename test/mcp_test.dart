@@ -214,7 +214,10 @@ void main() {
         },
       }),
     );
-    final server = await AgentServer.startEmbedded(directory: root.path);
+    final server = await AgentServer.startEmbedded(
+      directory: root.path,
+      configPath: '${root.path}/config.yaml',
+    );
     final client = await AgentClient.connect(server.uri);
     final received = <Json>[];
     final listener = client.events.stream.listen(received.add);

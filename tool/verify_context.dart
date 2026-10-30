@@ -40,7 +40,10 @@ Future<void> main(List<String> args) async {
       } finally {
         auth.close();
       }
-      var server = await AgentServer.startEmbedded(directory: data.path);
+      var server = await AgentServer.startEmbedded(
+        directory: data.path,
+        configPath: '${data.path}/config.yaml',
+      );
       var client = await AgentClient.connect(
         server.uri,
         cancellation: cancellation,
@@ -156,7 +159,10 @@ plugins, or delegated agents.''',
 
         await client.close();
         await server.close();
-        server = await AgentServer.startEmbedded(directory: data.path);
+        server = await AgentServer.startEmbedded(
+          directory: data.path,
+          configPath: '${data.path}/config.yaml',
+        );
         client = await AgentClient.connect(
           server.uri,
           cancellation: cancellation,

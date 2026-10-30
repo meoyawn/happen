@@ -25,6 +25,35 @@ class OpenCodeAuthManager {
   Future<void>? _loggingIn;
   File get _file => File('$directory/opencode-auth.json');
 
+  /// Local credential state only; never refreshes or returns credential values.
+  Future<String> status() async {
+    _lifetime.throwIfCancelled();
+    try {
+      if (!await _file.exists()) return 'signed_out';
+      if ((await _file.stat()).size > 64 * 1024) return 'invalid';
+      final value = _object(jsonDecode(await _file.readAsString()));
+      _lifetime.throwIfCancelled();
+      if (value['version'] != 1 ||
+          value['type'] != 'opencode' ||
+          value['server'] != endpoint.toString()) {
+        return 'invalid';
+      }
+      _required(value, 'access_token');
+      _required(value, 'org_id');
+      if ((value['expires_at'] as num? ?? 0) >
+          DateTime.now().millisecondsSinceEpoch + 60000) {
+        return 'signed_in';
+      }
+      return (value['refresh_token'] as String? ?? '').isNotEmpty
+          ? 'refresh_required'
+          : 'expired';
+    } on CancelledException {
+      rethrow;
+    } catch (_) {
+      return 'invalid';
+    }
+  }
+
   Future<void> login({
     required void Function(String url, String code) notify,
     required CancellationToken cancellation,

@@ -127,6 +127,7 @@ void main() {
     final endpoint = 'http://127.0.0.1:${provider.port}/responses';
     var server = await AgentServer.startEmbedded(
       directory: root.path,
+      configPath: '${root.path}/config.yaml',
       endpoint: endpoint,
     );
     var client = await AgentClient.connect(server.uri);
@@ -192,6 +193,7 @@ void main() {
     await server.close();
     server = await AgentServer.startEmbedded(
       directory: root.path,
+      configPath: '${root.path}/config.yaml',
       endpoint: endpoint,
     );
     client = await AgentClient.connect(server.uri);

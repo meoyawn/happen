@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
+import 'package:config/config.dart';
 import 'package:deepseek/deepseek.dart';
 import 'package:gpt/gpt.dart';
 import 'package:protocol/protocol.dart';
@@ -11,7 +12,12 @@ import 'package:server/server.dart';
 ArgParser parser() {
   final parser = ArgParser()
     ..addFlag('help', abbr: 'h', negatable: false)
-    ..addOption('data-dir', defaultsTo: defaultDataDirectory());
+    ..addOption('data-dir', defaultsTo: defaultDataDirectory())
+    ..addOption(
+      'config',
+      help: 'Global YAML config (default: ~/.happen/config.yaml)',
+    );
+  parser.addCommand('config-schema', ArgParser());
   parser.addCommand(
     'login',
     ArgParser()
@@ -68,12 +74,16 @@ Future<void> run(List<String> arguments) async {
   final command = parsed.command;
   if (parsed['help'] == true || command == null) {
     stdout.writeln(
-      'Agent server\n\n  agent login [--device | --from-codex | --provider opencode]\n  agent serve [--port 8765]\n  agent exec [--url ws://127.0.0.1:8765/ws] "task"\n  agent request METHOD \'{"parameter":"value"}\'\n\n${options.usage}',
+      'Agent server\n\n  agent login [--device | --from-codex | --provider opencode]\n  agent serve [--port 8765]\n  agent exec [--url ws://127.0.0.1:8765/ws] "task"\n  agent request METHOD \'{"parameter":"value"}\'\n  agent config-schema\n\n${options.usage}',
     );
     return;
   }
   final directory = Directory(parsed['data-dir'] as String).absolute.path;
   switch (command.name) {
+    case 'config-schema':
+      stdout.writeln(
+        const JsonEncoder.withIndent('  ').convert(globalConfigSchema),
+      );
     case 'login':
       if (command['provider'] == 'opencode') {
         if (command['from-codex'] == true || command.wasParsed('codex-auth')) {
@@ -128,6 +138,7 @@ Future<void> run(List<String> arguments) async {
     case 'serve':
       final server = await AgentServer.start(
         directory: directory,
+        configPath: parsed['config'] as String? ?? defaultConfigPath(),
         host: command['host'] as String,
         port: int.parse(command['port'] as String),
         socketPath: command['socket'] as String?,
@@ -168,6 +179,7 @@ Future<void> run(List<String> arguments) async {
         if (url == null) {
           embedded = await AgentServer.startEmbedded(
             directory: directory,
+            configPath: parsed['config'] as String? ?? defaultConfigPath(),
             telemetry: command['telemetry'] as bool,
           );
         }
