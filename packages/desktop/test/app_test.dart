@@ -123,6 +123,10 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Reconnecting… 1/5'), findsOneWidget);
     expect(find.text('Abandoned partial answer', findRichText: true), findsNothing);
+    session.client.events.add({'task_id': task.id, 'type': 'model.connected'});
+    await tester.pump();
+    expect(find.textContaining('Reconnecting…'), findsNothing);
+    expect(find.textContaining('Working'), findsOneWidget);
     session.client.events.add({'task_id': task.id, 'type': 'text.delta', 'delta': 'Recovered answer'});
     await tester.pump();
     expect(find.textContaining('Reconnecting…'), findsNothing);
@@ -137,6 +141,10 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsOneWidget);
     expect(find.text('Internal summary', findRichText: true), findsNothing);
+    session.client.events.add({'task_id': task.id, 'type': 'model.connected'});
+    await tester.pump();
+    expect(find.textContaining('Reconnecting…'), findsNothing);
+    expect(find.textContaining('Compacting context'), findsOneWidget);
     await emit('context.compacted', {'summary': ''});
     expect(session.task!.streamingText, isEmpty);
     expect(session.task!.retryStatus, isNull);

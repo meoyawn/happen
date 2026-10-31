@@ -1,3 +1,7 @@
 [submodule "packages/code_mode/native/quickjs"]
 	path = packages/code_mode/native/quickjs
 	url = https://github.com/bellard/quickjs.git
+[submodule "third_party/http"]
+	path = third_party/http
+	url = https://github.com/meoyawn/http.git
+	branch = happen/http2-late-data

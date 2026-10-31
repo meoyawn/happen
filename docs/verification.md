@@ -25,6 +25,11 @@ checkout. See [api.md](api.md) for configuration and the public API.
   renew the certificate before expiry, keeping its SANs and server-auth usage.
   See the connection-reuse decision and [latency evidence](evidence/http2-latency.json)
   for live protocol observations and the limits of the timing comparison.
+  The late-DATA regression also checks actual WINDOW_UPDATE bytes after a stream
+  reset and requires the shared connection to remain usable. The pinned HTTP/2
+  fork and its own test command are documented in [third_party](../third_party/README.md);
+  [the upstream issue](https://github.com/dart-lang/http/issues/2051) contains a
+  standalone package-only reproducer. See [the failure comparison](evidence/http2-late-data.json).
 - Verify streaming tool calls, provider state after save/load, append-only GPT
   effort updates, fixed DeepSeek effort, cancellation, incomplete streams, restart,
   independent forks, and validated export/import.
@@ -39,6 +44,15 @@ checkout. See [api.md](api.md) for configuration and the public API.
   retained task owners. It uses local provider fixtures and temporary data.
 - Verify global MCP processes are shared across tasks and supervised; task
   cancellation must not terminate unrelated calls or the shared server.
+- Run `dart test test/tool_cancellation_test.dart test/code_mode_test.dart --concurrency=1 -r expanded`
+  for both providers' process lifetimes: foreground process trees and native JS
+  stop on steering/Stop, while task sessions survive cells and later turns until
+  hibernation/archive/shutdown. The server fixture also holds a sibling MCP call
+  while cancelling every direct/nested call belonging to the interrupted task.
+  The native regression signals an atomic interrupt from another isolate during
+  a ten-second CPU-bound cell; it must stop within two seconds. Cell regressions
+  also require pending host work to release on cancellation, timeout, failure,
+  and early return. The POSIX process fixture uses `/bin/bash`, `/bin/sh`, and `ps`.
 - Run `dart test test/mcp_inventory_test.dart test/mcp_test.dart test/config_reload_test.dart -r expanded`
   for read-only desktop MCP inventory, disabled entries, resource pagination,
   sanitized failures and request-scoped cancellation over real transports.

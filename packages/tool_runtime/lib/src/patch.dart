@@ -1,6 +1,10 @@
 import 'dart:io';
+import 'dart:convert';
 
-Future<String> applyPatch(String cwd, String patch) async {
+import 'package:protocol/protocol.dart';
+
+Future<String> applyPatch(String cwd, String patch, {required CancellationToken cancellation}) async {
+  cancellation.throwIfCancelled();
   if (patch.length > 1024 * 1024) {
     throw const FormatException('Patch exceeds 1 MiB');
   }
@@ -17,6 +21,7 @@ Future<String> applyPatch(String cwd, String patch) async {
   var i = 1;
   String resolve(String path) => File(path).isAbsolute ? path : '$cwd/$path';
   while (i < lines.length - 1) {
+    cancellation.throwIfCancelled();
     final header = lines[i++];
     if (header.startsWith('*** Add File: ')) {
       final path = resolve(header.substring(14));
@@ -45,7 +50,10 @@ Future<String> applyPatch(String cwd, String patch) async {
       if (lines[i].startsWith('*** Move to: ')) {
         destination = resolve(lines[i++].substring(13));
       }
-      final original = await File(path).readAsString();
+      final input = ownStream(File(path).openRead(), cancellation);
+      final String original;
+      try { original = await input.stream.transform(utf8.decoder).join().asCancellable(cancellation); }
+      finally { await input.close(); }
       final crlf = original.contains('\r\n');
       final content = original.replaceAll('\r\n', '\n').split('\n');
       if (content.isNotEmpty && content.last.isEmpty) content.removeLast();
@@ -116,13 +124,16 @@ Future<String> applyPatch(String cwd, String patch) async {
     }
   }
   for (final change in changes) {
+    cancellation.throwIfCancelled();
     if (change.content == null) {
       await File(change.path).delete();
     } else {
       final destination = File(change.destination ?? change.path);
       await destination.parent.create(recursive: true);
+      cancellation.throwIfCancelled();
       await destination.writeAsString(change.content!, flush: true);
       if (change.destination != null && change.destination != change.path) {
+        cancellation.throwIfCancelled();
         await File(change.path).delete();
       }
     }

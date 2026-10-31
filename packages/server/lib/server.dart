@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'package:agent/agent.dart';
 import 'package:ai/ai.dart';
+import 'package:code_mode/code_mode.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:storage/storage.dart';
@@ -14,6 +15,7 @@ import 'package:telemetry/telemetry.dart';
 
 import 'src/network.dart';
 import 'src/client_tools.dart';
+import 'src/task_tools.dart';
 import 'src/file_search.dart';
 import 'src/attachments.dart';
 
@@ -36,6 +38,7 @@ class AgentServer {
   final ReceivePort _networkEvents;
   final _lifetime = CancellationToken();
   final _clientTools = ClientToolBridge();
+  final _taskTools = TaskToolBridge();
   final _files = FileSearch();
   String? socketPath;
   Directory? _socketDirectory;
@@ -145,6 +148,7 @@ class AgentServer {
             for (final task in server._tasks.values) {
               final agent = task.agent;
               if (agent != null) {
+                task.codeInterrupt?.interrupt();
                 agent.port.send({'method': 'cancel', 'params': {}});
               }
             }
@@ -521,10 +525,7 @@ class AgentServer {
         final pending = _imports[operationId];
         if (pending != null) return {'task_id': await pending.asCancellable(client.cancellation)};
         _transfers++;
-        final imported = importHistory(
-          targetDirectory, source, operationId: operationId,
-          taskIds: network.port, cancellation: client.cancellation,
-        );
+        final imported = _importHistory(targetDirectory, source, operationId, client.cancellation);
         if (operationId != null) _imports[operationId] = imported;
         try {
           final id = await imported;
@@ -562,8 +563,13 @@ class AgentServer {
           task.cancelled = true;
           _discardPending(task, 'cancelled');
           final agent = task.agent;
+          task.codeInterrupt?.interrupt();
           if (agent != null) await callIsolate(agent.port, 'cancel', {});
           return null;
+        }
+        if (method == 'task.hibernate') {
+          await _hibernate(task);
+          return {'task_id': id};
         }
         if (method == 'task.send' || method == 'task.compact') {
           final mode = params['delivery'] as String? ?? 'queue';
@@ -684,15 +690,59 @@ class AgentServer {
     _activity.add(activeTaskCount);
   }
 
+  Future<String> _importHistory(String targetDirectory, String source,
+    String? operationId, CancellationToken cancellation) async {
+    cancellation.throwIfCancelled();
+    if (operationId != null) {
+      validateTaskId(operationId);
+      final tasks = Directory('$directory/tasks');
+      if (await tasks.exists()) {
+        await for (final entry in tasks.list(followLinks: false)) {
+          cancellation.throwIfCancelled();
+          if (entry is! Directory) continue;
+          final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
+          try { validateTaskId(id); } on FormatException { continue; }
+          if (!await File('${entry.path}/history.sqlite').exists()) continue;
+          while (true) {
+            cancellation.throwIfCancelled();
+            final task = _tasks[id] ?? _Task(id, null);
+            // Await ownership transitions, never a SQLite lock or a polling timer.
+            if (task.maintenanceDone case final done?) {
+              await done.future.asCancellable(cancellation);
+              continue;
+            }
+            if (task.finishing) {
+              await task.running!.asCancellable(cancellation);
+              continue;
+            }
+            if (task.busy && task.writer == null) {
+              await task.ready!.future.asCancellable(cancellation);
+              continue;
+            }
+            final value = await _withWriter(task, (writer) => callIsolate(writer.port,
+              'metadata', {'key': 'import_operation'}, cancellation: cancellation));
+            if (value == operationId) return id;
+            break;
+          }
+        }
+      }
+    }
+    cancellation.throwIfCancelled();
+    return importHistory(targetDirectory, source, operationId: operationId,
+      taskIds: network.port, cancellation: cancellation);
+  }
+
   Future<void> _archive(_Task task, bool archived) async {
     if (task.maintenance) throw StateError('Task has a pending maintenance operation');
     task.maintenance = true;
+    final settled = task.maintenanceDone = Completer<void>();
     _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
       if (task.busy) {
         task.cancelled = true;
         _discardPending(task, 'archived');
+        task.codeInterrupt?.interrupt();
         if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
         await task.running;
       }
@@ -700,6 +750,7 @@ class AgentServer {
       writer = await startStore(directory, task.id, create: false, legacyDecoder: gptItemFromNative);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       if (archived) {
+        await _taskTools.release(task.id);
         _clientTools.archive(task.id);
         await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
       }
@@ -707,8 +758,33 @@ class AgentServer {
         client.event({'task_id': task.id, ...event});
       }
     } finally {
-      await writer?.close();
+      try { await writer?.close(); }
+      finally {
+        task.maintenance = false;
+        task.maintenanceDone = null;
+        settled.complete();
+        _forgetIdle(task);
+      }
+    }
+  }
+
+  Future<void> _hibernate(_Task task) async {
+    if (task.maintenance) throw StateError('Task has a pending maintenance operation');
+    task.maintenance = true;
+    final settled = task.maintenanceDone = Completer<void>();
+    _tasks[task.id] = task;
+    try {
+      task.cancelled = true;
+      _discardPending(task, 'hibernated');
+      task.codeInterrupt?.interrupt();
+      if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
+      await task.running;
+      await _taskTools.release(task.id);
+      await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
+    } finally {
       task.maintenance = false;
+      task.maintenanceDone = null;
+      settled.complete();
       _forgetIdle(task);
     }
   }
@@ -777,6 +853,7 @@ class AgentServer {
         !task.offered.add(message['id'] as String)) {
       return;
     }
+    task.codeInterrupt?.interrupt();
     task.agent!.port.send({'method': 'steer', 'params': message});
   }
 
@@ -841,6 +918,7 @@ class AgentServer {
       effective['cwd'] = cwd.path;
     }
     task.busy = true;
+    task.finishing = false;
     task.ready = Completer<void>();
     _tasks[task.id] = task;
     task.cancelled = false;
@@ -909,12 +987,15 @@ class AgentServer {
         _broadcast(task.id, migrated);
       }
       task.ready!.complete();
+      task.codeInterrupt = CodeInterrupt();
       task.agent = await startAgent(
         taskId: task.id,
         config: task.config!,
         writer: task.writer!.port,
         network: network.port,
         clientTools: _clientTools.port,
+        taskTools: _taskTools.port,
+        codeInterrupt: task.codeInterrupt!.address,
       );
       if (task.cancelled) {
         // Cancel after turn admission below; the mailbox preserves send order.
@@ -955,13 +1036,21 @@ class AgentServer {
         'data': {'error': error.toString()},
       };
     } finally {
+      task.finishing = true;
       turnLifetime.cancel();
       if (!task.ready!.isCompleted) task.ready!.complete();
       await task.agent?.close();
+      await _taskTools.settle(task.id);
+      task.codeInterrupt?.close();
+      task.codeInterrupt = null;
+      if (task.writerRequests > 0) {
+        await (task.writerDrained ??= Completer<void>()).future;
+      }
       await task.writer?.close();
       task.agent = null;
       task.writer = null;
       task.busy = false;
+      task.finishing = false;
       task.offered.clear();
       if (terminal != null) {
         telemetry.add(terminal!['type'] as String);
@@ -1001,11 +1090,20 @@ class AgentServer {
       throw StateError('Task has a pending maintenance operation');
     }
     if (task.busy) {
+      if (task.finishing) throw StateError('Task is finishing; retry shortly');
       final writer = task.writer;
       if (writer == null) throw StateError('Task is starting; retry shortly');
-      return operation(writer);
+      task.writerRequests++;
+      try { return await operation(writer); }
+      finally {
+        if (--task.writerRequests == 0) {
+          task.writerDrained?.complete();
+          task.writerDrained = null;
+        }
+      }
     }
     task.maintenance = true;
+    final settled = task.maintenanceDone = Completer<void>();
     _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
@@ -1017,9 +1115,13 @@ class AgentServer {
       );
       return await operation(writer);
     } finally {
-      await writer?.close();
-      task.maintenance = false;
-      _forgetIdle(task);
+      try { await writer?.close(); }
+      finally {
+        task.maintenance = false;
+        task.maintenanceDone = null;
+        settled.complete();
+        _forgetIdle(task);
+      }
     }
   }
 
@@ -1047,6 +1149,7 @@ class AgentServer {
     await http.close(force: true);
     for (final task in _tasks.values) {
       task.cancelled = true;
+      task.codeInterrupt?.interrupt();
       if (task.agent != null) {
         unawaited(callIsolate(task.agent!.port, 'cancel', {}));
       }
@@ -1055,6 +1158,7 @@ class AgentServer {
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
     );
     await Future.wait(_requests.toList().map((operation) => operation.catchError((Object _) => null)));
+    await _taskTools.close();
     unawaited(_activity.close());
     await network.close();
     _networkEvents.close();
@@ -1078,10 +1182,13 @@ class _Task {
   _Task(this.id, this.config);
   final String id;
   Json? config;
-  bool busy = false, maintenance = false, cancelled = false;
+  bool busy = false, maintenance = false, cancelled = false, finishing = false;
   IsolateOwner? writer, agent;
+  CodeInterrupt? codeInterrupt;
   Future<void>? running;
   Completer<void>? backgroundMaintenance;
+  Completer<void>? maintenanceDone, writerDrained;
+  int writerRequests = 0;
   Completer<void>? ready;
   final pending = <Json>[];
   final offered = <String>{};

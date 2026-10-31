@@ -14,5 +14,6 @@ dependencies:
   mcp: any
   ai: any
   agent: any
+  code_mode: any
   storage: any
   telemetry: any

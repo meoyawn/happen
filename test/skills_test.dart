@@ -193,13 +193,13 @@ void main() {
       var calls = 0;
       final result = await runtime.execute(ToolCall(id: 'load', name: 'skill',
         input: jsonEncode({'id': input['path']}), format: 'json'), ToolExecution(
-        call: (name, arguments) async {
+        call: (name, arguments, {required cancellation}) async {
           calls++;
           expect(name, 'skill');
           expect(arguments, {'id': input['path']});
           return {'name': input['name'], 'content': input['content'],
             'directory': (input['path'] as String).replaceFirst('/SKILL.md', ''), 'files': entry['files']};
-        }, catalog: () async => [], values: {}, cancellation: cancellation,
+        }, catalog: (_) async => [], values: {}, cancellation: cancellation,
       ));
       expect(result['output'], entry['expected']);
       expect(calls, 1);

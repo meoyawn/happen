@@ -7,14 +7,16 @@ import 'package:protocol/protocol.dart';
 import 'discovery.dart';
 
 Future<Json> executeCode(String code, ToolExecution context) async {
-  final catalog = await context.catalog();
+  context.cancellation.throwIfCancelled();
+  final catalog = await context.catalog(context.cancellation);
   final calls = <Json>[];
   final result = await const CodeMode().execute(
     'const __source = ${jsonEncode(code)};\nconst __catalog = ${jsonEncode(catalog)};\n$_runtime',
     catalog: const [],
     cancellation: context.cancellation,
     awaitPending: false,
-    tool: (name, input) async {
+    tool: (name, input, {required cancellation}) async {
+      cancellation.throwIfCancelled();
       final row = <String, dynamic>{'tool': name == '__fetch' ? 'fetch' : name == '__search' ? 'search' : name, 'status': 'running', 'input': input};
       try {
         if (name == '__search') {
@@ -26,7 +28,8 @@ Future<Json> executeCode(String code, ToolExecution context) async {
         calls.add(row);
         final tool = name == '__fetch' ? null : catalog.where((tool) => tool['name'] == name).firstOrNull;
         if (name != '__fetch' && tool == null) throw StateError('Unknown Code Mode tool: $name');
-        final output = await context.call(name == '__fetch' ? '__fetch' : tool!['host_name'] as String? ?? name, input);
+        final output = await context.call(name == '__fetch' ? '__fetch' : tool!['host_name'] as String? ?? name, input,
+          cancellation: cancellation);
         row['status'] = 'completed';
         if (output is Map && output['isError'] == true) {
           final message = (output['content'] as List? ?? []).where((part) => part['type'] == 'text').map((part) => part['text']).join('\n').trim();

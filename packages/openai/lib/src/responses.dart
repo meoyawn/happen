@@ -264,6 +264,8 @@ class ResponsesClient {
         cancellation.throwIfCancelled();
         final event = iterator.current;
         switch (event['type']) {
+          case 'response.created':
+            onEvent?.call({'type': 'model.connected'});
           case 'response.output_text.delta':
             onEvent?.call({'type': 'text.delta', 'delta': event['delta']});
           case 'response.reasoning_summary_text.delta':

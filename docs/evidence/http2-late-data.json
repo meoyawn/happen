@@ -1,0 +1,167 @@
+{
+  "recorded_date": "2026-11-01",
+  "timezone": "Europe/Moscow",
+  "environment": {
+    "os": "macOS",
+    "architecture": "arm64",
+    "cpu": "Apple M1 Pro",
+    "dart": "3.13.7",
+    "flutter": "3.47.8"
+  },
+  "upstream": {
+    "repository": "https://github.com/dart-lang/http",
+    "version": "3.1.0",
+    "tag": "http2-v3.1.0",
+    "commit": "286037b57bcd0cb353ed98be8a508e753221e661",
+    "archive_sha256": "480bf904908b4e4ec4fac8117f69f5ff54cf48c12b1761f0a192e1e10196ee7b",
+    "issue": "https://github.com/dart-lang/http/issues/2051"
+  },
+  "fork": {
+    "repository": "https://github.com/meoyawn/http",
+    "branch": "happen/http2-late-data",
+    "commit": "30e4c31035d7cca957658da38945e34079ac298a",
+    "version": "3.1.0+happen.1"
+  },
+  "package_only": {
+    "application_imports": false,
+    "late_data_bytes": 0,
+    "stock": {
+      "window_update_increments": [
+        5,
+        5,
+        0
+      ],
+      "invalid_frames_hex": [
+        "00000408000000000000000000"
+      ],
+      "exit_code": 1
+    },
+    "patched": {
+      "window_update_increments": [
+        5,
+        5
+      ],
+      "invalid_frames_hex": [],
+      "exit_code": 0
+    }
+  },
+  "live": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "low",
+    "route": "https://chatgpt.com/backend-api/codex/responses",
+    "requests_per_run": 4,
+    "stagger_ms": 700,
+    "comparison": {
+      "stock": {
+        "completed_requests": [
+          {
+            "request": 1,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1746
+          },
+          {
+            "request": 0,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 2476
+          }
+        ],
+        "zero_window_updates": 2,
+        "protocol_error_goaway": 1,
+        "connections": 1
+      },
+      "patched": {
+        "completed_requests": [
+          {
+            "request": 1,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1477
+          },
+          {
+            "request": 0,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 2231
+          },
+          {
+            "request": 2,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1568
+          },
+          {
+            "request": 3,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1643
+          }
+        ],
+        "zero_window_updates": 0,
+        "protocol_error_goaway": 0,
+        "connections": 1
+      },
+      "fork": {
+        "completed_requests": [
+          {
+            "request": 0,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 2097
+          },
+          {
+            "request": 1,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1871
+          },
+          {
+            "request": 2,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1816
+          },
+          {
+            "request": 3,
+            "ready": true,
+            "connected_before_text": true,
+            "retries": 0,
+            "ms": 1573
+          }
+        ],
+        "zero_window_updates": 0,
+        "protocol_error_goaway": 0,
+        "connections": 1
+      }
+    },
+    "limits": [
+      "Independent fresh processes; identical instrumented application code with only the dependency repair changed.",
+      "Stock run completed two requests and interrupted two; teardown then reported a TLS error.",
+      "Durations measure each request after its stagger, not total turn or experiment time.",
+      "Interoperability evidence, not a controlled latency benchmark."
+    ]
+  },
+  "verification": {
+    "happen_tests_passed": 359,
+    "desktop_tests_passed": 69,
+    "http2_tests_passed": 222,
+    "http2_tests_skipped": 7,
+    "happen_analysis_errors": 0,
+    "happen_analysis_warnings": 0,
+    "happen_analysis_existing_infos": 48,
+    "changed_http2_analysis_issues": 0,
+    "desktop_cold_rebuilt": true,
+    "desktop_loaded_repair_confirmed_by_vm_service": true,
+    "desktop_runtime_errors": 0
+  }
+}

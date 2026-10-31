@@ -17,58 +17,67 @@ class NativeTools {
   final _notifications = <String>[];
   late final CommandRunner _runner;
 
-  String resolve(String path) => p.normalize(p.isAbsolute(path) ? path
+  String resolve(String path, String cwd) => p.normalize(p.isAbsolute(path) ? path
     : path == '~' ? Platform.environment['HOME'] ?? cwd
     : path.startsWith('~/') ? p.join(Platform.environment['HOME'] ?? cwd, path.substring(2))
     : p.join(cwd, path));
 
-  Future<Json> execute(String name, Json input) async {
+  Future<Json> execute(String name, Json input, {required CancellationToken cancellation, String? cwd}) async {
+    this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
+    cwd ??= this.cwd;
     switch (name) {
       case 'shell':
         final id = newId();
         final background = input['background'] == true;
         final timeout = input['timeout'] as int? ?? (background ? 0 : 120000);
-        final result = _run(defaultShell,
+        final command = await _runner.start(defaultShell,
           ['-c', requiredString(input, 'command')],
-          directory: resolve(input['workdir'] as String? ?? '.'), timeout: timeout);
+          directory: resolve(input['workdir'] as String? ?? '.', cwd),
+          cancellation: background ? this.cancellation : cancellation,
+          timeout: timeout == 0 ? null : Duration(milliseconds: timeout));
+        final result = _capture(command, timeout, background ? this.cancellation : cancellation);
         if (!background) return result;
         late final Future<void> pending;
         pending = result.then((value) {
           _notifications.add('Background command $id completed.\n${value['output']}');
         }, onError: (Object error) {
-          if (!cancellation.isCancelled) _notifications.add('Background command $id failed: $error');
+          if (!this.cancellation.isCancelled) _notifications.add('Background command $id failed: $error');
         }).whenComplete(() => _background.remove(pending));
         _background.add(pending);
-        return {'output': 'Command moved to the background (shell ID: $id).\nYou will be notified automatically when the command finishes. DO NOT poll for completion.',
+        return {'output': 'Command moved to the background (shell ID: $id).\nAfter completion, its result is included at the next model step or turn. DO NOT poll for completion.',
           'shellID': id, 'truncated': false, 'status': 'running'};
-      case 'read': return _read(input);
+      case 'read': return _read(input, cwd, cancellation);
       case 'write':
-        final file = File(resolve(requiredString(input, 'path')));
+        final file = File(resolve(requiredString(input, 'path'), cwd));
         final existed = await file.exists();
-        final before = existed ? await file.readAsString() : '';
+        final before = existed ? await _readText(file, cancellation) : '';
         var content = input['content'] as String;
         if (before.startsWith('\ufeff') && !content.startsWith('\ufeff')) content = '\ufeff$content';
+        cancellation.throwIfCancelled();
         await file.parent.create(recursive: true);
         cancellation.throwIfCancelled();
         await file.writeAsString(content);
         return {'output': '${existed ? 'Wrote' : 'Created'} file successfully: ${input['path']}'};
-      case 'edit': return _edit(input);
-      case 'patch': return {'output': await applyPatch(cwd, input['patchText'] as String)};
+      case 'edit': return _edit(input, cwd, cancellation);
+      case 'patch': return {'output': await applyPatch(cwd, input['patchText'] as String, cancellation: cancellation)};
       case 'glob':
-      case 'grep': return _search(name, input);
+      case 'grep': return _search(name, input, cwd, cancellation);
       default: throw StateError('Unknown OpenCode tool: $name');
     }
   }
 
-  Future<Json> _read(Json input) async {
-    final path = requiredString(input, 'path'), absolute = resolve(path);
+  Future<Json> _read(Json input, String cwd, CancellationToken cancellation) async {
+    final path = requiredString(input, 'path'), absolute = resolve(path, cwd);
     final offset = (input['offset'] as int? ?? 1) == 0 ? 1 : input['offset'] as int? ?? 1;
     final requested = input['limit'] as int? ?? 2000;
     final limit = (requested == 0 ? 2000 : requested).clamp(1, 2000);
     final type = await FileSystemEntity.type(absolute);
     if (type == FileSystemEntityType.directory) {
-      final entries = await Directory(absolute).list(followLinks: false).toList();
+      final listing = ownStream(Directory(absolute).list(followLinks: false), cancellation);
+      final List<FileSystemEntity> entries;
+      try { entries = await listing.stream.toList().asCancellable(cancellation); }
+      finally { await listing.close(); }
       entries.sort((a, b) => (a is Directory) != (b is Directory)
         ? (a is Directory ? -1 : 1) : p.basename(a.path).compareTo(p.basename(b.path)));
       final selected = entries.skip(offset - 1).take(limit).toList();
@@ -81,20 +90,28 @@ class NativeTools {
     }
     if (type != FileSystemEntityType.file) throw StateError('Unable to read $path');
     final file = File(absolute);
-    final first = await file.openRead(0, 4096).fold<List<int>>([], (a, b) => a..addAll(b));
+    cancellation.throwIfCancelled();
+    final prefix = ownStream(file.openRead(0, 4096), cancellation);
+    final List<int> first;
+    try { first = await prefix.stream.fold<List<int>>([], (a, b) => a..addAll(b)).asCancellable(cancellation); }
+    finally { await prefix.close(); }
     if (first.contains(0)) throw StateError('Cannot read binary file: $path');
     final lines = <String>[];
     var index = 0, bytes = 0;
     int? next;
-    await for (final raw in file.openRead().transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter())) {
+    final contents = ownStream(file.openRead(), cancellation);
+    try {
+      await for (final raw in contents.stream.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter())) {
+        cancellation.throwIfCancelled();
+        if (++index < offset) continue;
+        final line = raw.length > 2000 ? '${raw.substring(0, 2000)}... (line truncated to 2000 chars)' : raw;
+        final size = utf8.encode(line).length + (lines.isEmpty ? 0 : 1);
+        if (lines.length >= limit || bytes + size > 50 * 1024) { next = index; break; }
+        lines.add(line);
+        bytes += size;
+      }
       cancellation.throwIfCancelled();
-      if (++index < offset) continue;
-      final line = raw.length > 2000 ? '${raw.substring(0, 2000)}... (line truncated to 2000 chars)' : raw;
-      final size = utf8.encode(line).length + (lines.isEmpty ? 0 : 1);
-      if (lines.length >= limit || bytes + size > 50 * 1024) { next = index; break; }
-      lines.add(line);
-      bytes += size;
-    }
+    } finally { await contents.close(); }
     if (lines.isEmpty && offset != 1) throw StateError('Offset $offset is out of range for this file ($index ${index == 1 ? 'line' : 'lines'})');
     return {'output': [
       lines.isEmpty ? 'Read file $path, 0 lines' : 'Read file $path, lines $offset-${offset + lines.length - 1}',
@@ -103,12 +120,12 @@ class NativeTools {
     ].join('\n')};
   }
 
-  Future<Json> _edit(Json input) async {
-    final path = requiredString(input, 'path'), file = File(resolve(requiredString(input, 'path')));
+  Future<Json> _edit(Json input, String cwd, CancellationToken cancellation) async {
+    final path = requiredString(input, 'path'), file = File(resolve(requiredString(input, 'path'), cwd));
     var old = input['oldString'] as String, replacement = input['newString'] as String;
     if (old == replacement) throw StateError('No changes to apply: oldString and newString are identical.');
     if (old.isEmpty) throw StateError('oldString must not be empty. Use write to create or overwrite a file.');
-    final original = await file.readAsString();
+    final original = await _readText(file, cancellation);
     final endingsOnly = old.replaceAll('\r', '') == replacement.replaceAll('\r', '');
     var source = endingsOnly ? original : original.replaceAll('\r\n', '\n');
     if (!endingsOnly) {
@@ -143,8 +160,14 @@ class NativeTools {
     return matches;
   }
 
-  Future<Json> _search(String name, Json input) async {
-    final target = resolve(input['path'] as String? ?? '.');
+  Future<String> _readText(File file, CancellationToken cancellation) async {
+    final input = ownStream(file.openRead(), cancellation);
+    try { return await input.stream.transform(utf8.decoder).join().asCancellable(cancellation); }
+    finally { await input.close(); }
+  }
+
+  Future<Json> _search(String name, Json input, String cwd, CancellationToken cancellation) async {
+    final target = resolve(input['path'] as String? ?? '.', cwd);
     final file = await FileSystemEntity.type(target) == FileSystemEntityType.file;
     final directory = file ? p.dirname(target) : target;
     final result = await _run('rg', [
@@ -155,7 +178,7 @@ class NativeTools {
         if (input['caseSensitive'] == false) '--ignore-case',
         if (input['include'] != null) ...['--glob', input['include'] as String],
         '--', input['pattern'] as String, file ? p.basename(target) : '.'],
-    ], directory: directory, timeout: 30000, maxBytes: null);
+    ], directory: directory, timeout: 30000, maxBytes: null, cancellation: cancellation);
     if ((result['exit'] as int) > 1) throw StateError(result['output'] as String);
     final limit = input['limit'] as int? ?? 100;
     if (name == 'glob') {
@@ -181,21 +204,33 @@ class NativeTools {
     return {'output': lines.join('\n')};
   }
 
-  Future<Json> _run(String executable, List<String> arguments, {required String directory, required int timeout, int? maxBytes = 50 * 1024}) async {
+  Future<Json> _run(String executable, List<String> arguments, {required String directory, required int timeout,
+    int? maxBytes = 50 * 1024, required CancellationToken cancellation}) async {
     final command = await _runner.start(executable, arguments, directory: directory,
-      timeout: timeout == 0 ? null : Duration(milliseconds: timeout));
-    await command.done.asCancellable(cancellation);
-    final captured = await command.capture(maxBytes: maxBytes);
-    return {'output': '${captured.text}${captured.truncated ? '\n[Output truncated. Full output saved to: ${command.outputFile.path}]' : ''}${command.timedOut ? '\nCommand timed out after $timeout ms.' : ''}',
-      'exit': command.exitCode, 'truncated': captured.truncated, if (command.timedOut) 'timeout': true, 'status': 'completed'};
+      timeout: timeout == 0 ? null : Duration(milliseconds: timeout), cancellation: cancellation);
+    return _capture(command, timeout, cancellation, maxBytes: maxBytes);
   }
 
-  Future<List<String>> notifications({bool wait = false}) async {
+  Future<Json> _capture(RunningCommand command, int timeout, CancellationToken cancellation, {int? maxBytes = 50 * 1024}) async {
+    try {
+      await command.done.asCancellable(cancellation);
+      cancellation.throwIfCancelled();
+      final captured = await command.capture(maxBytes: maxBytes, cancellation: cancellation);
+      return {'output': '${captured.text}${captured.truncated ? '\n[Output truncated. Full output saved to: ${command.outputFile.path}]' : ''}${command.timedOut ? '\nCommand timed out after $timeout ms.' : ''}',
+        'exit': command.exitCode, 'truncated': captured.truncated, if (command.timedOut) 'timeout': true, 'status': 'completed'};
+    } finally {
+      if (command.exitCode == null) command.kill();
+      await command.done;
+    }
+  }
+
+  Future<List<String>> notifications({bool wait = false, required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
     if (wait && _notifications.isEmpty && _background.isNotEmpty) {
       await Future.any(_background).asCancellable(cancellation);
     }
     final result = _notifications.toList(); _notifications.clear(); return result;
   }
 
-  void close() => _runner.close();
+  Future<void> close() => _runner.close();
 }

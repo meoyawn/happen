@@ -20,9 +20,9 @@ void main() {
     final openai = const OpenAIToolInterface().createRuntime(root.path, cancellation);
     final opencode = const OpenCodeToolInterface().createRuntime(root.path, cancellation);
     addTearDown(openai.close); addTearDown(opencode.close);
-    final context = ToolExecution(call: openai.call, catalog: () async => const OpenAIToolInterface().hostCatalog,
+    final context = ToolExecution(call: opencode.call, catalog: (_) async => const OpenCodeToolInterface().hostCatalog,
       values: const {}, cancellation: cancellation);
-    expect(await openai.call('apply_patch', '*** Begin Patch\n*** Add File: shared.txt\n+before\n*** End Patch'), contains('A '));
+    expect(await openai.call('apply_patch', '*** Begin Patch\n*** Add File: shared.txt\n+before\n*** End Patch', cancellation: cancellation), contains('A '));
     final patched = await opencode.execute(_call('patch', {'patchText':
       '*** Begin Patch\n*** Update File: shared.txt\n@@\n-before\n+after\n*** End Patch'}), context);
     expect(patched['output'], contains('M '));
@@ -30,10 +30,10 @@ void main() {
 
     final pending = jsonObject(await openai.call('exec_command', {
       'cmd': r'read value; printf "received:%s" "$value"', 'shell': '/bin/sh', 'login': false, 'yield_time_ms': 250,
-    }));
+    }, cancellation: cancellation));
     expect(pending['session_id'], isA<int>());
     expect(pending['exit_code'], isNull);
-    final settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}));
+    final settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}, cancellation: cancellation));
     expect(settled['output'], 'received:hello');
     expect(settled['exit_code'], 0);
     expect(settled['session_id'], isNull);
@@ -47,7 +47,7 @@ void main() {
   test('OpenCode file tools use upstream path keys, paging, exact replacement, and search', () async {
     final runtime = const OpenCodeToolInterface().createRuntime(root.path, cancellation);
     addTearDown(runtime.close);
-    final context = ToolExecution(call: runtime.call, catalog: () async => [], values: const {}, cancellation: cancellation);
+    final context = ToolExecution(call: runtime.call, catalog: (_) async => [], values: const {}, cancellation: cancellation);
     Future<Json> run(String name, Json input) => runtime.execute(_call(name, input), context);
     await run('write', {'path': 'src/example.txt', 'content': 'alpha\r\nalpha\r\nomega\r\n'});
     expect((await run('read', {'path': 'src/example.txt', 'offset': 2, 'limit': 1}))['output'],
@@ -75,8 +75,8 @@ void main() {
       },
     ]);
     final invoked = <String>[];
-    final context = ToolExecution(catalog: () async => catalog, values: const {}, cancellation: cancellation,
-      call: (name, input) async {
+    final context = ToolExecution(catalog: (_) async => catalog, values: const {}, cancellation: cancellation,
+      call: (name, input, {required cancellation}) async {
         invoked.add(name);
         return {'content': [{'type': 'text', 'text': jsonEncode({'key': jsonObject(input)['key'], 'complete': true})}]};
       });
@@ -107,8 +107,8 @@ const value = await tools.archive.probe({key: "saved"});
         'description': 'Inspect a client record', 'parameters': {'type': 'object'}},
     ]);
     final invoked = <String>[];
-    final context = ToolExecution(catalog: () async => [...catalog, catalog.first],
-      values: const {}, cancellation: cancellation, call: (name, input) async {
+    final context = ToolExecution(catalog: (_) async => [...catalog, catalog.first],
+      values: const {}, cancellation: cancellation, call: (name, input, {required cancellation}) async {
         invoked.add(name);
         return input;
       });
@@ -131,13 +131,13 @@ text(await tools.client_probe({key: "client"}));
     const interface = OpenCodeToolInterface();
     final runtime = interface.createRuntime(root.path, cancellation);
     addTearDown(runtime.close);
-    final nativeContext = ToolExecution(call: runtime.call, catalog: () async => [], values: const {}, cancellation: cancellation);
+    final nativeContext = ToolExecution(call: runtime.call, catalog: (_) async => [], values: const {}, cancellation: cancellation);
     expect((await runtime.execute(_call('shell', {'command': 'sleep 0.1; printf finished', 'background': true}), nativeContext))['status'], 'running');
-    expect(await runtime.notifications(wait: true), [contains('finished')]);
+    expect(await runtime.notifications(wait: true, cancellation: cancellation), [contains('finished')]);
     final cell = CancellationToken();
     final execution = runtime.execute(_call('execute', {'code': 'tools.archive.wait({}); return "done";'}),
-      ToolExecution(catalog: () async => [{'name': 'archive.wait'}], values: const {}, cancellation: cell,
-        call: (_, _) => Future<Object?>.delayed(const Duration(seconds: 10)).asCancellable(cell)));
+      ToolExecution(catalog: (_) async => [{'name': 'archive.wait'}], values: const {}, cancellation: cell,
+        call: (_, _, {required cancellation}) => CancellableCompleter<Object?>(cancellation).future));
     expect((await execution.timeout(const Duration(seconds: 2)))['output'], 'done');
     expect(cell.isCancelled, isTrue);
   });

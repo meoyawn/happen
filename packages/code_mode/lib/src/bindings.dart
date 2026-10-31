@@ -34,3 +34,18 @@ external int jsHasJobs(Pointer<Void> runtime);
 
 @Native<Uint64 Function()>(symbol: 'embedded_js_thread_id')
 external int nativeThreadId();
+
+@Native<Pointer<Void> Function()>(symbol: 'embedded_js_interrupt_new')
+external Pointer<Void> jsInterruptNew();
+
+@Native<Void Function(Pointer<Void>)>(symbol: 'embedded_js_interrupt_signal')
+external void jsInterruptSignal(Pointer<Void> interrupt);
+
+@Native<Uint64 Function(Pointer<Void>)>(symbol: 'embedded_js_interrupt_generation')
+external int jsInterruptGeneration(Pointer<Void> interrupt);
+
+@Native<Void Function(Pointer<Void>)>(symbol: 'embedded_js_interrupt_free')
+external void jsInterruptFree(Pointer<Void> interrupt);
+
+@Native<Void Function(Pointer<Void>, Pointer<Void>, Uint64)>(symbol: 'embedded_js_set_interrupt')
+external void jsSetInterrupt(Pointer<Void> runtime, Pointer<Void> interrupt, int generation);

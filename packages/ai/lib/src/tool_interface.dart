@@ -2,7 +2,9 @@ import 'package:protocol/protocol.dart';
 
 import 'model.dart';
 
-typedef ToolInvoker = Future<Object?> Function(String name, Object? arguments);
+typedef ToolInvoker = Future<Object?> Function(String name, Object? arguments, {
+  required CancellationToken cancellation,
+});
 
 /// Provider-owned model and code-mode contracts. The agent supplies execution
 /// services without interpreting a provider's tool names or argument encoding.
@@ -33,9 +35,11 @@ class ToolDiscovery {
 
 abstract class ToolRuntime {
   Future<Json> execute(ToolCall call, ToolExecution context);
-  Future<Object?> call(String name, Object? arguments);
-  void close();
-  Future<List<String>> notifications({bool wait = false}) async => [];
+  Future<Object?> call(String name, Object? arguments, {
+    required CancellationToken cancellation, String? cwd,
+  });
+  Future<void> close();
+  Future<List<String>> notifications({bool wait = false, required CancellationToken cancellation}) async => [];
 }
 
 class ToolExecution {
@@ -46,7 +50,7 @@ class ToolExecution {
     required this.cancellation,
   });
   final ToolInvoker call;
-  final Future<List<Json>> Function() catalog;
+  final Future<List<Json>> Function(CancellationToken cancellation) catalog;
   final Json values;
   final CancellationToken cancellation;
 }

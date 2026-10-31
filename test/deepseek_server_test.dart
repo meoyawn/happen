@@ -228,7 +228,9 @@ void main() {
       final call = ToolCall(id: 'legacy-call', name: 'exec', namespace: 'functions', format: 'text',
         input: 'text("Earlier work")', native: {'wire_name': 'functions__exec'});
       try {
-        store.append('task.created', legacyConfig, metadata: {'config': legacyConfig, 'status': 'idle'});
+        store.append('task.created', legacyConfig, metadata: {
+          'config': legacyConfig, 'status': 'idle', 'import_operation': legacyId,
+        });
         store.append('input.committed', {'item': ConversationItem.text('user', 'Earlier question').toJson()});
         store.append('model.completed', ModelReply([ConversationItem(role: 'assistant', content: [call.toJson()])], const ModelUsage()).toJson());
         store.append('tool.completed', {'item': ConversationItem.toolResult(call, 'Earlier work').toJson()});
@@ -239,6 +241,7 @@ void main() {
       server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml');
       client = await AgentClient.connect(server.uri);
       expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
+      expect(await client.request('history.import', {'path': bundle, 'operation_id': legacyId}), {'task_id': legacyId});
       for (var pass = 0; pass < 2; pass++) {
         if (pass > 0) {
           final compacted = await turn('task.compact', {'task_id': legacyId});

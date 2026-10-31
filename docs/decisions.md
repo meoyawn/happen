@@ -4600,8 +4600,7 @@ change models, modify sign-in, replace session IDs, or re-run completed tools.
 Continuing the task after the allowance resets retains its existing checkpoint.
 No provider inference or tool serialization was changed for this incident.
 
-[Sanitized diagnosis](evidence/opencode-followup-quota.json) records the original
-turn and isolated replay without credentials, prompts or tool-result content.
+The measurements above omit credentials, prompts and tool-result content.
 Temporary replay tooling and captured bodies remain outside the repository.
 No historical task data was rewritten.
 
@@ -4616,13 +4615,408 @@ The owner tests cover numeric reset timing, malformed private-looking timing,
 HTTP-date timing, and a real UDS Code Mode/MCP call followed by a quota denial.
 Resuming that task includes the identical saved result and produces no new host
 tool call. The quota/reset assertion failed against the original implementation
-and passes after the repair. All 11 focused tests passed. One initial integration
-run hit an existing concurrent-history-import SQLite lock before the quota stage;
-the focused repeat passed. Changed-file analysis has no errors or warnings and
-retains one existing informational brace lint. The running desktop accepted hot
-reload without runtime errors. No formatter was run.
+and passes after the repair. All 14 focused quota/storage tests and all 64 desktop
+tests passed. Changed-file analysis has no errors or warnings and retains one
+existing informational brace lint. The running desktop accepted hot reload
+without runtime errors. No formatter was run.
+
+The full run also exposed a separate history-import race before the quota stage:
+its idempotency lookup could receive SQLITE_BUSY_RECOVERY (261) while scanning
+other task databases. This was unrelated to the live OpenCode failure. The user
+rejected lock retries and clarified the ownership design below. The temporary
+lock-retry workaround and its lock-waiting test were removed.
 
 Remaining limit: actual model continuation after the remote reset has not been
 performed; the quota boundary and safe continuation are verified with local
 provider/MCP fixtures. Existing history preserves the message recorded before
 this repair; new failures use the corrected message and available reset timing.
+
+## 2026-10-31 — Import publication and task database ownership
+
+User clarification: one writer isolate per task/SQLite database; multiple
+independent readers are permitted. A portable-history restore writes a newly
+created, unpublished task database. It must not acquire write access to other
+tasks. Application coordination uses messages and completion signals, without
+lock polling or sleeps. SQLite retains its own internal WAL synchronization.
+
+The defect was before creation of that new database. The import worker scanned
+every existing task using fresh read-only SQLite connections to find a previous
+import_operation. Such a connection can encounter WAL recovery while another
+owner is opening or closing the database. The observed SQLITE_BUSY_RECOVERY is
+evidence of recovery contention, not proof of two application writers.
+[SQLite describes that distinction](https://www.sqlite.org/rescode.html#busy_recovery).
+
+Move idempotency discovery to the server, which already knows the persistence
+owners. Enumerate task directories there, then request only import_operation
+through the existing task owner's mailbox. A small lookup can complete while the
+task's model turn remains active. For an idle task, use the existing temporary
+persistence-owner path. Await startup, maintenance or shutdown acknowledgement
+when ownership is transitioning. Track requests using an active writer so its
+shutdown drains those requests before closing the connection. These completion
+signals coordinate owner lifetime; they introduce no database lock retry and no
+global query queue or restriction on independent read-only connections.
+
+The import worker now writes only its staged new database, preserving checksum
+validation and atomic directory publication. The optional import operation ID
+remains stored in that database's existing metadata transaction. Public
+history.import coalesces concurrent requests and resolves repeated operation IDs
+through owners before creating a worker. This preserves retries after restart
+and old tasks containing the existing metadata, without a new shared index,
+receipt-file format, schema migration or provider-ID mapping. TaskStore.importFrom
+is the lower-level new-database operation; server orchestration owns duplicate
+request lookup. This supersedes the direct read-only scan in the earlier
+provider-owned task identifier decision. Journal settings and writer busy_timeout
+remain unchanged.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    ulimit -n 4096
+    dart test test/storage_test.dart test/deepseek_server_test.dart test/server_test.dart --concurrency=1 --reporter expanded
+    dart analyze packages/server/lib/server.dart packages/storage/lib/storage.dart test/storage_test.dart test/deepseek_server_test.dart test/server_test.dart
+    git diff --check
+
+The new-database regression holds an unrelated database under a real exclusive
+SQLite lock. The old import scan fails with SQLITE_BUSY on its metadata SELECT;
+the repaired restore succeeds without touching that database. Existing server
+regressions retain the primary idempotency contract: concurrent imports, retries
+after restart, older metadata, and lookup during a held active model turn. The
+active turn remains running while duplicate lookup returns its original task ID.
+All 14 focused storage/server tests, all 353 root tests and all 64 desktop tests
+passed. Changed-file analysis has no issues. The running desktop accepted hot
+reload without runtime errors. No formatter was run.
+
+## 2026-10-31 — Caller cancellation and active-task process sessions
+
+User requirement, clarified during implementation: OpenAI `shell_command` runs
+one command to completion and is killed on cancellation. `exec_command` creates
+an active-task-owned session that survives cell cancellation, steering, Stop,
+and turn completion. Hibernation and archive close those sessions. OpenCode uses
+its existing `shell.background` distinction: foreground calls follow the caller;
+background commands belong to the active task. All MCP calls and QuickJS cells
+follow their caller. This supersedes the earlier decision to let tools settle
+before steering, and the previous per-turn ownership of every shell process.
+
+Read the user's [critique](https://adelnz.com/writing/a-critique-of-codex/), then
+inspected the pinned source on macOS arm64:
+
+- Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`, under `codex-rs/`:
+  `core/src/tools/handlers/unified_exec/exec_command.rs` selects one-shot versus
+  interactive execution; its one-shot schema removes yielding/session fields and
+  adds a 10,000 ms default timeout. `core/src/unified_exec/oneshot.rs` explicitly
+  terminates the published process on cancellation; `process_manager.rs` retains
+  resumable processes independently. `utils/pty/src/process_group.rs` establishes
+  why terminating a shell PID alone is insufficient for its descendants.
+- OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`:
+  `packages/core/src/tool/plugin/shell.ts` distinguishes foreground blocking from
+  background jobs, and cancels a foreground job on interruption.
+  `packages/core/src/shell.ts` retains the process handle inside its owner scope.
+- QuickJS `3d5e064e9dd67c70f7962836505a7fa067bf0a4e`:
+  `quickjs.h` exposes `JS_SetInterruptHandler`; `quickjs.c` polls it during JS
+  execution. The upstream submodule remains unchanged; only Happen's bridge adds
+  cancellation. Dart SDK 3.13.7 `runtime/bin/process_macos.cc` shows normal
+  `Process.start` does not establish a separate process group.
+
+Keep the agent and SQLite owners short-lived. A server-owned tool mailbox retains
+one provider runtime and lifetime token per active task, independently of turns.
+Every native or nested call, including catalog refresh, requires an explicit caller token. Providers
+select process lifetime when starting work: OpenAI sessions and OpenCode
+background commands use the task token, while one-shot/foreground tools use the
+caller token. Cancelling a session's initial wait or `write_stdin` poll releases
+that invocation without terminating the session. Session IDs are JavaScript-safe
+random integers so an old ID is not deterministically reused after hibernation.
+Per-call cwd overrides preserve later turns' working directories.
+
+`task.hibernate` stops any turn, drains its native calls, closes task-owned
+sessions, and releases cached repository context without archiving history.
+Archive and server shutdown also close sessions. Turn completion, Stop, client
+disconnection, and steering do not hibernate the task. Live processes are neither
+persisted nor copied by restart/fork/export/import. OpenCode background completion
+is retained until the next model step or turn; an idle task is not automatically
+sampled and an indefinitely running server cannot keep a turn open.
+
+QuickJS creates a child cancellation token per cell and passes it to host calls.
+Success, failure, timeout, cancellation, and early return cancel and drain pending
+calls before freeing the interpreter. A JS error stops pending host work
+immediately, rather than waiting for the cell deadline. Check cancellation before
+bootstrap, native execution, reply handling, and each host dispatch. Native
+budgets also respect remaining cell wall time. An atomic generation counter lets
+the server interrupt CPU-bound JS while the agent isolate is inside non-leaf FFI;
+Dart callbacks alone cannot service a queued Stop during that call. Free the
+signal only after the agent exits. The agent waits for the corresponding control
+message when native interruption wins the race with its mailbox, records cancelled
+tool results, skips the abandoned response's remaining calls, and then commits
+steering in the same turn. MCP/client RPC cancellation still targets individual
+operations and never owns a shared MCP process or pool.
+
+POSIX commands run inside a small `/bin/bash` supervisor that gives the requested
+shell and ordinary descendants a separate job group and kills/reaps that group
+on cancellation, timeout, or exit. The supervisor preserves stdin and captures
+the requested command's output/exit code without shell interpolation of its argv.
+Windows cleanup uses `taskkill /T /F`. Wait timers, output-file reads, directory
+streams, and patch/read helpers have explicit cancellation cleanup or checks
+before subsequent filesystem mutations. An already-started filesystem mutation
+may finish; cancellation is not transactional rollback.
+
+Compatibility choices: the requested `shell_command({command, ...})` name is an
+explicit Happen entry point for one-shot execution. The pinned Codex source
+selects one-shot behavior for `exec_command` instead of advertising that separate
+name. Preserve the existing `exec_command`/`write_stdin` argument and result shapes
+and advertise the implemented lifetimes. Both providers' GAPS documents record
+these intentional differences; no PTY, automatic background-task resume, or
+complete upstream job runtime is claimed.
+
+Verification environment: macOS 26.4 arm64, Dart 3.13.7, Flutter 3.47.8.
+Reproduce source reads with `git show REVISION:PATH` in the checkouts above.
+
+    dart test test/tool_cancellation_test.dart test/code_mode_test.dart test/tool_interfaces_test.dart --concurrency=1 --reporter expanded
+    ulimit -n 4096
+    dart test --concurrency=1 --reporter expanded
+    dart analyze
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    git diff --check
+
+The original cell regression failed because the host never received a token.
+The JS failure regression failed with TimeoutException instead of the source's
+StateError until pending work was cancelled on failure. A temporary negative
+control restoring per-turn process ownership fails with `A task-owned process
+must survive turn completion`. A second temporary negative control disables the
+bridge's atomic check: the native regression times out after two seconds and
+only exits at its ten-second CPU deadline. All
+negative-control source edits and operational tooling are restored/kept outside
+the repository. The focused 18 tests pass with real processes, a supervised MCP
+peer, both provider wire formats, server/agent/storage owners, and native QuickJS.
+
+The final full repository run passes all 357 tests. Scoped analysis reports no
+issues; whole-workspace analysis has 48 informational lints and no warnings or
+errors. Whitespace checks pass. An initial desktop sweep passes all 64 tests.
+During verification, concurrent edits to desktop project collapsing add a test
+and modify the Option-arrow regression. A subsequent sweep passes 64 and fails
+that modified test at its composer-focus assertion (`view_test.dart:250`), also
+reproduced by running it alone. That test uses the desktop's fake client without
+invoking task tools; the concurrent desktop files are outside this change and
+are preserved. This is not a claim of a final all-green desktop sweep.
+
+A running Happen debug build exports the five new native interrupt symbols and
+accepts official Dart MCP hot reload. The initial runtime-error query is empty;
+the app connection closes before the post-reload query, so no post-reload runtime
+result is claimed. No Dart formatter was run.
+
+Remaining uncertainty: these are local provider fixtures and macOS native checks,
+not live-model quality or Linux/Windows cancellation measurements. Remote MCP or
+client tools stop their actual work only if they honor cancellation. Deliberately
+daemonized POSIX descendants can escape a process group; there is no OS security
+sandbox or cgroup containment claim. Native assets require a cold rebuild before
+a pre-existing app can load the new bridge symbols.
+
+## 2026-10-31 — Collapsible desktop projects
+
+User requirement: projects in the desktop sidebar must be collapsible. Clicking
+an available project's heading or its disclosure button toggles its task rows;
+the plus button still opens a new task. Unavailable folders retain disabled
+creation controls and readable history, with an active disclosure button.
+Collapsing leaves the selected conversation, composer draft and running work
+intact. Archived tasks remain excluded from project rows.
+
+Keep collapsed checkout keys in `DesktopView` state, independently for each
+project. Preserve them across session notifications and hot reload, and discard
+keys when projects are removed. View-owned selection, including Option+Up/Down,
+new tasks and archive restoration, expands the destination project. Existing
+keyboard order and endpoints remain unchanged. The disclosure button exposes
+its expanded state and an Expand/Collapse tooltip.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub test/view_test.dart --name 'project headings|missing projects|Option arrows' --reporter expanded
+    dart analyze lib/app.dart test/view_test.dart
+    git diff --check
+
+All five focused widget checks pass. They cover independent collapse state,
+notifications while collapsed, retained conversations/drafts, new-task expansion,
+unavailable folders, and keyboard selection into collapsed projects. The
+keyboard check restores composer focus after clicking disclosure controls before
+asserting editing behavior. Scoped analysis has no errors or warnings and reports
+two existing informational brace-style lints in `_navigateKey`. The running
+desktop accepts official Dart MCP hot reload and reports no runtime errors.
+
+The full desktop sweep (`flutter test --no-pub --reporter expanded`) passes 66
+tests, including all five collapse/navigation checks, and fails the concurrently
+added sidebar pinning test when it expects `pinned:task` immediately after the
+first Pin task action. That failure occurs before exercising project collapse;
+the separate sidebar implementation remains in progress. No all-green full
+desktop result is claimed for this working-tree snapshot. Whitespace checks pass.
+
+Tradeoffs and remaining uncertainty: disclosure state lasts for the view's
+lifetime and resets when the application is relaunched. No preference schema or
+server interface changes are needed. Project collapse applies within Projects
+and Pinned; it does not hide independent task references in Recents or Pinned.
+Other operating systems have not been verified.
+
+
+## 2026-11-01 — Desktop Pinned, Projects, and Recents
+
+User requirement: match the Harness client's section order, with independently
+collapsible Pinned, Projects, and Recents. The user also reported Option-arrow
+navigation jumping in Recents and Pinned and requested correct traversal there.
+Keep desktop sidebar metadata in its SQLite owner: ordered task/project pins and
+section disclosure use the existing settings table. Tasks and projects offer
+pin/unpin actions in their existing menus. Pinned projects move out of Projects;
+pinned tasks move out of project children and Recents. Archive hides a task while
+retaining its pin for restoration. Recents merges all known project references,
+shows ten initially, grows by ten, and includes the selected task outside the
+initial slice. Sections share the existing lazy ListView and row cache.
+
+Desktop schema 4 adds integer last_activity timestamps to task references. New
+tasks save their creation time; accepted input and turn boundary events update
+recency, including committed events recovered when loading history. Per-token
+deltas and selection do not update recency. Memory and SQL both reject older
+activity times. Existing schema-3 rows use their global insertion order until
+actual activity is observed; no eager transcript scan or server protocol change
+is introduced. Equal timestamps retain existing project/task order. This is a
+local desktop projection, not a new authoritative task-history store.
+
+Navigation records the clicked section independently of task identity, since an
+unpinned task can appear in both a project and Recents. Option+Up/Down traverses
+that section's task order, retains a snapshot while membership is unchanged,
+and stops at its endpoints. Recents retains the same visible ordering during
+that traversal, and paging grows when navigation reaches older entries.
+Pinned traverses standalone tasks followed by pinned projects' tasks. Project
+navigation continues to include collapsed projects' tasks and opens the target
+project, preserving the existing disclosure behavior. Keyboard selection restores
+composer focus and reveals a mounted target row. Switching sections, a menu action,
+or an external task selection resets traversal; Settings and menu routes remain guarded.
+
+Sources inspected on macOS arm64, Dart 3.13.7, Flutter 3.47.8: local
+harness/client/lib/ui/project_sidebar.dart, including _composeRows, _appendRecent,
+_navigationTarget, _navigateThread, _savePreferences and thread-row callbacks;
+its sidebar-reference.md and sidebar-recents-reference.md contracts. Harness HEAD
+was 6b595ec8a160d7d0c0b5dae0a7352793944fe1d5; the inspected working-tree sidebar
+SHA-256 was 3369ae2585b20574cd81cecbd621ddbcf957bec79686685beb3a278778429d86.
+The adaptation uses Happen's existing Material styling and local task ownership.
+It deliberately keeps each arrow traversal inside its chosen section, avoiding a
+second visit through the same tasks in another section.
+
+Reproduction and verification:
+
+    cd packages/desktop
+    flutter test --no-pub test/sidebar_test.dart test/view_test.dart test/project_test.dart --reporter expanded
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    dart analyze packages/desktop
+    git diff --check
+
+The new navigation regression fails with the former project-flattening traversal
+at the Recents sequence assertion. Final verification passes all 69 desktop tests
+in the working tree. Coverage includes normal and interrupted schema-3 upgrades,
+pins and disclosure across relaunch, independent section and project collapse,
+source-specific arrow navigation and endpoints, stable reverse traversal during
+activity changes, both Option keys, key repeat past the initial ten recents,
+pinned-project disclosure, and pinning the selected recent task. Scoped analysis
+reports no warnings or errors and six existing informational lints; whitespace
+checks pass. Official Dart MCP hot reload succeeds, with no fresh runtime errors.
+Read-only inspection confirms the three section headers in order and no
+ErrorWidgets. Live inspection was read-only; verification did not navigate or
+submit a conversation.
+
+Remaining uncertainty: legacy tasks have creation-order fallback until observed,
+and other OSes have not been exercised locally. No Dart formatter was run.
+## 2026-11-01 — HTTP/2 late DATA protocol failure and recovery
+
+User reports: shared GPT requests repeatedly disconnected and exhausted retries;
+the desktop could remain on Reconnecting after the provider accepted a retry.
+The user authorized a personal GitHub fork and submodule, conditioned on first
+proving the dependency defect and reporting it upstream. Filed
+[dart-lang/http#2051](https://github.com/dart-lang/http/issues/2051) before creating
+[meoyawn/http](https://github.com/meoyawn/http).
+
+Cause: after Happen finishes reading a terminal SSE event, it resets that stream.
+An already-in-flight empty END_STREAM can arrive after the reset. Published
+`http2 3.1.0` calls `dataProcessed(0)` for this ignored DATA frame and emits
+`00000408000000000000000000`: connection-level WINDOW_UPDATE with increment zero.
+[RFC 9113 section 6.9](https://www.rfc-editor.org/rfc/rfc9113.html#section-6.9)
+requires a connection PROTOCOL_ERROR. Captured live frame metadata shows the
+ChatGPT peer returning GOAWAY(PROTOCOL_ERROR), interrupting sibling requests.
+This was reproduced in fresh processes, independently of Flutter hot reload.
+
+The package-only program in the upstream report imports only Dart libraries and
+`package:http2/transport.dart`. Stock 3.1.0 emits increments `[5, 5, 0]` and exits
+with failure; the same program with the one-function repair emits `[5, 5]` and
+succeeds. The fork's revised existing flow-control test independently fails on
+stock code for both empty DATA (the invalid frame) and three ignored bytes
+(receive window grows from 65,535 to 65,538). Both pass after the repair.
+The repair skips empty ignored DATA and debits nonempty ignored DATA before
+returning its connection credit. It changes no transport APIs or retry policy.
+
+The live comparison used identical application code with frame-metadata
+instrumentation and four requests staggered by 700 ms, changing only this
+dependency function. Stock code emitted two zero updates, received one protocol
+GOAWAY, and completed two requests before the others were interrupted; teardown
+then reported a TLS error. Patched code completed all four on one connection,
+with zero retries, zero invalid increments and no GOAWAY. A repeat against the
+final fork pin also completed all four with zero retries. These observations
+establish this protocol defect; they are not a model-latency benchmark or a
+guarantee that all remote disconnects are eliminated.
+[Sanitized evidence](evidence/http2-late-data.json) records the results without
+credentials, prompts, or response bodies. Ad hoc probes remain outside the repo.
+
+Source pin: upstream tag `http2-v3.1.0`, commit
+`286037b57bcd0cb353ed98be8a508e753221e661`; published archive SHA-256
+`480bf904908b4e4ec4fac8117f69f5ff54cf48c12b1761f0a192e1e10196ee7b`.
+Upstream master `8c0d66acd2385761182d34b48c4c80ca6cfa4513` still contained the faulty
+ignored-DATA path when inspected. `third_party/http` now pins fork commit
+`30e4c31035d7cca957658da38945e34079ac298a` on `happen/http2-late-data`. The root
+path override selects only `pkgs/http2`, version `3.1.0+happen.1`; other packages
+continue to resolve normally. No pub-cache files or upstream workflows changed.
+The upstream monorepo is excluded from Happen's analyzer traversal and checked
+using its own package configuration. Remove the fork/override after a released
+upstream repair passes the same regressions.
+
+Recovery improvements remain useful for ordinary peer resets: retire the
+affected pooled connection, wake queued callers, and let already accepted
+sibling responses finish. Remove an origin's pending connection only if it is
+still the same future, so an old failure cannot evict its replacement. Preserve
+the existing provider-owned bounded retry policy and cancellation semantics.
+TLS regressions cover disconnects, resets before and after response headers,
+concurrent queued callers, and a sibling response that drains successfully.
+
+For progress reporting, pinned Codex
+`67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
+`codex-rs/codex-api/src/sse/responses.rs`, treats `response.created` as provider
+acceptance. Happen emits ephemeral `model.connected` for it, and the desktop
+clears Reconnecting immediately instead of waiting for generated text.
+Provider tests cover both HTTP/SSE and WebSocket; the existing widget test checks
+that the visible retry indicator clears before a text delta arrives.
+
+Verification on macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
+
+    git submodule update --init --recursive
+    dart pub get
+    ulimit -n 4096
+    dart test --concurrency=1 --reporter expanded
+    dart analyze
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../../third_party/http/pkgs/http2
+    dart pub get
+    dart test --platform vm --reporter expanded
+    dart analyze lib/src/flowcontrol/connection_queues.dart test/src/flowcontrol/connection_queues_test.dart
+    cd ../../../..
+    git diff --check
+    git -C third_party/http diff --check
+
+All 359 Happen tests, 69 desktop tests, and 222 HTTP/2 package tests passed.
+The upstream package retains seven existing skips. Happen analysis reports 48
+existing informational lints with no errors or warnings; changed dependency
+files have no analysis issues. No Dart formatter was run.
+The idle desktop was stopped, cold rebuilt, and relaunched through
+`python3 packages/desktop/tool/run_flutter.py`. Dart VM service inspection of the
+running application's `package:http2/src/flowcontrol/connection_queues.dart`
+confirmed that the repaired function was loaded; Dart MCP reported no runtime
+errors. No saved task input was submitted during this verification.
+
+Remaining uncertainty: this verifies the observed late-empty-frame defect and
+recovery paths, not every network/VPN failure or all HTTP/2 protocol behavior.
+The live comparison used the ChatGPT subscription Responses route and GPT low
+effort. Other OSes and transport stacks were not measured in this repair.

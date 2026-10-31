@@ -1,5 +1,6 @@
 #include "quickjs.h"
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -10,10 +11,37 @@
 #endif
 
 typedef struct {
+  _Atomic uint64_t generation;
+} CodeInterrupt;
+
+typedef struct {
   JSRuntime *runtime;
   JSContext *context;
   int64_t deadline_ns;
+  CodeInterrupt *interrupt;
+  uint64_t generation;
 } EmbeddedJs;
+
+CodeInterrupt *embedded_js_interrupt_new(void) {
+  CodeInterrupt *interrupt = malloc(sizeof(CodeInterrupt));
+  if (interrupt) atomic_init(&interrupt->generation, 0);
+  return interrupt;
+}
+
+void embedded_js_interrupt_signal(CodeInterrupt *interrupt) {
+  atomic_fetch_add_explicit(&interrupt->generation, 1, memory_order_relaxed);
+}
+
+uint64_t embedded_js_interrupt_generation(CodeInterrupt *interrupt) {
+  return atomic_load_explicit(&interrupt->generation, memory_order_relaxed);
+}
+
+void embedded_js_interrupt_free(CodeInterrupt *interrupt) { free(interrupt); }
+
+void embedded_js_set_interrupt(EmbeddedJs *js, CodeInterrupt *interrupt, uint64_t generation) {
+  js->interrupt = interrupt;
+  js->generation = generation;
+}
 
 static int64_t monotonic_ns(void) {
   struct timespec time;
@@ -24,7 +52,8 @@ static int64_t monotonic_ns(void) {
 static int interrupted(JSRuntime *runtime, void *opaque) {
   (void)runtime;
   EmbeddedJs *js = opaque;
-  return monotonic_ns() >= js->deadline_ns;
+  return (js->interrupt && embedded_js_interrupt_generation(js->interrupt) != js->generation)
+    || monotonic_ns() >= js->deadline_ns;
 }
 
 static char *copy_result(char kind, const char *value) {

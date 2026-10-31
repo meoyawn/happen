@@ -58,18 +58,20 @@ class _OpenAITools extends ToolRuntime {
   _OpenAITools(String cwd, CancellationToken cancellation) : host = HostTools(cwd, cancellation);
   final HostTools host;
   @override
-  Future<Object?> call(String name, Object? arguments) => host.call(name, arguments);
+  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
+      host.call(name, arguments, cancellation: cancellation, cwd: cwd);
   @override
-  void close() => host.close();
+  Future<void> close() => host.close();
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
+    context.cancellation.throwIfCancelled();
     if (call.namespace == 'web' && call.name == 'run') {
-      return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)))};
+      return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};
     }
     if (call.name != 'exec' || call.namespace != null && call.namespace != 'functions') {
       throw StateError('Unknown OpenAI tool: ${call.namespace}.${call.name}');
     }
-    final catalog = await context.catalog();
+    final catalog = await context.catalog(context.cancellation);
     final names = <String, String>{};
     for (final tool in catalog) {
       names.putIfAbsent(tool['name'] as String, () => tool['host_name'] as String? ?? tool['name'] as String);
@@ -79,13 +81,15 @@ class _OpenAITools extends ToolRuntime {
     final ordered = metadata.keys.toList()..sort();
     return const CodeMode().execute(
       call.input,
-      tool: (name, arguments) async {
+      tool: (name, arguments, {required cancellation}) async {
+        cancellation.throwIfCancelled();
         if (!names.containsKey(name)) {
-          for (final tool in await context.catalog()) {
+          for (final tool in await context.catalog(cancellation)) {
             names.putIfAbsent(tool['name'] as String, () => tool['host_name'] as String? ?? tool['name'] as String);
           }
         }
-        return context.call(names[name] ?? name, arguments);
+        cancellation.throwIfCancelled();
+        return context.call(names[name] ?? name, arguments, cancellation: cancellation);
       },
       catalog: [for (final name in ordered) {'name': name, 'description': metadata[name]!['description']}],
       values: context.values,

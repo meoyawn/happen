@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:code_mode/code_mode.dart';
 import 'package:protocol/protocol.dart';
@@ -21,7 +22,7 @@ void main() {
         text(load("answer"));
       ''',
           cancellation: CancellationToken(),
-          tool: (name, _) async {
+          tool: (name, _, {required cancellation}) async {
             entered.add(name);
             if (entered.length == 2) gate.complete();
             await gate.future;
@@ -33,7 +34,7 @@ void main() {
           'text([typeof accidental, load("answer")]);',
           values: jsonObject(result['values']),
           cancellation: CancellationToken(),
-          tool: (_, _) async => throw StateError('unexpected host call'),
+          tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
         );
         expect(next['output'], ['["undefined",42]']);
       },
@@ -59,7 +60,7 @@ void main() {
         text(load("mainIsolate").id);
         ''',
         cancellation: CancellationToken(),
-        tool: (name, _) async => name == 'shell' ? {'output': 'shell complete'} : {
+        tool: (name, _, {required cancellation}) async => name == 'shell' ? {'output': 'shell complete'} : {
           'content': [{'type': 'text', 'text': jsonEncode(isolate)}],
         },
       );
@@ -75,7 +76,7 @@ void main() {
         ''',
         values: jsonObject(result['values']),
         cancellation: CancellationToken(),
-        tool: (_, _) async => throw StateError('unexpected host call'),
+        tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
       );
       expect(jsonDecode((next['output'] as List).single as String), {
         'id': 'isolates/fixture',
@@ -95,7 +96,7 @@ void main() {
           text("finished");
           ''',
           cancellation: CancellationToken(),
-          tool: (name, _) async => {
+          tool: (name, _, {required cancellation}) async => {
             'output': name == 'first'
                 ? 'begin:${'a' * 39994}'
                 : '${'b' * 39996}end!',
@@ -147,7 +148,7 @@ void main() {
           final result = await const CodeMode().execute(
             item.source,
             cancellation: CancellationToken(),
-            tool: (_, _) async => throw StateError('unexpected host call'),
+            tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
           );
           expect(result['output'], item.output, reason: item.source);
         }
@@ -169,7 +170,7 @@ void main() {
           const CodeMode().execute(
             '// @exec: $directive\nawait tools.side_effect({});',
             cancellation: CancellationToken(),
-            tool: (_, _) async => calls++,
+            tool: (_, _, {required cancellation}) async => calls++,
           ),
           throwsFormatException,
           reason: directive,
@@ -187,7 +188,7 @@ void main() {
           store("complete", true);
           ''',
           cancellation: CancellationToken(),
-          tool: (_, _) async => throw StateError('unexpected host call'),
+          tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
         );
         expect(result['values'], {'complete': true});
         final output = (result['output'] as List).cast<String>();
@@ -205,7 +206,7 @@ void main() {
         '// @exec: {"max_output_tokens": 9007199254740991}\n'
         'text("x".repeat(2097152)); text("last");',
         cancellation: CancellationToken(),
-        tool: (_, _) async => throw StateError('unexpected host call'),
+        tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
       );
       final output = (bytes['output'] as List).cast<String>();
       expect(output, [
@@ -221,7 +222,7 @@ void main() {
         '// @exec: {"max_output_tokens": 100000}\n'
         'for (let i = 0; i < 32769; i++) text(String(i));',
         cancellation: CancellationToken(),
-        tool: (_, _) async => throw StateError('unexpected host call'),
+        tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'),
       );
       final retained = items['output'] as List;
       expect(retained, hasLength(32768));
@@ -238,14 +239,14 @@ void main() {
         await expectLater(
           mode.execute(
             'while (true) {}',
-            tool: (_, _) async => null,
+            tool: (_, _, {required cancellation}) async => null,
             cancellation: CancellationToken(),
           ),
           throwsStateError,
         );
         final next = await mode.execute(
           'text(42);',
-          tool: (_, _) async => null,
+          tool: (_, _, {required cancellation}) async => null,
           cancellation: CancellationToken(),
         );
         expect(next['output'], ['42']);
@@ -253,23 +254,90 @@ void main() {
     );
 
     test(
-      'cancellation releases a cell awaiting an unresolved host operation',
+      'cancellation reaches pending host calls before releasing the cell',
       () async {
         final cancellation = CancellationToken();
-        final entered = Completer<void>(), operation = Completer<Object?>();
+        final entered = Completer<void>();
+        CancellationToken? child;
         final running = const CodeMode().execute(
           'await tools.wait({});',
           cancellation: cancellation,
-          tool: (_, _) {
+          tool: (_, _, {CancellationToken? cancellation}) {
+            child = cancellation;
             entered.complete();
-            return operation.future;
+            return CancellableCompleter<Object?>(cancellation).future;
           },
         );
         await entered.future;
         cancellation.cancel();
         await expectLater(running, throwsA(isA<CancelledException>()));
-        operation.complete(null);
+        expect(child, isNotNull);
+        expect(child!.isCancelled, isTrue);
       },
     );
+
+    test('cell timeout, failure, and early return cancel pending host work', () async {
+      for (final source in ['await tools.wait({});', 'tools.wait({}); await tools.ready({}); throw new Error("failed");', 'tools.wait({}); return 42;']) {
+        CancellationToken? child;
+        var released = false;
+        final running = const CodeMode().execute(source,
+          cancellation: CancellationToken(), timeout: const Duration(milliseconds: 50), awaitPending: !source.contains('return 42'),
+          tool: (name, _, {required cancellation}) {
+            if (name == 'ready') return Future<Object?>.value();
+            child = cancellation;
+            return CancellableCompleter<Object?>(cancellation, onCancel: () { released = true; }).future;
+          });
+        if (source.contains('return 42')) {
+          expect((await running)['output'], ['42']);
+        } else {
+          await expectLater(running, source.contains('throw') ? throwsStateError : throwsA(isA<TimeoutException>()));
+        }
+        expect(child!.isCancelled, isTrue);
+        expect(released, isTrue);
+      }
+      final cancelled = CancellationToken()..cancel();
+      await expectLater(const CodeMode().execute('while (true) {}', cancellation: cancelled,
+        tool: (_, _, {required cancellation}) async => fail('Cancelled cells must not dispatch tools')),
+        throwsA(isA<CancelledException>()));
+    });
+
+    test('another isolate interrupts CPU-bound native JS before its CPU deadline', () async {
+      final interrupt = CodeInterrupt();
+      final messages = ReceivePort(), exited = ReceivePort();
+      final entered = Completer<void>(), result = Completer<bool>();
+      messages.listen((message) {
+        if (message == 'entered') { entered.complete(); }
+        else { result.complete(message == 'cancelled'); }
+      });
+      final stopped = exited.first;
+      final worker = await Isolate.spawn(_cpuBoundCell, [messages.sendPort, interrupt.address], onExit: exited.sendPort);
+      try {
+        await entered.future.timeout(const Duration(seconds: 3));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        interrupt.interrupt();
+        expect(await result.future.timeout(const Duration(seconds: 2)), isTrue);
+        await stopped;
+      } finally {
+        worker.kill(priority: Isolate.immediate);
+        await stopped;
+        messages.close(); exited.close(); interrupt.close();
+      }
+    });
   });
+}
+
+void _cpuBoundCell(List<Object?> arguments) async {
+  final parent = arguments[0] as SendPort;
+  final token = CodeCancellationToken.shared(arguments[1] as int);
+  try {
+    await const CodeMode(cpuBudgetMs: 10000).execute('await tools.entered({}); while (true) {}',
+      cancellation: token, tool: (_, _, {required cancellation}) async { parent.send('entered'); return null; });
+    parent.send('completed');
+  } on CancelledException {
+    parent.send('cancelled');
+  } catch (error) {
+    parent.send(error.toString());
+  } finally {
+    token.close();
+  }
 }

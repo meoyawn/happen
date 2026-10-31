@@ -2,3 +2,4 @@ include: package:lints/recommended.yaml
 analyzer:
   exclude:
     - '**/native/quickjs/**'
+    - 'third_party/http/**'

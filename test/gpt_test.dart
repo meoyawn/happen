@@ -283,12 +283,14 @@ void main() {
       });
       final deltas = <String>[];
       final retries = <int>[];
+      final progress = <String>[];
       var cancelOnRetry = false;
       Future<ResponsesReply> run(String mode) => runZoned(
         () => client.respond(
           model: 'gpt-6.1-sol', instructions: mode, input: [], tools: [],
           sessionId: newId(), cancellation: cancellation, transport: transport,
           onEvent: (event) {
+            progress.add(event['type'] as String);
             if (event['type'] == 'text.delta') deltas.add(event['delta'] as String);
             if (event['type'] == 'model.retrying') {
               retries.add(event['attempt'] as int);
@@ -302,10 +304,15 @@ void main() {
       );
       expect((await run('active')).text, 'Long response finished');
       expect(deltas, ['tick', 'tick']);
+      expect(progress, ['model.connected', 'text.delta', 'text.delta']);
+      progress.clear();
       await expectLater(run('silent'), throwsA(isA<ModelFailure>().having(
         (error) => error.code, 'code', 'stream_idle_timeout',
       )));
       expect(retries, [1, 2, 3, 4, 5]);
+      expect(progress, [for (var attempt = 0; attempt < 6; attempt++) ...[
+        'model.connected', if (attempt < 5) 'model.retrying',
+      ]], reason: 'Accepted retries must report recovery even before the first text delta');
       expect((await run('active')).text, 'Long response finished');
       expect(requests, 8, reason: 'Retry exhaustion must not close the shared pool');
       cancelOnRetry = true;

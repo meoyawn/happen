@@ -117,7 +117,7 @@ class HttpConnections {
       final opening = _origins.putIfAbsent(origin, () {
         final future = _connect(uri);
         unawaited(future.catchError((Object error) {
-          _origins.remove(origin);
+          if (identical(_origins[origin], future)) _origins.remove(origin);
           return null;
         }));
         return future;
@@ -125,10 +125,9 @@ class HttpConnections {
       final connection = await opening.asCancellable(token);
       token.throwIfCancelled();
       if (connection == null) return null;
-      if (connection.closed.isCompleted) {
-        _origins.remove(origin);
-        _connections.remove(connection);
-        connection.close();
+      if (connection.closed.isCompleted || connection.draining) {
+        if (identical(_origins[origin], opening)) _origins.remove(origin);
+        connection.retire();
         continue;
       }
       final limit = connection.transport.peerMaxConcurrentStreams ?? 100;
@@ -137,9 +136,8 @@ class HttpConnections {
         continue;
       }
       if (!connection.transport.isOpen) {
-        _origins.remove(origin);
-        connection.draining = true;
-        if (connection.active == 0) connection.close();
+        if (identical(_origins[origin], opening)) _origins.remove(origin);
+        connection.retire();
         continue;
       }
       connection.idle?.cancel();
@@ -192,6 +190,13 @@ class _Connection {
     active--;
     notify();
     if (draining && active == 0) close();
+  }
+
+  void retire() {
+    // Retry on a fresh connection, while accepted sibling streams can finish.
+    draining = true;
+    notify();
+    if (active == 0) close();
   }
 
   void notify() {
@@ -258,13 +263,17 @@ Future<HttpReply> _http2(_Connection connection, String method, Uri uri,
         incoming.add(message.bytes);
       }
     }, onError: (Object error, StackTrace stack) {
+      if (!token.isCancelled && error is! CancelledException) connection.retire();
       // Preserve the providers' existing bounded recovery for disconnected IO.
       final failure = error is CancelledException ? error : const HttpException('HTTP/2 stream disconnected');
       if (!status.isCompleted) { status.completeError(failure, stack); }
       else { incoming.addError(failure, stack); }
       unawaited(stop());
     }, onDone: () {
-      if (!status.isCompleted) status.completeError(const HttpException('HTTP/2 stream closed before response headers'));
+      if (!status.isCompleted) {
+        connection.retire();
+        status.completeError(const HttpException('HTTP/2 stream closed before response headers'));
+      }
       unawaited(stop());
     });
     hook = CancellationHook(token, () {

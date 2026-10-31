@@ -299,6 +299,33 @@ own discovery, declarations, catalog updates, and result formatting. Both reuse
 the process runner, patch engine, and JavaScript engine. OpenAI search is entirely
 Dart and has no native build hook.
 
+OpenAI's `tools.shell_command({command, workdir?, shell?, login?, timeout_ms?,
+max_output_tokens?})` runs to completion, with a 10,000 ms default timeout and no
+resumable session. Steering, Stop, or cell cancellation kills its process tree.
+`tools.exec_command({cmd, ...})` creates a task-owned session: its process survives
+cell cancellation, steering, Stop, and turn completion. `write_stdin` can access
+the same session in later turns; cancelling a poll releases the wait and preserves
+the session. Use one-shot calls for short commands and sessions for development
+servers or other deliberately persistent work.
+
+OpenCode uses `shell({command, background?})`: foreground calls follow their caller,
+while `background: true` commands belong to the task. Completed background results
+are included at the next model step or turn. An idle task is not sampled just
+because its background command completed, and a persistent server does not keep
+the turn open. Each call uses its current working directory even when native
+tool state was created in an earlier turn.
+
+`task.hibernate`, archive, and server shutdown close task-owned sessions and reap
+their processes. Hibernation preserves history and permits later turns with fresh
+sessions. Session IDs are ephemeral; fork, export/import, and restart never copy
+or recreate live processes. Finishing a turn does not hibernate the task.
+
+MCP and client-tool calls always follow their invoking cell or turn. Cancellation
+is forwarded to the remote owner, without stopping shared MCP servers or another
+task's calls. Remote execution stops only if that owner honors cancellation.
+QuickJS cancellation reaches pending host calls and its native interrupt handler;
+the task-owned process lifetime is selected separately by the provider runtime.
+
 OpenAI follows Codex: `await tools.tool_search({query, limit})` uses English BM25
 over deferred metadata and returns `{tools: [{name, description}]}`. Descriptions
 include TypeScript declarations and MCP guidance. The default limit is 8; there
@@ -464,8 +491,9 @@ including after a server restart, return the same imported task ID.
 
 Turns and model/compaction calls have no cumulative wall-clock deadline or model
 step limit. Legacy `max_steps` fields in existing task configurations are ignored;
-the CLI no longer accepts `--max-steps`. Stop, archive, and server shutdown cancel
-owned work. Quitting the desktop stops its embedded server. GPT HTTP/SSE and WebSocket
+the CLI no longer accepts `--max-steps`. Stop cancels turn-owned work; hibernation,
+archive, and server shutdown also close task-owned sessions. Quitting the desktop
+stops its embedded server. GPT HTTP/SSE and WebSocket
 responses have a five-minute idle limit between provider events; each event
 starts a fresh wait. Tool-specific execution limits still apply.
 
@@ -477,6 +505,11 @@ again. Ephemeral `model.retrying` notifications contain `task_id`, `turn_id`,
 `attempt` (1–5), and `max_retries` (5). The desktop shows reconnecting progress,
 discards abandoned partial response text, and retains terminal failures in the
 conversation, including failures without a durable sequence number.
+HTTP/2 stream failures retire the affected pooled connection; retries use a
+fresh connection while accepted sibling responses finish. Caller cancellation
+resets only its stream. A GPT `response.created` acknowledgement emits ephemeral
+`model.connected` with `task_id` and `turn_id`, clearing reconnecting progress
+while the accepted request is processing, even before any text arrives.
 
 Manual, threshold, and overflow compaction emit a durable `compaction.started`
 event with `data.reason` (`manual`, `threshold`, or `overflow`). Successful
@@ -504,7 +537,8 @@ shown as interrupted rather than left spinning.
 | `attachments.finish` | `upload_id`. Requires the declared byte count and returns an attachment containing its `upload_id`. |
 | `attachments.cancel` | `upload_id`. Releases a pending upload and its staged bytes. |
 | `task.compact` | `task_id`. Installs a checkpoint only after successful compaction. |
-| `task.cancel` | `task_id`. Cancels the active operation and its owned tools. |
+| `task.cancel` | `task_id`. Cancels the turn and caller-owned tools; task-owned sessions survive. |
+| `task.hibernate` | `task_id`. Cancels the turn and closes task-owned sessions, retaining history for a later turn. |
 | `task.archive` / `task.unarchive` | `task_id`. Stops work and archives a task, or restores it. History is retained. |
 | `task.subscribe` | `task_id`. Subscribes this connection to future task events and returns `running` and pending inputs. |
 | `task.fork` | `task_id`, optional `through` event sequence. Copies an independent committed prefix; returns a new `task_id`. |
@@ -520,7 +554,8 @@ shown as interrupted rather than left spinning.
 | `auth.desktop` | Local Unix sockets only. Optional `refresh` boolean; returns `access_token` and `account_id` for the desktop's direct OpenAI requests. Never returns a refresh token. TCP listeners reject it. |
 | `maintenance.run` | Runs the same coalesced maintenance sweep used at startup and every 24 hours. |
 
-Steer messages join the active turn before its next model request. Queue messages
+Steer messages cancel active inference, cells, and caller-owned tools, then join
+the same turn before its next model request. Task-owned sessions survive. Queue messages
 start subsequent turns in order. Pending input is bounded to 32 messages and
 512 KiB of text plus a 64 MiB serialized budget per task, and becomes durable only
 when committed to history. Cancellation,
@@ -576,8 +611,9 @@ the time history was loaded.
 
 Maintenance checkpoints archived SQLite WALs and removes abandoned staging
 directories older than one day while no history transfer is active. It does not
-expire archived conversations or delete project files. Idle task owners and their
-isolates are released after each turn. Telemetry includes active/resident task,
+expire archived conversations or delete project files. Idle agent and SQLite
+owners release their isolates after each turn. Task-owned tool state
+stays in the server until hibernation, archive, or shutdown. Telemetry includes active/resident task,
 connection, pending-message, and maintenance counts for monitoring long runs.
 
 The model is fixed for each task. GPT effort updates are appended to history;

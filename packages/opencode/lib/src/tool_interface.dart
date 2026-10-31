@@ -80,13 +80,16 @@ class _OpenCodeTools extends ToolRuntime {
   _OpenCodeTools(String cwd, CancellationToken cancellation) : native = NativeTools(cwd, cancellation);
   final NativeTools native;
   @override
-  Future<Object?> call(String name, Object? arguments) => native.execute(name, jsonObject(arguments));
+  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
+      native.execute(name, jsonObject(arguments), cancellation: cancellation, cwd: cwd);
   @override
-  void close() => native.close();
+  Future<void> close() => native.close();
   @override
-  Future<List<String>> notifications({bool wait = false}) => native.notifications(wait: wait);
+  Future<List<String>> notifications({bool wait = false, required CancellationToken cancellation}) =>
+      native.notifications(wait: wait, cancellation: cancellation);
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
+    context.cancellation.throwIfCancelled();
     if (call.namespace != null) throw StateError('Unknown OpenCode tool namespace: ${call.namespace}');
     final definition = openCodeDefinitions.where((tool) => tool.name == call.name).firstOrNull;
     if (definition == null) throw StateError('Unknown OpenCode tool: ${call.name}');
@@ -95,25 +98,26 @@ class _OpenCodeTools extends ToolRuntime {
     if (call.name == 'execute') {
       return executeCode(input['code'] as String, ToolExecution(
         catalog: context.catalog, values: const {}, cancellation: context.cancellation,
-        call: (name, arguments) async {
+        call: (name, arguments, {required cancellation}) async {
           if (name == 'opencode.list_mcp_resources') {
             final pages = await Future.wait([
-              context.call('__resource_list', arguments), context.call('__resource_templates', arguments),
+              context.call('__resource_list', arguments, cancellation: cancellation),
+              context.call('__resource_templates', arguments, cancellation: cancellation),
             ]);
             return {'resources': jsonObject(pages[0])['resources'] ?? [],
               'templates': jsonObject(pages[1])['resourceTemplates'] ?? []};
           }
-          return context.call(name, name == '__fetch' ? {'fetch': arguments} : arguments);
+          return context.call(name, name == '__fetch' ? {'fetch': arguments} : arguments, cancellation: cancellation);
         },
       ));
     }
     if (call.name == 'skill') {
-      final skill = jsonObject(await context.call('skill', input));
+      final skill = jsonObject(await context.call('skill', input, cancellation: context.cancellation));
       return {'output': skillOutput(skill)};
     }
     if (call.name == 'websearch' || call.name == 'webfetch') {
-      return {'output': await context.call(call.name, input)};
+      return {'output': await context.call(call.name, input, cancellation: context.cancellation)};
     }
-    return native.execute(call.name, input);
+    return jsonObject(await context.call(call.name, input, cancellation: context.cancellation));
   }
 }

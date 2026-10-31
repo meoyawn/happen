@@ -6,11 +6,14 @@ import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
 
 import 'bindings.dart';
+import 'cancellation.dart';
 import 'output.dart';
 
 export 'bindings.dart' show nativeThreadId;
 
-typedef HostTool = Future<Object?> Function(String name, Object? arguments);
+typedef HostTool = Future<Object?> Function(String name, Object? arguments, {
+  required CancellationToken cancellation,
+});
 
 /// A runtime belongs to exactly one Dart isolate, never used concurrently.
 class QuickJs {
@@ -58,58 +61,69 @@ class QuickJs {
     int cpuBudgetMs = 1000,
     bool awaitPending = true,
   }) async {
+    cancellation.throwIfCancelled();
     if (_running) throw StateError('Only one cell may run in a context');
     if (source.length > 256 * 1024) {
       throw const FormatException('Cell source too large');
     }
     final maxOutputTokens = cellOutputTokens(source);
+    final cell = cancellation is CodeCancellationToken
+        ? CodeCancellationToken.shared(cancellation.address, generation: cancellation.generation)
+        : CodeCancellationToken();
+    final link = CancellationHook(cancellation, cell.cancel);
+    final deadline = Timer(timeout, () => cell.cancel(TimeoutException('JavaScript cell timed out', timeout)));
     _running = true;
     final pending = <int, Future<void>>{};
     final replies = <Json>[];
     final clock = Stopwatch()..start();
+    int budget() {
+      cell.throwIfCancelled();
+      final remaining = timeout - clock.elapsed;
+      if (remaining <= Duration.zero) {
+        cell.cancel(TimeoutException('JavaScript cell timed out', timeout));
+        cell.throwIfCancelled();
+      }
+      return cpuBudgetMs.clamp(1, remaining.inMilliseconds.clamp(1, cpuBudgetMs));
+    }
+    Object? evaluateCell(String source) => evaluate(source, cpuBudgetMs: budget());
+    jsSetInterrupt(_handle, Pointer.fromAddress(cell.address), cell.generation);
     try {
-      evaluate(_bootstrap, cpuBudgetMs: cpuBudgetMs);
-      evaluate('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
-      evaluate('__cell.values = ${jsonEncode(values)}; null');
-      evaluate(
+      evaluateCell(_bootstrap);
+      evaluateCell('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
+      evaluateCell('__cell.values = ${jsonEncode(values)}; null');
+      evaluateCell(
         '__cell.start(${jsonEncode(source)}); null',
-        cpuBudgetMs: cpuBudgetMs,
       );
       while (true) {
-        cancellation.throwIfCancelled();
-        if (clock.elapsed > timeout) {
-          throw TimeoutException('JavaScript cell timed out', timeout);
-        }
+        budget();
         while (replies.isNotEmpty) {
-          evaluate(
+          evaluateCell(
             '__cell.resolve(${jsonEncode(replies.removeAt(0))}); null',
-            cpuBudgetMs: cpuBudgetMs,
           );
         }
-        final error = jsPump(_handle, 128, cpuBudgetMs);
+        final error = jsPump(_handle, 128, budget());
         if (error != nullptr) _decode(error);
-        final state = jsonObject(evaluate('__cell.poll()'));
+        final state = jsonObject(evaluateCell('__cell.poll()'));
+        if (state['error'] != null) throw StateError(state['error'] as String);
         for (final raw in state['requests'] as List) {
+          budget();
           final request = jsonObject(raw);
           final id = request['id'] as int;
           final operation = Future<Object?>.sync(
-            () => tool(request['name'] as String, request['args'] ?? {}),
+            () => tool(request['name'] as String, request['args'] ?? {}, cancellation: cell),
           );
           pending[id] = operation.then<void>(
             (value) {
-              replies.add({'id': id, 'ok': true, 'value': value});
+              if (!cell.isCancelled) replies.add({'id': id, 'ok': true, 'value': value});
             },
             onError: (Object error, StackTrace stack) {
-              replies.add({'id': id, 'ok': false, 'value': error.toString()});
+              if (!cell.isCancelled) replies.add({'id': id, 'ok': false, 'value': error.toString()});
             },
           );
           unawaited(pending[id]!.whenComplete(() => pending.remove(id)));
         }
         if (state['done'] == true && (!awaitPending || pending.isEmpty && replies.isEmpty)) {
-          if (state['error'] != null) {
-            throw StateError(state['error'] as String);
-          }
-          final result = jsonObject(evaluate(
+          final result = jsonObject(evaluateCell(
             '({output: __cell.output.collect(), values: __cell.values})',
           ));
           return {
@@ -120,13 +134,24 @@ class QuickJs {
         // Let cancellation and async host I/O run between bounded native calls.
         if (jsHasJobs(_handle) == 0 && replies.isEmpty) {
           await Future.any<void>(pending.values)
-              .asCancellable(cancellation)
-              .timeout(timeout - clock.elapsed);
+              .asCancellable(cell);
         } else {
-          await cancellableDelay(Duration.zero, cancellation);
+          await cancellableDelay(Duration.zero, cell);
         }
       }
+    } catch (_) {
+      // Native execution may observe the atomic signal before Dart can service
+      // the cancellation mailbox or deadline timer.
+      budget();
+      rethrow;
     } finally {
+      deadline.cancel();
+      link.dispose();
+      cell.cancel();
+      await Future.wait(pending.values.toList());
+      replies.clear();
+      jsSetInterrupt(_handle, nullptr, 0);
+      cell.close();
       _running = false;
     }
   }

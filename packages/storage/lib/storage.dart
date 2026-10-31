@@ -632,25 +632,9 @@ class TaskStore {
     CancellationToken? cancellation,
   }) async {
     cancellation?.throwIfCancelled();
-    if (operationId != null) {
-      validateTaskId(operationId);
-      final tasks = Directory('$directory/tasks');
-      if (tasks.existsSync()) {
-        for (final entry in tasks.listSync(followLinks: false).whereType<Directory>()) {
-          cancellation?.throwIfCancelled();
-          final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
-          try { validateTaskId(id); } on FormatException { continue; }
-          if (!File('${entry.path}/history.sqlite').existsSync()) continue;
-          final existing = sqlite3.open('${entry.path}/history.sqlite', mode: OpenMode.readOnly);
-          try {
-            final rows = existing.select("SELECT value FROM metadata WHERE key IS 'import_operation'");
-            if (rows.isNotEmpty && jsonDecode(rows.single['value'] as String) == operationId) return id;
-          } finally {
-            existing.close();
-          }
-        }
-      }
-    }
+    // The server resolves duplicate operations through existing task owners.
+    // This owner writes only the new, unpublished database.
+    if (operationId != null) validateTaskId(operationId);
     final stage = Directory('$directory/staging/${newId()}')
       ..createSync(recursive: true);
     const stagingId = 'import';

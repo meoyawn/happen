@@ -33,7 +33,14 @@ class _DesktopViewState extends State<DesktopView> {
   bool _picking = false, _settingsOpen = false;
   double? _dragSidebarWidth;
   bool _sidebarHovered = false;
-  final _taskTiles = <DesktopTask, ({Object state, Widget tile})>{};
+  final _collapsedProjects = <String>{};
+  final _composer = GlobalKey<_ComposerState>();
+  int _recentLimit = 10;
+  String? _navigationSection;
+  DesktopTask? _navigationTask;
+  List<(Project, DesktopTask)>? _navigationTasks;
+  final _taskRowKeys = <(String, DesktopTask), GlobalKey>{};
+  final _taskTiles = <(String, DesktopTask), ({Object state, Widget tile})>{};
 
   @override
   void initState() {
@@ -174,7 +181,7 @@ class _DesktopViewState extends State<DesktopView> {
                   subtitle: Tooltip(message: project.path, child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
                   onTap: task.archiving ? null : () {
                     Navigator.pop(settingsContext);
-                    unawaited(_run(() => session.select(project, task)));
+                    unawaited(_run(() => _selectProject(project, task)));
                   },
                   trailing: TextButton(
                     onPressed: session.connected && !task.archiving
@@ -295,6 +302,7 @@ class _DesktopViewState extends State<DesktopView> {
   @override
   void reassemble() {
     super.reassemble();
+    _taskTiles.clear();
     _bindNavigation();
   }
 
@@ -316,18 +324,81 @@ class _DesktopViewState extends State<DesktopView> {
     return KeyEventResult.handled;
   }
 
-  void _selectAdjacentTask(int offset) {
-    final tasks = [
+  List<(Project, DesktopTask)> _sectionTasks(String section) {
+    if (section == 'recents') return session.recentTasks;
+    final pinned = {
       for (final project in session.projects)
-        for (final task in project.tasks)
-          if (!task.archived) (project, task),
+        if (!project.removing)
+          for (final task in project.tasks) task.id: (project, task),
+    };
+    return [
+      if (section == 'pinned')
+        for (final id in session.pinnedTaskIds)
+          if (pinned[id] case final entry? when !entry.$2.archived) entry,
+      for (final project in section == 'pinned'
+          ? [for (final key in session.pinnedProjectKeys)
+              ...session.projects.where((project) => project.checkoutKey == key)]
+          : session.projects.where((project) => !session.pinnedProjectKeys.contains(project.checkoutKey)))
+        if (!project.removing)
+          for (final task in project.tasks)
+            if (!task.archived && !session.pinnedTaskIds.contains(task.id)) (project, task),
     ];
+  }
+
+  List<(Project, DesktopTask)> _orderedSectionTasks(String section) {
+    final tasks = _sectionTasks(section);
+    final retained = _navigationTasks;
+    final live = tasks.map((entry) => entry.$2).toSet();
+    return section == _navigationSection && _navigationTask == session.task &&
+        retained != null && retained.length == tasks.length && retained.every((entry) => live.contains(entry.$2))
+        ? retained : tasks;
+  }
+
+  void _selectAdjacentTask(int offset) {
+    var section = _navigationSection;
+    if (section == null || session.collapsedSidebarSections.contains(section) ||
+        session.task != null && !_sectionTasks(section).any((entry) => entry.$2 == session.task)) {
+      final expanded = ['pinned', 'projects', 'recents'].where((id) => !session.collapsedSidebarSections.contains(id)).toList();
+      section = expanded.where((id) => _sectionTasks(id).any((entry) => entry.$2 == session.task)).firstOrNull ??
+          expanded.where((id) => _sectionTasks(id).isNotEmpty).firstOrNull;
+      _navigationTasks = null;
+    }
+    if (section == null) return;
+    if (_navigationTask != session.task) _navigationTasks = null;
+    final tasks = _orderedSectionTasks(section);
     if (tasks.isEmpty) return;
     final current = tasks.indexWhere((entry) => entry.$2 == session.task);
     final next = current < 0 ? (offset > 0 ? 0 : tasks.length - 1) : current + offset;
     if (next < 0 || next >= tasks.length) return;
     final (project, task) = tasks[next];
-    unawaited(_run(() => session.select(project, task)));
+    _navigationSection = section;
+    _navigationTask = task;
+    _navigationTasks = tasks;
+    if (section == 'recents' && next >= _recentLimit) _recentLimit = next + 1;
+    final grouped = section == 'projects' || section == 'pinned' &&
+        session.pinnedProjectKeys.contains(project.checkoutKey) && !session.pinnedTaskIds.contains(task.id);
+    unawaited(_run(() => grouped
+        ? _selectProject(project, task) : session.select(project, task)));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && session.task == task && ModalRoute.of(context)?.isCurrent == true) {
+        _composer.currentState?._focus.requestFocus();
+        final row = _taskRowKeys[(section, task)]?.currentContext;
+        if (row != null) unawaited(Scrollable.ensureVisible(row, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd));
+      }
+    });
+  }
+
+  void _toggleProject(Project project) => setState(() {
+    if (!_collapsedProjects.add(project.checkoutKey)) {
+      _collapsedProjects.remove(project.checkoutKey);
+    }
+  });
+
+  Future<void> _selectProject(Project project, [DesktopTask? task]) {
+    if (_collapsedProjects.contains(project.checkoutKey)) {
+      setState(() => _collapsedProjects.remove(project.checkoutKey));
+    }
+    return session.select(project, task);
   }
 
   @override
@@ -343,7 +414,9 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
-    _taskTiles.removeWhere((task, _) => !tasks.contains(task));
+    _taskTiles.removeWhere((entry, _) => !tasks.contains(entry.$2));
+    _taskRowKeys.removeWhere((entry, _) => !tasks.contains(entry.$2));
+    _collapsedProjects.retainAll(session.projects.map((project) => project.checkoutKey));
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(200.0, 480.0).toDouble();
     final sidebarWidth = (_dragSidebarWidth ?? session.sidebarWidth).clamp(200.0, maxSidebarWidth).toDouble();
     return Row(
@@ -434,7 +507,7 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                   )
                 else if (session.project != null)
-                  _Composer(session: session),
+                  _Composer(key: _composer, session: session),
               ],
             ),
           ),
@@ -463,71 +536,31 @@ class _DesktopViewState extends State<DesktopView> {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.only(left: 22, right: 12),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'PROJECTS',
-                    style: TextStyle(
-                      fontSize: 11,
-                      letterSpacing: 1.2,
-                      color: Colors.black54,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Open project',
-                  onPressed: _addProject,
-                  icon: const Icon(Icons.create_new_folder_outlined, size: 19),
-                ),
-              ],
-            ),
-          ),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               children: [
-                for (final project in session.projects) ...[
-                  ListTile(
-                    key: ValueKey('project:${project.checkoutKey}'),
-                    enabled: project.available && !project.removing,
-                    dense: true,
-                    contentPadding: const EdgeInsets.only(left: 12),
-                    leading: const Icon(Icons.folder_outlined, size: 19),
-                    minLeadingWidth: 20,
-                    title: Tooltip(
-                      message: project.available ? project.path : '${project.path}\nFolder unavailable',
-                      child: Text(
-                        project.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    subtitle: !project.available ? const Text('Folder unavailable', style: TextStyle(fontSize: 11)) : null,
-                    onTap: () => _run(() => session.select(project)),
-                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                      IconButton(
-                        tooltip: 'New task in ${project.name}',
-                        icon: const Icon(Icons.add, size: 18),
-                        onPressed: project.available && !project.removing ? () => _run(() => session.select(project)) : null,
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: 'Project actions',
-                        enabled: !project.removing && !session.submitting && !project.tasks.any((task) => task.archiving),
-                        icon: const Icon(Icons.more_horiz, size: 18),
-                        onSelected: (_) => _run(() => _removeProject(project)),
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'remove', child: Text('Remove project')),
-                        ],
-                      ),
-                    ]),
-                  ),
-                  for (final task in project.tasks.where((task) => !task.archived))
-                    _taskTile(project, task),
-                ],
+                ..._sidebarSection('pinned', 'Pinned', () => [
+                  for (final id in session.pinnedTaskIds)
+                    for (final project in session.projects)
+                      for (final task in project.tasks)
+                        if (task.id == id && !task.archived) _taskTile(project, task, section: 'pinned'),
+                  for (final key in session.pinnedProjectKeys)
+                    for (final project in session.projects)
+                      if (project.checkoutKey == key) ..._projectRows(project, section: 'pinned'),
+                  if (!session.projects.any((project) => session.pinnedProjectKeys.contains(project.checkoutKey) ||
+                      project.tasks.any((task) => !task.archived && session.pinnedTaskIds.contains(task.id))))
+                    _sidebarEmpty('No pinned items'),
+                ]),
+                ..._sidebarSection('projects', 'Projects', () => [
+                  for (final project in session.projects)
+                    if (!session.pinnedProjectKeys.contains(project.checkoutKey)) ..._projectRows(project),
+                ], action: IconButton(
+                  tooltip: 'Open project',
+                  onPressed: _addProject,
+                  icon: const Icon(Icons.create_new_folder_outlined, size: 19),
+                )),
+                ..._sidebarSection('recents', 'Recents', _recentRows),
               ],
             ),
           ),
@@ -563,22 +596,136 @@ class _DesktopViewState extends State<DesktopView> {
     ),
   );
 
-  Widget _taskTile(Project project, DesktopTask task) {
+  List<Widget> _sidebarSection(String id, String title, List<Widget> Function() children, {Widget? action}) {
+    final collapsed = session.collapsedSidebarSections.contains(id);
+    return [
+      Semantics(
+        key: ValueKey('section:$id'),
+        expanded: !collapsed,
+        child: ListTile(
+          key: ValueKey('section-header:$id'),
+          dense: true,
+          contentPadding: const EdgeInsets.only(left: 12, right: 2),
+          minLeadingWidth: 12,
+          horizontalTitleGap: 6,
+          leading: Icon(collapsed ? Icons.chevron_right : Icons.expand_more, size: 17, color: Colors.black54),
+          title: Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black54)),
+          trailing: action,
+          onTap: () {
+            if (id == 'recents' && !collapsed) _recentLimit = 10;
+            _navigationTasks = null;
+            unawaited(_run(() => session.chooseSidebarSection(id, !collapsed)));
+          },
+        ),
+      ),
+      if (!collapsed) ...children(),
+      const SizedBox(height: 12),
+    ];
+  }
+
+  Widget _sidebarEmpty(String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(32, 4, 12, 8),
+    child: Text(text, style: const TextStyle(fontSize: 12, color: Colors.black38)),
+  );
+
+  List<Widget> _recentRows() {
+    final tasks = _orderedSectionTasks('recents');
+    final visible = tasks.take(_recentLimit).toList();
+    if (tasks.length - visible.length == 1) visible.add(tasks.last);
+    final active = tasks.where((entry) => entry.$2 == session.task).firstOrNull;
+    if (active != null && !visible.contains(active)) visible.add(active);
+    return [
+      for (final (project, task) in visible) _taskTile(project, task, section: 'recents'),
+      if (tasks.isEmpty) _sidebarEmpty('No recent tasks'),
+      if (visible.length < tasks.length)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            onPressed: () => setState(() => _recentLimit += 10),
+            child: const Text('Show more'),
+          ),
+        ),
+    ];
+  }
+
+  List<Widget> _projectRows(Project project, {String section = 'projects'}) => [
+    ListTile(
+      key: ValueKey('project:${project.checkoutKey}'),
+      enabled: project.available && !project.removing,
+      dense: true,
+      contentPadding: const EdgeInsets.only(left: 12),
+      leading: Semantics(
+        expanded: !_collapsedProjects.contains(project.checkoutKey),
+        child: IconButton(
+          tooltip: '${_collapsedProjects.contains(project.checkoutKey) ? 'Expand' : 'Collapse'} ${project.name}',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 24, height: 28),
+          icon: Icon(_collapsedProjects.contains(project.checkoutKey) ? Icons.chevron_right : Icons.expand_more, size: 19),
+          onPressed: project.removing ? null : () => _toggleProject(project),
+        ),
+      ),
+      minLeadingWidth: 20,
+      title: Tooltip(
+        message: project.available ? project.path : '${project.path}\nFolder unavailable',
+        child: Text(
+          project.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+      ),
+      subtitle: !project.available ? const Text('Folder unavailable', style: TextStyle(fontSize: 11)) : null,
+      onTap: () => _toggleProject(project),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        IconButton(
+          tooltip: 'New task in ${project.name}',
+          icon: const Icon(Icons.add, size: 18),
+          onPressed: project.available && !project.removing ? () => _run(() => _selectProject(project)) : null,
+        ),
+        PopupMenuButton<String>(
+          tooltip: 'Project actions',
+          enabled: !project.removing && !session.submitting && !project.tasks.any((task) => task.archiving),
+          icon: const Icon(Icons.more_horiz, size: 18),
+          onSelected: (value) {
+            _navigationTasks = null;
+            unawaited(_run(() => value == 'pin'
+                ? session.pinProject(project, !session.pinnedProjectKeys.contains(project.checkoutKey))
+                : _removeProject(project)));
+          },
+          itemBuilder: (_) => [
+            PopupMenuItem(value: 'pin', child: Text(session.pinnedProjectKeys.contains(project.checkoutKey) ? 'Unpin project' : 'Pin project')),
+            const PopupMenuItem(value: 'remove', child: Text('Remove project')),
+          ],
+        ),
+      ]),
+    ),
+    if (!_collapsedProjects.contains(project.checkoutKey))
+      for (final task in project.tasks.where((task) => !task.archived && !session.pinnedTaskIds.contains(task.id)))
+        _taskTile(project, task, section: section, grouped: true),
+  ];
+
+  Widget _taskTile(Project project, DesktopTask task, {String section = 'projects', bool grouped = false}) {
     final state = (session.task == task, task.running, task.archiving, task.archived,
-      session.connected, project.available, project.removing);
-    final cached = _taskTiles[task];
+      session.connected, project.available, project.removing, session.pinnedTaskIds.contains(task.id), grouped);
+    final key = (section, task);
+    final cached = _taskTiles[key];
     if (cached?.state == state) return cached!.tile;
     final tile = Padding(
-    padding: const EdgeInsets.only(left: 22, bottom: 2),
+    key: ValueKey('$section:${task.id}'),
+    padding: EdgeInsets.only(left: grouped ? 22 : 0, bottom: 2),
     child: ListTile(
+      key: _taskRowKeys.putIfAbsent(key, () => GlobalKey()),
       dense: true,
       contentPadding: const EdgeInsets.only(left: 12),
       visualDensity: const VisualDensity(vertical: -2),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       selected: session.task == task,
       selectedTileColor: const Color(0xffe2e7df),
-      title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-        style: project.available ? null : const TextStyle(color: Colors.black38)),
+      title: Tooltip(
+        message: '${task.title}\n${project.path}',
+        child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: project.available ? null : const TextStyle(color: Colors.black38)),
+      ),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         if (task.running || task.archiving)
           const SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.5)),
@@ -586,16 +733,28 @@ class _DesktopViewState extends State<DesktopView> {
           tooltip: 'Task actions',
           enabled: session.connected && !task.archiving && !project.removing,
           icon: const Icon(Icons.more_horiz, size: 18),
-          onSelected: (value) => _run(() => _archiveTask(task, value == 'archive')),
+          onSelected: (value) {
+            _navigationTasks = null;
+            unawaited(_run(() => value == 'pin'
+                ? session.pinTask(task, !session.pinnedTaskIds.contains(task.id))
+                : _archiveTask(task, value == 'archive')));
+          },
           itemBuilder: (_) => [
+            if (!task.archived)
+              PopupMenuItem(value: 'pin', child: Text(session.pinnedTaskIds.contains(task.id) ? 'Unpin task' : 'Pin task')),
             PopupMenuItem(value: task.archived ? 'restore' : 'archive', child: Text(task.archived ? 'Restore task' : 'Archive task')),
           ],
         ),
       ]),
-      onTap: () => _run(() => session.select(project, task)),
+      onTap: () {
+        _navigationSection = section;
+        _navigationTask = task;
+        _navigationTasks = null;
+        unawaited(_run(() => grouped ? _selectProject(project, task) : session.select(project, task)));
+      },
     ),
   );
-    _taskTiles[task] = (state: state, tile: tile);
+    _taskTiles[key] = (state: state, tile: tile);
     return tile;
   }
 
@@ -605,7 +764,7 @@ class _DesktopViewState extends State<DesktopView> {
     await session.setArchived(task, archived);
     if (!mounted) return;
     if (!archived) {
-      await session.select(project, task);
+      await _selectProject(project, task);
     } else {
       ScaffoldMessenger.of(context)..clearSnackBars()..showSnackBar(SnackBar(
         content: const Text('Task archived'),
@@ -630,7 +789,7 @@ class _DesktopViewState extends State<DesktopView> {
         ),
         if (session.project != null)
           TextButton.icon(
-            onPressed: session.project!.available && !session.project!.removing ? () => _run(() => session.select(session.project!)) : null,
+            onPressed: session.project!.available && !session.project!.removing ? () => _run(() => _selectProject(session.project!)) : null,
             icon: const Icon(Icons.edit_square, size: 16),
             label: const Text('New task'),
           ),
@@ -674,7 +833,7 @@ class _DesktopViewState extends State<DesktopView> {
 }
 
 class _Composer extends StatefulWidget {
-  const _Composer({required this.session});
+  const _Composer({super.key, required this.session});
   final DesktopSession session;
 
   @override

@@ -7,3 +7,8 @@ EXPORTS
   embedded_js_string_free
   embedded_js_has_jobs
   embedded_js_thread_id
+  embedded_js_interrupt_new
+  embedded_js_interrupt_signal
+  embedded_js_interrupt_generation
+  embedded_js_interrupt_free
+  embedded_js_set_interrupt

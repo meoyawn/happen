@@ -34,6 +34,7 @@ class DesktopTask {
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
+  int lastActivity = 0;
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending;
   Object? _conversationState;
@@ -77,6 +78,9 @@ class DesktopSession extends ChangeNotifier {
   String deliveryMode = 'steer';
   String dictationMode = 'live';
   double sidebarWidth = 248;
+  final collapsedSidebarSections = <String>{};
+  final pinnedTaskIds = <String>[];
+  final pinnedProjectKeys = <String>[];
   Project? project;
   DesktopTask? task;
   String? error;
@@ -150,6 +154,49 @@ class DesktopSession extends ChangeNotifier {
     sidebarWidth = width;
     notifyListeners();
     await _setting('sidebar_width', width.toString());
+  }
+
+  Future<void> chooseSidebarSection(String section, bool collapsed) async {
+    if (!{'pinned', 'projects', 'recents'}.contains(section)) throw ArgumentError('Invalid sidebar section');
+    if (collapsed) {
+      collapsedSidebarSections.add(section);
+    } else {
+      collapsedSidebarSections.remove(section);
+    }
+    notifyListeners();
+    await _setting('sidebar_collapsed', jsonEncode(collapsedSidebarSections.toList()));
+  }
+
+  Future<void> pinTask(DesktopTask target, bool pinned) async {
+    if (target.archived || target.archiving || !projects.any((project) => !project.removing && project.tasks.contains(target))) return;
+    await _pin('sidebar_pinned_tasks', pinnedTaskIds, target.id, pinned);
+  }
+
+  Future<void> pinProject(Project target, bool pinned) async {
+    if (target.removing || !projects.contains(target)) return;
+    await _pin('sidebar_pinned_projects', pinnedProjectKeys, target.checkoutKey, pinned);
+  }
+
+  Future<void> _pin(String setting, List<String> ids, String id, bool pinned) async {
+    final next = ids.where((value) => value != id).toList();
+    if (pinned) next.add(id);
+    await _setting(setting, jsonEncode(next));
+    ids..clear()..addAll(next);
+    notifyListeners();
+  }
+
+  List<(Project, DesktopTask)> get recentTasks {
+    final tasks = [
+      for (final project in projects)
+        for (final task in project.tasks)
+          if (!task.archived && !pinnedTaskIds.contains(task.id)) (project, task),
+    ];
+    // Retain project/task order for equal timestamps, including unsaved rows.
+    final order = {for (var index = 0; index < tasks.length; index++) tasks[index].$2: index};
+    return tasks..sort((a, b) {
+      final recency = b.$2.lastActivity.compareTo(a.$2.lastActivity);
+      return recency != 0 ? recency : order[a.$2]!.compareTo(order[b.$2]!);
+    });
   }
 
   Future<bool> signIn(String provider, Future<void> Function(String) openBrowser) async {
@@ -269,6 +316,19 @@ class DesktopSession extends ChangeNotifier {
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
     sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
+    List<String> savedIds(String key) {
+      final value = settings[key];
+      if (value is! String) return const [];
+      try {
+        final decoded = jsonDecode(value);
+        return decoded is List ? decoded.whereType<String>().toSet().toList() : const [];
+      } on FormatException {
+        return const [];
+      }
+    }
+    collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed'));
+    pinnedTaskIds..clear()..addAll(savedIds('sidebar_pinned_tasks'));
+    pinnedProjectKeys..clear()..addAll(savedIds('sidebar_pinned_projects'));
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
       final key = requiredString(value, 'checkout_key');
@@ -283,7 +343,8 @@ class DesktopSession extends ChangeNotifier {
                 DesktopTask(
                   requiredString(t, 'id'),
                   requiredString(t, 'title'),
-                )..archived = t['archived'] == 1,
+                )..archived = t['archived'] == 1
+                  ..lastActivity = t['last_activity'] as int? ?? 0,
           ],
         ),
       );
@@ -443,6 +504,7 @@ class DesktopSession extends ChangeNotifier {
       for (final event in ordered) {
         _settings(target, event);
       }
+      _observeActivity(target, ordered);
     } on CancelledException {
       rethrow;
     } catch (failure) {
@@ -531,7 +593,8 @@ class DesktopSession extends ChangeNotifier {
         final created = DesktopTask(
           requiredString(reply, 'task_id'),
           title.length > 72 ? '${title.substring(0, 72)}…' : title,
-        )..running = true;
+        )..running = true
+          ..lastActivity = DateTime.now().millisecondsSinceEpoch;
         created.loaded = true;
         created.provider = provider;
         created.model = model;
@@ -547,6 +610,7 @@ class DesktopSession extends ChangeNotifier {
             'id': created.id,
             'checkout_key': owner.checkoutKey,
             'title': created.title,
+            'last_activity': created.lastActivity,
           }, cancellation: _lifetime);
         } on CancelledException {
           rethrow;
@@ -644,6 +708,7 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     _applyEvent(target, event);
+    _observeActivity(target, [event]);
     if (event['type'] == 'task.archived' || event['type'] == 'task.unarchived') {
       if (target.archived && task == target) task = null;
       unawaited(_saveArchived(target).catchError((Object failure) {
@@ -651,6 +716,28 @@ class DesktopSession extends ChangeNotifier {
       }));
     }
     notifyListeners();
+  }
+
+  void _observeActivity(DesktopTask target, Iterable<Json> events) {
+    var latest = target.lastActivity;
+    for (final event in events) {
+      if (!{'input.pending', 'input.committed', 'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) continue;
+      var timestamp = event['created_at'];
+      if (event['type'] == 'input.pending') timestamp ??= event['data']?['created_at'];
+      final time = timestamp is String ? DateTime.tryParse(timestamp)?.millisecondsSinceEpoch : null;
+      if (time != null && time > latest) latest = time;
+    }
+    if (latest <= target.lastActivity) return;
+    target.lastActivity = latest;
+    unawaited(_saveActivity(target).catchError((Object failure) {
+      if (failure is! CancelledException) showError(failure);
+    }));
+  }
+
+  Future<void> _saveActivity(DesktopTask target) async {
+    await callIsolate(database.port, 'task.activity', {
+      'task_id': target.id, 'last_activity': target.lastActivity,
+    }, cancellation: _lifetime);
   }
 
   void _applyEvent(DesktopTask target, Json event) {
@@ -681,6 +768,8 @@ class DesktopSession extends ChangeNotifier {
       case 'model.retrying':
         target.streamingText = '';
         target.retryStatus = 'Reconnecting… ${event['attempt']}/${event['max_retries']}';
+      case 'model.connected':
+        target.retryStatus = null;
       case 'text.delta':
         target.streamingText += event['delta'] as String;
         target.retryStatus = null;

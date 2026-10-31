@@ -87,8 +87,22 @@ Tool availability can change between calls.''',
 const hostCatalog = <Json>[
   webSearchHost,
   {
+    'name': 'shell_command',
+    'description': 'Run a short shell command to completion. Its process tree is terminated on steering, turn cancellation, cell cancellation, or timeout. Use exec_command for task-owned sessions such as development servers.',
+    'parameters': {
+      'type': 'object', 'properties': {
+        'command': {'type': 'string', 'description': 'Shell command to execute.'},
+        'workdir': {'type': 'string', 'description': 'Working directory. Defaults to the current task cwd.'},
+        'shell': {'type': 'string', 'description': 'Shell binary. Defaults to the user shell.'},
+        'login': {'type': 'boolean', 'description': 'Start a login shell. Defaults to true.'},
+        'timeout_ms': {'type': 'number', 'description': 'Maximum command runtime. Defaults to 10000 ms.'},
+        'max_output_tokens': {'type': 'number', 'description': 'Output token budget. Defaults to 10000.'},
+      }, 'required': ['command'], 'additionalProperties': false,
+    },
+  },
+  {
     'name': 'exec_command',
-    'description': 'Run a shell command. Arguments: cmd (required), workdir, shell, login (default true), yield_time_ms (default 10000, 250..30000), max_output_tokens (default 10000), tty (currently false only). Returns output, wall_time_seconds, exit_code or session_id. A running process survives the cell; poll it with write_stdin.',
+    'description': 'Start a task-owned shell session, for example a development server. It survives cell cancellation, steering, Stop, and later turns. Hibernating or archiving the task closes it. Use shell_command for short calls that must stop with their caller. Arguments: cmd (required), workdir, shell, login (default true), yield_time_ms (default 10000, 250..30000), max_output_tokens (default 10000), tty (currently false only). Returns output, wall_time_seconds, exit_code or session_id. Poll a session with write_stdin.',
     'parameters': {
       'type': 'object',
       'properties': {

@@ -20,12 +20,16 @@ Future<IsolateOwner> startAgent({
   required SendPort writer,
   required SendPort network,
   SendPort? clientTools,
+  required SendPort taskTools,
+  required int codeInterrupt,
 }) => IsolateOwner.start(_agentMain, {
   ...config,
   'task_id': taskId,
   'writer': writer,
   'network': network,
   'client_tools': clientTools,
+  'task_tools': taskTools,
+  'code_interrupt': codeInterrupt,
 });
 
 void _agentMain(List<Object?> args) {
@@ -80,12 +84,16 @@ class _Agent {
   final Json config;
   CancellationToken? _cancellation;
   CancellationToken? _responseCancellation;
+  CancellationToken? _toolCancellation;
+  Completer<void>? _toolPreemption;
   bool _accepting = false;
   final _steering = <Json>[];
   void steer(Json message) {
     if (_accepting && _cancellation?.isCancelled == false) {
       _steering.add(message);
       _responseCancellation?.cancel();
+      _toolCancellation?.cancel();
+      if (_toolPreemption?.isCompleted == false) _toolPreemption!.complete();
     }
   }
 
@@ -165,7 +173,9 @@ class _Agent {
         final effective = {...config}
           ..remove('writer')
           ..remove('network')
-          ..remove('client_tools');
+          ..remove('client_tools')
+          ..remove('task_tools')
+          ..remove('code_interrupt');
         event(
           await _append(
             'task.created',
@@ -492,7 +502,7 @@ class _Agent {
       }
 
       Future<ModelReply?> respond() async {
-        // Steering preempts inference, without cancelling the turn or its tools.
+        // Inference and tools have fresh operation tokens; steering keeps the turn.
         final token = _responseCancellation = CancellationToken();
         final link = CancellationHook(cancellation, token.cancel);
         try {
@@ -592,8 +602,9 @@ class _Agent {
         );
       }
 
-      Future<bool> takeNotifications({bool wait = false}) async {
-        final notices = await host!.notifications(wait: wait);
+      Future<bool> takeNotifications() async {
+        final notices = await callIsolate(config['task_tools'] as SendPort, 'notifications',
+          {'task_id': taskId}, cancellation: cancellation) as List;
         for (final notice in notices) {
           final item = ConversationItem(
             role: 'user', content: [{'type': 'text', 'text': notice}],
@@ -661,7 +672,7 @@ class _Agent {
         );
         if (reply.calls.isEmpty) {
           if (await takeSteering()) continue;
-          if (await takeNotifications(wait: true)) continue;
+          if (await takeNotifications()) continue;
           await finish(reply.text);
           return;
         }
@@ -678,9 +689,12 @@ class _Agent {
           final watch = Stopwatch()..start();
           Json result;
           var selectedTools = <ToolDefinition>[];
-          final cellCancellation = CancellationToken();
+          final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
+          _toolCancellation = cellCancellation;
+          final preemption = _toolPreemption = Completer<void>();
           final link = CancellationHook(cancellation, cellCancellation.cancel);
           try {
+            if (_steering.isNotEmpty) throw const CancelledException();
             if (discovery != null && call.name == discovery.name && call.namespace == discovery.namespace) {
               final found = interface.search(await currentDeferredCatalog(cellCancellation), jsonObject(jsonDecode(call.input)));
               final selected = found.tools;
@@ -713,14 +727,14 @@ class _Agent {
                   : {'output': output};
             } else {
               result = await host.execute(call, ToolExecution(
-                catalog: () async => [
+                catalog: (cancellation) async => [
                   ...interface.hostCatalog,
-                  ...interface.externalCatalog(await currentDeferredCatalog(cellCancellation)),
+                  ...interface.externalCatalog(await currentDeferredCatalog(cancellation)),
                 ],
                 cancellation: cellCancellation,
                 values: values,
-                call: (name, arguments) async {
-                  cellCancellation.throwIfCancelled();
+                call: (name, arguments, {required cancellation}) async {
+                  cancellation.throwIfCancelled();
                   final id = newId();
                   event(
                     await _append('host_tool.started', {
@@ -731,24 +745,25 @@ class _Agent {
                     }),
                   );
                   try {
+                    cancellation.throwIfCancelled();
                     final Object? output;
                     final service = interface.services[name];
                     if (discovery != null && name == discovery.name) {
                       output = interface.search(
-                        await currentDeferredCatalog(cellCancellation), jsonObject(arguments), nested: true,
+                        await currentDeferredCatalog(cancellation), jsonObject(arguments), nested: true,
                       ).output;
                     } else if (service == 'skills.read') {
                       output = await callIsolate(network, 'skills.read', {
                         ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
-                      }, cancellation: cellCancellation);
+                      }, cancellation: cancellation);
                     } else if (service == 'web.search') {
-                      output = await searchWeb(arguments, cellCancellation);
+                      output = await searchWeb(arguments, cancellation);
                     } else if (service?.startsWith('history.') == true) {
                       output = await callIsolate(
                         writer,
                         service!,
                         jsonObject(arguments),
-                        cancellation: cellCancellation,
+                        cancellation: cancellation,
                       );
                     } else if (name.startsWith('client__')) {
                       if (clientTools == null) {
@@ -758,23 +773,26 @@ class _Agent {
                         'task_id': taskId,
                         'name': name.substring(8),
                         'arguments': arguments,
-                      }, cancellation: cellCancellation);
+                      }, cancellation: cancellation);
                     } else if (name.startsWith('mcp__')) {
                       output = jsonObject(
                         await callIsolate(network, 'mcp.call', {
                           'task_id': taskId,
                           'name': name,
                           'arguments': arguments,
-                        }, cancellation: cellCancellation),
+                        }, cancellation: cancellation),
                       )..remove('_meta');
                     } else if (service != null) {
                       output = await callIsolate(network, 'mcp.resources', {
                         'task_id': taskId,
                         'method': service,
                         'arguments': arguments,
-                      }, cancellation: cellCancellation);
+                      }, cancellation: cancellation);
                     } else {
-                      output = await host!.call(name, arguments);
+                      output = await callIsolate(config['task_tools'] as SendPort, 'call', {
+                        'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
+                        'name': name, 'arguments': arguments,
+                      }, timeout: null, cancellation: cancellation);
                     }
                     event(
                       await _append('host_tool.completed', {
@@ -802,11 +820,20 @@ class _Agent {
               if (result['values'] != null) values = jsonObject(result['values']);
             }
           } on CancelledException {
-            rethrow;
+            // Native JS can observe the server's atomic interrupt before this
+            // isolate services the corresponding steering/Stop mailbox message.
+            if (cellCancellation.interrupted && _steering.isEmpty) {
+              await preemption.future.asCancellable(cancellation);
+            }
+            cancellation.throwIfCancelled();
+            if (_steering.isEmpty) rethrow;
+            result = {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
           } catch (error) {
             result = {'error': error.toString()};
           } finally {
             cellCancellation.cancel();
+            _toolCancellation = null;
+            _toolPreemption = null;
             link.dispose();
           }
           telemetry.observe('code', watch.elapsed);
@@ -843,7 +870,7 @@ class _Agent {
       _accepting = false;
       _steering.clear();
       cancellation.cancel();
-      host?.close();
+      await host?.close();
       _cancellation = null;
     }
   }

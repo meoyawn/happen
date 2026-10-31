@@ -19,7 +19,7 @@ void _databaseMain(List<Object?> args) async {
     db.execute('PRAGMA foreign_keys=ON');
     final version =
         db.select('PRAGMA user_version').single.values.single as int;
-    if (version > 3) {
+    if (version > 4) {
       throw StateError('Desktop database is from a newer version');
     }
     db.execute('''
@@ -32,7 +32,8 @@ void _databaseMain(List<Object?> args) async {
         id TEXT PRIMARY KEY,
         checkout_key TEXT NOT NULL REFERENCES projects(checkout_key),
         title TEXT NOT NULL,
-        archived INTEGER NOT NULL DEFAULT 0
+        archived INTEGER NOT NULL DEFAULT 0,
+        last_activity INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -42,7 +43,16 @@ void _databaseMain(List<Object?> args) async {
     if (!db.select('PRAGMA table_info(tasks)').any((row) => row['name'] == 'archived')) {
       db.execute('ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
     }
-    db.execute('PRAGMA user_version=3');
+    if (!db.select('PRAGMA table_info(tasks)').any((row) => row['name'] == 'last_activity')) {
+      db.execute('ALTER TABLE tasks ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0');
+    }
+    if (version < 4) {
+      // Older references retain their global creation order until activity is
+      // observed. Finish this backfill even if an earlier launch stopped after
+      // adding the column, without loading every server transcript for Recents.
+      db.execute('UPDATE tasks SET last_activity = rowid WHERE last_activity = 0');
+    }
+    db.execute('PRAGMA user_version=4');
     (args[0] as SendPort).send(port.sendPort);
     await for (final raw in port) {
       final request = jsonObject(raw);
@@ -65,7 +75,7 @@ void _databaseMain(List<Object?> args) async {
                   .toList(),
               'tasks': db
                   .select(
-                    'SELECT id, checkout_key, title, archived FROM tasks ORDER BY rowid DESC',
+                    'SELECT id, checkout_key, title, archived, last_activity FROM tasks ORDER BY rowid DESC',
                   )
                   .map((row) => Map<String, Object?>.from(row))
                   .toList(),
@@ -97,9 +107,11 @@ void _databaseMain(List<Object?> args) async {
             );
           case 'task.add':
             db.execute(
-              'INSERT INTO tasks(id, checkout_key, title) VALUES (?, ?, ?)',
-              [params['id'], params['checkout_key'], params['title']],
+              'INSERT INTO tasks(id, checkout_key, title, last_activity) VALUES (?, ?, ?, ?)',
+              [params['id'], params['checkout_key'], params['title'], params['last_activity'] ?? DateTime.now().millisecondsSinceEpoch],
             );
+          case 'task.activity':
+            db.execute('UPDATE tasks SET last_activity = MAX(last_activity, ?) WHERE id IS ?', [params['last_activity'], params['task_id']]);
           case 'task.archive':
             db.execute('UPDATE tasks SET archived = ? WHERE id IS ?', [params['archived'] == true ? 1 : 0, params['task_id']]);
           case 'close':

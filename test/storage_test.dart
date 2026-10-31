@@ -49,7 +49,7 @@ void main() {
     },
   );
 
-  test('import retries preserve provider IDs without contending with active task writers', () async {
+  test('import writes only its new database and preserves provider IDs', () async {
     final root = await Directory.systemTemp.createTemp('history-import-');
     final source = TaskStore(root.path, newId());
     final legacyId = newId();
@@ -65,6 +65,8 @@ void main() {
     final bundle = '${root.path}/portable.jsonl';
     await source.exportTo(bundle);
     source.db.execute('BEGIN IMMEDIATE');
+    legacy.db.execute('PRAGMA locking_mode = EXCLUSIVE');
+    legacy.db.execute('BEGIN EXCLUSIVE');
     try {
       var generated = 0;
       final operationId = newId();
@@ -76,14 +78,15 @@ void main() {
         });
       expect(imported, isNot(operationId));
       expect(generated, 1);
-      await File(bundle).delete();
-      for (final (operation, expected) in [(operationId, imported), (legacyId, legacyId)]) {
-        expect(await TaskStore.importFrom(root.path, bundle, operationId: operation,
-          newTaskId: (_) async => throw StateError('A retry must not generate a task ID')), expected);
-      }
+      final restored = TaskStore(root.path, imported, create: false);
+      try {
+        expect(restored.metadata('config'), config);
+        expect(restored.metadata('import_operation'), operationId);
+      } finally { restored.close(); }
       expect(Directory('${root.path}/staging').listSync(), isEmpty);
     } finally {
       source.db.execute('ROLLBACK');
+      legacy.db.execute('ROLLBACK');
     }
   });
 

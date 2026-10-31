@@ -60,6 +60,243 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('sidebar sections collapse independently and pin menus move tasks and projects', (tester) async {
+    final first = session.task!..lastActivity = 100;
+    final other = DesktopTask('other', 'Other task')..loaded = true..lastActivity = 200;
+    final secondProject = Project('other-checkout', '/other', '/other', [other]);
+    session.projects.add(secondProject);
+    late IsolateOwner database;
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-sidebar-view-');
+      database = await openDesktopDatabase(directory!.path);
+      for (final project in session.projects) {
+        await callIsolate(database.port, 'project.add', {
+          'checkout_key': project.checkoutKey, 'identity': project.id, 'path': project.path,
+        });
+        for (final task in project.tasks) {
+          await callIsolate(database.port, 'task.add', {
+            'id': task.id, 'checkout_key': project.checkoutKey, 'title': task.title, 'last_activity': task.lastActivity,
+          });
+        }
+      }
+      final previous = session;
+      await previous.close();
+      client = _Client()..providers = previous.providers;
+      session = DesktopSession(client, database)
+        ..providers = previous.providers
+        ..projects.addAll(previous.projects)
+        ..project = previous.project
+        ..task = previous.task;
+    });
+    await open(tester);
+    final pinned = find.byKey(const ValueKey('section:pinned'));
+    final projects = find.byKey(const ValueKey('section:projects'));
+    final recents = find.byKey(const ValueKey('section:recents'));
+    expect(tester.getTopLeft(pinned).dy, lessThan(tester.getTopLeft(projects).dy));
+    expect(tester.getTopLeft(projects).dy, lessThan(tester.getTopLeft(recents).dy));
+    expect(tester.getTopLeft(find.byKey(const ValueKey('recents:other'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const ValueKey('recents:task'))).dy));
+    await tester.tap(find.byKey(const ValueKey('recents:task')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Keep this draft');
+
+    Future<void> menu(Finder row, String action, bool Function() applied) async {
+      await tester.ensureVisible(row);
+      await tester.tap(find.descendant(of: row, matching: find.byType(PopupMenuButton<String>)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(action));
+      await tester.pumpAndSettle();
+      for (var attempt = 0; !applied() && session.error == null && attempt < 100; attempt++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(applied(), true, reason: session.error);
+    }
+    Future<void> toggle(String section) async {
+      final header = find.byKey(ValueKey('section-header:$section'));
+      await tester.ensureVisible(header);
+      await tester.runAsync(() async {
+        await tester.tap(header);
+        await callIsolate(database.port, 'load', {});
+      });
+      await tester.pumpAndSettle();
+    }
+
+    await menu(find.byKey(const ValueKey('projects:task')), 'Pin task', () => session.pinnedTaskIds.contains(first.id));
+    expect(session.pinnedTaskIds, [first.id], reason: session.error);
+    expect(find.byKey(const ValueKey('pinned:task')), findsOneWidget);
+    expect(find.byKey(const ValueKey('projects:task')), findsNothing);
+    expect(find.byKey(const ValueKey('recents:task')), findsNothing);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await tester.pumpAndSettle();
+    expect(session.task, same(first), reason: 'Pinning the selected recent task moves navigation into Pinned');
+    await menu(find.byKey(const ValueKey('project:other-checkout')), 'Pin project', () => session.pinnedProjectKeys.contains(secondProject.checkoutKey));
+    expect(tester.getTopLeft(find.byKey(const ValueKey('project:other-checkout'))).dy,
+      lessThan(tester.getTopLeft(projects).dy));
+    await toggle('pinned');
+    expect(find.byKey(const ValueKey('pinned:task')), findsNothing);
+    expect(find.byKey(const ValueKey('project:other-checkout')), findsNothing);
+    expect(find.byKey(const ValueKey('project:checkout')), findsOneWidget);
+    expect(find.byKey(const ValueKey('recents:other')), findsOneWidget);
+    await toggle('projects');
+    expect(find.byKey(const ValueKey('project:checkout')), findsNothing);
+    expect(find.byKey(const ValueKey('recents:other')), findsOneWidget);
+    expect(session.task, same(first));
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep this draft');
+
+    await tester.tap(find.byKey(const ValueKey('recents:other')));
+    await tester.pumpAndSettle();
+    expect(session.task, same(other));
+    expect(session.project, same(secondProject));
+    expect(session.drafts[first.id], 'Keep this draft');
+    await toggle('recents');
+    expect(find.byKey(const ValueKey('recents:other')), findsNothing);
+    expect(find.byType(ConversationTranscript), findsOneWidget);
+    await toggle('pinned');
+    await menu(find.byKey(const ValueKey('pinned:task')), 'Unpin task', () => !session.pinnedTaskIds.contains(first.id));
+    await menu(find.byKey(const ValueKey('project:other-checkout')), 'Unpin project', () => !session.pinnedProjectKeys.contains(secondProject.checkoutKey));
+    expect(find.text('No pinned items'), findsOneWidget);
+    await toggle('projects');
+    await toggle('recents');
+    expect(find.byKey(const ValueKey('projects:task')), findsOneWidget);
+    expect(find.byKey(const ValueKey('recents:task')), findsOneWidget);
+    expect(client.sent, isEmpty);
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('project headings collapse independently without changing the conversation or draft', (tester) async {
+    final project = session.project!, task = session.task!;
+    final other = DesktopTask('other', 'Other task')..loaded = true;
+    session.projects.add(Project('other-checkout', '/other', '/other', [other]));
+    await open(tester);
+    final row = find.byKey(const ValueKey('project:checkout'));
+    final taskRow = find.byKey(ValueKey('projects:${task.id}'));
+    final otherRow = find.byKey(ValueKey('projects:${other.id}'));
+    await tester.enterText(find.byType(TextField), 'Keep this draft');
+
+    await tester.tap(find.descendant(of: row, matching: find.text(project.name)));
+    await tester.pumpAndSettle();
+    expect(taskRow, findsNothing);
+    expect(otherRow, findsOneWidget);
+    expect(session.task, same(task));
+    expect(session.project, same(project));
+    expect(find.byType(ConversationTranscript), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep this draft');
+
+    await tester.runAsync(() => session.select(project, task));
+    await tester.pumpAndSettle();
+    expect(taskRow, findsNothing);
+    await tester.tap(find.byTooltip('Collapse other'));
+    await tester.pumpAndSettle();
+    expect(otherRow, findsNothing);
+    await tester.tap(find.byTooltip('Expand project'));
+    await tester.pumpAndSettle();
+    expect(taskRow, findsOneWidget);
+    expect(otherRow, findsNothing);
+
+    await tester.tap(find.byTooltip('Collapse project'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('New task in project'));
+    await tester.pumpAndSettle();
+    expect(session.task, isNull);
+    expect(taskRow, findsOneWidget);
+    expect(otherRow, findsNothing);
+    expect(session.drafts[task.id], 'Keep this draft');
+    expect(client.sent, isEmpty);
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('Option arrows follow Recents and Pinned locations without jumping between duplicate tasks', (tester) async {
+    final alpha = session.task!..lastActivity = 20;
+    DesktopTask task(String id, int activity) => DesktopTask(id, id)
+      ..loaded = true..provider = 'openai'..model = 'gpt-6.1-sol'..lastActivity = activity;
+    final beta = task('beta', 40), pinAlpha = task('pin-alpha', 50);
+    final gamma = task('gamma', 30), delta = task('delta', 10), pinBeta = task('pin-beta', 60);
+    session.project!.tasks.addAll([beta, pinAlpha]);
+    session.projects.add(Project('other-checkout', '/other', '/other', [gamma, delta, pinBeta]));
+    session.pinnedTaskIds.addAll([pinBeta.id, pinAlpha.id]);
+    await open(tester);
+
+    Future<void> arrow(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pumpAndSettle();
+    }
+    Future<void> click(String section, DesktopTask task) async {
+      final row = find.byKey(ValueKey('$section:${task.id}'));
+      await tester.ensureVisible(row);
+      await tester.tap(row, kind: PointerDeviceKind.mouse);
+      await tester.pumpAndSettle();
+    }
+
+    await click('recents', beta);
+    await tester.enterText(find.byType(TextField), 'Recent task draft');
+    for (final expected in [gamma, alpha, delta, delta]) {
+      await arrow(LogicalKeyboardKey.arrowDown);
+      expect(session.task, same(expected));
+    }
+    // History hydration or live activity can change the displayed sort while
+    // traversing. Reversing must retrace the same tasks until another row click.
+    alpha.lastActivity = 100;
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    for (final expected in [alpha, gamma, beta, beta]) {
+      await arrow(LogicalKeyboardKey.arrowUp);
+      expect(session.task, same(expected));
+    }
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Recent task draft');
+    await click('pinned', pinBeta);
+    for (final expected in [pinAlpha, pinAlpha]) {
+      await arrow(LogicalKeyboardKey.arrowDown);
+      expect(session.task, same(expected));
+    }
+    await arrow(LogicalKeyboardKey.arrowUp);
+    expect(session.task, same(pinBeta));
+    await arrow(LogicalKeyboardKey.arrowUp);
+    expect(session.task, same(pinBeta));
+    await click('projects', alpha);
+    await arrow(LogicalKeyboardKey.arrowDown);
+    expect(session.task, same(beta), reason: 'Clicking a project row switches back to project order');
+    expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus, true);
+    session.pinnedProjectKeys.add('other-checkout');
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Collapse other'));
+    await tester.pumpAndSettle();
+    await click('recents', gamma);
+    await arrow(LogicalKeyboardKey.arrowDown);
+    expect(session.task, same(delta));
+    expect(find.byTooltip('Expand other'), findsOneWidget,
+      reason: 'Recent navigation preserves a pinned project\'s disclosure');
+    final older = [for (var index = 0; index < 12; index++) task('older-$index', 0)];
+    session.projects.first.tasks.addAll(older);
+    session.collapsedSidebarSections.add('projects');
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    await click('recents', delta);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altRight);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(session.task, same(older.first));
+    for (final expected in older.skip(1)) {
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(session.task, same(expected));
+    }
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altRight);
+    expect(find.byKey(const ValueKey('recents:older-11')).hitTestable(), findsOneWidget);
+    expect(client.sent, isEmpty);
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('missing projects are greyed out with readable history and an active removal menu', (tester) async {
     final project = session.project!..available = false;
     await open(tester);
@@ -72,6 +309,14 @@ void main() {
     expect(find.byType(ConversationTranscript), findsOneWidget);
     expect(find.text('Project folder is unavailable'), findsOneWidget);
     expect(find.text('Check again'), findsNothing);
+    final taskRow = find.byKey(ValueKey('projects:${session.task!.id}'));
+    await tester.tap(find.byTooltip('Collapse project'));
+    await tester.pumpAndSettle();
+    expect(taskRow, findsNothing);
+    expect(find.byType(ConversationTranscript), findsOneWidget);
+    await tester.tap(find.byTooltip('Expand project'));
+    await tester.pumpAndSettle();
+    expect(taskRow, findsOneWidget);
     expect(tester.widget<PopupMenuButton<String>>(find.byWidgetPredicate((widget) => widget is PopupMenuButton<String> && widget.tooltip == 'Project actions')).enabled, true);
     await tester.tap(find.byTooltip('Project actions'));
     await tester.pumpAndSettle();
@@ -159,6 +404,10 @@ void main() {
     await open(tester);
     await tester.enterText(find.byType(TextField), 'First task draft\nAnother line');
     await tester.pump();
+    await tester.tap(find.byTooltip('Collapse project'));
+    await tester.tap(find.byTooltip('Collapse next'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(TextField));
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
     await tester.pumpAndSettle();
     expect(session.task, same(first));
@@ -168,11 +417,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(session.task, same(second));
     expect(session.project, same(firstProject));
+    expect(find.byTooltip('Collapse project'), findsOneWidget);
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
     await tester.pumpAndSettle();
     expect(session.task, same(third));
     expect(session.project, same(nextProject));
+    expect(find.byTooltip('Collapse next'), findsOneWidget);
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Third task draft');
     await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
     await tester.pumpAndSettle();
@@ -202,7 +453,7 @@ void main() {
     project.tasks.add(second);
     await open(tester);
     await tester.enterText(find.byType(TextField), 'Keep this draft');
-    await tester.tap(find.descendant(of: find.byKey(const ValueKey('sidebar')), matching: find.text(first.title)), kind: PointerDeviceKind.mouse);
+    await tester.tap(find.byKey(ValueKey('projects:${first.id}')), kind: PointerDeviceKind.mouse);
     await tester.pumpAndSettle();
     final sidebar = tester.getRect(find.byKey(const ValueKey('sidebar')));
     await tester.tapAt(Offset(sidebar.center.dx, sidebar.top + 500), kind: PointerDeviceKind.mouse);
@@ -1178,7 +1429,7 @@ void main() {
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
     await tester.tap(find.descendant(
-      of: find.ancestor(of: find.text('Old conversation'), matching: find.byType(ListTile)),
+      of: find.byKey(const ValueKey('projects:archived')),
       matching: find.byType(PopupMenuButton<String>),
     ));
     await tester.pumpAndSettle();

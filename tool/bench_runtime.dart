@@ -34,7 +34,7 @@ Future<void> main(List<String> args) async {
         if (reuse) js.resetContext();
         final result = await js.run(
           'text([1,2,3,4].map(x => x*x).reduce((a,b) => a+b, 0));',
-          tool: (_, _) async => null,
+          tool: (_, _, {required cancellation}) async => null,
           cancellation: CancellationToken(),
         );
         if ((result['output'] as List).single != '30') {
@@ -227,7 +227,7 @@ void _benchmarkAgent(List<Object?> args) async {
           final output = await js.run(
             'const r = await tools.wait({}); text(r);',
             cancellation: CancellationToken(),
-            tool: (_, _) async {
+            tool: (_, _, {required cancellation}) async {
               await Future<void>.delayed(
                 Duration(
                   milliseconds:

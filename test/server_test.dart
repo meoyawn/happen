@@ -455,6 +455,18 @@ void main() {
         expect(retry, imported);
         expect(imported['task_id'], matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'));
         expect(imported['task_id'], isNot(operationId));
+        final started = client.events.stream.firstWhere((event) =>
+          event['task_id'] == imported['task_id'] && event['type'] == 'turn.started');
+        await client.request('task.send', {'task_id': imported['task_id'], 'prompt': 'stream'});
+        await started.timeout(const Duration(seconds: 3));
+        expect(await client.request('history.import', {
+          'path': bundle, 'operation_id': operationId,
+        }).timeout(const Duration(seconds: 3)), imported);
+        expect(server.activeTaskCount, 1, reason: 'Import lookup must not await a running model turn');
+        final stopped = client.events.stream.firstWhere((event) =>
+          event['task_id'] == imported['task_id'] && event['type'] == 'turn.cancelled');
+        await client.request('task.cancel', {'task_id': imported['task_id']});
+        await stopped.timeout(const Duration(seconds: 3));
         final moved = await turn('task.send', {
           'task_id': imported['task_id'],
           'prompt': 'continue',

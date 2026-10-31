@@ -5,6 +5,18 @@ Happen desktop client
 Drag the sidebar's right edge to resize it. The chosen width is saved between
 launches and adjusts to keep room for the conversation in a smaller window.
 
+The sidebar lists **Pinned**, **Projects**, then **Recents**. Click a section
+heading to collapse it; section choices and pins are saved between launches.
+Use a task or project's **… → Pin** menu to keep it in Pinned. Recents shows
+unpinned tasks across projects by latest activity, with **Show more** after the
+first ten. Archived tasks stay in Settings.
+Older entries start in creation order until Happen observes their activity.
+
+**Option+Up/Down** follows the section of the last task row you clicked. Recents
+uses activity order, Pinned uses pin order, and Projects follows project order.
+Traversal stays stable through activity updates and stops at either end. Clicking
+a row chooses its section again; conversation drafts are retained while navigating.
+
 Use a project's **… → Remove project** menu to remove it and its task entries
 from Happen. Confirming stops running tasks and clears drafts; the project folder
 and saved task history are kept. Missing folders are greyed out when Happen
