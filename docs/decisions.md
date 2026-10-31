@@ -3175,3 +3175,60 @@ change is local protocol/server fixtures. Search still costs a discovery step
 for unfamiliar tools; BM25 does not provide semantic synonym matching. Full
 catalog metadata remains in host memory, and a count-limited search result may
 still contain large individual schemas. No user tasks were migrated or edited.
+
+## 2026-10-31 — Recover missing context limits in cached desktop tasks
+
+The reported circle had response token counts but no denominator. Read-only
+Dart MCP inspection found five loaded desktop caches missing sequence 1. The
+selected task's first `history.page` record was `task.created` with a frozen
+272,000-token limit. Its durable configuration was intact; the in-memory cache
+had missed admission and `loaded = true` prevented later history retrieval.
+Earlier server broadcasts forwarded raw store events without an outer `task_id`
+(`9470b12`, `packages/server/lib/server.dart`, `_broadcast`). The existing identity
+fix in `c3c5180` routes new events correctly but cannot restore missed events.
+
+On selection, replay a nonempty cached transcript whose initial sequence is
+missing, using the existing subscribe-before-paging and sequence-keyed merge.
+Keep complete cached transcripts on their existing fast path. Use the task's
+stored settings, without substituting a current catalog default or rewriting
+history. The server also broadcasts its committed `task.configuration_migrated`
+event: previously this path persisted the resolved limit without notifying
+already subscribed clients. The event shape and frozen-setting contract stay
+unchanged. No new settings owner or operational migration is introduced.
+
+The desktop regression removes the admission event from a real streamed task,
+then reselects it. Before the fix the limit remained null; afterward the same
+event ID and frozen limit return without duplicate usage, draft loss, or loss of
+an unsent reasoning selection. The server regression resumes a stored legacy
+configuration through the real WebSocket route. Before the fix no configuration
+notification arrived; afterward its task identity and settings match history.
+These extend the existing lifecycle and notification tests; the existing widget
+test owns the ring, tooltip, replay, cache totals, and unknown-usage behavior.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub test/session_test.dart test/view_test.dart --reporter expanded
+    cd ../..
+    dart test test/server_test.dart --reporter expanded
+    ulimit -n 4096
+    dart test test/server_test.dart --plain-name 'one socket searches files while 100 tasks stream, and cancels one task independently' --reporter expanded
+    dart analyze packages/desktop/lib/session.dart packages/desktop/test/session_test.dart packages/server/lib/server.dart test/server_test.dart
+    git diff --check
+
+All 19 desktop checks and eight server checks pass. The 100-task server case
+initially timed out with the shell's 256-file limit and passed with 4,096, as
+required by the earlier verification instructions. Scoped analysis and whitespace
+checks pass. No Dart formatter was run.
+
+Hot reload succeeded. Replaying the five incomplete in-memory caches through
+`DesktopSession.loadHistory` recovered their initial events with no load errors.
+No stored task data was changed. The mounted ring painter reports 45.56%, its
+semantics reports 46%, and its tooltip shows 124k / 272k tokens with 93.6%
+conversation and 99.1% latest-response cache hits. Selection and drafts remained
+unchanged, and Dart MCP reported no runtime errors.
+
+Tradeoff: an incomplete cache requires a history replay on selection. This
+targets missing admission, not arbitrary missing events in an otherwise complete
+cache. Compaction still leaves usage explicitly unknown until a model response
+measures the replacement context; no new size estimate is presented as measured.

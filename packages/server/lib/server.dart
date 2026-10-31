@@ -856,11 +856,12 @@ class AgentServer {
               .toList(),
           'global_directory': directory,
         };
-        await callIsolate(task.writer!.port, 'append', {
+        final migrated = jsonObject(await callIsolate(task.writer!.port, 'append', {
           'type': 'task.configuration_migrated',
           'data': task.config,
           'metadata': {'config': task.config},
-        });
+        }));
+        _broadcast(task.id, migrated);
       }
       task.ready!.complete();
       task.agent = await startAgent(

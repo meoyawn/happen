@@ -345,7 +345,10 @@ class DesktopSession extends ChangeNotifier {
     error = null;
     notifyListeners();
     await _refreshIdentity(nextProject);
-    if (nextTask != null && !nextTask.loaded && !nextTask.loading) {
+    // Live events can leave a cached task without its initial configuration.
+    // Recover that prefix before treating the transcript as fully loaded.
+    if (nextTask != null && !nextTask.loading &&
+        (!nextTask.loaded || nextTask.events.isNotEmpty && !nextTask.events.containsKey(1))) {
       await loadHistory(nextTask);
     }
   }

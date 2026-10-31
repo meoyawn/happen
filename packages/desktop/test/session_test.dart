@@ -307,6 +307,19 @@ void main() {
       expect(desktop.reasoning, 'medium', reason: 'Committed updates must preserve a newer unsent selection');
       final taskId = desktop.task!.id;
 
+      final cached = desktop.task!;
+      final createdId = cached.events.remove(1)!['id'];
+      final eventCount = cached.events.length;
+      desktop.drafts[taskId] = 'Keep this draft';
+      expect(cached.loaded, isTrue);
+      await desktop.select(desktop.project!, cached);
+      expect(cached.events[1]?['data']['provider_settings']['context_limit'], 272000,
+        reason: 'A live-only cache missing admission must recover the frozen context limit');
+      expect(cached.events[1]?['id'], createdId);
+      expect(cached.events.length, eventCount + 1, reason: 'History replay must not duplicate live token usage');
+      expect(desktop.drafts[taskId], 'Keep this draft');
+      expect(desktop.reasoning, 'medium');
+
       desktop.chooseReasoning('high');
       expect(await desktop.send('hold'), isTrue, reason: desktop.error);
       await _until(desktop, () => desktop.task!.streamingText == 'Waiting');

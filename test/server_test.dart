@@ -191,6 +191,27 @@ void main() {
       final history = await client.request('history.page', {'task_id': id}) as List;
       expect(created['seq'], history.first['seq']);
       expect(created['data'], history.first['data']);
+
+      final legacyId = newId();
+      final legacy = TaskStore(root.path, legacyId);
+      try {
+        final config = {
+          'cwd': work.path, 'model': 'gpt-6.1-sol', 'reasoning': 'low',
+          'instructions': 'Follow the user request.', 'tools': <Json>[],
+        };
+        legacy.append('task.created', config, metadata: {'config': config});
+      } finally {
+        legacy.close();
+      }
+      events.clear();
+      final resumed = await turn('task.send', {'task_id': legacyId, 'prompt': 'continue'});
+      expect(resumed['type'], 'turn.completed', reason: resumed.toString());
+      final migrated = events.where((event) => event['type'] == 'task.configuration_migrated').toList();
+      expect(migrated, hasLength(1), reason: 'Resolved settings must reach already subscribed clients');
+      expect(migrated.single['task_id'], legacyId);
+      expect(migrated.single['data']['provider_settings']['context_limit'], 272000);
+      final replay = await client.request('history.page', {'task_id': legacyId}) as List;
+      expect(migrated.single['data'], replay.singleWhere((event) => event['type'] == 'task.configuration_migrated')['data']);
     });
 
     test('turns stay active after 24, 48 and 72 hours and still stop explicitly', () async {
