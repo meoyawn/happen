@@ -500,13 +500,22 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('one model and reasoning menu selects new-task defaults and preserves existing-task restrictions', (tester) async {
+  testWidgets('one model and reasoning menu combines both providers and preserves existing-task restrictions', (tester) async {
     (session.providers.first['models'] as List).first['reasoning_levels'] = ['low', 'high'];
     (session.providers.first['models'] as List).add({'id': 'gpt-6-astra', 'default_reasoning': 'low', 'reasoning_levels': ['low', 'high']});
+    session.providers.last['models'] = [
+      {'id': 'deepseek-v4.1-flash-free', 'default_reasoning': 'high', 'reasoning_levels': ['off', 'low', 'high', 'max']},
+    ];
+    client.providers = [...session.providers,
+      {'id': 'deepseek', 'name': 'DeepSeek API', 'auth': 'api_key', 'status': 'api_key',
+        'models': [{'id': 'deepseek-flash'}]},
+    ];
     session.task!.reasoningUpdates = true;
     final existing = session.task!;
     session.task = null;
     await session.refreshProviders();
+    expect(session.providers.map((p) => p['id']), ['gpt', 'opencode']);
+    expect(session.models.map((m) => m['id']), isNot(contains('deepseek-flash')));
     await open(tester);
     final menu = find.byTooltip('Model and reasoning effort');
     Finder item(String label) => find.ancestor(of: find.text(label), matching: find.byType(PopupMenuItem<String>));
@@ -518,9 +527,34 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('MODEL'), findsOneWidget);
     expect(find.text('REASONING EFFORT'), findsOneWidget);
+    expect(find.text('gpt-6.1-sol'), findsOneWidget);
+    expect(find.text('deepseek-v4.1-flash-free'), findsOneWidget);
+    await tester.tap(item('deepseek-v4.1-flash-free'));
+    await tester.pumpAndSettle();
+    expect(session.providerId, 'opencode');
+    expect(session.modelId, 'deepseek-v4.1-flash-free');
+    expect(session.reasoning, 'high');
+    expect(session.authenticated, false);
+    await tester.tap(menu);
+    await tester.pumpAndSettle();
+    expect(find.text('Off'), findsOneWidget);
+    expect(find.text('Max'), findsOneWidget);
+    expect(find.text('gpt-6.1-sol'), findsOneWidget);
+    expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, true);
+    await tester.tap(item('Max'));
+    await tester.pumpAndSettle();
+    expect(session.reasoning, 'max');
+    await session.refreshProviders();
+    expect(session.providerId, 'opencode');
+    expect(session.reasoning, 'max');
+    await tester.tap(menu);
+    await tester.pumpAndSettle();
     await tester.tap(item('gpt-6-astra'));
     await tester.pumpAndSettle();
+    expect(session.providerId, 'gpt');
     expect(session.modelId, 'gpt-6-astra');
+    expect(session.reasoning, 'low');
+    expect(session.authenticated, true);
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep new draft');
     await tester.tap(menu);
     await tester.pumpAndSettle();
@@ -535,6 +569,7 @@ void main() {
     await tester.tap(menu);
     await frame();
     expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, false);
+    expect(tester.widget<PopupMenuItem<String>>(item('deepseek-v4.1-flash-free')).enabled, false);
     expect(find.text('Start a new task to change models.'), findsOneWidget);
     expect(tester.widget<PopupMenuItem<String>>(item('High')).enabled, true);
     await tester.tap(item('High'));
@@ -851,6 +886,11 @@ void main() {
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.byType(AppBar), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
+    expect(find.text('Default provider'), findsNothing);
+    expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+    expect(find.text('DeepSeek API'), findsNothing);
+    expect(find.text('ChatGPT'), findsOneWidget);
+    expect(find.text('OpenCode'), findsOneWidget);
     expect(find.text('Live'), findsOneWidget);
     expect(find.text('On stop'), findsOneWidget);
     await tester.runAsync(() async {

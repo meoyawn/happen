@@ -78,19 +78,7 @@ class _DesktopViewState extends State<DesktopView> {
                   ],
                   const Text('Accounts', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 12),
-                  for (final provider in session.selectableProviders) _accountCard(provider),
-                  const SizedBox(height: 20),
-                  const Text('Default provider', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    initialValue: session.defaultProviderId,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-                    items: [for (final provider in session.selectableProviders)
-                      DropdownMenuItem(value: provider['id'] as String, child: Text(provider['name'] as String))],
-                    onChanged: session.connected ? (value) => _run(() => session.chooseProvider(value!)) : null,
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('Used for new tasks. Existing tasks keep their provider.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  for (final provider in session.providers) _accountCard(provider),
                   const SizedBox(height: 24),
                   const Text('Messages sent while a task is working', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 12),
@@ -201,7 +189,7 @@ class _DesktopViewState extends State<DesktopView> {
     final id = provider['id'] as String;
     final name = provider['auth'] == 'opencode' ? 'OpenCode' : provider['name'] as String;
     final status = provider['status'] as String;
-    final connected = {'signed_in', 'refresh_required', 'api_key'}.contains(status);
+    final connected = {'signed_in', 'refresh_required'}.contains(status);
     final working = session.signingIn && session.loginProvider == id;
     final available = session.connected && !session.signingIn && session.signingOut == null;
     return Container(
@@ -230,9 +218,7 @@ class _DesktopViewState extends State<DesktopView> {
             TextButton(onPressed: session.loginUrl == null ? null : session.openLoginBrowser, child: const Text('Open browser')),
             TextButton(onPressed: () => _run(session.cancelLogin), child: const Text('Cancel')),
           ]),
-        ] else if (provider['auth'] == 'api_key')
-          const Text('Uses the API key configured on this server.', style: TextStyle(fontSize: 12, color: Colors.black54))
-        else
+        ] else
           Wrap(spacing: 8, children: [
             if (!connected)
               FilledButton(onPressed: available ? () => _run(() => _signIn(id)) : null, child: Text('Sign in to $name'))
@@ -990,7 +976,6 @@ class _ComposerState extends State<_Composer> {
 String _authLabel(String status) => switch (status) {
   'signed_in' => 'Signed in',
   'refresh_required' => 'Login saved',
-  'api_key' => 'API key set',
   'expired' => 'Login expired',
   'invalid' => 'Check login',
   _ => 'Not signed in',

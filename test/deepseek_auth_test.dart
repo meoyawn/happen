@@ -106,17 +106,27 @@ void main() {
       model: openCodeDeepSeekModel,
       instructions: 'Follow instructions.',
       input: [ConversationItem.text('user', 'Ready?')],
-      tools: [],
+      tools: const [ToolDefinition(
+        name: 'exec', namespace: 'functions', format: 'text',
+        description: 'Execute JavaScript.',
+      )],
       settings: settings,
       effectiveReasoning: 'low',
     );
     handler = (http, body) async {
       expect(http.uri.path, '/inference/openai/v1/chat/completions');
       expect(http.headers.value('Authorization'), 'Bearer fixture-access-1');
-      expect(http.headers.value('x-org-id'), 'personal-org');
-      expect(http.headers.value('User-Agent'), startsWith('happen/'));
+      expect(http.headers.value('x-opencode-org-id'), 'personal-org');
+      expect(http.headers.value('x-org-id'), isNull);
+      expect(http.headers.value('x-opencode-session'), request.taskId);
+      expect(http.headers.value('x-opencode-client'), 'cli');
+      expect(http.headers.value('User-Agent'), 'opencode/latest/2.2.5/cli');
       expect(body['model'], 'deepseek-v4.1-flash-free');
       expect(body['max_tokens'], 32000);
+      expect(body['tools'].single['function']['name'], 'read');
+      expect(body['tools'].single['function']['parameters']['required'], ['input']);
+      expect(body['messages'].first['content'], contains('<env>'));
+      expect(body['messages'].first['content'], contains('It executes JavaScript'));
       http.response.headers.contentType = ContentType('text', 'event-stream');
       http.response.write(
         'data: ${jsonEncode({

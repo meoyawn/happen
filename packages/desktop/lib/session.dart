@@ -69,7 +69,6 @@ class DesktopSession extends ChangeNotifier {
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
   List<Json> providers = [];
-  Iterable<Json> get selectableProviders => providers.where((provider) => provider['alias_for'] == null);
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
@@ -85,53 +84,34 @@ class DesktopSession extends ChangeNotifier {
 
   String get draftKey => task?.id ?? project?.checkoutKey ?? '';
   String? get providerId => task?.provider ?? _provider;
-  String? get defaultProviderId => _provider;
   String? get modelId => task?.model ?? _model;
   String? get reasoning => task?.nextReasoning ?? task?.reasoning ?? _reasoning;
   Json? get providerInfo =>
       providers.where((p) => p['id'] == providerId).firstOrNull;
-  List<Json> get models =>
-      (providerInfo?['models'] as List? ?? []).map(jsonObject).toList();
-  Json? get modelInfo => models.where((m) => m['id'] == modelId).firstOrNull;
+  List<Json> get models => [
+    for (final provider in providers)
+      for (final model in provider['models'] as List? ?? [])
+        {...jsonObject(model), 'provider': provider['id']},
+  ];
+  Json? get modelInfo => models.where((m) => m['provider'] == providerId && m['id'] == modelId).firstOrNull;
   bool get authenticated => {
     'signed_in',
     'refresh_required',
-    'api_key',
   }.contains(providerInfo?['status']);
 
   Future<void> refreshProviders() async {
     final result = jsonObject(await _request('providers.list'));
-    providers = (result['providers'] as List).map(jsonObject).toList();
-    final previous = providers.where((provider) => provider['id'] == _provider).firstOrNull;
-    if (previous?['alias_for'] case final String id) _provider = id;
-    if (_model == null || !providers.any((p) => p['id'] == _provider)) {
-      _selectProvider(
-        providers.any((p) => p['id'] == _provider)
-            ? _provider!
-            : (providers.firstWhere((provider) => provider['id'] == result['default_provider'])['alias_for'] as String? ?? result['default_provider'] as String),
-      );
+    providers = (result['providers'] as List).map(jsonObject)
+        .where((provider) => {'gpt', 'opencode'}.contains(provider['id'])).toList();
+    if (!models.any((m) => m['provider'] == _provider && m['id'] == _model)) {
+      final provider = providers.firstOrNull;
+      final available = (provider?['models'] as List? ?? []).map(jsonObject);
+      final model = available.where((m) => m['id'] == provider?['default_model']).firstOrNull ?? available.firstOrNull;
+      _provider = provider?['id'] as String?;
+      _model = model?['id'] as String?;
+      _reasoning = model?['default_reasoning'] as String?;
     }
     notifyListeners();
-  }
-
-  void _selectProvider(String id) {
-    _provider = id;
-    final provider = providers.firstWhere((p) => p['id'] == id);
-    _model = provider['default_model'] as String;
-    _reasoning =
-        (provider['models'] as List)
-                .map(jsonObject)
-                .firstWhere((m) => m['id'] == _model)['default_reasoning']
-            as String;
-    notifyListeners();
-  }
-
-  Future<void> chooseProvider(String id) async {
-    if (!providers.any((p) => p['id'] == id)) {
-      throw ArgumentError('Unknown provider');
-    }
-    await _setting('provider', id);
-    _selectProvider(id);
   }
 
   Future<void> chooseDeliveryMode(String mode) async {
@@ -242,8 +222,11 @@ class DesktopSession extends ChangeNotifier {
 
   void chooseModel(String id) {
     if (task != null) return;
+    final model = models.where((m) => m['id'] == id).firstOrNull;
+    if (model == null) throw ArgumentError('Unknown model');
+    _provider = model['provider'] as String;
     _model = id;
-    _reasoning = modelInfo?['default_reasoning'] as String?;
+    _reasoning = model['default_reasoning'] as String?;
     notifyListeners();
   }
 
@@ -267,7 +250,6 @@ class DesktopSession extends ChangeNotifier {
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
-    _provider = settings['provider'] as String?;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     for (final raw in saved['projects'] as List) {

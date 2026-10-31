@@ -87,7 +87,9 @@ need a client UI.
 Open Settings from the gear or **Happen → Settings…** (Command+,). Accounts have
 separate sign-in, sign-out, and switch-account actions for ChatGPT and OpenCode.
 Successful browser authorization brings Happen forward and confirms the account
-connection. The default provider and Steer/Queue behavior are app settings.
+connection. The composer lists models from both subscriptions in one menu;
+choosing a model selects its provider and reasoning options. DeepSeek API-key
+accounts are not offered. Steer/Queue behavior remains an app setting.
 Existing tasks retain their provider/model and supported effort-change policy.
 
 Archive a task from its sidebar menu. Archived tasks appear only in Settings,
@@ -307,7 +309,7 @@ authorize the workspace. The DeepSeek package saves `opencode-auth.json` private
 and refreshes its own tokens. It does not require the OpenCode executable or use
 the CLI's refresh token.
 
-Select OpenCode in desktop Settings, or use `--provider opencode` with the CLI.
+Select an OpenCode model in the desktop composer, or use `--provider opencode` with the CLI.
 Optional defaults in `~/.happen/config.yaml`:
 
 ```yaml
@@ -323,7 +325,8 @@ of 32,000 tokens from the pinned OpenCode catalog. The exact free model is requi
 there is no automatic paid fallback. Native DeepSeek remains available with
 `backend: native` (the default), `deepseek-flash`, and `DEEPSEEK_API_KEY`.
 The earlier `providers.deepseek.backend: opencode` configuration remains valid
-for existing tasks and clients. The desktop presents it as the OpenCode choice.
+for existing tasks and clients. The desktop offers the `opencode` subscription
+account directly.
 
 Login and model availability are separate. In the recorded live check, Happen's
 device authorization succeeded, but its authenticated inference request received
@@ -374,7 +377,7 @@ conversation, including failures without a durable sequence number.
 | `history.import` | `path` on the server, optional `operation_id` for idempotent retries. Validates the bundle before publishing a task. |
 | `tools.register` | `task_id`, `tools`. Replaces the caller's client tool catalog. |
 | `telemetry` | Returns bounded counters and timing buckets. |
-| `providers.list` | Returns available models, reasoning options, and credential status without credential values. |
+| `providers.list` | Returns ChatGPT (`gpt`) and OpenCode (`opencode`) models, reasoning options, and credential status without credential values. |
 | `auth.login` | `provider`, `login_id`. Starts browser/device authorization; `auth.login` events supply its URL and optional device code. |
 | `auth.cancel` | `login_id`. Cancels this connection's active authorization. |
 | `auth.logout` | `provider` (`gpt` or `opencode`). Cancels credential operations and removes Happen's login. |

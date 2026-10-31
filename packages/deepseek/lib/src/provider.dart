@@ -203,7 +203,7 @@ class DeepSeekProvider implements ModelProvider {
     cancellation.throwIfCancelled();
     final settings = _settings(request);
     _validateExchanges(request.input);
-    final catalog = _Catalog(request.tools, request.input);
+    final catalog = _Catalog(request.tools, request.input, openCode: _console != null);
     final body = transport == 'messages'
         ? _messages(request, settings, catalog)
         : _chat(request, settings, catalog);
@@ -213,6 +213,11 @@ class DeepSeekProvider implements ModelProvider {
   String _instructions(ModelRequest request, Json settings) => [
     request.instructions,
     if (settings['personality'] == 'pragmatic') 'Be pragmatic: prioritize concrete, useful results. State assumptions clearly, communicate concisely, and verify your work.',
+    if (_console != null) '''
+<env>
+The working directory and repository instructions are supplied in the conversation. Later environment messages update the working directory.
+</env>
+For this API, functions.exec, when available, is named read. It executes JavaScript; pass the complete JavaScript string in the input field.''',
   ].where((value) => value.isNotEmpty).join('\n\n');
 
   Json _messages(ModelRequest request, Json settings, _Catalog catalog) {
@@ -534,7 +539,12 @@ class DeepSeekProvider implements ModelProvider {
         ..set(HttpHeaders.acceptHeader, 'text/event-stream')
         ..set(HttpHeaders.userAgentHeader, 'happen/0.1.0 (Dart)');
       if (console != null) {
-        request.headers.set('x-org-id', console['org_id'] as String);
+        // Match OpenCode 2.2.5's Console inference contract (see decisions.md).
+        request.headers
+          ..set(HttpHeaders.userAgentHeader, 'opencode/latest/2.2.5/cli')
+          ..set('x-opencode-org-id', console['org_id'] as String)
+          ..set('x-opencode-session', modelRequest.taskId)
+          ..set('x-opencode-client', 'cli');
       }
       if (transport == 'messages') {
         request.headers.set('x-api-key', key);
@@ -1037,7 +1047,7 @@ void _validateExchanges(List<ConversationItem> input) {
 }
 
 class _Catalog {
-  _Catalog(List<ToolDefinition> initial, List<ConversationItem> input) {
+  _Catalog(List<ToolDefinition> initial, List<ConversationItem> input, {this.openCode = false}) {
     for (final tool in initial) {
       _add(tool);
     }
@@ -1048,11 +1058,15 @@ class _Catalog {
       }
     }
   }
+  final bool openCode;
   final definitions = <String, ToolDefinition>{};
   final names = <String, ToolDefinition>{};
   final deferred = <String>{};
   String key(ToolDefinition tool) => '${tool.namespace ?? ''}.${tool.name}';
   String wire(ToolDefinition tool) =>
+      openCode && tool.namespace == 'functions' && tool.name == 'exec' && tool.format == 'text'
+      ? 'read'
+      :
       tool.namespace == null ? tool.name : '${tool.namespace}__${tool.name}';
   void _add(ToolDefinition tool) {
     if (!{'json', 'text', 'search'}.contains(tool.format) ||

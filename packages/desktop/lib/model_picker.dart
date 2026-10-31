@@ -56,7 +56,8 @@ class ComposerModelPicker extends StatelessWidget {
       itemBuilder: (_) => [
         const PopupMenuItem<String>(enabled: false, height: 28, child: Text('MODEL', style: heading)),
         for (final model in session.models)
-          _option(model['id'] as String, model['id'] as String, model['id'] == session.modelId, canChangeModel),
+          _option(model['id'] as String, model['id'] as String,
+            model['provider'] == session.providerId && model['id'] == session.modelId, canChangeModel),
         if (session.task != null) const PopupMenuItem<String>(enabled: false,
           child: Text('Start a new task to change models.')),
         if (efforts.isNotEmpty) ...[

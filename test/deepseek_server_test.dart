@@ -47,6 +47,7 @@ void main() {
       }),
     );
     final requests = <Json>[];
+    final sessions = <String?>[];
     var denied = false;
     provider.listen((request) async {
       final body = jsonObject(
@@ -55,7 +56,11 @@ void main() {
       requests.add(body);
       expect(request.uri.path, '/inference/openai/v1/chat/completions');
       expect(request.headers.value('Authorization'), 'Bearer fixture-access');
-      expect(request.headers.value('x-org-id'), 'fixture-org');
+      expect(request.headers.value('x-opencode-org-id'), 'fixture-org');
+      expect(request.headers.value('x-org-id'), isNull);
+      expect(request.headers.value('x-opencode-client'), 'cli');
+      expect(request.headers.value('User-Agent'), 'opencode/latest/2.2.5/cli');
+      sessions.add(request.headers.value('x-opencode-session'));
       expect(body['model'], 'deepseek-v4.1-flash-free');
       expect(body['reasoning_effort'], 'low');
       if (denied) {
@@ -100,7 +105,7 @@ void main() {
                     'id': 'call-1',
                     'type': 'function',
                     'function': {
-                      'name': 'functions__exec',
+                      'name': 'read',
                       'arguments': jsonEncode({
                         'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: verified.txt\\n+42\\n*** End Patch"));',
                       }),
@@ -194,6 +199,7 @@ void main() {
     expect(failed['type'], 'turn.failed');
     expect(failed['data']['error'], contains('free_usage_limit'));
     expect(requests.length, beforeDenial + 1);
+    expect(sessions, everyElement(first['task_id']));
     final history = await client.request('history.page', {
       'task_id': first['task_id'],
     });

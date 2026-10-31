@@ -3315,3 +3315,65 @@ is committed. Happen still commits model output at response completion; abandone
 partial output and unreported provider usage are not durable conversation data.
 Repeated steering can therefore discard inference work. No provider wire format,
 tool capability, task-history schema, or one-time operational repair was added.
+
+## 2026-10-31 — Subscription accounts and one composer model list
+
+User requirement: remove the desktop's default-provider setting and DeepSeek
+API-key account, keep ChatGPT and OpenCode subscriptions, and concatenate their
+model lists in the composer. This replaces the provider-setting and native
+DeepSeek discovery choices in the earlier thin-desktop decision.
+
+`providers.list` now advertises only `gpt` and `opencode`. The desktop also
+filters discovery to those identities, including responses from an already
+running network owner with the previous catalog. Model entries carry their
+provider identity in the desktop projection. Choosing a model selects that
+provider, its authentication status, and its default reasoning; later account
+refreshes preserve the chosen model and effort. The picker lists both complete
+implemented catalogs regardless of the selected account or its login status.
+Existing tasks retain their fixed provider/model and reasoning-update rules.
+
+Remove the saved desktop-provider read/write path. Initial desktop selection
+uses the first subscription's configured default model, independent of an old
+desktop provider setting or the CLI's global `default_provider`. No stored
+settings or task data are rewritten. Native/legacy server routing and the
+reusable DeepSeek adapter remain available to existing CLI/API callers; their
+removal is outside this desktop account change.
+
+Catalog scope remains five implemented GPT models and OpenCode's exact
+`deepseek-v4.1-flash-free` route. Consulted the vendored Codex catalog at
+`2681f8cba2831ef72bca2c0672b2e49d5f690745` and OpenCode
+`fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`'s
+`packages/core/src/plugin/provider/opencode.ts` and
+`packages/core/src/models-dev/snapshot.txt` with `git show REVISION:PATH` in
+`/Users/meoyawn/Developer/github/opencode`. The latter confirms the free model's
+200,000-token context, 32,000-token output and fixed effort. Concatenating the
+implemented catalogs does not enable additional upstream model routes or change
+authentication/inference contracts.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub test --reporter expanded
+    cd ../..
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze
+    git diff --check
+
+The widget regression switches from a signed-in GPT model to a signed-out
+OpenCode model and back, checks provider-specific effort choices and account
+refreshes, retains the draft, and keeps both models locked in existing tasks.
+It also supplies an older three-provider response and confirms native DeepSeek
+is absent. Settings checks cover the two accounts and removed default selector.
+A real WebSocket/server regression starts tasks through both local HTTP provider
+fixtures and checks their exact model, endpoint, reasoning and rendered reply;
+an obsolete saved native-provider preference does not affect selection.
+All 89 repository tests and 46 desktop tests pass. Whole-repository analysis and
+whitespace checks pass.
+
+Official Dart MCP hot reload and a provider refresh applied the change in the
+running desktop. Read-only VM inspection found exactly two accounts and six
+models, the original selected GPT model, and both active tasks still running.
+No runtime errors were reported. These checks establish local routing and UI
+behavior; subscription entitlements and new live-model inference were not
+retested. No Dart formatter was run.

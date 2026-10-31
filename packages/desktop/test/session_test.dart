@@ -11,6 +11,79 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  test('composer model selections route new tasks through ChatGPT and OpenCode', () async {
+    final root = await Directory.systemTemp.createTemp('desktop-models-');
+    final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    AgentServer? server;
+    DesktopSession? desktop;
+    addTearDown(() async {
+      await desktop?.close();
+      await server?.close();
+      await provider.close(force: true);
+      await root.delete(recursive: true);
+    });
+    await File('${root.path}/config.yaml').writeAsString(jsonEncode({
+      'default_provider': 'opencode',
+      'providers': {'opencode': {'endpoint': 'http://127.0.0.1:${provider.port}/v1'}},
+    }));
+    final expires = DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch;
+    await File('${root.path}/auth.json').writeAsString(jsonEncode({
+      'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture',
+      'account_id': 'fixture', 'expires_at': expires,
+    }));
+    await File('${root.path}/opencode-auth.json').writeAsString(jsonEncode({
+      'version': 1, 'type': 'opencode', 'server': 'https://opencode.ai/console',
+      'access_token': 'fixture', 'refresh_token': 'fixture', 'org_id': 'fixture',
+      'expires_at': expires,
+    }));
+    final requests = <({String path, Json body})>[];
+    provider.listen((request) async {
+      requests.add((path: request.uri.path,
+        body: jsonObject(jsonDecode(await utf8.decoder.bind(request).join()))));
+      request.response.headers.contentType = ContentType('text', 'event-stream');
+      final response = request.uri.path == '/responses'
+        ? {'type': 'response.completed', 'response': {
+            'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant',
+              'content': [{'type': 'output_text', 'text': 'ChatGPT reply'}]}],
+          }}
+        : {'choices': [{'delta': {'content': 'OpenCode reply'}, 'finish_reason': 'stop'}]};
+      request.response.write('data: ${jsonEncode(response)}\n\n');
+      if (request.uri.path != '/responses') request.response.write('data: [DONE]\n\n');
+      await request.response.close();
+    });
+    server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml', port: 0,
+      endpoint: 'http://127.0.0.1:${provider.port}/responses');
+    final database = await openDesktopDatabase(root.path);
+    await callIsolate(database.port, 'settings.set', {'key': 'provider', 'value': 'deepseek'});
+    final session = desktop = DesktopSession(await AgentClient.connect(server.uri), database);
+    await session.load();
+    expect(session.providers.map((p) => p['id']), ['gpt', 'opencode']);
+    expect(session.models.map((m) => m['id']), isNot(contains('deepseek-flash')));
+    expect(session.providerId, 'gpt', reason: 'Desktop selection no longer follows a saved default provider');
+    await session.addProject(root.path);
+    for (final (id, model, effort, path, reply) in [
+      ('opencode', 'deepseek-v4.1-flash-free', 'max', '/v1/chat/completions', 'OpenCode reply'),
+      ('gpt', 'gpt-6-astra', 'low', '/responses', 'ChatGPT reply'),
+    ]) {
+      await session.select(session.project!);
+      session.chooseModel(model);
+      session.chooseReasoning(effort);
+      await session.refreshProviders();
+      expect(session.providerId, id);
+      expect(session.modelId, model);
+      expect(session.reasoning, effort);
+      expect(session.authenticated, true);
+      expect(await session.send('Use the selected model'), true, reason: session.error);
+      await _until(session, () => !session.task!.running);
+      expect(requests.last.path, path);
+      expect(requests.last.body['model'], model);
+      expect(requests.last.body[id == 'gpt' ? 'reasoning' : 'reasoning_effort'],
+        id == 'gpt' ? {'effort': effort} : effort);
+      expect(session.task!.provider, id);
+      expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
+    }
+  });
+
   test('remote desktop prepares a 100 MiB image before transport and preserves originals for retry', () async {
     final root = await Directory.systemTemp.createTemp('desktop-images-server-');
     final local = await Directory.systemTemp.createTemp('desktop-images-client-');
@@ -342,13 +415,16 @@ void main() {
       await _until(desktop, () => !desktop.task!.running);
       expect(conversation(desktop.task!).last.text, 'Stopped');
       expect(desktop.task!.pending, isEmpty);
-      await desktop.chooseProvider('deepseek');
+      desktop.chooseModel('deepseek-v4.1-flash-free');
       expect(desktop.providerId, 'gpt');
-      expect(desktop.defaultProviderId, 'deepseek');
+      expect(desktop.modelId, 'gpt-6-astra');
       final archivedTask = desktop.task!;
       await desktop.setArchived(archivedTask, true);
       expect(desktop.task, isNull);
       expect(archivedTask.archived, isTrue);
+      desktop.chooseModel('deepseek-v4.1-flash-free');
+      expect(desktop.providerId, 'opencode');
+      expect(desktop.modelId, 'deepseek-v4.1-flash-free');
 
       for (final (url, expected) in [
         ('git@github.com:acme/project.git', 'https://github.com/acme/project'),
@@ -380,7 +456,7 @@ void main() {
       await server!.close();
       server = null;
       desktop = await open();
-      expect(desktop.defaultProviderId, 'deepseek');
+      expect(desktop.providerId, 'gpt');
       expect(desktop.deliveryMode, 'queue');
       expect(desktop.dictationMode, 'on_stop');
       expect(desktop.project!.id, 'https://github.com/acme/again');

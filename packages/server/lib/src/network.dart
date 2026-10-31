@@ -435,9 +435,6 @@ void _networkMain(List<Object?> args) async {
         return;
       }
       if (request['method'] == 'providers.list') {
-        final deepseekKey =
-            Platform.environment[deepseekOptions['api_key_env'] as String? ??
-                'DEEPSEEK_API_KEY'];
         reply?.send({
           'result': {
             'default_provider': global['default_provider'] ?? 'gpt',
@@ -462,34 +459,6 @@ void _networkMain(List<Object?> args) async {
                       'reasoning_updates': GptModel(model).reasoningUpdates,
                       'input_modalities': ['text', 'image'],
                     },
-                ],
-              },
-              {
-                'id': 'deepseek',
-                if (backend == 'opencode') 'alias_for': 'opencode',
-                'auth': backend == 'opencode' ? 'opencode' : 'api_key',
-                'name': backend == 'opencode'
-                    ? 'DeepSeek · OpenCode'
-                    : 'DeepSeek API',
-                'status': backend == 'opencode'
-                    ? await consoleAuth.status()
-                    : deepseekKey == null || deepseekKey.isEmpty
-                    ? 'signed_out'
-                    : 'api_key',
-                'default_model':
-                    deepseekOptions['model'] ?? deepseek.defaultModel,
-                'models': [
-                  {
-                    'id': deepseek.defaultModel,
-                    'name': deepseekModel(deepseek.defaultModel)['name'],
-                    'reasoning_levels': ['off', 'low', 'high', 'max'],
-                    'default_reasoning': deepseek.resolveSettings(
-                      jsonObject(deepseekOptions['settings'] ?? {}),
-                      model: deepseek.defaultModel,
-                    )['reasoning'],
-                    'reasoning_updates': false,
-                    'input_modalities': ['text', 'image'],
-                  },
                 ],
               },
               {
