@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 import 'app.dart';
+import 'appearance.dart';
 import 'database.dart';
 import 'lifecycle.dart';
 import 'local_task_sleep.dart';
@@ -137,16 +138,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       child: child!,
     ),
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xff325e57),
-        surface: const Color(0xfffcfcfa),
-      ),
-      scaffoldBackgroundColor: const Color(0xfffcfcfa),
-      fontFamily: '.AppleSystemUIFont',
-      dividerColor: const Color(0xffe5e6e2),
-    ),
+    theme: desktopTheme(),
     home: _error != null
         ? Scaffold(
             body: Center(

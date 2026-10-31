@@ -9,5 +9,6 @@ dependencies:
   tool_runtime: any
   path: ^1.9.1
   ai: any
+  image: ^4.12.0
   html: ^0.15.7
   protocol: any

@@ -10,6 +10,7 @@ import 'tool_catalog.dart';
 import 'instructions.dart';
 import 'mcp_instructions.dart';
 import 'skills.dart';
+import 'images.dart';
 
 class OpenCodeToolInterface extends ToolInterface {
   const OpenCodeToolInterface();
@@ -65,6 +66,9 @@ class OpenCodeToolInterface extends ToolInterface {
   }..removeWhere((key, _) => key == 'namespace_description' && (tool['namespace'] as String).startsWith('mcp__'))];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenCodeTools(cwd, cancellation);
+  @override
+  Future<List<Json>> prepareImages(List<Json> images, {required CancellationToken cancellation}) =>
+      prepareOpenCodeImages(images, cancellation: cancellation);
   @override
   String formatResult(ToolCall call, Json result) {
     final value = result.containsKey('error') && result['error'] != true ? result['error'] : result['output'];

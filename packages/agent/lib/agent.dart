@@ -688,6 +688,7 @@ class _Agent {
           );
           final watch = Stopwatch()..start();
           Json result;
+          var images = <Json>[];
           var selectedTools = <ToolDefinition>[];
           final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
           _toolCancellation = cellCancellation;
@@ -819,6 +820,22 @@ class _Agent {
               ));
               if (result['values'] != null) values = jsonObject(result['values']);
             }
+            final separated = separateToolImages(result);
+            result = separated.$1;
+            if (separated.$2.isNotEmpty) {
+              // The interpreter closes its execution token when the cell ends.
+              // Image preparation is a new cancellable phase of the same tool.
+              final preparation = CancellationToken();
+              final preparationLink = CancellationHook(cancellation, preparation.cancel);
+              _toolCancellation = preparation;
+              try {
+                if (_steering.isNotEmpty) throw const CancelledException();
+                images = await interface.prepareImages(separated.$2, cancellation: preparation);
+              } finally {
+                preparationLink.dispose();
+                preparation.cancel();
+              }
+            }
           } on CancelledException {
             // Native JS can observe the server's atomic interrupt before this
             // isolate services the corresponding steering/Stop mailbox message.
@@ -846,6 +863,7 @@ class _Agent {
                 : output,
             isError: result.containsKey('error'),
             tools: selectedTools,
+            images: images,
           );
           event(
             await _append(

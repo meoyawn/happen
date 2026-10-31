@@ -6,6 +6,44 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as image;
 import 'package:protocol/protocol.dart';
 
+/// Inline image content returned by MCP, view_image, or code mode.
+Json toolImage(Json part) {
+  final source = part['image_url'] ?? part['data'];
+  if (source is! String || source.isEmpty) throw const FormatException('Missing tool image bytes');
+  final detail = part['detail'] ?? jsonObject(part['_meta'] ?? {})['codex/imageDetail'];
+  final uri = source.startsWith('data:') ? Uri.parse(source).data : null;
+  return {
+    'type': 'image', 'name': 'Image',
+    'mime_type': uri?.mimeType ?? part['mimeType'] ?? part['mime_type'],
+    'data': uri == null ? source : base64Encode(uri.contentAsBytes()),
+    'detail': {'auto', 'low', 'high', 'original'}.contains(detail) ? detail : 'high',
+  };
+}
+
+/// Keep image bytes outside text formatting and truncation.
+(Json, List<Json>) separateToolImages(Json result) {
+  final images = (result['images'] as List? ?? []).map(jsonObject).toList();
+  final text = {...result}..remove('images');
+  for (final key in ['output', 'error']) {
+    final value = text[key];
+    if (value is! Map || value['content'] is! List) continue;
+    final content = <Object?>[];
+    for (final raw in value['content'] as List) {
+      if (jsonObject(raw)['type'] == 'image') {
+        images.add(toolImage(jsonObject(raw)));
+        content.add({'type': 'text', 'text': '[Image attached]'});
+      } else {
+        content.add(raw);
+      }
+    }
+    text[key] = {
+      ...jsonObject(value),
+      'content': content,
+    };
+  }
+  return (text, images);
+}
+
 /// Codex's model image preparation. Killing the worker cancels file reads and
 /// CPU work without blocking other tasks or the UI.
 Future<List<Json>> prepareInputAttachments(Object? attachments, {
@@ -21,7 +59,7 @@ Future<List<Json>> prepareInputAttachments(Object? attachments, {
     final result = [
       for (final part in parts)
         if (part['type'] == 'image')
-          _prepareImage(_imageBytes(part), part['name'] as String, part['detail'] as String)
+          _prepareImage(inputImageBytes(part), part['name'] as String, part['detail'] as String)
         else part,
     ];
     if (utf8.encode(jsonEncode(result)).length + envelopeBytes > maxClientFrameBytes) {
@@ -54,7 +92,7 @@ Future<List<Json>> prepareRemoteImages(List<Json> attachments, {required Cancell
     for (final index in largestFirst) {
       if (total <= maxRemoteImageBytes) break;
       final part = parts[index];
-      final reduced = _prepareImage(_imageBytes(part), part['name'] as String, part['detail'] as String, forceEncode: true);
+      final reduced = _prepareImage(inputImageBytes(part), part['name'] as String, part['detail'] as String, forceEncode: true);
       prepared[index] = reduced;
       total += attachmentDataUrl(reduced).length - estimates[index];
       if (prepared.values.fold<int>(0, (size, image) => size + attachmentDataUrl(image).length) > maxRemoteImageBytes) {
@@ -67,7 +105,7 @@ Future<List<Json>> prepareRemoteImages(List<Json> attachments, {required Cancell
       if (prepared[index] case final image?) {
         result.add(image);
       } else {
-        final bytes = _imageBytes(part);
+        final bytes = inputImageBytes(part);
         final mime = imageMimeType(bytes);
         result.add(mime == null
           ? _prepareImage(bytes, part['name'] as String, part['detail'] as String, resize: false)
@@ -81,7 +119,8 @@ Future<List<Json>> prepareRemoteImages(List<Json> attachments, {required Cancell
   }, cancellation);
 }
 
-Uint8List _imageBytes(Json part) {
+/// Read a bounded image snapshot inside a caller-owned cancellable worker.
+Uint8List inputImageBytes(Json part) {
   if (part['path'] case final String path) {
     final file = File(path);
     final stat = file.statSync();
@@ -108,7 +147,7 @@ Json _prepareImage(Uint8List bytes, String name, String detail, {bool forceEncod
   if (bytes.isEmpty || bytes.length > maxImageInputBytes) {
     throw const FormatException('Image input must be nonempty and at most 1 GiB');
   }
-  if (!{'high', 'original'}.contains(detail)) throw const FormatException('Unsupported image detail');
+  if (!{'auto', 'low', 'high', 'original'}.contains(detail)) throw const FormatException('Unsupported image detail');
   final decoded = image.decodeImage(bytes, frame: 0);
   if (decoded == null) throw const FormatException('Could not decode the attached image');
   var source = image.bakeOrientation(decoded);

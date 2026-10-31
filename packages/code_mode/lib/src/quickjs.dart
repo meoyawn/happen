@@ -124,11 +124,12 @@ class QuickJs {
         }
         if (state['done'] == true && (!awaitPending || pending.isEmpty && replies.isEmpty)) {
           final result = jsonObject(evaluateCell(
-            '({output: __cell.output.collect(), values: __cell.values})',
+            '({output: __cell.output.collect(), images: __cell.images, values: __cell.values})',
           ));
           return {
             'output': renderCellOutput(jsonObject(result['output']), maxOutputTokens),
             'values': result['values'],
+            if ((result['images'] as List).isNotEmpty) 'images': result['images'],
           };
         }
         // Let cancellation and async host I/O run between bounded native calls.
@@ -170,9 +171,11 @@ var __cell = (() => {
   const pending = new Map();
   const requests = [];
   const output = __createOutput();
+  const images = [];
+  let imageBytes = 0;
   let next = 1, done = false, error = null;
   const api = {
-    values: {}, output,
+    values: {}, output, images,
     start(source) {
       const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
       new AsyncFunction(source)().then(
@@ -195,6 +198,24 @@ var __cell = (() => {
     const content = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
     output.push(content);
   }
+  function image(value, detail) {
+    const item = typeof value === "string" ? {image_url: value} : value;
+    if (!item || typeof item !== "object") throw new Error("image expects an inline data URL or image content block");
+    const source = item.image_url ?? item.data;
+    if (typeof source !== "string") throw new Error("image requires inline image bytes");
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([\s\S]+)$/.exec(source);
+    if (!match && (item.image_url !== undefined || source.startsWith("data:"))) {
+      throw new Error("image requires a base64 image data URL; remote URLs are not supported");
+    }
+    const mime = match ? match[1] : item.mimeType ?? item.mime_type;
+    const data = match ? match[2] : source;
+    const hint = detail ?? item.detail ?? item._meta?.["codex/imageDetail"] ?? "high";
+    if (!["auto", "low", "high", "original"].includes(hint)) throw new Error("Unsupported image detail");
+    if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime)) throw new Error("Unsupported image format");
+    if (imageBytes + data.length > 32 * 1024 * 1024) throw new Error("Cell images exceed the 32 MiB output limit");
+    imageBytes += data.length;
+    images.push({type: "image", name: "Image", mime_type: mime, data, detail: hint});
+  }
   function store(key, value) {
     const encoded = JSON.stringify(value);
     if (encoded === undefined) throw new Error("store requires a JSON value");
@@ -211,7 +232,7 @@ var __cell = (() => {
       };
     }
   });
-  for (const [name, value] of Object.entries({text, store, load, tools, console: {log: text}})) {
+  for (const [name, value] of Object.entries({text, image, store, load, tools, console: {log: text}})) {
     globalThis[name] = value;
   }
   return api;

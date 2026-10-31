@@ -7,6 +7,7 @@ import 'package:desktop/app.dart';
 import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/conversation.dart';
 import 'package:desktop/database.dart';
+import 'package:desktop/inline_reference.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop_drop/src/native_transport.dart';
 import 'package:flutter/material.dart';
@@ -304,7 +305,7 @@ void main() {
     expect(tester.widget<ListTile>(row).enabled, false);
     expect(find.descendant(of: row, matching: find.text('Folder unavailable')), findsOneWidget);
     expect(tester.widget<IconButton>(find.byWidgetPredicate((widget) => widget is IconButton && widget.tooltip == 'New task in project')).onPressed, isNull);
-    expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'New task')).onPressed, isNull);
+    expect(tester.widget<IconButton>(find.byWidgetPredicate((widget) => widget is IconButton && widget.tooltip == 'New task')).onPressed, isNull);
     expect(find.byType(TextField), findsNothing);
     expect(find.byType(ConversationTranscript), findsOneWidget);
     expect(find.text('Project folder is unavailable'), findsOneWidget);
@@ -999,6 +1000,22 @@ void main() {
       {'id': 'deepseek', 'name': 'DeepSeek API', 'auth': 'api_key', 'status': 'api_key',
         'models': [{'id': 'deepseek-flash'}]},
     ];
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-model-picker-');
+      final database = await openDesktopDatabase(directory!.path);
+      final project = session.project!;
+      await callIsolate(database.port, 'project.add', {
+        'checkout_key': project.checkoutKey, 'identity': project.id, 'path': project.path,
+      });
+      final previous = session, providers = client.providers;
+      await previous.close();
+      client = _Client()..providers = providers;
+      session = DesktopSession(client, database)
+        ..providers = previous.providers
+        ..projects.addAll(previous.projects)
+        ..project = project
+        ..task = previous.task;
+    });
     session.task!.reasoningUpdates = true;
     final existing = session.task!;
     session.task = null;
@@ -1081,7 +1098,139 @@ void main() {
     await frame();
     session.chooseReasoning('low');
     expect(session.reasoning, 'high');
+    await tester.runAsync(() async {
+      final saved = jsonObject(await callIsolate(session.database.port, 'load', {}));
+      final project = jsonDecode(saved['settings']['project_models'] as String)['checkout'];
+      expect((project['provider'], project['model'], project['reasoning']), ('openai', 'gpt-6.1-sol', 'high'));
+    });
     await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('skills complete dollar, slash and at queries with inline atoms and survive draft navigation and send', (tester) async {
+    final existing = session.task!;
+    session.task = null;
+    client.deferSkills = true;
+    await open(tester);
+    final originalRect = tester.getRect(find.byType(TextField));
+    await tester.enterText(find.byType(TextField), r'Use $da');
+    await tester.pump(const Duration(milliseconds: 199));
+    expect(client.skillSearches, isEmpty);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(client.skillSearches.single.cwd, '/project');
+    expect(client.skillSearches.single.query, 'da');
+    expect(client.searches, isEmpty);
+    client.skillSearches.single.reply.complete({'skills': [
+      {'name': 'dart', 'path': '/skills/dart/SKILL.md', 'description': 'Dart and Flutter', 'scope': 'user'},
+      {'name': 'data-tools', 'path': '/project/.agents/skills/data/SKILL.md', 'description': 'Work with data', 'scope': 'repo'},
+    ], 'truncated': false});
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.byType(TextField)), originalRect);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pumpAndSettle();
+    final draft = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(draft.text, 'Use \uFFFC ');
+    expect(draft.serializePrompt(), r'Use [$data-tools](/project/.agents/skills/data/SKILL.md) ');
+    expect(draft.files.single.skillName, 'data-tools');
+    expect(find.byType(SkillIcon), findsOneWidget);
+    expect(find.text('data-tools'), findsOneWidget);
+    expect(session.fileDrafts['checkout']!.single.skillName, 'data-tools');
+    expect(client.sent, isEmpty);
+
+    await tester.runAsync(() => session.select(session.project!, existing));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '/dar');
+    await tester.pump(const Duration(milliseconds: 200));
+    client.skillSearches.last.reply.complete({'skills': [
+      {'name': 'dart', 'path': '/skills/dart/SKILL.md', 'description': 'Dart and Flutter', 'scope': 'user'},
+    ], 'truncated': false});
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(controller.serializePrompt(), r'[$dart](/skills/dart/SKILL.md) ');
+    expect(client.sent, isEmpty, reason: 'Choosing a slash skill inserts it without sending');
+    await tester.runAsync(() => session.select(session.project!));
+    await tester.pumpAndSettle();
+    expect((tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController).serializePrompt(),
+      r'Use [$data-tools](/project/.agents/skills/data/SKILL.md) ');
+    await tester.runAsync(() => session.select(session.project!, existing));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Use @da');
+    await tester.pump(const Duration(milliseconds: 200));
+    client.searches.last.reply.complete({'paths': ['lib/data.dart'], 'truncated': false});
+    client.skillSearches.last.reply.complete({'skills': [
+      {'name': 'dart', 'path': '/skills/dart/SKILL.md', 'description': 'Dart and Flutter', 'scope': 'user'},
+    ], 'truncated': false});
+    await tester.pumpAndSettle();
+    expect(find.text('lib/data.dart'), findsOneWidget);
+    await tester.tap(find.text('dart'));
+    await tester.pumpAndSettle();
+    expect((tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController).serializePrompt(),
+      r'Use [$dart](/skills/dart/SKILL.md) ');
+    expect(client.sent, isEmpty);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(client.sent.single['prompt'], r'Use [$dart](/skills/dart/SKILL.md) ');
+    expect(session.fileDrafts[existing.id], isNull);
+    expect(client.sent, hasLength(1));
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('skill queries ignore code, currency and IME and cancel obsolete replies, blur and navigation', (tester) async {
+    client.deferSkills = true;
+    await open(tester);
+    for (final text in [r'Price $123.45', r'`$dart`', '```\n/dart', r'word$dart']) {
+      await tester.enterText(find.byType(TextField), text);
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+    expect(client.skillSearches, isEmpty);
+    tester.testTextInput.updateEditingValue(const TextEditingValue(text: r'$da',
+      selection: TextSelection.collapsed(offset: 3), composing: TextRange(start: 0, end: 3)));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(client.skillSearches, isEmpty);
+    await tester.enterText(find.byType(TextField), r'$da');
+    await tester.pump(const Duration(milliseconds: 200));
+    final old = client.skillSearches.single;
+    await tester.enterText(find.byType(TextField), r'$dart');
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(old.cancellation.isCancelled, true);
+    final pending = client.skillSearches.last;
+    old.reply.complete({'skills': [
+      {'name': 'obsolete', 'path': '/old/SKILL.md', 'description': 'Old', 'scope': 'user'},
+    ], 'truncated': false});
+    await tester.pump();
+    expect(find.text('obsolete'), findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(client.sent, isEmpty);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(pending.cancellation.isCancelled, true);
+    pending.reply.complete({'skills': [], 'truncated': false});
+    await tester.enterText(find.byType(TextField), '/da');
+    await tester.pump(const Duration(milliseconds: 200));
+    final command = client.skillSearches.last;
+    await tester.enterText(find.byType(TextField), 'plain text');
+    await tester.pump();
+    expect(command.cancellation.isCancelled, true);
+    command.reply.complete({'skills': [], 'truncated': false});
+    await tester.enterText(find.byType(TextField), r'$blur');
+    await tester.pump(const Duration(milliseconds: 200));
+    final blurred = client.skillSearches.last;
+    tester.widget<TextField>(find.byType(TextField)).focusNode!.unfocus();
+    await tester.pumpAndSettle();
+    expect(blurred.cancellation.isCancelled, true);
+    blurred.reply.complete({'skills': [], 'truncated': false});
+    await tester.enterText(find.byType(TextField), r'$deploy');
+    await tester.pump(const Duration(milliseconds: 200));
+    final navigating = client.skillSearches.last;
+    await tester.runAsync(() => session.select(session.project!));
+    await tester.pumpAndSettle();
+    expect(navigating.cancellation.isCancelled, true);
+    navigating.reply.complete({'skills': [], 'truncated': false});
+    expect(client.sent, isEmpty);
+    expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('file mentions complete new and existing drafts without sending or damaging surrounding text', (tester) async {
@@ -1379,7 +1528,7 @@ void main() {
     expect(find.byType(DropdownButtonFormField<String>), findsNothing);
     expect(find.text('DeepSeek API'), findsNothing);
     expect(find.text('ChatGPT'), findsOneWidget);
-    expect(find.text('OpenCode'), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const ValueKey('account:opencode')), matching: find.text('OpenCode')), findsOneWidget);
     expect(find.text('Live'), findsOneWidget);
     expect(find.text('On stop'), findsOneWidget);
     await tester.runAsync(() async {
@@ -1461,6 +1610,14 @@ class _Client implements AgentClient {
   final cancelled = <String>[];
   List<Json> providers = [];
   final searches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
+  final skillSearches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
+  bool deferSkills = false;
+  @override Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) {
+    if (!deferSkills) return Future.value({'skills': [], 'truncated': false});
+    final reply = Completer<Json>();
+    skillSearches.add((cwd: cwd, query: query, cancellation: cancellation, reply: reply));
+    return reply.future;
+  }
   final inventories = <({bool verbose, CancellationToken cancellation, Completer<Json> reply})>[];
   @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) {
     final reply = Completer<Json>();

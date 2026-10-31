@@ -8,10 +8,12 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:protocol/protocol.dart' show maxClientFrameBytes;
 
 import 'code_highlight.dart';
+import 'appearance.dart';
+import 'inline_reference.dart';
 
-const conversationInk = Color(0xff242b29);
-const conversationMuted = Color(0xff737c77);
-const conversationBorder = Color(0xffe2e6df);
+const conversationInk = Color(0xff1a1c1f);
+const conversationMuted = Color(0xff8b8e95);
+const conversationBorder = Color(0xffe8e9eb);
 
 class ConversationMarkdown extends StatelessWidget {
   const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false});
@@ -20,16 +22,18 @@ class ConversationMarkdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const body = TextStyle(fontSize: 15, height: 1.65, color: conversationInk);
+    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
+    final body = TextStyle(fontSize: 14, height: harness ? 1.625 : 1.5, letterSpacing: 0, color: conversationInk);
     return SelectionArea(
       child: MarkdownBody(
         data: text,
         extensionSet: md.ExtensionSet.gitHubFlavored,
+        inlineSyntaxes: [_SkillInvocationSyntax(), _SkillLinkSyntax()],
         fitContent: fitContent,
         softLineBreak: fitContent,
         styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
           p: body,
-          a: body.copyWith(color: const Color(0xff16796c), decoration: TextDecoration.underline),
+          a: body.copyWith(color: const Color(0xff0085ff), decoration: TextDecoration.none),
           h1: body.copyWith(fontSize: 26, height: 1.3, fontWeight: FontWeight.w600),
           h2: body.copyWith(fontSize: 22, height: 1.35, fontWeight: FontWeight.w600),
           h3: body.copyWith(fontSize: 18, height: 1.4, fontWeight: FontWeight.w600),
@@ -40,14 +44,14 @@ class ConversationMarkdown extends StatelessWidget {
           h2Padding: const EdgeInsets.only(top: 8, bottom: 4),
           h3Padding: const EdgeInsets.only(top: 6),
           code: const TextStyle(fontFamily: 'monospace', fontSize: 13,
-            color: conversationInk, backgroundColor: Color(0xffeef0eb)),
-          blockSpacing: 14,
+            color: conversationInk, backgroundColor: Color(0xfff1f1f3)),
+          blockSpacing: harness ? 12 : 10,
           listBullet: body,
           listIndent: 24,
           blockquote: body.copyWith(color: conversationMuted),
           blockquotePadding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
           blockquoteDecoration: const BoxDecoration(
-            border: Border(left: BorderSide(color: Color(0xffa5b9aa), width: 3)),
+            border: Border(left: BorderSide(color: Color(0xffd4d6db), width: 2)),
           ),
           tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
           tableBody: body.copyWith(fontSize: 13),
@@ -55,14 +59,14 @@ class ConversationMarkdown extends StatelessWidget {
           tableColumnWidth: const IntrinsicColumnWidth(),
           tableBorder: TableBorder.all(color: conversationBorder),
           tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          tableHeadCellsDecoration: const BoxDecoration(color: Color(0xffeff2ec)),
-          tableCellsDecoration: const BoxDecoration(color: Color(0xfff8f9f6)),
+          tableHeadCellsDecoration: const BoxDecoration(color: Color(0xfff4f4f6)),
+          tableCellsDecoration: const BoxDecoration(color: Colors.white),
           codeblockDecoration: const BoxDecoration(),
           horizontalRuleDecoration: const BoxDecoration(
             border: Border(top: BorderSide(color: conversationBorder)),
           ),
         ),
-        builders: {'pre': _CodeBuilder()},
+        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory)},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
           label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory,
@@ -70,13 +74,67 @@ class ConversationMarkdown extends StatelessWidget {
         checkboxBuilder: (checked) => Padding(
           padding: const EdgeInsets.only(top: 4, right: 4),
           child: Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank,
-            size: 17, color: checked ? const Color(0xff16796c) : conversationMuted),
+            size: 17, color: checked ? conversationInk : conversationMuted),
         ),
         onTapLink: (_, href, _) {
           if (href != null) unawaited(_openLink(context, href, directory));
         },
       ),
     );
+  }
+}
+
+/// Composer atoms retain native paths, including spaces, in their Markdown.
+/// Recognize those invocations inside the inline parser so code stays literal.
+class _SkillInvocationSyntax extends md.InlineSyntax {
+  _SkillInvocationSyntax() : super(r'\[(\$(?:\\.|[^\\\]\r\n])*)\]\(((?:\\.|[^\\)\r\n])+)\)');
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final destination = match[2]!;
+    // Leave ordinary link destinations and optional titles to Markdown.
+    if (!RegExp(r'(?:/|\\\\)SKILL\.md$', caseSensitive: false).hasMatch(destination)) return false;
+    final node = _SkillLinkSyntax().createNode(destination, null,
+      getChildren: () => parser.document.parseInline(match[1]!));
+    if (node is! md.Element || node.tag != 'skill-reference') return false;
+    parser.addNode(node);
+    return true;
+  }
+}
+
+/// Keep Markdown's link parsing and escaping, decorating only local skill links.
+class _SkillLinkSyntax extends md.LinkSyntax {
+  @override
+  md.Node createNode(String destination, String? title, {required List<md.Node> Function() getChildren}) {
+    final node = super.createNode(destination, title, getChildren: getChildren) as md.Element;
+    final uri = Uri.tryParse(node.attributes['href']!);
+    if (uri == null || !{'', 'file'}.contains(uri.scheme) ||
+        uri.hasAuthority && !(uri.scheme == 'file' && (uri.host.isEmpty || uri.host == 'localhost'))) {
+      return node;
+    }
+    if (!node.textContent.trim().startsWith(r'$') && uri.path.split('/').last.toLowerCase() != 'skill.md') return node;
+    return md.Element('skill-reference', node.children)..attributes.addAll(node.attributes);
+  }
+}
+
+class _SkillLinkBuilder extends MarkdownElementBuilder {
+  _SkillLinkBuilder(this.directory);
+  final String directory;
+
+  @override
+  Widget visitElementAfterWithContext(BuildContext context, md.Element element,
+      TextStyle? preferredStyle, TextStyle? parentStyle) {
+    final href = element.attributes['href']!;
+    return Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
+      child: GestureDetector(onTap: () => unawaited(_openLink(context, href, directory)),
+        child: Text.rich(TextSpan(children: [
+          const WidgetSpan(alignment: PlaceholderAlignment.middle,
+            child: Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())),
+          TextSpan(text: element.textContent),
+        ]), style: (parentStyle ?? const TextStyle()).copyWith(color: inlineReferenceAccent,
+          fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+      ),
+    ));
   }
 }
 
@@ -118,9 +176,9 @@ class _ConversationCodeState extends State<ConversationCode> {
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: const Color(0xfff5f6f2),
+        color: const Color(0xfff8f8fa),
         border: Border.all(color: conversationBorder),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(ConversationAppearance.of(context) == ConversationStyle.harness ? 12 : 6),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(

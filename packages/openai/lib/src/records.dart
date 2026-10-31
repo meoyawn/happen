@@ -119,7 +119,13 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
             'type': 'tool_result',
             'call_id': requiredString(wire, 'call_id'),
             'format': type == 'custom_tool_call_output' ? 'text' : 'json',
-            'output': wire['output'] as String? ?? '',
+            'output': wire['output'] is List
+                ? (wire['output'] as List).map(jsonObject).where((part) => part['type'] == 'input_text').map((part) => part['text']).join('\n')
+                : wire['output'] as String? ?? '',
+            if (wire['output'] is List) 'images': inputAttachments([
+              for (final part in (wire['output'] as List).map(jsonObject))
+                if (part['type'] == 'input_image') toolImage(part),
+            ]),
             'native': {
               'gpt': {
                 ...state
@@ -154,7 +160,7 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
                   return inputAttachments([{
                     'type': 'image', 'name': 'Image', 'mime_type': data.mimeType,
                     'data': base64Encode(data.contentAsBytes()),
-                    'detail': part['detail'] == 'original' ? 'original' : 'high',
+                    'detail': part['detail'] ?? 'high',
                   }]).single;
                 }
                 final text = part.remove(
@@ -285,7 +291,11 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
               ? 'custom_tool_call_output'
               : 'function_call_output',
           'call_id': part['call_id'],
-          'output': part['output'],
+          'output': (part['images'] as List? ?? []).isEmpty ? part['output'] : [
+            if ((part['output'] as String).isNotEmpty) {'type': 'input_text', 'text': part['output']},
+            for (final image in (part['images'] as List).map(jsonObject))
+              {'type': 'input_image', 'image_url': attachmentDataUrl(image), 'detail': image['detail'] ?? 'high'},
+          ],
         });
       case 'reasoning':
         throw const ModelFailure(

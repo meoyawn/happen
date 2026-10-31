@@ -48,6 +48,98 @@ void main() {
     return desktop;
   }
 
+  test('model and reasoning choices stay with each project across switches and relaunch', () async {
+    var desktop = await open();
+    await desktop.addProject(work.path);
+    final first = desktop.project!;
+    desktop.chooseModel('other-model');
+    desktop.chooseReasoning('high');
+    final other = await Directory('${root.path}/other').create();
+    await desktop.addProject(other.path);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'fixture', 'low'));
+    desktop.chooseModel('free-model');
+    desktop.chooseReasoning('max');
+    await desktop.select(first);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
+    await desktop.select(desktop.projects.last);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('opencode', 'free-model', 'max'));
+    expect(await desktop.send('Use project defaults'), true, reason: desktop.error);
+    expect(client.started.single['provider'], 'opencode');
+    expect(client.started.single['model'], 'free-model');
+    expect(client.started.single['reasoning'], 'max');
+
+    await desktop.close();
+    session = null;
+    database = await openDesktopDatabase(root.path);
+    client = _Client();
+    desktop = await open();
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
+    await desktop.addProject(other.path);
+    expect(desktop.projects, hasLength(2));
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('opencode', 'free-model', 'max'));
+    await desktop.removeProject(desktop.project!);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
+    await desktop.addProject(other.path);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'fixture', 'low'));
+  });
+
+  test('only explicit task reasoning choices replace the project defaults', () async {
+    var desktop = await open();
+    await desktop.addProject(work.path);
+    final project = desktop.project!;
+    desktop.chooseModel('other-model');
+    desktop.chooseReasoning('high');
+    final existing = DesktopTask('existing', 'Existing task')
+      ..loaded = true..provider = 'openai'..model = 'fixture'..reasoning = 'low'..reasoningUpdates = true;
+    project.tasks.add(existing);
+    await desktop.select(project, existing);
+    desktop.chooseModel('free-model');
+    expect((desktop.modelId, desktop.reasoning), ('fixture', 'low'));
+    await desktop.select(project);
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
+    await desktop.select(project, existing);
+    desktop.chooseReasoning('high');
+    expect(existing.reasoning, 'low', reason: 'An unsent choice does not change committed task settings');
+    expect(existing.nextReasoning, 'high');
+    await desktop.select(project);
+    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+    final fixed = DesktopTask('fixed', 'Fixed effort')
+      ..loaded = true..provider = 'opencode'..model = 'free-model'..reasoning = 'max';
+    project.tasks.add(fixed);
+    await desktop.select(project, fixed);
+    desktop.chooseReasoning('low');
+    expect(desktop.reasoning, 'max');
+    await desktop.select(project);
+    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+
+    await desktop.close();
+    session = null;
+    database = await openDesktopDatabase(root.path);
+    client = _Client();
+    desktop = await open();
+    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+  });
+
+  test('catalog refresh falls back from unavailable choices without losing the saved selection', () async {
+    final desktop = await open();
+    await desktop.addProject(work.path);
+    desktop.chooseModel('other-model');
+    desktop.chooseReasoning('high');
+    final models = client.providers.first['models'] as List;
+    final selected = models.removeLast();
+    await desktop.refreshProviders();
+    expect((desktop.modelId, desktop.reasoning), ('fixture', 'low'));
+    models.add(selected);
+    await desktop.refreshProviders();
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
+    selected['reasoning_levels'] = ['medium'];
+    await desktop.refreshProviders();
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'medium'));
+    selected['reasoning_levels'] = ['medium', 'high'];
+    await desktop.refreshProviders();
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
+  });
+
   test('launch marks missing folders unavailable and retains their identity and tasks', () async {
     final missing = '${root.path}/missing';
     await saveProject('missing', missing, ['saved-task']);
@@ -170,13 +262,24 @@ class _Client implements AgentClient {
   final cancelled = <String>[];
   Completer<void>? stopping;
   bool rejectCancellation = false;
+  final started = <Json>[];
+  final providers = <Json>[
+    {'id': 'openai', 'status': 'signed_in', 'default_model': 'fixture', 'models': [
+      {'id': 'fixture', 'default_reasoning': 'low', 'reasoning_levels': ['low', 'high']},
+      {'id': 'other-model', 'default_reasoning': 'medium', 'reasoning_levels': ['medium', 'high']},
+    ]},
+    {'id': 'opencode', 'status': 'signed_in', 'default_model': 'free-model', 'models': [
+      {'id': 'free-model', 'default_reasoning': 'high', 'reasoning_levels': ['off', 'low', 'high', 'max']},
+    ]},
+  ];
 
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'providers.list') {
-      return {'providers': [{
-        'id': 'openai', 'status': 'signed_in', 'default_model': 'fixture',
-        'models': [{'id': 'fixture'}],
-      }]};
+      return {'providers': providers};
+    }
+    if (method == 'task.start') {
+      started.add(params);
+      return {'task_id': 'task-${started.length}'};
     }
     if (method == 'task.cancel') {
       if (rejectCancellation) throw StateError('Could not stop task');

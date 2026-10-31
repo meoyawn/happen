@@ -35,6 +35,7 @@ class ConversationItem {
     String output, {
     bool isError = false,
     List<ToolDefinition> tools = const [],
+    List<Json> images = const [],
   }) => ConversationItem(
     role: 'tool',
     tools: tools,
@@ -46,6 +47,7 @@ class ConversationItem {
         if (call.namespace != null) 'namespace': call.namespace,
         'format': call.format,
         'output': output,
+        if (images.isNotEmpty) 'images': images,
         'is_error': isError,
       },
     ],
@@ -88,6 +90,11 @@ class ConversationItem {
           if (part['output'] is! String) {
             throw const FormatException('Invalid tool output');
           }
+          final images = inputAttachments(part['images']);
+          if (images.any((image) => image['type'] != 'image' || image['path'] != null)) {
+            throw const FormatException('Tool images must contain inline image bytes');
+          }
+          if (images.isNotEmpty) part['images'] = images;
         case 'image':
           if (part['path'] != null) throw const FormatException('Saved images must contain their bytes');
           if (role != 'user') throw const FormatException('Attachments require a user message');
@@ -345,9 +352,12 @@ int estimateTokens(Iterable<ConversationItem> items) {
   for (final item in items) {
     visible.add({...item.toJson(), 'content': [
       for (final part in item.content)
-        if (part['type'] != 'image') part,
+        if (part['type'] != 'image') {...part}..remove('images'),
     ]});
-    for (final part in item.content.where((part) => part['type'] == 'image')) {
+    for (final part in item.content.expand((part) => [
+      if (part['type'] == 'image') part,
+      ...(part['images'] as List? ?? []).map(jsonObject),
+    ])) {
       // Codex counts image tokens independently of base64 length. Its high-
       // detail heuristic is 7,373 estimated bytes at four bytes per token.
       if (part['detail'] == 'original') {

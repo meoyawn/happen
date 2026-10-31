@@ -3,6 +3,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('skill atoms retain names and paths through edits, undo, mixed drafts and clipboard serialization', () {
+    final controller = ComposerTextController(text: r'Use $deploy with @file');
+    addTearDown(controller.dispose);
+    controller.insertFile(const TextRange(start: 4, end: 11), '/skills/my [deploy](v2)/SKILL.md', skillName: '部署 [web]');
+    controller.insertFile(TextRange(start: controller.text.indexOf('@'), end: controller.text.length), 'lib/main.dart');
+    const expected = r'Use [$部署 \[web\]](/skills/my [deploy](v2\)/SKILL.md) with [main.dart](lib/main.dart) ';
+    expect(controller.serializePrompt(), expected);
+    expect(controller.serializeRange(4, 5), r'[$部署 \[web\]](/skills/my [deploy](v2\)/SKILL.md)');
+    final saved = controller.value;
+    controller.selection = const TextSelection(baseOffset: 4, extentOffset: 5);
+    controller.value = TextEditingValue(text: controller.text.replaceRange(4, 5, ''), selection: const TextSelection.collapsed(offset: 4));
+    expect(controller.files.single.path, 'lib/main.dart');
+    controller.value = saved;
+    expect(controller.serializePrompt(), expected);
+    controller.value = TextEditingValue(text: 'Please ${controller.text}', selection: const TextSelection.collapsed(offset: 7));
+    expect(controller.files.first.skillName, '部署 [web]');
+    expect(controller.files.first.offset, 11);
+    final restored = ComposerTextController(text: controller.text, files: controller.files);
+    addTearDown(restored.dispose);
+    expect(restored.serializePrompt(), 'Please $expected');
+    expect(restored.files.first.label, '部署 [web]');
+  });
+
   test('references serialize their paths, survive edits and disappear on deletion', () {
     final controller = ComposerTextController(text: 'Check @file afterwards');
     addTearDown(controller.dispose);

@@ -6,13 +6,14 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 import 'composer_text_controller.dart';
+import 'inline_reference.dart';
 import 'mcp_menu.dart';
 import 'mcp_auth.dart';
 
 typedef _Mention = ({int start, int end, String query});
 typedef _Command = ({int start, int end, String text});
 
-/// One popover and input owner for file mentions and local slash commands.
+/// One popover and input owner for file/skill mentions and local slash commands.
 class ComposerAutocomplete extends StatefulWidget {
   const ComposerAutocomplete({super.key, required this.controller, required this.focusNode,
     required this.client, required this.cwd, required this.enabled, required this.child});
@@ -32,11 +33,15 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   final _link = LayerLink();
   final _overlay = OverlayPortalController();
   final _scroll = ScrollController();
+  final _rowKeys = <int, GlobalKey>{};
   final _cache = <String, ({Json result, DateTime time})>{};
   Timer? _debounce;
   CancellationToken? _search;
   _Mention? _mention, _dismissed;
   List<String> _paths = [];
+  List<Json> _skills = [];
+  CancellationToken? _skillSearch;
+  bool _skillsLoading = false, _skillsFailed = false, _skillsTruncated = false;
   int _selected = 0;
   bool _loading = false, _failed = false, _truncated = false, _overlayScheduled = false;
   _Command? _command;
@@ -56,6 +61,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     for (final command in _commands)
       if (command.name.startsWith(_normalizedCommand(_command?.text ?? ''))) command,
   ];
+  int get _choiceCount => (_command != null ? _suggestions.length : _paths.length) + _skills.length;
+  bool get _skillsOnly => _mention != null && widget.controller.text[_mention!.start] == r'$';
 
   @override
   void initState() {
@@ -86,6 +93,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       _command = null;
       _dismissedCommand = null;
       _paths = [];
+      _skills = [];
       _changed();
     }
   }
@@ -110,6 +118,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     _debounce = null;
     _search?.cancel();
     _search = null;
+    _skillSearch?.cancel();
+    _skillSearch = null;
   }
 
   void _changed() {
@@ -140,15 +150,22 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       setState(() {
         _mention = null;
         _paths = [];
+        _skills = [];
+        _skillsLoading = value != _dismissedCommand;
+        _skillsFailed = false;
+        _skillsTruncated = false;
         _command = value == _dismissedCommand ? null : command;
         _selected = 0;
       });
+      if (_command != null) {
+        _debounce = Timer(const Duration(milliseconds: 200),
+          () => unawaited(_lookupSkills(command.text.substring(1))));
+      }
       return;
     }
     _command = null;
     if (next == _dismissed && next != null) return;
-    if (next == _mention) {
-      if (wasMcp) setState(() {});
+    if (next == _mention && !wasMcp) {
       return;
     }
     _dismissed = null;
@@ -156,19 +173,25 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     setState(() {
       _mention = next;
       _paths = [];
+      _skills = [];
       _selected = 0;
       _failed = false;
-      _loading = next != null;
+      _loading = next != null && !_skillsOnly;
+      _skillsLoading = next != null;
+      _skillsFailed = false;
+      _skillsTruncated = false;
       _truncated = false;
     });
     if (next == null) return;
-    final cached = _cache.remove(next.query);
-    if (cached != null && DateTime.now().difference(cached.time) < const Duration(seconds: 10)) {
-      _cache[next.query] = cached;
+    final cached = _cache.remove('files:${next.query}');
+    if (!_skillsOnly && cached != null && DateTime.now().difference(cached.time) < const Duration(seconds: 10)) {
+      _cache['files:${next.query}'] = cached;
       _apply(cached.result);
-      return;
     }
-    _debounce = Timer(const Duration(milliseconds: 200), () => unawaited(_lookup(next)));
+    _debounce = Timer(const Duration(milliseconds: 200), () {
+      if (_loading) unawaited(_lookup(next));
+      unawaited(_lookupSkills(next.query));
+    });
   }
 
   /// The send button and modified Enter run commands locally as well.
@@ -180,6 +203,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
         ? (start: value.text.indexOf('/'), end: value.text.length, text: value.text.trim()) : null);
     if (command == null) return false;
     final text = _normalizedCommand(command.text);
+    if (!RegExp(r'^/mcp(?:\s|$)').hasMatch(text)) return false;
     if (text != '/mcp' && text != '/mcp verbose') {
       setState(() => _command = command);
       return true;
@@ -190,7 +214,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
 
   void _chooseCommand() {
     final suggestions = _suggestions;
-    if (_command == null || suggestions.isEmpty) return;
+    if (_command == null) return;
+    if (_selected >= suggestions.length) { _chooseSkill(_skills[_selected - suggestions.length]); return; }
+    if (suggestions.isEmpty) return;
     _activateMcp(_command!, suggestions[_selected.clamp(0, suggestions.length - 1)].name == '/mcp verbose');
   }
 
@@ -205,6 +231,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     setState(() {
       _mention = null;
       _paths = [];
+      _skills = [];
       _command = null;
       _dismissed = null;
       _dismissedCommand = null;
@@ -247,7 +274,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     try {
       final result = await widget.client.searchFiles(widget.cwd, mention.query, cancellation: token);
       if (!mounted || token.isCancelled || _mention != mention) return;
-      _cache[mention.query] = (result: result, time: DateTime.now());
+      _cache['files:${mention.query}'] = (result: result, time: DateTime.now());
       while (_cache.length > 20) {
         _cache.remove(_cache.keys.first);
       }
@@ -263,12 +290,42 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     }
   }
 
+  Future<void> _lookupSkills(String query) async {
+    final token = _skillSearch = CancellationToken();
+    try {
+      final key = 'skills:$query';
+      final cached = _cache.remove(key);
+      final result = cached != null && DateTime.now().difference(cached.time) < const Duration(seconds: 10)
+          ? cached.result : await widget.client.searchSkills(widget.cwd, query, cancellation: token);
+      if (!mounted || token.isCancelled || !identical(_skillSearch, token)) return;
+      _cache[key] = (result: result, time: DateTime.now());
+      while (_cache.length > 20) { _cache.remove(_cache.keys.first); }
+      setState(() {
+        _skills = (result['skills'] as List).map(jsonObject).toList();
+        _skillsLoading = false;
+        _skillsFailed = false;
+        _skillsTruncated = result['truncated'] == true;
+        _selected = _selected.clamp(0, (_choiceCount - 1).clamp(0, 100));
+      });
+      if (_selected == 0 && _scroll.hasClients) _scroll.jumpTo(0);
+    } on CancelledException {
+      // Navigation, dismissal or a newer query owns cancellation.
+    } catch (_) {
+      if (mounted && !token.isCancelled && identical(_skillSearch, token)) {
+        setState(() { _skillsLoading = false; _skillsFailed = true; });
+      }
+    } finally {
+      if (identical(_skillSearch, token)) _skillSearch = null;
+    }
+  }
+
   void _apply(Json result) {
     setState(() {
       _paths = (result['paths'] as List).cast<String>();
       _loading = false;
       _failed = false;
       _truncated = result['truncated'] == true;
+      _selected = _selected.clamp(0, (_choiceCount - 1).clamp(0, 100));
     });
     if (_scroll.hasClients) _scroll.jumpTo(0);
   }
@@ -282,6 +339,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       _mention = null;
       _command = null;
       _paths = [];
+      _skills = [];
     });
   }
 
@@ -300,16 +358,36 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   }
 
   void _move(int offset) {
-    final count = _command != null ? _suggestions.length : _paths.length;
+    final count = _choiceCount;
     setState(() => _selected = (_selected + offset) % count);
-    if (!_scroll.hasClients) return;
-    final top = 4 + _selected * 44.0;
-    final bottom = top + 44;
-    if (top < _scroll.offset) {
-      _scroll.jumpTo(top);
-    } else if (bottom > _scroll.offset + _scroll.position.viewportDimension) {
-      _scroll.jumpTo(bottom - _scroll.position.viewportDimension);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_visible) return;
+      final row = _rowKeys[_selected]?.currentContext;
+      if (row == null) return;
+      unawaited(Scrollable.ensureVisible(row, alignmentPolicy: offset > 0
+          ? ScrollPositionAlignmentPolicy.keepVisibleAtEnd : ScrollPositionAlignmentPolicy.keepVisibleAtStart));
+    });
+  }
+
+  void _chooseSkill(Json skill) {
+    final mention = _mention;
+    final command = _command;
+    final controller = widget.controller;
+    if (controller is! ComposerTextController || mention == null && command == null) return;
+    if (mention != null && _mentionAt(controller.value) != mention ||
+        command != null && _commandAt(controller.value) != command) {
+      return;
     }
+    final range = TextRange(start: command?.start ?? mention!.start, end: command?.end ?? mention!.end);
+    dismiss();
+    controller.insertFile(range, skill['path'] as String, skillName: skill['name'] as String);
+    widget.focusNode.requestFocus();
+  }
+
+  void _chooseSelected() {
+    if (_command != null) { _chooseCommand(); }
+    else if (_selected < _paths.length) { _choose(_paths[_selected]); }
+    else { _chooseSkill(_skills[_selected - _paths.length]); }
   }
 
   void _choose(String path) {
@@ -341,13 +419,11 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
         if (visible) ...{
           const SingleActivator(LogicalKeyboardKey.escape): dismiss,
           const SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false): () {
-            if (_command != null) {
-              _chooseCommand();
-            } else if (_mcpAnchor != null) {
+            if (_mcpAnchor != null) {
               return;
-            } else if (_paths.isNotEmpty) {
-              _choose(_paths[_selected]);
-            } else if (!_loading) {
+            } else if (_choiceCount > 0) {
+              _chooseSelected();
+            } else if (!_loading && !_skillsLoading && _command == null) {
               dismiss();
             }
           },
@@ -355,10 +431,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
             const SingleActivator(LogicalKeyboardKey.tab): () {},
             if (_mcpFilter.isEmpty) const SingleActivator(LogicalKeyboardKey.backspace): dismiss,
           },
-          if (_paths.isNotEmpty || _command != null && _suggestions.isNotEmpty) ...{
-            const SingleActivator(LogicalKeyboardKey.tab): () {
-              if (_command != null) { _chooseCommand(); } else { _choose(_paths[_selected]); }
-            },
+          if (_choiceCount > 0) ...{
+            const SingleActivator(LogicalKeyboardKey.tab): _chooseSelected,
             const SingleActivator(LogicalKeyboardKey.arrowDown): () => _move(1),
             const SingleActivator(LogicalKeyboardKey.arrowUp): () => _move(-1),
           },
@@ -404,7 +478,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
             children: [
               if (_command != null) ...[
                 for (var index = 0; index < _suggestions.length; index++)
-                  Semantics(selected: index == _selected, child: MouseRegion(
+                  Semantics(key: _rowKeys.putIfAbsent(index, () => GlobalKey()), selected: index == _selected, child: MouseRegion(
                     onEnter: (_) => setState(() => _selected = index),
                     child: InkWell(canRequestFocus: false, onTap: () { _selected = index; _chooseCommand(); },
                       borderRadius: BorderRadius.circular(12),
@@ -419,7 +493,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                         ])),
                     ),
                   )),
-                if (_suggestions.isEmpty) const Padding(padding: EdgeInsets.all(8), child: Text('Usage: /mcp [verbose]')),
+                if (_suggestions.isEmpty && _normalizedCommand(_command!.text).startsWith('/mcp '))
+                  const Padding(padding: EdgeInsets.all(8), child: Text('Usage: /mcp [verbose]')),
               ] else if (_mcpAnchor != null)
                 McpStatusMenu(inventory: _inventory, verbose: _verbose, loading: _mcpLoading, failed: _mcpFailed,
                   query: _mcpFilter, onRetry: () => unawaited(_loadMcp()),
@@ -428,6 +503,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
               else ...[
               for (var index = 0; index < _paths.length; index++)
                 Semantics(
+                  key: _rowKeys.putIfAbsent(index, () => GlobalKey()),
                   selected: index == _selected,
                   child: MouseRegion(
                     onEnter: (_) => setState(() => _selected = index),
@@ -454,7 +530,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                     ),
                   ),
                 ),
-              if (_paths.isEmpty || _truncated)
+              if (!_skillsOnly && (_paths.isEmpty || _truncated))
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                   child: _failed
@@ -468,12 +544,50 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                           style: Theme.of(context).textTheme.bodySmall),
                 ),
               ],
+              if (_mcpAnchor == null) ...[
+                if (_skills.isNotEmpty) const Padding(padding: EdgeInsets.fromLTRB(8, 8, 8, 4),
+                  child: Text('Skills', style: TextStyle(fontSize: 12, color: Colors.black54))),
+                for (var index = 0; index < _skills.length; index++) _skillRow(context, index),
+                if (_skillsLoading || _skillsFailed || _skillsTruncated || _skillsOnly && _skills.isEmpty || _command != null && _choiceCount == 0)
+                  Padding(padding: const EdgeInsets.all(8),
+                    child: _skillsFailed ? TextButton(onPressed: () {
+                      setState(() { _skillsFailed = false; _skillsLoading = true; });
+                      unawaited(_lookupSkills(_command?.text.substring(1) ?? _mention!.query));
+                    }, child: const Text('Skill search unavailable. Retry'))
+                    : Text(_skillsLoading ? 'Searching skills…' : _skillsTruncated ? 'Type more to narrow the results'
+                        : 'No matching skills', style: Theme.of(context).textTheme.bodySmall)),
+              ],
             ],
           ),
         ),
       ),
     ),
   );
+
+  Widget _skillRow(BuildContext context, int index) {
+    final skill = _skills[index];
+    final selected = index + (_command != null ? _suggestions.length : _paths.length);
+    return Semantics(key: _rowKeys.putIfAbsent(selected, () => GlobalKey()), selected: selected == _selected, child: MouseRegion(
+      onEnter: (_) => setState(() => _selected = selected),
+      child: InkWell(canRequestFocus: false, onTap: () => _chooseSkill(skill),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(color: selected == _selected ? Theme.of(context).colorScheme.secondaryContainer : null,
+            borderRadius: BorderRadius.circular(12)),
+          child: Row(children: [
+            const SkillIcon(color: Colors.black54), const SizedBox(width: 8),
+            Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(skill['name'] as String, maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(skill['description'] as String, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.black54)),
+            ])),
+            const SizedBox(width: 8),
+            Tooltip(message: skill['path'] as String, child: Text(skill['scope'] == 'repo' ? 'Project' : 'Global',
+              style: const TextStyle(fontSize: 11, color: Colors.black54))),
+          ])),
+      ),
+    ));
+  }
 }
 
 _Mention? _mentionAt(TextEditingValue value) {
@@ -481,7 +595,12 @@ _Mention? _mentionAt(TextEditingValue value) {
   if (!selection.isValid || !selection.isCollapsed || !value.composing.isCollapsed) return null;
   final caret = selection.baseOffset, text = value.text;
   if (caret == 0 || caret > text.length) return null;
-  final start = text.lastIndexOf('@', caret - 1);
+  final prefix = text.substring(0, caret);
+  if ('```'.allMatches(prefix).length.isOdd) return null;
+  final line = prefix.substring(prefix.lastIndexOf('\n') + 1);
+  if ('`'.allMatches(line).length.isOdd) return null;
+  final at = text.lastIndexOf('@', caret - 1), dollar = text.lastIndexOf(r'$', caret - 1);
+  final start = at > dollar ? at : dollar;
   if (start < 0 || (start > 0 && !RegExp(r'[\s(\[{]').hasMatch(text[start - 1]))) return null;
   var end = start + 1;
   String query;
@@ -499,13 +618,14 @@ _Mention? _mentionAt(TextEditingValue value) {
     query = text.substring(from, caret).replaceAllMapped(RegExp(r'\\(.)'), (match) => match[1]!);
     if (end < text.length && text[end] == '"') end++;
   } else {
-    while (end < text.length && text[end] != ComposerTextController.marker && !RegExp(r'[\s@"\)\]}]').hasMatch(text[end])) {
+    while (end < text.length && text[end] != ComposerTextController.marker && !RegExp(r'[\s@$"\)\]}]').hasMatch(text[end])) {
       end++;
     }
     if (caret > end) return null;
     query = text.substring(start + 1, caret);
   }
   if (query.length > 256) return null;
+  if (text[start] == r'$' && RegExp(r'^[.,]?\d[\d.,]*$').hasMatch(query)) return null;
   return (start: start, end: end, query: query);
 }
 
@@ -516,11 +636,11 @@ _Command? _commandAt(TextEditingValue value) {
   if ('```'.allMatches(prefix).length.isOdd) return null;
   final line = prefix.substring(prefix.lastIndexOf('\n') + 1);
   if ('`'.allMatches(line).length.isOdd) return null;
-  final match = RegExp(r'(?:^|[\s(\[{])(/[A-Za-z]*(?:[ \t]+[^\n/@$>\uFFFC]*)?)$').firstMatch(line);
+  final match = RegExp(r'(?:^|[\s(\[{])(/[\p{L}\p{N}\p{M}._:-]*(?:[ \t]+[^\n/@$>\uFFFC]*)?)$', unicode: true).firstMatch(line);
   if (match == null) return null;
   final text = match[1]!;
   final query = _normalizedCommand(text);
-  if (!'/mcp'.startsWith(query) && !query.startsWith('/mcp ')) return null;
+  if (query.length > 257 || query.contains(' ') && !query.startsWith('/mcp ')) return null;
   return (start: end - text.length, end: end, text: text);
 }
 

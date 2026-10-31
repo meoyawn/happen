@@ -10,6 +10,7 @@ Future<Json> executeCode(String code, ToolExecution context) async {
   context.cancellation.throwIfCancelled();
   final catalog = await context.catalog(context.cancellation);
   final calls = <Json>[];
+  final images = <Json>[];
   final result = await const CodeMode().execute(
     'const __source = ${jsonEncode(code)};\nconst __catalog = ${jsonEncode(catalog)};\n$_runtime',
     catalog: const [],
@@ -35,6 +36,10 @@ Future<Json> executeCode(String code, ToolExecution context) async {
           final message = (output['content'] as List? ?? []).where((part) => part['type'] == 'text').map((part) => part['text']).join('\n').trim();
           throw StateError(message.isEmpty ? 'MCP tool returned an error' : message);
         }
+        if (output is Map && output['content'] is List) {
+          images.addAll((output['content'] as List).map(jsonObject)
+            .where((part) => part['type'] == 'image').map(toolImage));
+        }
         if (tool?['transport'] == 'mcp') {
           if (output is Map && output.containsKey('structuredContent')) return output['structuredContent'];
           if (output is Map && output['content'] is List) {
@@ -54,6 +59,7 @@ Future<Json> executeCode(String code, ToolExecution context) async {
   );
   context.cancellation.cancel();
   return {'output': (result['output'] as List).join('\n'), 'toolCalls': calls, 'files': <Json>[],
+    if (images.isNotEmpty) 'images': images,
     if (jsonObject(result['values'])['__opencode_error'] == true) 'error': true};
 }
 

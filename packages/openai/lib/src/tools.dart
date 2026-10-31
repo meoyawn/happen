@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'package:tool_runtime/tool_runtime.dart';
@@ -25,6 +27,14 @@ class HostTools {
     }
     final input = jsonObject(raw);
     switch (name) {
+      case 'view_image':
+        final path = requiredString(input, 'path');
+        final images = await prepareInputAttachments([{
+          'type': 'image', 'name': 'Image',
+          'path': File.fromUri(Directory(directory).absolute.uri.resolveUri(Uri.file(path))).path,
+          'detail': input['detail'] ?? 'high',
+        }], cancellation: cancellation.merge(this.cancellation));
+        return {'image_url': attachmentDataUrl(images.single), 'detail': images.single['detail']};
       case 'shell_command':
         final timeout = (input['timeout_ms'] as num? ?? 10000).toInt();
         if (timeout < 0) throw const FormatException('timeout_ms must be non-negative');

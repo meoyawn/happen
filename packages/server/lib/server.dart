@@ -275,6 +275,10 @@ class AgentServer {
             }
             return;
           }
+          if (request['method'] == 'skills.cancel') {
+            if (request['params']?['request_id'] == client.skillSearchId) client.skillSearch?.cancel();
+            return;
+          }
           if (request['method'] == 'mcp.inventory.cancel') {
             client.mcpInventories[request['params']?['request_id']]?.cancel();
             return;
@@ -461,6 +465,21 @@ class AgentServer {
           if (identical(client.fileSearch, deadline)) {
             client.fileSearch = null;
             client.fileSearchId = null;
+          }
+          deadline.cancel();
+        }
+      case 'skills.search':
+        client.skillSearch?.cancel();
+        final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
+        client.skillSearch = deadline;
+        client.skillSearchId = requestId;
+        try {
+          return await callIsolate(network.port, method, {...params, 'owner': client.id},
+            cancellation: deadline.merge(client.cancellation));
+        } finally {
+          if (identical(client.skillSearch, deadline)) {
+            client.skillSearch = null;
+            client.skillSearchId = null;
           }
           deadline.cancel();
         }
@@ -1203,9 +1222,11 @@ class _Client {
   late final AttachmentUploads attachments;
   final cancellation = CancellationToken();
   CancellationToken? fileSearch;
+  CancellationToken? skillSearch;
   final mcpInventories = <Object, CancellationToken>{};
   final mcpLogins = <Object, CancellationToken>{};
   Object? fileSearchId;
+  Object? skillSearchId;
   final subscriptions = <String>{};
   final _events = Queue<({String frame, int bytes})>();
   int _queuedBytes = 0;
@@ -1374,6 +1395,10 @@ class AgentClient {
       jsonObject(await _request('files.search', {'cwd': cwd, 'query': query},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
+  Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) async =>
+      jsonObject(await _request('skills.search', {'cwd': cwd, 'query': query},
+          cancellation: cancellation, timeout: const Duration(seconds: 10)));
+
   Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
       jsonObject(await _request('mcp.inventory', {'verbose': verbose, 'server': ?server},
         cancellation: cancellation, timeout: const Duration(seconds: 35)));
@@ -1404,6 +1429,9 @@ class AgentClient {
       _pending.remove(id);
       if (method == 'files.search' && socket.readyState == WebSocket.open) {
         socket.add(jsonEncode({'method': 'files.cancel', 'params': {'request_id': id}}));
+      }
+      if (method == 'skills.search' && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({'method': 'skills.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'mcp.inventory' && socket.readyState == WebSocket.open) {
         socket.add(jsonEncode({'method': 'mcp.inventory.cancel', 'params': {'request_id': id}}));

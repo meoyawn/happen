@@ -76,6 +76,13 @@ remote files upload in blocks of up to 24 MiB; local files remain path reference
 Cancellation preserves the draft. Saved conversations retain prepared image
 bytes. Remote server selection remains outside the current desktop UI.
 
+Images inspected by the agent appear as a collapsed **Viewed an image** or
+**Viewed N images** activity in the conversation. Expand it to reveal the
+thumbnail rail, then click a thumbnail to inspect and zoom inside Happen.
+The saved activity contains the same prepared image bytes sent to the model.
+OpenAI uses `image(...)` with MCP image blocks or `tools.view_image(...)`;
+OpenCode's `read` and MCP tools present images directly to the model.
+
 The Windows runner and QuickJS build path target x64. In addition to Flutter's
 Visual Studio tooling, the Windows QuickJS build uses
 [MSYS2 UCRT64 GCC](https://www.msys2.org/docs/environments/), defaulting to
@@ -158,6 +165,16 @@ Type `@` in a new or existing task's composer to search files in the selected
 project on the server. Use Up/Down and Enter or Tab, or click/tap a result; Escape
 dismisses suggestions. Paths containing spaces are quoted. Selecting a file
 inserts its relative path into the draft; it does not upload its contents.
+
+Type `$` to search skills, or find them alongside files with `@` and commands
+with `/`. Skills come from the server's project and user `.agents/skills/`
+directories. Suggestions show the name, description, and Project or Global
+scope. Select one with Up/Down and Enter or Tab, or click it, to insert an inline
+skill reference. Escape dismisses suggestions. Selection preserves the full
+`SKILL.md` path through editing, undo, copying, and draft navigation; sending
+serializes it as `[$name](/path/to/SKILL.md)`. The composer and conversation use
+Harness's blue skill glyph and label. Discovery returns metadata only; the agent
+loads the skill instructions when needed.
 
 Search waits for a 200 ms typing pause, caches up to 20 recent queries for ten
 seconds, and cancels superseded requests. Late replies cannot change a newer

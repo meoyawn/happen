@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import 'conversation.dart';
+import 'appearance.dart';
 import 'composer_dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
@@ -18,6 +19,7 @@ import 'file_autocomplete.dart';
 import 'model_picker.dart';
 import 'mcp_conversation.dart';
 import 'session.dart';
+import 'sidebar_hover.dart';
 
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session});
@@ -70,7 +72,7 @@ class _DesktopViewState extends State<DesktopView> {
           builder: (context, _) => Scaffold(
             appBar: AppBar(title: const Text('Settings')),
             body: Align(alignment: Alignment.topCenter, child: SingleChildScrollView(
-              padding: const EdgeInsets.all(28),
+              padding: const EdgeInsets.fromLTRB(32, 20, 32, 40),
               child: SizedBox(
               width: 640,
               child: Column(
@@ -89,6 +91,11 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                     const SizedBox(height: 20),
                   ],
+                  ConversationStylePicker(
+                    selected: session.conversationStyle,
+                    onSelected: (style) => unawaited(_run(() => session.chooseConversationStyle(style))),
+                  ),
+                  const Padding(padding: EdgeInsets.symmetric(vertical: 28), child: Divider(height: 1)),
                   const Text('Accounts', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 12),
                   for (final provider in session.providers) _accountCard(provider),
@@ -206,9 +213,10 @@ class _DesktopViewState extends State<DesktopView> {
     final working = session.signingIn && session.loginProvider == id;
     final available = session.connected && !session.signingIn && session.signingOut == null;
     return Container(
+      key: ValueKey('account:$id'),
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(border: Border.all(color: const Color(0xffdaddd5)), borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(color: const Color(0xfffcfcfd), border: Border.all(color: const Color(0xffe8e9eb)), borderRadius: BorderRadius.circular(12)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -445,20 +453,22 @@ class _DesktopViewState extends State<DesktopView> {
                 child: SizedBox(
                   width: 8,
                   height: double.infinity,
-                  child: VerticalDivider(
-                    width: 8,
-                    thickness: _sidebarHovered || _dragSidebarWidth != null ? 2 : 1,
-                    color: _sidebarHovered || _dragSidebarWidth != null ? Theme.of(context).colorScheme.primary : null,
-                  ),
+                  child: ColoredBox(color: const Color(0xfff9f9f9), child: Center(child: Container(
+                    width: _sidebarHovered || _dragSidebarWidth != null ? 2 : 1,
+                    color: _sidebarHovered || _dragSidebarWidth != null ? const Color(0xffb0b3b9) : Colors.transparent,
+                  ))),
                 ),
               ),
             ),
           ),
           Expanded(
-            child: Column(
+            child: ConversationAppearance(
+              style: session.conversationStyle,
+              child: ColoredBox(color: session.conversationStyle == ConversationStyle.harness ? Colors.white : const Color(0xfffdfdfd),
+              child: Column(
               children: [
                 _header(context),
-                const Divider(height: 1),
+                if (session.conversationStyle == ConversationStyle.opencode) const Divider(height: 1, color: Color(0xffeeeeef)),
                 Expanded(
                   child: ConversationDeck(
                     task: session.task,
@@ -509,7 +519,7 @@ class _DesktopViewState extends State<DesktopView> {
                 else if (session.project != null)
                   _Composer(key: _composer, session: session),
               ],
-            ),
+            ))),
           ),
         ],
       );
@@ -519,26 +529,43 @@ class _DesktopViewState extends State<DesktopView> {
     key: const ValueKey('sidebar'),
     width: width,
     child: Material(
-      color: const Color(0xfff2f3ef),
+      color: const Color(0xfff9f9f9),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(22, 24, 20, 28),
-            child: Row(
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: SizedBox(height: 52, child: Row(
               children: [
-                Icon(Icons.blur_on_rounded, size: 24, color: Color(0xff325e57)),
-                SizedBox(width: 10),
-                Text(
-                  'Happen',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                PopupMenuButton<String>(
+                  tooltip: 'Happen',
+                  onSelected: (value) => value == 'settings' ? _settings() : _addProject(),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'project', child: Text('Open project')),
+                    PopupMenuItem(value: 'settings', child: Text('Settings')),
+                  ],
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text('Happen', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -.7)),
+                    SizedBox(width: 4),
+                    Icon(Icons.keyboard_arrow_down_rounded, size: 15, color: Color(0xff979aa0)),
+                  ]),
                 ),
               ],
-            ),
+            )),
           ),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: SidebarItem(
+            child: const Row(children: [
+              Icon(Icons.edit_square, size: 16, color: Color(0xff656971)),
+              SizedBox(width: 8),
+              Text('New task', style: TextStyle(fontSize: 14, color: Color(0xff1a1c1f))),
+            ]),
+            onTap: session.project?.available == true && session.project?.removing != true
+                ? () => _run(() => _selectProject(session.project!)) : _addProject,
+          )),
+          const SizedBox(height: 12),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
               children: [
                 ..._sidebarSection('pinned', 'Pinned', () => [
                   for (final id in session.pinnedTaskIds)
@@ -548,9 +575,6 @@ class _DesktopViewState extends State<DesktopView> {
                   for (final key in session.pinnedProjectKeys)
                     for (final project in session.projects)
                       if (project.checkoutKey == key) ..._projectRows(project, section: 'pinned'),
-                  if (!session.projects.any((project) => session.pinnedProjectKeys.contains(project.checkoutKey) ||
-                      project.tasks.any((task) => !task.archived && session.pinnedTaskIds.contains(task.id))))
-                    _sidebarEmpty('No pinned items'),
                 ]),
                 ..._sidebarSection('projects', 'Projects', () => [
                   for (final project in session.projects)
@@ -558,28 +582,29 @@ class _DesktopViewState extends State<DesktopView> {
                 ], action: IconButton(
                   tooltip: 'Open project',
                   onPressed: _addProject,
-                  icon: const Icon(Icons.create_new_folder_outlined, size: 19),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+                  icon: const Icon(Icons.add_rounded, size: 16),
                 )),
                 ..._sidebarSection('recents', 'Recents', _recentRows),
               ],
             ),
           ),
-          const Divider(height: 1),
           Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
             child: Row(
               children: [
                 Icon(
                   Icons.circle,
                   size: 7,
                   color: session.connected
-                      ? const Color(0xff567f59)
+                      ? const Color(0xff58a375)
                       : Colors.orange,
                 ),
                 const SizedBox(width: 9),
                 Text(
                   session.connected ? 'Local' : 'Disconnected',
-                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  style: const TextStyle(fontSize: 12, color: Color(0xff777b82)),
                 ),
                 const Spacer(),
                 IconButton(
@@ -602,30 +627,31 @@ class _DesktopViewState extends State<DesktopView> {
       Semantics(
         key: ValueKey('section:$id'),
         expanded: !collapsed,
-        child: ListTile(
+        child: SidebarHover(builder: (context, active) => SidebarItem(
           key: ValueKey('section-header:$id'),
-          dense: true,
-          contentPadding: const EdgeInsets.only(left: 12, right: 2),
-          minLeadingWidth: 12,
-          horizontalTitleGap: 6,
-          leading: Icon(collapsed ? Icons.chevron_right : Icons.expand_more, size: 17, color: Colors.black54),
-          title: Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black54)),
-          trailing: action,
+          padding: const EdgeInsets.only(left: 8, right: 4),
+          child: Row(children: [
+            Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Color(0x7e1a1c1f))),
+            if (collapsed || active) Icon(collapsed ? Icons.chevron_right : Icons.expand_more,
+              size: 14, color: const Color(0x7e1a1c1f)),
+            const Spacer(),
+            if (action != null && active) action,
+          ]),
           onTap: () {
             if (id == 'recents' && !collapsed) _recentLimit = 10;
             _navigationTasks = null;
             unawaited(_run(() => session.chooseSidebarSection(id, !collapsed)));
           },
-        ),
+        )),
       ),
       if (!collapsed) ...children(),
-      const SizedBox(height: 12),
+      const SizedBox(height: 16),
     ];
   }
 
   Widget _sidebarEmpty(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(32, 4, 12, 8),
-    child: Text(text, style: const TextStyle(fontSize: 12, color: Colors.black38)),
+    padding: const EdgeInsets.fromLTRB(24, 4, 12, 4),
+    child: Text(text, style: const TextStyle(fontSize: 12, color: Color(0xffb1b3b9))),
   );
 
   List<Widget> _recentRows() {
@@ -649,43 +675,50 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   List<Widget> _projectRows(Project project, {String section = 'projects'}) => [
-    ListTile(
+    SidebarHover(builder: (context, active) => SidebarItem(
       key: ValueKey('project:${project.checkoutKey}'),
-      enabled: project.available && !project.removing,
-      dense: true,
-      contentPadding: const EdgeInsets.only(left: 12),
-      leading: Semantics(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      selected: session.project == project && session.task == null,
+      onTap: project.removing ? null : () => _toggleProject(project),
+      child: Row(children: [
+      Semantics(
         expanded: !_collapsedProjects.contains(project.checkoutKey),
         child: IconButton(
           tooltip: '${_collapsedProjects.contains(project.checkoutKey) ? 'Expand' : 'Collapse'} ${project.name}',
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 24, height: 28),
-          icon: Icon(_collapsedProjects.contains(project.checkoutKey) ? Icons.chevron_right : Icons.expand_more, size: 19),
+          constraints: const BoxConstraints.tightFor(width: 16, height: 24),
+          style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+          icon: Icon(active ? _collapsedProjects.contains(project.checkoutKey) ? Icons.chevron_right : Icons.expand_more
+            : Icons.folder_outlined, size: 16, color: project.available ? const Color(0xff50545b) : const Color(0xffb1b3b9)),
           onPressed: project.removing ? null : () => _toggleProject(project),
         ),
       ),
-      minLeadingWidth: 20,
-      title: Tooltip(
+      const SizedBox(width: 8),
+      Expanded(child: Tooltip(
         message: project.available ? project.path : '${project.path}\nFolder unavailable',
         child: Text(
           project.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
+          style: TextStyle(fontSize: 14, height: 1.5, fontWeight: FontWeight.w400,
+            color: project.available ? const Color(0xff1a1c1f) : const Color(0xffb1b3b9)),
         ),
-      ),
-      subtitle: !project.available ? const Text('Folder unavailable', style: TextStyle(fontSize: 11)) : null,
-      onTap: () => _toggleProject(project),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+      )),
+      if (active) ...[
         IconButton(
           tooltip: 'New task in ${project.name}',
-          icon: const Icon(Icons.add, size: 18),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 22, height: 24),
+          icon: const Icon(Icons.add, size: 16),
           onPressed: project.available && !project.removing ? () => _run(() => _selectProject(project)) : null,
         ),
         PopupMenuButton<String>(
           tooltip: 'Project actions',
+          padding: EdgeInsets.zero,
+          iconSize: 16,
+          style: IconButton.styleFrom(minimumSize: const Size(22, 24), maximumSize: const Size(22, 24), padding: EdgeInsets.zero),
           enabled: !project.removing && !session.submitting && !project.tasks.any((task) => task.archiving),
-          icon: const Icon(Icons.more_horiz, size: 18),
+          icon: const Icon(Icons.more_horiz, size: 16),
           onSelected: (value) {
             _navigationTasks = null;
             unawaited(_run(() => value == 'pin'
@@ -697,42 +730,43 @@ class _DesktopViewState extends State<DesktopView> {
             const PopupMenuItem(value: 'remove', child: Text('Remove project')),
           ],
         ),
+      ],
       ]),
-    ),
+    )),
     if (!_collapsedProjects.contains(project.checkoutKey))
       for (final task in project.tasks.where((task) => !task.archived && !session.pinnedTaskIds.contains(task.id)))
         _taskTile(project, task, section: section, grouped: true),
   ];
 
   Widget _taskTile(Project project, DesktopTask task, {String section = 'projects', bool grouped = false}) {
-    final state = (session.task == task, task.running, task.archiving, task.archived,
+    final state = (session.task == task, task.title, task.running, task.archiving, task.archived,
       session.connected, project.available, project.removing, session.pinnedTaskIds.contains(task.id), grouped);
     final key = (section, task);
     final cached = _taskTiles[key];
     if (cached?.state == state) return cached!.tile;
     final tile = Padding(
     key: ValueKey('$section:${task.id}'),
-    padding: EdgeInsets.only(left: grouped ? 22 : 0, bottom: 2),
-    child: ListTile(
+    padding: const EdgeInsets.only(bottom: 1),
+    child: SidebarHover(builder: (context, active) => SidebarItem(
       key: _taskRowKeys.putIfAbsent(key, () => GlobalKey()),
-      dense: true,
-      contentPadding: const EdgeInsets.only(left: 12),
-      visualDensity: const VisualDensity(vertical: -2),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      padding: EdgeInsets.only(left: grouped ? 32 : 8, right: 8),
       selected: session.task == task,
-      selectedTileColor: const Color(0xffe2e7df),
-      title: Tooltip(
+      child: Row(children: [Expanded(child: Tooltip(
         message: '${task.title}\n${project.path}',
         child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: project.available ? null : const TextStyle(color: Colors.black38)),
-      ),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          style: TextStyle(fontSize: 14, height: 20 / 14,
+            color: project.available ? const Color(0xff1a1c1f) : const Color(0xffb1b3b9))),
+      )),
         if (task.running || task.archiving)
-          const SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.5)),
-        PopupMenuButton<String>(
+          const Padding(padding: EdgeInsets.only(right: 6), child: SizedBox.square(dimension: 10,
+            child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xff777b82)))),
+        if (active) PopupMenuButton<String>(
           tooltip: 'Task actions',
+          padding: EdgeInsets.zero,
+          iconSize: 16,
+          style: IconButton.styleFrom(minimumSize: const Size(20, 24), maximumSize: const Size(20, 24), padding: EdgeInsets.zero),
           enabled: session.connected && !task.archiving && !project.removing,
-          icon: const Icon(Icons.more_horiz, size: 18),
+          icon: const Icon(Icons.more_horiz, size: 16),
           onSelected: (value) {
             _navigationTasks = null;
             unawaited(_run(() => value == 'pin'
@@ -752,7 +786,7 @@ class _DesktopViewState extends State<DesktopView> {
         _navigationTasks = null;
         unawaited(_run(() => grouped ? _selectProject(project, task) : session.select(project, task)));
       },
-    ),
+    )),
   );
     _taskTiles[key] = (state: state, tile: tile);
     return tile;
@@ -776,25 +810,30 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Widget _header(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
-    child: Row(
+    padding: const EdgeInsets.symmetric(horizontal: 24),
+    child: SizedBox(height: 56, child: Row(
       children: [
+        if (session.task != null && session.project != null) ...[
+          Flexible(child: Text(session.project!.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13, color: Color(0xff8b8e95)))),
+          const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('/', style: TextStyle(color: Color(0xffc8cacf)))),
+        ],
         Expanded(
           child: Text(
             session.task?.title ?? session.project?.name ?? 'Your workspace',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w500),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Color(0xff50545b)),
           ),
         ),
         if (session.project != null)
-          TextButton.icon(
+          IconButton(
+            tooltip: 'New task',
             onPressed: session.project!.available && !session.project!.removing ? () => _run(() => _selectProject(session.project!)) : null,
-            icon: const Icon(Icons.edit_square, size: 16),
-            label: const Text('New task'),
+            icon: const Icon(Icons.edit_square, size: 17, color: Color(0xff777b82)),
           ),
       ],
-    ),
+    )),
   );
 
   Widget _empty(BuildContext context) => Center(
@@ -803,20 +842,25 @@ class _DesktopViewState extends State<DesktopView> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.blur_on_rounded, size: 42, color: Color(0xff7f9384)),
-          const SizedBox(height: 24),
+          if (session.project == null) ...[
+            const Icon(Icons.folder_open_outlined, size: 32, color: Color(0xff8b8e95)),
+            const SizedBox(height: 20),
+          ],
           Text(
             session.project == null
                 ? 'Start with a project'
                 : 'What are we working on?',
-            style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w500),
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: session.conversationStyle == ConversationStyle.harness ? 28 : 24,
+              fontWeight: FontWeight.w500, letterSpacing: -.8, color: const Color(0xff292b30)),
           ),
           const SizedBox(height: 12),
           Text(
             session.project == null
                 ? 'Open a folder, then start a task.'
                 : 'Each task keeps its own conversation.',
-            style: const TextStyle(color: Colors.black54),
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 14, color: Color(0xff979aa0)),
           ),
           if (session.project == null) ...[
             const SizedBox(height: 24),
@@ -1140,6 +1184,7 @@ class _ComposerState extends State<_Composer> {
       WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
     }
     final session = widget.session;
+    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
     final running = session.task?.running == true;
     final available =
         session.connected &&
@@ -1155,9 +1200,9 @@ class _ComposerState extends State<_Composer> {
       onLeave: () { if (mounted) setState(() => _draggingAttachments = false); },
       child: Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 840),
+        constraints: BoxConstraints(maxWidth: harness ? 832 : 800),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(28, 8, 28, 20),
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           child: CallbackShortcuts(
             bindings: {
               const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
@@ -1193,14 +1238,17 @@ class _ComposerState extends State<_Composer> {
               cwd: session.project!.path,
               enabled: session.connected && !session.submitting && !_dictating && _text is ComposerTextController,
               child: DecoratedBox(
+                key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary : const Color(0xffdaddd5),
+                  borderRadius: BorderRadius.circular(harness ? 24 : 12),
+                  border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary : const Color(0xffe0e1e4),
                     width: _draggingAttachments ? 2 : 1),
+                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: harness ? .04 : .025),
+                    blurRadius: harness ? 16 : 6, offset: const Offset(0, 2))],
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
+                  padding: EdgeInsets.fromLTRB(harness ? 18 : 14, 12, 10, 10),
                   child: Column(
                     children: [
                       if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
@@ -1240,10 +1288,14 @@ class _ComposerState extends State<_Composer> {
                         autofocus: true,
                         minLines: 2,
                         maxLines: 8,
+                        style: TextStyle(fontSize: harness ? 15 : 14, height: harness ? 1.6 : 1.5, color: const Color(0xff1a1c1f)),
                         decoration: const InputDecoration(
-                          hintText: 'Describe a task, @ a file or folder, or / for commands…',
-                          hintStyle: TextStyle(color: Colors.black38),
+                          hintText: 'Ask anything, @ a file, / for commands',
+                          hintStyle: TextStyle(color: Color(0xff979aa0)),
+                          contentPadding: EdgeInsets.only(top: 4, bottom: 12),
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
                         ),
                       ),
                       Row(
@@ -1275,6 +1327,12 @@ class _ComposerState extends State<_Composer> {
                             final stopWorking = running && !hasContent && !_dictating;
                             final dictationCanSend = _dictating && _voice.phase == DictationPhase.recording && !_finishingVoice;
                             return IconButton.filled(
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xff1a1c1f), foregroundColor: Colors.white,
+                              disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
+                              minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(harness ? 18 : 8)),
+                            ),
                             tooltip: stopWorking ? 'Stop task and clear pending messages' : running
                                 ? (session.deliveryMode == 'steer'
                                       ? 'Steer task'

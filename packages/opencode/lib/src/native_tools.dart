@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'package:tool_runtime/tool_runtime.dart';
@@ -95,6 +96,15 @@ class NativeTools {
     final List<int> first;
     try { first = await prefix.stream.fold<List<int>>([], (a, b) => a..addAll(b)).asCancellable(cancellation); }
     finally { await prefix.close(); }
+    if (imageMimeType(first) != null) {
+      if (await file.length() > 20 * 1024 * 1024) {
+        throw StateError('Image exceeds the OpenCode 20 MiB read limit: $path');
+      }
+      return {
+        'output': 'Image read successfully',
+        'images': [{'type': 'image', 'name': p.basename(absolute), 'path': absolute}],
+      };
+    }
     if (first.contains(0)) throw StateError('Cannot read binary file: $path');
     final lines = <String>[];
     var index = 0, bytes = 0;

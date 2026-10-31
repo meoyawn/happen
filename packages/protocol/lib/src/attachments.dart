@@ -38,7 +38,9 @@ List<Json> inputAttachments(Object? value) {
     switch (part['type']) {
       case 'image':
         final detail = part['detail'] ?? 'high';
-        if (detail != 'high' && detail != 'original') throw const FormatException('Image detail must be high or original');
+        if (!{'auto', 'low', 'high', 'original'}.contains(detail)) {
+          throw const FormatException('Image detail must be auto, low, high or original');
+        }
         if (part['path'] != null) {
           if (part['data'] != null) throw const FormatException('Use either image bytes or an image path');
           final path = requiredString(part, 'path');

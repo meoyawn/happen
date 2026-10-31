@@ -11,6 +11,7 @@ import 'project_identity.dart';
 import 'dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
+import 'appearance.dart';
 
 class Project {
   Project(this.checkoutKey, this.id, this.path, [List<DesktopTask>? tasks])
@@ -74,9 +75,11 @@ class DesktopSession extends ChangeNotifier {
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
   List<Json> providers = [];
+  final _projectModels = <String, Json>{};
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
+  ConversationStyle conversationStyle = ConversationStyle.harness;
   double sidebarWidth = 248;
   final collapsedSidebarSections = <String>{};
   final pinnedTaskIds = <String>[];
@@ -93,11 +96,19 @@ class DesktopSession extends ChangeNotifier {
 
   String get draftKey => task?.id ?? project?.checkoutKey ?? '';
   String? get providerId {
-    final selected = task?.provider ?? _provider;
+    final selected = task?.provider ?? (_projectModel?['provider'] as String?) ?? _provider;
     return selected == 'gpt' ? 'openai' : selected;
   }
-  String? get modelId => task?.model ?? _model;
-  String? get reasoning => task?.nextReasoning ?? task?.reasoning ?? _reasoning;
+  String? get modelId => task?.model ?? (_projectModel?['id'] as String?) ?? _model;
+  String? get reasoning {
+    final selected = task?.nextReasoning ?? task?.reasoning;
+    if (selected != null) return selected;
+    final model = _projectModel;
+    if (model == null) return _reasoning;
+    final saved = _projectModels[project?.checkoutKey]?['reasoning'];
+    return (model['reasoning_levels'] as List? ?? const []).contains(saved)
+        ? saved as String? : model['default_reasoning'] as String?;
+  }
   Json? get providerInfo =>
       providers.where((p) => p['id'] == providerId).firstOrNull;
   List<Json> get models => [
@@ -106,6 +117,10 @@ class DesktopSession extends ChangeNotifier {
         {...jsonObject(model), 'provider': provider['id']},
   ];
   Json? get modelInfo => models.where((m) => m['provider'] == providerId && m['id'] == modelId).firstOrNull;
+  Json? get _projectModel {
+    final saved = _projectModels[project?.checkoutKey];
+    return models.where((m) => m['provider'] == saved?['provider'] && m['id'] == saved?['model']).firstOrNull;
+  }
   bool get authenticated => {
     'signed_in',
     'refresh_required',
@@ -146,6 +161,12 @@ class DesktopSession extends ChangeNotifier {
     if (!{'live', 'on_stop'}.contains(mode)) throw ArgumentError('Invalid dictation mode');
     await _setting('dictation_mode', mode);
     dictationMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> chooseConversationStyle(ConversationStyle style) async {
+    await _setting('conversation_view', style == ConversationStyle.harness ? 'codex' : 'opencode');
+    conversationStyle = style;
     notifyListeners();
   }
 
@@ -286,20 +307,37 @@ class DesktopSession extends ChangeNotifier {
     if (task != null) return;
     final model = models.where((m) => m['id'] == id).firstOrNull;
     if (model == null) throw ArgumentError('Unknown model');
-    _provider = model['provider'] as String;
-    _model = id;
-    _reasoning = model['default_reasoning'] as String?;
+    _rememberModel(model['provider'] as String, id, model['default_reasoning'] as String?);
     notifyListeners();
   }
 
   void chooseReasoning(String value) {
+    final provider = providerId, model = modelId;
     if (task case final target?) {
       if (!target.reasoningUpdates) return;
       target.nextReasoning = value;
-    } else {
-      _reasoning = value;
     }
+    _rememberModel(provider, model, value);
     notifyListeners();
+  }
+
+  void _rememberModel(String? provider, String? model, String? reasoning) {
+    final owner = project;
+    if (owner == null) {
+      _provider = provider;
+      _model = model;
+      _reasoning = reasoning;
+      return;
+    }
+    if (owner.removing) return;
+    _projectModels[owner.checkoutKey] = {'provider': provider, 'model': model, 'reasoning': reasoning};
+    _saveProjectModels();
+  }
+
+  void _saveProjectModels() {
+    unawaited(_setting('project_models', jsonEncode(_projectModels)).catchError((Object failure) {
+      if (failure is! CancelledException) showError(failure);
+    }));
   }
 
   Future<Object?> _request(String method, [Json params = const {}]) {
@@ -312,8 +350,20 @@ class DesktopSession extends ChangeNotifier {
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
+    _projectModels.clear();
+    try {
+      final decoded = jsonDecode(settings['project_models'] as String? ?? '{}');
+      if (decoded is Map) {
+        for (final entry in jsonObject(decoded).entries) {
+          if (entry.value is Map) _projectModels[entry.key] = jsonObject(entry.value);
+        }
+      }
+    } on FormatException {
+      // Ignore malformed UI preferences and use the catalog defaults.
+    }
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
+    conversationStyle = settings['conversation_view'] == 'opencode' ? ConversationStyle.opencode : ConversationStyle.harness;
     final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
     sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
     List<String> savedIds(String key) {
@@ -431,6 +481,7 @@ class DesktopSession extends ChangeNotifier {
         'checkout_key': target.checkoutKey,
       }, cancellation: _lifetime);
       projects.remove(target);
+      if (_projectModels.remove(target.checkoutKey) != null) _saveProjectModels();
       if (project == target) {
         project = projects.where((project) => project.available && !project.removing).firstOrNull ?? projects.firstOrNull;
         task = null;
@@ -839,6 +890,7 @@ class ToolActivity {
   // Collapsed tools should not parse and re-encode their potentially large JSON.
   String get input => _input ??= _pretty(_rawInput);
   String? get output => _hasOutput ? _output ??= _pretty(_rawOutput) : null;
+  Object? get rawOutput => _rawOutput;
   set output(Object? value) {
     _hasOutput = true;
     _rawOutput = value;
@@ -1007,6 +1059,10 @@ List<ChatEntry> conversation(DesktopTask task) {
           tool.status = part['is_error'] == true ? 'failed' : 'done';
           tool.output = part['output'];
           tool.endedAt = at;
+          final images = (part['images'] as List? ?? []).map(jsonObject).toList();
+          if (images.isNotEmpty) {
+            result.add(ChatEntry('$id:images:${tool.id}', 'Image', '', attachments: images, timestamp: at));
+          }
           if (tool == activeCell) activeCell = null;
         }
       case 'turn.failed':

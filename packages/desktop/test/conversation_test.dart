@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:desktop/conversation.dart';
 import 'package:desktop/conversation_markdown.dart';
+import 'package:desktop/inline_reference.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,31 @@ import 'package:flutter_test/flutter_test.dart';
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 
 void main() {
+  testWidgets('skill links render the Harness glyph and label in messages while code and web links stay ordinary', (tester) async {
+    final task = DesktopTask('skills', 'Skills')..events.addAll({
+      1: {'seq': 1, 'type': 'input.committed', 'data': {'item': {
+        'role': 'user', 'content': [{'type': 'text', 'text': r'Use [$dart](/skills/dart/SKILL.md) with [guide](https://example.com/SKILL.md).'}],
+      }}},
+      2: {'seq': 2, 'type': 'model.completed', 'data': {'output': [
+        {'content': [{'type': 'text', 'text': r'Loaded [Dart](file:///skills/dart/SKILL.md). Example: `[$code](/skills/code/SKILL.md)`'}]},
+      ]}},
+    });
+    tester.view.physicalSize = const Size(1000, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body:
+      ConversationTranscript(task: task, directory: '/project', onRetry: () {}))));
+    await tester.pumpAndSettle();
+    expect(find.byType(SkillIcon), findsNWidgets(2));
+    expect(find.textContaining(r'$dart', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Dart', findRichText: true), findsOneWidget);
+    expect(find.byTooltip('/skills/dart/SKILL.md'), findsOneWidget);
+    expect(find.textContaining(r'[$code](/skills/code/SKILL.md)', findRichText: true), findsOneWidget);
+    expect(find.textContaining('guide', findRichText: true), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   Future<void> open(WidgetTester tester, DesktopTask task, {Size size = const Size(1100, 1400)}) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;

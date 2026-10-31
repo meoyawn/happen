@@ -72,6 +72,7 @@ Each execution uses a fresh JavaScript context. Use the host tools for file, pro
 
 Global helpers:
 - `text(value)`: Appends a text item. Non-string values are stringified with JSON.stringify when possible.
+- `image(value, detail?)`: Appends an image for you to inspect with vision. Accepts a base64 image data URL, an object with image_url, or an MCP image content block. For MCP screenshots, use `for (const part of result.content ?? []) { if (part.type === "image") image(part); else if (part.type === "text") text(part.text); }`. Use `image(await tools.view_image({path: "/absolute/path.png"}))` for a local image. Optional detail accepts "auto", "low", "high", or "original". Images are separate from the text output budget. Inspect images directly with these helpers; opening an image in the user's browser does not give you its pixels.
 - `store(key: string, value: any)`: stores a serializable value under a string key for later exec calls in the same session.
 - `load(key: string)`: returns the stored value for a string key, or undefined if it is missing.
 - `ALL_TOOLS`: metadata for the enabled nested tools as { name, description } entries.''',
@@ -86,6 +87,16 @@ Tool availability can change between calls.''',
 
 const hostCatalog = <Json>[
   webSearchHost,
+  {
+    'name': 'view_image',
+    'description': 'View a local image with your vision. Returns image_url and detail; pass the result to image(await tools.view_image(...)) to inspect it. Relative paths resolve from the task working directory. This does not open a browser or external application.',
+    'parameters': {
+      'type': 'object', 'properties': {
+        'path': {'type': 'string', 'description': 'Path to the image file.'},
+        'detail': {'type': 'string', 'enum': ['high', 'original'], 'description': 'Defaults to high. Use original to preserve more image detail.'},
+      }, 'required': ['path'], 'additionalProperties': false,
+    },
+  },
   {
     'name': 'shell_command',
     'description': 'Run a short shell command to completion. Its process tree is terminated on steering, turn cancellation, cell cancellation, or timeout. Use exec_command for task-owned sessions such as development servers.',

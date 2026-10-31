@@ -331,6 +331,8 @@ class OpenCodeProvider implements ModelProvider {
               'tool_use_id': part['call_id'],
               'content': [
                 {'type': 'text', 'text': part['output']},
+                for (final image in (part['images'] as List? ?? []).map(jsonObject))
+                  {'type': 'image', 'source': {'type': 'base64', 'media_type': image['mime_type'], 'data': image['data']}},
               ],
               if (part['is_error'] == true) 'is_error': true,
             });
@@ -398,7 +400,16 @@ class OpenCodeProvider implements ModelProvider {
     final messages = <Json>[
       if (instructions.isNotEmpty) {'role': 'system', 'content': instructions},
     ];
+    final toolImages = <Json>[];
+    void flushToolImages() {
+      if (toolImages.isEmpty) return;
+      messages.add({'role': 'user', 'content': [
+        for (final image in toolImages) {'type': 'image_url', 'image_url': {'url': attachmentDataUrl(image)}},
+      ]});
+      toolImages.clear();
+    }
     for (final item in request.input) {
+      if (item.role != 'tool') flushToolImages();
       if (item.kind == 'configuration') continue;
       if (item.kind == 'tools') {
         // Chat has one catalog per request. Keep the update's position as text;
@@ -429,6 +440,7 @@ class OpenCodeProvider implements ModelProvider {
             'tool_call_id': part['call_id'],
             'content': part['output'],
           });
+          toolImages.addAll((part['images'] as List? ?? []).map(jsonObject));
         }
       } else if (item.role == 'assistant') {
         final native = jsonObject(item.native['deepseek'] ?? {});
@@ -478,6 +490,7 @@ class OpenCodeProvider implements ModelProvider {
         });
       }
     }
+    flushToolImages();
     return {
       'model': request.model,
       'messages': messages,

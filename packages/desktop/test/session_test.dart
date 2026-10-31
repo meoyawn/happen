@@ -456,7 +456,8 @@ void main() {
       await server!.close();
       server = null;
       desktop = await open();
-      expect(desktop.providerId, 'openai');
+      expect(desktop.providerId, 'opencode');
+      expect(desktop.modelId, 'deepseek-v4.1-flash-free');
       expect(desktop.deliveryMode, 'queue');
       expect(desktop.dictationMode, 'on_stop');
       expect(desktop.project!.id, 'https://github.com/acme/again');

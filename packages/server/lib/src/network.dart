@@ -260,6 +260,10 @@ void _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
+      if (request['method'] == 'skills.search') {
+        reply?.send({'result': await skills.search(params, cancellation)});
+        return;
+      }
       if (request['method'] == 'skills.catalog' || request['method'] == 'skills.read') {
         if (id == null) throw ArgumentError('Skills require a task');
         final cwd = requiredString(params, 'cwd');

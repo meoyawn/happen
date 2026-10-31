@@ -1,6 +1,7 @@
 import 'package:protocol/protocol.dart';
 
 import 'model.dart';
+import 'images.dart';
 
 typedef ToolInvoker = Future<Object?> Function(String name, Object? arguments, {
   required CancellationToken cancellation,
@@ -22,6 +23,8 @@ abstract class ToolInterface {
   Map<String, String> get services => const {};
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation);
   String formatResult(ToolCall call, Json result);
+  Future<List<Json>> prepareImages(List<Json> images, {required CancellationToken cancellation}) =>
+      prepareInputAttachments(images, cancellation: cancellation);
   List<Json> externalCatalog(List<Json> catalog) => catalog;
   ToolDiscovery search(List<Json> catalog, Json arguments, {bool nested = false}) =>
       throw UnsupportedError('This provider discovers tools inside code mode');

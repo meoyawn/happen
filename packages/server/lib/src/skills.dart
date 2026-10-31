@@ -15,6 +15,48 @@ class FilesystemSkills {
 
   final String? homeDirectory;
 
+  /// Composer metadata only; explicit selection also includes non-implicit skills.
+  Future<Json> search(Json params, CancellationToken cancellation) async {
+    cancellation.throwIfCancelled();
+    final cwd = requiredString(params, 'cwd');
+    final query = params['query'];
+    final limit = params['limit'] ?? 20;
+    if (!p.isAbsolute(cwd) || cwd.contains('\x00')) {
+      throw const FormatException('cwd must be an absolute directory');
+    }
+    if (query is! String || query.length > 256 || query.contains(RegExp(r'[\x00-\x1f]'))) {
+      throw const FormatException('query must be a string of at most 256 characters');
+    }
+    if (limit is! int || limit < 1 || limit > 50) throw const FormatException('limit must be 1..50');
+    if (!await Directory(cwd).exists()) throw const FileSystemException('Search directory is unavailable');
+    final catalog = await this.catalog(cwd, cancellation);
+    final needle = query.trim().toLowerCase();
+    final matches = <({Json skill, int score, int order})>[];
+    for (final raw in catalog['skills'] as List) {
+      cancellation.throwIfCancelled();
+      final skill = jsonObject(raw);
+      final score = _matchSkill(skill['name'] as String, needle);
+      if (score == null) continue;
+      matches.add((skill: skill, score: score, order: matches.length));
+    }
+    matches.sort((a, b) {
+      final score = b.score.compareTo(a.score);
+      return score != 0 ? score : a.order.compareTo(b.order);
+    });
+    final skills = <Json>[];
+    var bytes = 0, truncated = matches.length > limit || catalog['error_count'] != 0;
+    for (final match in matches.take(limit)) {
+      final skill = match.skill;
+      final row = <String, Object?>{'name': skill['name'], 'path': skill['path'], 'scope': skill['scope'],
+        'description': String.fromCharCodes((skill['short_description'] as String? ?? skill['description'] as String).runes.take(1024))};
+      bytes += utf8.encode(jsonEncode(row)).length;
+      if (bytes > 32 * 1024) { truncated = true; break; }
+      skills.add(row);
+    }
+    cancellation.throwIfCancelled();
+    return {'skills': skills, 'truncated': truncated};
+  }
+
   Future<Json> catalog(String cwd, CancellationToken cancellation) async {
     final chain = <String>[];
     var cursor = p.normalize(p.absolute(cwd));
@@ -171,6 +213,23 @@ class FilesystemSkills {
 }
 
 const _resourceIgnored = {'.git', 'node_modules', '.venv', 'venv', '__pycache__', '.DS_Store'};
+
+int? _matchSkill(String name, String query) {
+  if (query.isEmpty) return 0;
+  final lower = name.toLowerCase();
+  if (lower == query) return 100000;
+  if (lower.startsWith(query)) return 80000 - name.length;
+  if (lower.contains(query)) return 60000 - name.length;
+  var position = 0, gaps = 0;
+  for (final rune in query.runes) {
+    final character = String.fromCharCode(rune);
+    final found = lower.indexOf(character, position);
+    if (found < 0) return null;
+    gaps += found - position;
+    position = found + character.length;
+  }
+  return 40000 - gaps * 10 - name.length;
+}
 
 Future<String> _read(String path, CancellationToken cancellation) async {
   const limit = 2 * 1024 * 1024;

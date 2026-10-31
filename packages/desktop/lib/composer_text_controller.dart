@@ -1,22 +1,25 @@
 import 'package:flutter/material.dart';
 
-/// A file reference occupies one UTF-16 position, like Harness's mention atoms.
+import 'inline_reference.dart';
+
+/// A file or skill occupies one UTF-16 position, like Harness's mention atoms.
 @immutable
 class ComposerFileReference {
-  const ComposerFileReference(this.offset, this.path);
+  const ComposerFileReference(this.offset, this.path, {this.skillName});
   final int offset;
   final String path;
+  final String? skillName;
   bool get folder => path.endsWith('/');
-  String get label => path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).last;
+  String get label => skillName ?? path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).last;
   String get markdown {
-    final title = label.replaceAll('\\', '\\\\').replaceAll('[', r'\[').replaceAll('](', r']\(').replaceAll(']', r'\]');
+    final title = (skillName == null ? label : '\$$label').replaceAll('\\', '\\\\').replaceAll('[', r'\[').replaceAll('](', r']\(').replaceAll(']', r'\]');
     final destination = path.replaceAll('\\', '\\\\').replaceAll(')', r'\)');
     return '[$title]($destination)';
   }
-  ComposerFileReference shifted(int delta) => ComposerFileReference(offset + delta, path);
+  ComposerFileReference shifted(int delta) => ComposerFileReference(offset + delta, path, skillName: skillName);
 }
 
-/// Keeps file identity out of editable text and serializes it only at the edge.
+/// Keeps reference identity out of editable text and serializes it at the edge.
 class ComposerTextController extends TextEditingController {
   ComposerTextController({super.text, List<ComposerFileReference> files = const []}) {
     _files.addAll(files.where(_valid));
@@ -58,12 +61,12 @@ class ComposerTextController extends TextEditingController {
 
   String serializePrompt() => serializeRange(0, text.length);
 
-  void insertFile(TextRange range, String path) {
+  void insertFile(TextRange range, String path, {String? skillName}) {
     final followingSpace = range.end < text.length && RegExp(r'\s').hasMatch(text[range.end]);
     final replacement = '$marker${followingSpace ? '' : ' '}';
     final result = text.replaceRange(range.start, range.end, replacement);
     _replaceFiles(range.start, range.end, replacement.length);
-    _files.add(ComposerFileReference(range.start, path));
+    _files.add(ComposerFileReference(range.start, path, skillName: skillName));
     _files.sort((a, b) => a.offset.compareTo(b.offset));
     super.value = TextEditingValue(text: result,
       selection: TextSelection.collapsed(offset: range.start + 2));
@@ -150,10 +153,11 @@ class ComposerTextController extends TextEditingController {
       spans.add(WidgetSpan(alignment: PlaceholderAlignment.middle,
         child: Semantics(label: file.label, excludeSemantics: true,
           child: Tooltip(message: file.path, child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(file.folder ? Icons.folder_outlined : Icons.insert_drive_file_outlined, size: 16, color: const Color(0xff2e82d2)),
+            if (file.skillName != null) const SkillIcon()
+            else Icon(file.folder ? Icons.folder_outlined : Icons.insert_drive_file_outlined, size: 16, color: inlineReferenceAccent),
             const SizedBox(width: 3),
             Flexible(child: Text(file.label, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w500, color: const Color(0xff2e82d2)))),
+              style: (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w500, color: inlineReferenceAccent))),
           ])),
         )));
       offset = file.offset + 1;

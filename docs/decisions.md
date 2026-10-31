@@ -5020,3 +5020,56 @@ Remaining uncertainty: this verifies the observed late-empty-frame defect and
 recovery paths, not every network/VPN failure or all HTTP/2 protocol behavior.
 The live comparison used the ChatGPT subscription Responses route and GPT low
 effort. Other OSes and transport stacks were not measured in this repair.
+
+## 2026-11-01 — Desktop model and reasoning defaults per project
+
+User requirement: remember the last selected model and reasoning level for each
+desktop project, including after relaunch. Store provider, model, and reasoning
+under the stable checkout key in the existing desktop SQLite `settings` table's
+`project_models` JSON value. The desktop settings owner serializes writes, and
+each selection captures the complete map before awaiting storage. Save failures
+use the existing session error display. Removing a project clears its selection.
+
+Resolve new-task defaults from the selected project's saved provider/model pair.
+Projects without a saved choice use the first subscription's catalog default.
+Opening an existing task displays its frozen model and current or pending effort
+without replacing project defaults. An explicit allowed effort change in that
+task remembers the displayed model and chosen effort for future new tasks; the
+task's own effort remains pending until sent with input. Model locking and fixed
+effort restrictions still apply to existing tasks.
+
+Validate saved choices against the current advertised catalog. An unavailable
+model uses the initial catalog default, and an unsupported reasoning level uses
+the selected model's default. Keep the saved preference so a later catalog
+refresh can restore it. Project identity changes, including Git remote changes,
+do not change the checkout key or its preferences.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    dart analyze packages/desktop
+    git diff --check
+
+Before the change, regressions exposed choices carrying into a different project,
+task effort changes failing to update new-task defaults, and catalog refresh
+losing a saved choice. All 72 desktop tests now pass. Real SQLite relaunch checks
+cover separate ChatGPT/OpenCode selections, project reopening/removal, and pending
+task reasoning. The picker widget check verifies its persisted settings, and the
+existing real-server fixture retains the selected OpenCode model across Git
+remote changes and server/desktop restart. Analysis scoped to the changed session
+and test files reports no errors or warnings and one existing informational lint.
+A subsequent desktop-wide run also reports an unused `sidebar_hover.dart` import
+in concurrently edited `app.dart`. Whitespace checks pass.
+
+Official Dart MCP hot reload succeeds. Read-only VM inspection exercises the
+updated composer getters while existing tasks remain active, and Dart MCP reports
+no fresh runtime errors. Verification did not navigate or submit a conversation.
+No Dart formatter was run.
+
+Tradeoffs and remaining uncertainty: each choice rewrites the small preferences
+map, rather than individual project rows. Selections apply immediately in memory
+while their database writes complete asynchronously. Existing-task pending effort
+is still memory-only; the saved preference controls new tasks after relaunch.
+Other operating systems and crash/power-loss durability were not measured.
