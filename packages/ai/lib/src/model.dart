@@ -49,6 +49,15 @@ class ConversationItem {
     ],
   );
 
+  factory ConversationItem.user(String text, {Object? attachments}) {
+    final parts = inputAttachments(attachments);
+    validateUserInput(text, parts);
+    return ConversationItem(role: 'user', content: [
+      if (text.isNotEmpty) {'type': 'text', 'text': text},
+      ...parts,
+    ]);
+  }
+
   factory ConversationItem.fromJson(Json json) {
     if (json['version'] != 1) {
       throw const FormatException('Unsupported conversation record version');
@@ -77,6 +86,13 @@ class ConversationItem {
           if (part['output'] is! String) {
             throw const FormatException('Invalid tool output');
           }
+        case 'image':
+          if (part['path'] != null) throw const FormatException('Saved images must contain their bytes');
+          if (role != 'user') throw const FormatException('Attachments require a user message');
+          inputAttachments([part]);
+        case 'file':
+          if (role != 'user') throw const FormatException('Attachments require a user message');
+          inputAttachments([part]);
         default:
           throw FormatException('Unsupported content part: ${part['type']}');
       }
@@ -312,6 +328,25 @@ class ModelFailure implements Exception {
 }
 
 /// Conservative estimate for newly appended data; reported usage remains primary.
-int estimateTokens(Iterable<ConversationItem> items) =>
-    (utf8.encode(jsonEncode(items.map((v) => v.toJson()).toList())).length / 3)
-        .ceil();
+int estimateTokens(Iterable<ConversationItem> items) {
+  var images = 0;
+  final visible = <Json>[];
+  for (final item in items) {
+    visible.add({...item.toJson(), 'content': [
+      for (final part in item.content)
+        if (part['type'] != 'image') part,
+    ]});
+    for (final part in item.content.where((part) => part['type'] == 'image')) {
+      // Codex counts image tokens independently of base64 length. Its high-
+      // detail heuristic is 7,373 estimated bytes at four bytes per token.
+      if (part['detail'] == 'original') {
+        final width = part['width'] as int?, height = part['height'] as int?;
+        images += width == null || height == null ? 10000
+            : (((width + 31) ~/ 32) * ((height + 31) ~/ 32)).clamp(1, 10000);
+      } else {
+        images += 1844;
+      }
+    }
+  }
+  return (utf8.encode(jsonEncode(visible)).length / 3).ceil() + images;
+}

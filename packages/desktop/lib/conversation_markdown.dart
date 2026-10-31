@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:protocol/protocol.dart' show maxClientFrameBytes;
 
 import 'code_highlight.dart';
 
@@ -248,8 +249,9 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
 }
 
 class ConversationImage extends StatefulWidget {
-  const ConversationImage({super.key, required this.source, required this.label, required this.directory});
+  const ConversationImage({super.key, required this.source, required this.label, required this.directory, this.thumbnail = false});
   final String source, label, directory;
+  final bool thumbnail;
 
   @override
   State<ConversationImage> createState() => _ConversationImageState();
@@ -277,7 +279,7 @@ class _ConversationImageState extends State<ConversationImage> {
       if (uri == null) return;
       if (uri.scheme == 'data') {
         // Bound inline decoding; invalid content remains a readable placeholder.
-        if (widget.source.length > 24 * 1024 * 1024) return;
+        if (widget.source.length > maxClientFrameBytes) return;
         final data = uri.data;
         if (data != null && data.mimeType.startsWith('image/')) _provider = MemoryImage(data.contentAsBytes());
       } else if (uri.scheme == 'http' || uri.scheme == 'https') {
@@ -293,10 +295,11 @@ class _ConversationImageState extends State<ConversationImage> {
   }
 
   Widget _placeholder({bool failed = false}) => Container(
-    height: 150,
+    height: widget.thumbnail ? 78 : 150,
     alignment: Alignment.center,
     color: const Color(0xfff0f2ed),
-    child: Column(mainAxisSize: MainAxisSize.min, children: [
+    child: widget.thumbnail ? Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
+      color: conversationMuted, size: 24) : Column(mainAxisSize: MainAxisSize.min, children: [
       Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
         color: conversationMuted, size: 28),
       const SizedBox(height: 8),
@@ -309,11 +312,11 @@ class _ConversationImageState extends State<ConversationImage> {
     ]),
   );
 
-  Widget _image() {
+  Widget _image({bool preview = false}) {
     final provider = _provider;
     if (provider == null) return _placeholder(failed: true);
     return Image(
-      image: provider,
+      image: widget.thumbnail && !preview ? ResizeImage(provider, width: 212, height: 156, policy: ResizeImagePolicy.fit) : provider,
       fit: BoxFit.contain,
       semanticLabel: widget.label,
       frameBuilder: (_, child, frame, synchronous) =>
@@ -338,7 +341,7 @@ class _ConversationImageState extends State<ConversationImage> {
                 icon: const Icon(Icons.close_rounded)),
             ]),
             Expanded(child: InteractiveViewer(minScale: .5, maxScale: 5,
-              child: Center(child: _image()))),
+              child: Center(child: _image(preview: true)))),
             const Padding(padding: EdgeInsets.only(top: 8, bottom: 4),
               child: Text('Pinch or scroll to zoom', style: TextStyle(fontSize: 11, color: conversationMuted))),
           ]),
@@ -348,23 +351,27 @@ class _ConversationImageState extends State<ConversationImage> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Material(
+  Widget build(BuildContext context) {
+    final image = Material(
         color: const Color(0xfff5f6f2),
         clipBehavior: Clip.antiAlias,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           onTap: _provider == null ? null : _preview,
           child: Tooltip(message: 'Open image', child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 360), child: _image(),
+            constraints: BoxConstraints(maxHeight: widget.thumbnail ? 78 : 360), child: _image(),
           )),
         ),
-      ),
+      );
+    if (widget.thumbnail) return image;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      image,
       if (widget.label.isNotEmpty && widget.label != 'Image')
         Padding(padding: const EdgeInsets.only(top: 6), child: Text(widget.label,
           style: const TextStyle(fontSize: 12, color: conversationMuted))),
     ]),
-  );
+    );
+  }
 }

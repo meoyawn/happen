@@ -18,7 +18,7 @@ const codeTool = <String, dynamic>{
     {
       'type': 'custom',
       'name': 'exec',
-      'description': 'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value).',
+      'description': 'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value). Output defaults to 10000 tokens; override with a first-line // @exec: {"max_output_tokens": 20000} pragma. Oversized text is truncated, preserving its beginning and end.',
       'format': {
         'type': 'grammar',
         'syntax': 'lark',
@@ -66,6 +66,8 @@ separately. Before working below the working directory or outside it, check for 
 AGENTS.md/AGENTS.override.md files down to the target directory. Read them before making edits.
 After compaction, check applicable nested files again when their instructions are not present.
 Use functions.exec with raw JavaScript and top-level await. Print useful output with text(value).
+Text output defaults to 10000 tokens. Set a different budget with a first-line
+// @exec: {"max_output_tokens": 20000} pragma. Oversized output is truncated without stopping the cell.
 The following host tools are available on tools:
   await tools.exec_command({cmd, workdir?, shell?, login?, yield_time_ms?, max_output_tokens?, tty?})
   await tools.write_stdin({session_id, chars?, yield_time_ms?, max_output_tokens?})

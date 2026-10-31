@@ -6,6 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
 
 import 'bindings.dart';
+import 'output.dart';
 
 export 'bindings.dart' show nativeThreadId;
 
@@ -60,6 +61,7 @@ class QuickJs {
     if (source.length > 256 * 1024) {
       throw const FormatException('Cell source too large');
     }
+    final maxOutputTokens = cellOutputTokens(source);
     _running = true;
     final pending = <int, Future<void>>{};
     final replies = <Json>[];
@@ -106,9 +108,13 @@ class QuickJs {
           if (state['error'] != null) {
             throw StateError(state['error'] as String);
           }
-          return jsonObject(
-            evaluate('({output: __cell.output, values: __cell.values})'),
-          );
+          final result = jsonObject(evaluate(
+            '({output: __cell.output.collect(), values: __cell.values})',
+          ));
+          return {
+            'output': renderCellOutput(jsonObject(result['output']), maxOutputTokens),
+            'values': result['values'],
+          };
         }
         // Let cancellation and async host I/O run between bounded native calls.
         if (jsHasJobs(_handle) == 0 && replies.isEmpty) {
@@ -132,13 +138,13 @@ class QuickJs {
   }
 }
 
-const _bootstrap = r'''
+const _bootstrap = outputBootstrap + r'''
 var ALL_TOOLS = [];
 var __cell = (() => {
   const pending = new Map();
   const requests = [];
-  const output = [];
-  let next = 1, size = 0, done = false, error = null;
+  const output = __createOutput();
+  let next = 1, done = false, error = null;
   const api = {
     values: {}, output,
     start(source) {
@@ -161,8 +167,6 @@ var __cell = (() => {
   };
   function text(value) {
     const content = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
-    size += content.length;
-    if (size > 65536) throw new Error("Cell output limit exceeded");
     output.push(content);
   }
   function store(key, value) {

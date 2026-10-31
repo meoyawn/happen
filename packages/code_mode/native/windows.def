@@ -1,0 +1,9 @@
+EXPORTS
+  embedded_js_new
+  embedded_js_reset_context
+  embedded_js_eval
+  embedded_js_pump
+  embedded_js_free
+  embedded_js_string_free
+  embedded_js_has_jobs
+  embedded_js_thread_id

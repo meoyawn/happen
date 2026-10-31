@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ai/ai.dart';
 import 'package:flutter/foundation.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 import 'project_identity.dart';
+import 'dictation.dart';
+import 'composer_attachments.dart';
 
 class Project {
   Project(this.checkoutKey, this.id, this.path, [List<DesktopTask>? tasks])
@@ -24,6 +27,8 @@ class DesktopTask {
   final pending = <String, Json>{};
   bool running = false, loaded = false, loading = false, archived = false, archiving = false;
   String streamingText = '';
+  String? retryStatus;
+  Json? transientTerminal;
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
@@ -31,12 +36,14 @@ class DesktopTask {
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
 class DesktopSession extends ChangeNotifier {
-  DesktopSession(this.client, this.database) {
+  DesktopSession(this.client, this.database, {String? attachmentDirectory})
+    : attachmentDirectory = attachmentDirectory ?? '${Directory.systemTemp.path}/happen-attachments-${newId()}' {
     _events = client.events.stream.listen(
       _onEvent,
       onDone: () {
         if (_lifetime.isCancelled) return;
         connected = false;
+        unawaited(_dictation?.cancel());
         error = 'Connection closed. Reopen Happen to reconnect.';
         notifyListeners();
       },
@@ -48,6 +55,13 @@ class DesktopSession extends ChangeNotifier {
   final IsolateOwner database;
   final projects = <Project>[];
   final drafts = <String, String>{};
+  final String attachmentDirectory;
+  final attachmentDrafts = <String, List<ComposerAttachment>>{};
+  CancellationToken? _submission;
+  String? attachmentStatus;
+  void cancelUpload() => _submission?.cancel();
+  DictationService? _dictation;
+  DictationService get dictation => _dictation ??= DictationService(client);
   final _lifetime = CancellationToken();
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
@@ -56,6 +70,7 @@ class DesktopSession extends ChangeNotifier {
   Iterable<Json> get selectableProviders => providers.where((provider) => provider['alias_for'] == null);
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
+  String dictationMode = 'live';
   Project? project;
   DesktopTask? task;
   String? error;
@@ -133,8 +148,16 @@ class DesktopSession extends ChangeNotifier {
     }, cancellation: _lifetime);
   }
 
+  Future<void> chooseDictationMode(String mode) async {
+    if (!{'live', 'on_stop'}.contains(mode)) throw ArgumentError('Invalid dictation mode');
+    await _setting('dictation_mode', mode);
+    dictationMode = mode;
+    notifyListeners();
+  }
+
   Future<bool> signIn(String provider, Future<void> Function(String) openBrowser) async {
     if (signingIn || !connected) return false;
+    if (provider == 'gpt') await _dictation?.cancel();
     final id = _loginId = newId();
     signingIn = true;
     loginProvider = provider;
@@ -176,6 +199,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> signOut(String provider) async {
     if (signingOut != null || signingIn) return;
+    if (provider == 'gpt') await _dictation?.cancel();
     signingOut = provider;
     loginError = null;
     loginProvider = provider;
@@ -223,7 +247,7 @@ class DesktopSession extends ChangeNotifier {
 
   void chooseReasoning(String value) {
     if (task case final target?) {
-      if (!target.reasoningUpdates || target.running) return;
+      if (!target.reasoningUpdates) return;
       target.nextReasoning = value;
     } else {
       _reasoning = value;
@@ -243,6 +267,7 @@ class DesktopSession extends ChangeNotifier {
     final settings = jsonObject(saved['settings'] ?? {});
     _provider = settings['provider'] as String?;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
+    dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
       final key = requiredString(value, 'checkout_key');
@@ -352,7 +377,7 @@ class DesktopSession extends ChangeNotifier {
         for (final event in page) {
           target.events[event['seq'] as int] = event;
         }
-        if (page.length < 100) break;
+        if (page.isEmpty) break;
         after = page.last['seq'] as int;
       }
       target.loaded = true;
@@ -371,12 +396,12 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  Future<bool> send(String prompt) async {
+  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const []}) async {
     final owner = project;
     final existing = task;
     final wasRunning = existing?.running == true;
     if (owner == null ||
-        prompt.trim().isEmpty ||
+        (prompt.trim().isEmpty && attachments.isEmpty) ||
         submitting ||
         !connected ||
         existing?.archived == true ||
@@ -388,19 +413,62 @@ class DesktopSession extends ChangeNotifier {
     error = null;
     _earlyEvents.clear();
     final provider = providerId, model = modelId, effort = reasoning;
+    final cancellation = _submission = CancellationToken();
+    final uploaded = <String>[];
+    var admitted = false;
     notifyListeners();
     try {
+      final input = <Json>[];
+      final images = attachments.where((attachment) => attachment.image).toList();
+      final remoteImages = <Json>[];
+      if (images.isNotEmpty && !client.sharedFilesystem) {
+        attachmentStatus = 'Preparing images…';
+        notifyListeners();
+        remoteImages.addAll(await prepareRemoteImages(images.map((image) => image.toJson()).toList(),
+          cancellation: cancellation.merge(_lifetime)));
+        attachmentStatus = null;
+      }
+      var imageIndex = 0;
+      for (final attachment in attachments) {
+        cancellation.throwIfCancelled();
+        _lifetime.throwIfCancelled();
+        if (!client.sharedFilesystem && attachment.image) {
+          input.add(remoteImages[imageIndex++]);
+        } else if (!client.sharedFilesystem) {
+          if (await FileSystemEntity.isDirectory(attachment.path)) {
+            throw StateError('Folders must be on the server; upload individual files instead');
+          }
+          attachmentStatus = 'Uploading ${attachment.name}…';
+          notifyListeners();
+          final part = await client.uploadAttachment(attachment.path,
+            name: attachment.name, type: attachment.image ? 'image' : 'file',
+            cancellation: cancellation.merge(_lifetime),
+            onProgress: (sent, total) {
+              attachmentStatus = 'Uploading ${attachment.name} · ${total == 0 ? 100 : (sent * 100 ~/ total)}%';
+              if (!_lifetime.isCancelled) notifyListeners();
+            });
+          uploaded.add(part['upload_id'] as String);
+          input.add(part);
+        } else {
+          input.add(attachment.toJson());
+        }
+      }
+      cancellation.throwIfCancelled();
+      _lifetime.throwIfCancelled();
+      attachmentStatus = null;
+      notifyListeners();
       if (existing == null) {
         final reply = jsonObject(
           await _request('task.start', {
             'cwd': owner.path,
             'prompt': prompt,
+            if (input.isNotEmpty) 'attachments': input,
             'provider': provider,
             'model': model,
             'reasoning': effort,
           }),
         );
-        final title = prompt.trim().split('\n').first;
+        final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
         final created = DesktopTask(
           requiredString(reply, 'task_id'),
           title.length > 72 ? '${title.substring(0, 72)}…' : title,
@@ -435,10 +503,12 @@ class DesktopSession extends ChangeNotifier {
         await _request('task.send', {
           'task_id': existing.id,
           'prompt': prompt,
+          if (input.isNotEmpty) 'attachments': input,
           'delivery': deliveryMode,
-          if (!wasRunning) 'reasoning': effort,
+          if (!wasRunning || existing.reasoningUpdates) 'reasoning': effort,
         });
       }
+      admitted = true;
       return true;
     } on CancelledException {
       rethrow;
@@ -447,6 +517,10 @@ class DesktopSession extends ChangeNotifier {
       error = failure.toString();
       return false;
     } finally {
+      if (!admitted) for (final id in uploaded) { await client.discardAttachment(id); }
+      cancellation.cancel();
+      if (identical(_submission, cancellation)) _submission = null;
+      attachmentStatus = null;
       _earlyEvents.clear();
       submitting = false;
       if (!_lifetime.isCancelled) notifyListeners();
@@ -487,6 +561,10 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (event['type'] == 'auth.changed' && event['provider'] == 'gpt') {
+      unawaited(_dictation?.cancel());
+      return;
+    }
     if (event['type'] == 'auth.login') {
       if (event['login_id'] == _loginId && !_loginCancelled) {
         loginUrl = event['url'] as String;
@@ -519,6 +597,9 @@ class DesktopSession extends ChangeNotifier {
     _settings(target, event);
     final sequence = event['seq'] as int?;
     if (sequence != null) target.events[sequence] = event;
+    if ({'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) {
+      target.transientTerminal = sequence == null ? event : null;
+    }
     switch (event['type']) {
       case 'input.pending':
         final message = jsonObject(event['data']);
@@ -531,15 +612,23 @@ class DesktopSession extends ChangeNotifier {
         }
       case 'turn.started':
         target.running = true;
+        target.transientTerminal = null;
+        target.retryStatus = null;
+      case 'model.retrying':
+        target.streamingText = '';
+        target.retryStatus = 'Reconnecting… ${event['attempt']}/${event['max_retries']}';
       case 'text.delta':
         target.streamingText += event['delta'] as String;
+        target.retryStatus = null;
       case 'model.completed':
         target.streamingText = '';
+        target.retryStatus = null;
       case 'turn.completed':
       case 'turn.cancelled':
       case 'turn.failed':
         target.running = false;
         target.streamingText = '';
+        target.retryStatus = null;
         if (sequence == null && event['type'] == 'turn.failed') {
           error = event['data']?['error'] as String? ?? 'Task failed to start';
         }
@@ -562,16 +651,24 @@ class DesktopSession extends ChangeNotifier {
       target.reasoning =
           data['effort'] as String? ??
           data['item']?['settings']?['reasoning'] as String?;
-      target.nextReasoning = null;
+      if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
     }
   }
 
   Future<void> close() async {
+    _submission?.cancel();
+    await _dictation?.cancel();
+    _dictation?.dispose();
+    _dictation = null;
     _lifetime.cancel();
     _disconnect.dispose();
     await _events.cancel();
     await client.close();
     await database.close();
+    for (final draft in attachmentDrafts.values) {
+      for (final attachment in draft) { await attachment.discard(); }
+    }
+    attachmentDrafts.clear();
     dispose();
   }
 }
@@ -589,18 +686,20 @@ class ToolActivity {
 /// A visible transcript row. Provider replay state never enters this projection.
 class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
-    this.tool, this.timestamp, this.startedAt, this.streaming = false,
+    this.tool, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
   });
   final String id, role, text;
   final ToolActivity? tool;
   final DateTime? timestamp, startedAt;
   final bool streaming;
+  final List<Json> attachments;
 }
 
 List<ChatEntry> conversation(DesktopTask task) {
   final result = <ChatEntry>[];
   final events = task.events.values.toList()
     ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+  if (task.transientTerminal case final terminal?) events.add(terminal);
   final tools = <String, ToolActivity>{};
   ToolActivity? activeCell;
   DateTime? turnStartedAt;
@@ -626,6 +725,7 @@ List<ChatEntry> conversation(DesktopTask task) {
         final item = jsonObject(data['item']);
         if (item['role'] == 'user') {
           result.add(ChatEntry(id, 'You', _text(item),
+            attachments: (item['content'] as List? ?? []).where((part) => part['type'] == 'image' || part['type'] == 'file').map(jsonObject).toList(),
             timestamp: DateTime.tryParse(data['sent_at'] as String? ?? '') ?? at));
         }
       case 'model.completed':
@@ -732,6 +832,7 @@ List<ChatEntry> conversation(DesktopTask task) {
     result.add(ChatEntry('pending:${message['id']}',
       message['delivery'] == 'steer' ? 'Steer pending' : 'Queued',
       message['prompt'] as String,
+      attachments: (message['attachments'] as List? ?? []).map(jsonObject).toList(),
       timestamp: DateTime.tryParse(message['created_at'] as String? ?? ''),
     ));
   }

@@ -1,11 +1,18 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 
 import 'conversation.dart';
+import 'composer_dictation.dart';
+import 'composer_attachments.dart';
+import 'dictation.dart';
+import 'dictation_controls.dart';
+import 'file_autocomplete.dart';
 import 'session.dart';
 
 class DesktopView extends StatefulWidget {
@@ -39,15 +46,17 @@ class _DesktopViewState extends State<DesktopView> {
     if (_settingsOpen || !mounted) return;
     _settingsOpen = true;
     try {
-      await showDialog<void>(
-        context: context,
+      await session.dictation.cancel();
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (context) => ListenableBuilder(
           listenable: session,
-          builder: (context, _) => AlertDialog(
-            title: const Text('Settings'),
-            scrollable: true,
-            content: SizedBox(
-              width: 440,
+          builder: (context, _) => Scaffold(
+            appBar: AppBar(title: const Text('Settings')),
+            body: Align(alignment: Alignment.topCenter, child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: SizedBox(
+              width: 640,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -96,19 +105,32 @@ class _DesktopViewState extends State<DesktopView> {
                       : 'Wait for the current turn to finish, then start the next one.',
                     style: const TextStyle(fontSize: 12, color: Colors.black54)),
                   const SizedBox(height: 24),
+                  const Text('Dictation', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 12),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'live', label: Text('Live')),
+                      ButtonSegment(value: 'on_stop', label: Text('On stop')),
+                    ],
+                    selected: {session.dictationMode},
+                    onSelectionChanged: (value) => _run(() => session.chooseDictationMode(value.single)),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(session.dictationMode == 'live'
+                      ? 'Show text while you speak. If live dictation is unavailable, transcribe when you stop.'
+                      : 'Record first, then insert the transcription when you stop.',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                  const SizedBox(height: 24),
                   _archivedTasks(context),
+                  if (session.error case final error?)
+                    Padding(padding: const EdgeInsets.only(top: 20), child: SelectableText(error,
+                      style: TextStyle(color: Theme.of(context).colorScheme.error))),
                 ],
               ),
-            ),
-            actions: [
-              FilledButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text(session.loginSucceeded ? 'Continue' : 'Done'),
-              ),
-            ],
+            ))),
           ),
         ),
-      );
+      ));
     } finally {
       _settingsOpen = false;
       await _run(session.cancelLogin);
@@ -125,7 +147,7 @@ class _DesktopViewState extends State<DesktopView> {
     if (success && mounted) await _desktop.invokeMethod<void>('activate');
   }
 
-  Widget _archivedTasks(BuildContext dialogContext) {
+  Widget _archivedTasks(BuildContext settingsContext) {
     final archived = [
       for (final project in session.projects)
         for (final task in project.tasks)
@@ -154,7 +176,7 @@ class _DesktopViewState extends State<DesktopView> {
                   title: Text(task.title, maxLines: 2, overflow: TextOverflow.ellipsis),
                   subtitle: Tooltip(message: project.path, child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
                   onTap: task.archiving ? null : () {
-                    Navigator.pop(dialogContext);
+                    Navigator.pop(settingsContext);
                     unawaited(_run(() => session.select(project, task)));
                   },
                   trailing: TextButton(
@@ -384,57 +406,6 @@ class _DesktopViewState extends State<DesktopView> {
           ),
           const Divider(height: 1),
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 12, 0),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'PROVIDERS',
-                    style: TextStyle(
-                      fontSize: 10,
-                      letterSpacing: 1,
-                      color: Colors.black45,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Refresh provider login status',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _run(session.refreshProviders),
-                  icon: const Icon(Icons.refresh, size: 16),
-                ),
-              ],
-            ),
-          ),
-          for (final provider in session.selectableProviders)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 3, 20, 3),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      provider['name'] as String,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  Text(
-                    _authLabel(provider['status'] as String),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color:
-                          {
-                            'signed_in',
-                            'refresh_required',
-                            'api_key',
-                          }.contains(provider['status'])
-                          ? const Color(0xff325e57)
-                          : Colors.black45,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Padding(
             padding: const EdgeInsets.all(20),
             child: Row(
               children: [
@@ -578,14 +549,188 @@ class _ComposerState extends State<_Composer> {
   late final _text = TextEditingController(
     text: widget.session.drafts[_draftKey] ?? '',
   );
+  final _focus = FocusNode();
+  final _attachmentLifetime = CancellationToken();
+  bool _receivingAttachments = false, _draggingAttachments = false;
+  List<ComposerAttachment> get _attachments => widget.session.attachmentDrafts[_draftKey] ?? const [];
+  late final _voiceOwner = Object();
+  DictationService? _boundVoice;
+  ComposerDictationSession? _voiceText;
+  bool _finishingVoice = false, _disposing = false;
+  DictationService get _voice => widget.session.dictation;
+  bool get _ownsVoice => identical(_voice.owner, _voiceOwner);
+  bool get _dictating => _ownsVoice && (_voice.active || _finishingVoice);
+  DictationUiPhase get _voicePhase => !_ownsVoice ? DictationUiPhase.idle : switch (_voice.phase) {
+    DictationPhase.idle => _finishingVoice ? DictationUiPhase.transcribing : DictationUiPhase.idle,
+    DictationPhase.starting => DictationUiPhase.starting,
+    DictationPhase.recording => DictationUiPhase.recording,
+    DictationPhase.transcribing => DictationUiPhase.transcribing,
+    DictationPhase.failed => _voice.canRetry ? DictationUiPhase.retry : DictationUiPhase.idle,
+  };
+
+  void _bindVoice() {
+    if (identical(_boundVoice, _voice)) return;
+    _boundVoice?.removeListener(_voiceChanged);
+    _boundVoice = _voice;
+    _boundVoice!.addListener(_voiceChanged);
+  }
+
+  void _voiceChanged() {
+    if (!mounted) return;
+    if (_ownsVoice && _voice.active) {
+      _voiceText?.update(_voice.transcript);
+    } else if (_ownsVoice && _voice.canRetry) {
+      _voiceText?.pauseForRecovery();
+    } else if (!_ownsVoice || !_finishingVoice) {
+      _voiceText?.dispose(cancel: true);
+      _voiceText = null;
+    }
+    setState(() {});
+  }
+
+  Future<void> _startVoice() async {
+    if (_voice.active || _finishingVoice || !widget.session.connected || widget.session.submitting) return;
+    _voiceText?.dispose();
+    _voiceText = ComposerDictationSession(_text, (range, text) {
+      final editorContext = _focus.context;
+      if (!_disposing && editorContext != null && editorContext.mounted) {
+        Actions.invoke(editorContext, ReplaceTextIntent(_text.value, text, range, SelectionChangedCause.keyboard));
+      } else {
+        // Navigation may already have detached the editable widget. Restore the
+        // saved draft through its controller without looking up widget actions.
+        _text.value = TextEditingValue(text: _text.text.replaceRange(range.start, range.end, text),
+          selection: TextSelection.collapsed(offset: range.start + text.length));
+      }
+    });
+    _focus.requestFocus();
+    await _voice.start(owner: _voiceOwner, liveTranscription: widget.session.dictationMode == 'live',
+      onRecordingLimit: () => unawaited(_finishVoice(DictationAction.insert)));
+  }
+
+  Future<void> _cancelVoice() async {
+    if (!_ownsVoice) return;
+    _voiceText?.dispose(cancel: true);
+    _voiceText = null;
+    await _voice.cancel();
+    if (mounted) _focus.requestFocus();
+  }
+
+  Future<void> _finishVoice(DictationAction action, {bool retry = false}) async {
+    if (!_ownsVoice || _finishingVoice) return;
+    setState(() => _finishingVoice = true);
+    try {
+      final result = retry ? await _voice.retry(action) : await _voice.stop(action);
+      if (!mounted || !_ownsVoice || result == null) return;
+      final inserted = await _voiceText?.finish(result.text) ?? false;
+      if (!mounted || !_ownsVoice || !inserted) return;
+      _voiceText?.dispose();
+      _voiceText = null;
+      _focus.requestFocus();
+      if (result.action == DictationAction.send) await _sendPrompt();
+    } finally {
+      _finishingVoice = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _text.addListener(_saveDraft);
+  }
+
+  void _saveDraft() {
+    if (_text.text.isEmpty) {
+      widget.session.drafts.remove(_draftKey);
+    } else {
+      widget.session.drafts[_draftKey] = _text.text;
+    }
+  }
+
+  void _addAttachments(List<ComposerAttachment> additions) {
+    if (!mounted) return;
+    setState(() {
+      final draft = widget.session.attachmentDrafts.putIfAbsent(_draftKey, () => []);
+      for (final attachment in additions) {
+        if (!draft.any((existing) => existing.path == attachment.path)) draft.add(attachment);
+      }
+    });
+    _focus.requestFocus();
+  }
+
+  Future<void> _paste(SelectionChangedCause cause) async {
+    if (_receivingAttachments || widget.session.submitting || _dictating || !widget.session.connected) return;
+    final before = _text.value;
+    setState(() => _receivingAttachments = true);
+    try {
+      final snapshot = await readComposerClipboard(widget.session.attachmentDirectory, _attachmentLifetime);
+      if (!mounted) {
+        for (final attachment in snapshot.attachments) { await attachment.discard(); }
+        return;
+      }
+      if (snapshot.attachments.isNotEmpty) {
+        _addAttachments(snapshot.attachments);
+      } else if (_text.text == before.text && snapshot.text != null) {
+        final current = _text.value;
+        final range = current.selection.isValid ? current.selection : TextSelection.collapsed(offset: current.text.length);
+        final editor = _focus.context;
+        if (editor != null && editor.mounted) {
+          Actions.invoke(editor, ReplaceTextIntent(current, snapshot.text!, range, cause));
+        }
+      }
+    } on CancelledException {
+      // Leaving this composer owns the pending native snapshot.
+    } catch (error) {
+      if (mounted) widget.session.showError(error);
+    } finally {
+      if (mounted) setState(() => _receivingAttachments = false);
+    }
+  }
+
+  Future<void> _drop(DropDetails details) async {
+    if (_receivingAttachments || widget.session.submitting) return;
+    setState(() => _receivingAttachments = true);
+    try {
+      final attachments = await receiveComposerDrop(details, widget.session.attachmentDirectory, _attachmentLifetime);
+      if (mounted) {
+        _addAttachments(attachments);
+      } else {
+        for (final attachment in attachments) { await attachment.discard(); }
+      }
+    } on CancelledException {
+      // The source is released by DropTarget after this operation settles.
+    } catch (error) {
+      if (mounted) widget.session.showError(error);
+    } finally {
+      if (mounted) setState(() => _receivingAttachments = false);
+    }
+  }
 
   Future<void> _submit() async {
+    if (!_text.value.composing.isCollapsed) return;
+    if (_dictating) {
+      await _finishVoice(DictationAction.send);
+      return;
+    }
+    await _sendPrompt();
+  }
+
+  Future<void> _sendPrompt() async {
+    if (_receivingAttachments) return;
     final prompt = _text.text;
+    final attachments = List<ComposerAttachment>.of(_attachments);
     try {
-      final accepted = await widget.session.send(prompt);
+      final accepted = await widget.session.send(prompt, attachments: attachments);
       if (accepted) {
-        widget.session.drafts.remove(_draftKey);
+        if (widget.session.drafts[_draftKey] == prompt) widget.session.drafts.remove(_draftKey);
+        final ids = attachments.map((attachment) => attachment.id).toSet();
+        widget.session.attachmentDrafts[_draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
+        if (widget.session.attachmentDrafts[_draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(_draftKey);
+        for (final attachment in attachments) {
+          if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
+        }
         if (mounted && _text.text == prompt) _text.clear();
+        if (mounted) setState(() {});
       }
     } on CancelledException {
       // Application exit owns cancellation.
@@ -617,26 +762,44 @@ class _ComposerState extends State<_Composer> {
 
   @override
   void dispose() {
+    _disposing = true;
+    _attachmentLifetime.cancel();
+    _boundVoice?.removeListener(_voiceChanged);
+    _voiceText?.dispose(cancel: true);
+    if (_boundVoice != null && identical(_boundVoice!.owner, _voiceOwner)) unawaited(_boundVoice!.cancel());
+    _focus.dispose();
     _text.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    _bindVoice();
     final session = widget.session;
     final running = session.task?.running == true;
     final available =
         session.connected &&
+        !_receivingAttachments &&
         !session.submitting &&
         session.task?.loading != true &&
         session.task?.loadError == null;
-    return Center(
+    return DropTarget(
+      enabled: session.connected && !session.submitting && !_receivingAttachments,
+      acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
+      onDrop: _drop,
+      onEnter: (_) => setState(() => _draggingAttachments = true),
+      onLeave: () { if (mounted) setState(() => _draggingAttachments = false); },
+      child: Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 840),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(28, 8, 28, 20),
           child: CallbackShortcuts(
             bindings: {
+              const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
+                if (!_text.value.composing.isCollapsed) return;
+                if (_ownsVoice && (_dictating || _voice.phase == DictationPhase.failed)) unawaited(_cancelVoice());
+              },
               const SingleActivator(LogicalKeyboardKey.enter, shift: true): _newline,
               const SingleActivator(
                 LogicalKeyboardKey.enter,
@@ -654,142 +817,201 @@ class _ComposerState extends State<_Composer> {
                 if (available) unawaited(_submit());
               },
             },
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xffdaddd5)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: _text,
-                      autofocus: true,
-                      enabled: session.connected,
-                      minLines: 2,
-                      maxLines: 8,
-                      onChanged: (value) => session.drafts[_draftKey] = value,
-                      decoration: const InputDecoration(
-                        hintText: 'Describe a task or ask a question…',
-                        border: InputBorder.none,
+            child: Actions(actions: {PasteTextIntent: ComposerPasteAction(
+              enabled: session.connected && !session.submitting && !_receivingAttachments && !_dictating, paste: _paste)},
+            child: FileAutocomplete(
+              controller: _text,
+              focusNode: _focus,
+              client: session.client,
+              cwd: session.project!.path,
+              enabled: session.connected && !_dictating,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary : const Color(0xffdaddd5),
+                    width: _draggingAttachments ? 2 : 1),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
+                  child: Column(
+                    children: [
+                      if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
+                      if (_attachments.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8), child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: AttachmentRail(attachments: _attachments.map((attachment) => attachment.toJson()).toList(),
+                          onRemove: session.submitting ? null : (index) {
+                            final removed = _attachments[index];
+                            setState(() => widget.session.attachmentDrafts[_draftKey]!.remove(removed));
+                            unawaited(removed.discard());
+                          }),
+                      )),
+                      if (_receivingAttachments || session.attachmentStatus != null) Row(children: [
+                        const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(session.attachmentStatus ?? 'Adding attachments…', style: const TextStyle(fontSize: 12))),
+                        if (session.attachmentStatus != null) IconButton(tooltip: 'Cancel upload', onPressed: session.cancelUpload, icon: const Icon(Icons.close, size: 16)),
+                      ]),
+                      if (_ownsVoice && _voice.canRetry)
+                        Tooltip(message: _voice.error ?? 'Dictation stopped', child: DictationRecoveryRail(
+                          phase: DictationRecoveryPhase.failed,
+                          onDismiss: () => unawaited(_cancelVoice()),
+                          onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
+                        ))
+                      else if (_ownsVoice && _voice.error != null)
+                        Semantics(liveRegion: true, child: Row(children: [
+                          Expanded(child: Text(_voice.error!, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
+                          if (_voice.microphonePermissionDenied)
+                            TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
+                          IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
+                        ])),
+                      TextField(
+                        controller: _text,
+                        focusNode: _focus,
+                        enabled: session.connected,
+                        contextMenuBuilder: (_, state) => composerContextMenu(state, _paste),
+                        autofocus: true,
+                        minLines: 2,
+                        maxLines: 8,
+                        decoration: const InputDecoration(
+                          hintText: 'Describe a task or use @ to mention a file or folder…',
+                          border: InputBorder.none,
+                        ),
                       ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: DropdownButtonHideUnderline(
-                        child: Wrap(
-                          spacing: 16,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            Tooltip(
-                              message: session.task == null
-                                  ? 'Model'
-                                  : 'Model is fixed for this task',
-                              child: DropdownButton<String>(
-                                value:
-                                    session.models.any(
-                                      (m) => m['id'] == session.modelId,
-                                    )
-                                    ? session.modelId
-                                    : null,
-                                isDense: true,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.black87,
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: DropdownButtonHideUnderline(
+                          child: Wrap(
+                            spacing: 16,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Tooltip(
+                                message: session.task == null
+                                    ? 'Model'
+                                    : 'Model is fixed for this task',
+                                child: DropdownButton<String>(
+                                  value:
+                                      session.models.any(
+                                        (m) => m['id'] == session.modelId,
+                                      )
+                                      ? session.modelId
+                                      : null,
+                                  isDense: true,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black87,
+                                  ),
+                                  onChanged: available && session.task == null
+                                      ? (value) => session.chooseModel(value!)
+                                      : null,
+                                  items: [
+                                    for (final model in session.models)
+                                      DropdownMenuItem(
+                                        value: model['id'] as String,
+                                        child: Text(model['id'] as String),
+                                      ),
+                                  ],
                                 ),
-                                onChanged: available && session.task == null
-                                    ? (value) => session.chooseModel(value!)
-                                    : null,
-                                items: [
-                                  for (final model in session.models)
-                                    DropdownMenuItem(
-                                      value: model['id'] as String,
-                                      child: Text(model['id'] as String),
-                                    ),
-                                ],
                               ),
-                            ),
-                            Tooltip(
-                              message:
-                                  session.task == null ||
-                                      session.task!.reasoningUpdates
-                                  ? 'Reasoning level'
-                                  : 'Reasoning is fixed for this task',
-                              child: DropdownButton<String>(
-                                value: session.reasoning,
-                                isDense: true,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.black87,
+                              Tooltip(
+                                message:
+                                    session.task == null ||
+                                        session.task!.reasoningUpdates
+                                    ? 'Reasoning level for your next message'
+                                    : 'Reasoning is fixed for this task',
+                                child: DropdownButton<String>(
+                                  value: session.reasoning,
+                                  isDense: true,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black87,
+                                  ),
+                                  onChanged:
+                                      available &&
+                                          (session.task == null ||
+                                              session.task!.reasoningUpdates)
+                                      ? (value) => session.chooseReasoning(value!)
+                                      : null,
+                                  items: [
+                                    for (final level
+                                        in session.modelInfo?['reasoning_levels']
+                                                as List? ??
+                                            [])
+                                      DropdownMenuItem(
+                                        value: level as String,
+                                        child: Text('$level reasoning'),
+                                      ),
+                                  ],
                                 ),
-                                onChanged:
-                                    available &&
-                                        !running &&
-                                        (session.task == null ||
-                                            session.task!.reasoningUpdates)
-                                    ? (value) => session.chooseReasoning(value!)
-                                    : null,
-                                items: [
-                                  for (final level
-                                      in session.modelInfo?['reasoning_levels']
-                                              as List? ??
-                                          [])
-                                    DropdownMenuItem(
-                                      value: level as String,
-                                      child: Text('$level reasoning'),
-                                    ),
-                                ],
                               ),
-                            ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          if (_dictating) ...[
+                            DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
+                            const SizedBox(width: 8),
                           ],
-                        ),
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            session.authenticated
-                                ? 'Enter to send · Shift+Enter for a new line'
-                                : 'Sign in to the selected provider to send',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.black38,
+                          Expanded(
+                            child: Text(
+                              _ownsVoice && _voice.phase == DictationPhase.recording && _voice.liveTranscriptionHint != null
+                                  ? _voice.liveTranscriptionHint! : session.authenticated
+                                  ? 'Enter to send · Shift+Enter for a new line'
+                                  : 'Sign in to the selected provider to send',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.black38,
+                              ),
                             ),
                           ),
-                        ),
-                        if (running)
-                          IconButton(
-                            tooltip: 'Stop task and clear pending messages',
-                            onPressed: available ? _stop : null,
-                            icon: const Icon(Icons.stop_rounded, size: 20),
+                          if (running)
+                            IconButton(
+                              tooltip: 'Stop task and clear pending messages',
+                              onPressed: available ? _stop : null,
+                              icon: const Icon(Icons.stop_rounded, size: 20),
+                            ),
+                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
+                            DictationButton(
+                              phase: _voicePhase,
+                              amplitude: _voice.amplitude,
+                              statusHint: _voice.liveTranscriptionHint,
+                              enabled: available && (!_voice.active || _ownsVoice),
+                              onStart: () => unawaited(_startVoice()),
+                              onStop: () => unawaited(_finishVoice(DictationAction.insert)),
+                              onCancel: () => unawaited(_cancelVoice()),
+                              onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          IconButton.filled(
+                            tooltip: running
+                                ? (session.deliveryMode == 'steer'
+                                      ? 'Steer task'
+                                      : 'Queue message')
+                                : 'Send message',
+                            onPressed: available && session.authenticated &&
+                                (!_dictating || _voice.phase == DictationPhase.recording && !_finishingVoice)
+                                ? _submit
+                                : null,
+                            icon: Icon(
+                              running && session.deliveryMode == 'queue'
+                                  ? Icons.playlist_add
+                                  : Icons.arrow_upward_rounded,
+                              size: 20,
+                            ),
                           ),
-                        IconButton.filled(
-                          tooltip: running
-                              ? (session.deliveryMode == 'steer'
-                                    ? 'Steer task'
-                                    : 'Queue message')
-                              : 'Send message',
-                          onPressed: available && session.authenticated
-                              ? _submit
-                              : null,
-                          icon: Icon(
-                            running && session.deliveryMode == 'queue'
-                                ? Icons.playlist_add
-                                : Icons.arrow_upward_rounded,
-                            size: 20,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
+            )),
           ),
         ),
+      ),
       ),
     );
   }

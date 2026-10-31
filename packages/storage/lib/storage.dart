@@ -153,25 +153,35 @@ class TaskStore {
     if (limit < 1 || limit > 500) {
       throw const FormatException('History limit must be 1..500');
     }
-    final rows = db.select(
+    final query = db.prepare(
       'SELECT seq, id, window_id, type, created_at, data FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?',
-      [after, through ?? lastSequence, limit],
     );
-    return rows
-        .map(
-          (row) => <String, dynamic>{
+    try {
+      final rows = query.selectCursor([after, through ?? lastSequence, limit]);
+      final result = <Json>[];
+      var bytes = 0;
+      while (rows.moveNext()) {
+        final row = rows.current;
+        final encoded = row['data'] as String;
+        bytes += utf8.encode(encoded).length + 512;
+        // A compaction checkpoint may itself fill a page. Never split a record.
+        if (result.isNotEmpty && bytes > maxClientFrameBytes) break;
+        result.add({
             'seq': row['seq'],
             'id': row['id'],
             'window_id': row['window_id'],
             'type': row['type'],
             'created_at': row['created_at'],
-            'data': jsonDecode(row['data'] as String),
-          },
-        )
-        .toList();
+            'data': jsonDecode(encoded),
+        });
+      }
+      return result;
+    } finally {
+      query.close();
+    }
   }
 
-  List<Json> modelContext({int maxBytes = 2 * 1024 * 1024}) {
+  List<Json> modelContext({int maxBytes = maxContextBytes}) {
     final compacted = db.select(
       "SELECT seq, id, data FROM events WHERE type IS 'context.compacted' ORDER BY seq DESC LIMIT 1",
     );
@@ -380,6 +390,10 @@ class TaskStore {
           case 'text':
           case 'reasoning':
             content.add(part['text'] as String);
+          case 'image':
+            content.add('[Image: ${part['name']} (${part['mime_type']})]');
+          case 'file':
+            content.add(attachedFileText(part));
           case 'tool_call':
             names.add(part['name'] as String);
             namespaces.add(part['namespace'] as String? ?? '');
@@ -634,7 +648,7 @@ class TaskStore {
       try {
         await for (final line in boundedLines(
           input.stream,
-          maxBytes: 8 * 1024 * 1024,
+          maxBytes: maxContextBytes + maxFrameBytes,
         )) {
           cancellation?.throwIfCancelled();
           final item = jsonObject(jsonDecode(line));

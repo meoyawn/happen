@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
@@ -117,6 +119,18 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
               ]
             : (source as List? ?? []).map((value) {
                 final part = jsonObject(value);
+                if (part['type'] == 'input_image') {
+                  final uri = Uri.tryParse(part['image_url'] as String? ?? '');
+                  final data = uri?.scheme == 'data' ? uri!.data : null;
+                  if (data == null || !imageMimeTypes.contains(data.mimeType)) {
+                    throw const ModelFailure('unsupported_content', 'GPT image requires inline image bytes');
+                  }
+                  return inputAttachments([{
+                    'type': 'image', 'name': 'Image', 'mime_type': data.mimeType,
+                    'data': base64Encode(data.contentAsBytes()),
+                    'detail': part['detail'] == 'original' ? 'original' : 'high',
+                  }]).single;
+                }
                 final text = part.remove(
                   part['type'] == 'refusal' ? 'refusal' : 'text',
                 );
@@ -203,6 +217,10 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
           else
             'text': part['text'],
         });
+      case 'image':
+        textParts.add({'type': 'input_image', 'image_url': attachmentDataUrl(part), 'detail': part['detail'] ?? 'high'});
+      case 'file':
+        textParts.add({'type': 'input_text', 'text': attachedFileText(part)});
       case 'tool_call':
         final call = ToolCall.fromJson(part);
         output.add({
@@ -236,7 +254,7 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
     output.insert(0, {
       ...native,
       'role': item.role,
-      'content': item.role == 'assistant' || native.isNotEmpty
+      'content': item.role == 'assistant' || native.isNotEmpty || item.content.any((part) => part['type'] == 'image' || part['type'] == 'file')
           ? textParts
           : textParts.map((p) => p['text']).join('\n'),
     });

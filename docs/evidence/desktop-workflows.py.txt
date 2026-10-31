@@ -1,0 +1,135 @@
+"""Run from the repository root after building release and starting one debug app.
+
+Requires no running release. Uses a temporary installation and AGENT_DATA_DIR,
+then stops/unregisters that release. Injects a validation failure after swapping
+the bundle to check rollback. Both successful installation and rollback must
+leave the installed release stopped while preserving the debug session.
+"""
+import contextlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+repository = Path.cwd()
+tool = repository / "packages/desktop/tool"
+sys.path.insert(0, str(tool))
+import run_flutter
+import release_macos
+
+environment = {key: value for key, value in os.environ.items() if not key.startswith("MOON_")}
+before_debug = run_flutter.app_pids("debug")
+before_supervisors = run_flutter.flutter_pids("debug")
+assert len(before_debug) == len(before_supervisors) == 1, (before_debug, before_supervisors)
+assert not run_flutter.app_pids("release") and not run_flutter.flutter_pids("release"), "An existing release would make this probe unsuitable"
+log_path = run_flutter.RUN / "verify-release.log"
+fd = os.open(log_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+log = os.fdopen(fd, "w")
+summary = {}
+original_directory = os.environ.get("AGENT_DATA_DIR")
+owned_children = []
+
+def wait_for(predicate):
+    deadline = time.monotonic() + 15
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("Timed out waiting for the temporary release")
+        time.sleep(0.05)
+
+with tempfile.TemporaryDirectory(prefix="verify-release-", dir=repository / ".local") as temporary:
+    temporary = Path(temporary).resolve()
+    applications = temporary / "Debug" / "Applications with spaces"
+    bundle = applications / run_flutter.APP
+    data = temporary / "data"
+    environment["AGENT_DATA_DIR"] = str(data)
+    os.environ["AGENT_DATA_DIR"] = str(data)
+
+    def start_release():
+        child = subprocess.Popen([str(bundle / "Contents/MacOS/Happen")],
+            cwd=run_flutter.ROOT, env=environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        owned_children.append(child)
+        wait_for(lambda: release_macos.release_pids(bundle) == [child.pid]
+            and (data / "desktop.sqlite").exists())
+        return child
+
+    try:
+        result = subprocess.run([sys.executable, str(tool / "release_macos.py"), "--applications-dir", str(applications)],
+            cwd=repository, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        assert result.returncode == 0, ("release-reinstall", result.returncode, str(log_path))
+        assert bundle.exists()
+        assert not run_flutter.app_pids("release"), "Installing a stopped release must leave it stopped"
+        summary["stopped_release_stayed_stopped"] = True
+        unwanted = [str(path.relative_to(bundle)) for path in bundle.rglob("*")
+            if path.name.endswith((".lock", ".log")) or path.name in (".local", "supervisor.json", "flutter-input", "run_flutter.py", "release_macos.py")]
+        assert not unwanted, unwanted
+        summary["installed_bundle_has_no_tooling_logs_or_locks"] = True
+
+        first = start_release()
+        summary["first_release_pid"] = first.pid
+        executable = bundle / "Contents/MacOS/Happen"
+        first_inode = executable.stat().st_ino
+
+        result = subprocess.run([sys.executable, str(tool / "release_macos.py"), "--applications-dir", str(applications)],
+            cwd=repository, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        assert result.returncode == 0, ("live install", result.returncode, str(log_path))
+        first.wait(timeout=5)
+        assert not release_macos.release_pids(bundle), "Reinstallation must leave the release stopped"
+        assert executable.stat().st_ino != first_inode, "Reinstallation must replace the bundle"
+        summary["running_release_stopped_without_restart"] = True
+
+        second = start_release()
+        summary["rollback_fixture_pid"] = second.pid
+        previous_inode = executable.stat().st_ino
+        original_verify = release_macos.verify
+
+        def fail_replacement(candidate):
+            original_verify(candidate)
+            if candidate == bundle:
+                assert executable.stat().st_ino != previous_inode, "Fault must occur after replacement"
+                raise RuntimeError("Injected post-replacement validation failure")
+
+        release_macos.verify = fail_replacement
+        saved_argv = sys.argv
+        sys.argv = ["release_macos.py", "--applications-dir", str(applications)]
+        try:
+            with contextlib.redirect_stdout(log):
+                try:
+                    release_macos.main()
+                    raise AssertionError("Fault injection unexpectedly succeeded")
+                except RuntimeError as error:
+                    assert str(error) == "Injected post-replacement validation failure", str(error)
+        finally:
+            sys.argv = saved_argv
+            release_macos.verify = original_verify
+        assert executable.stat().st_ino == previous_inode, "The previous installed bundle was not restored"
+        second.wait(timeout=5)
+        assert not release_macos.release_pids(bundle), "Rollback must leave the release stopped"
+        original_verify(bundle)
+        summary["rollback_restored_previous_bundle_and_left_stopped"] = True
+
+        assert run_flutter.app_pids("debug") == before_debug
+        assert run_flutter.flutter_pids("debug") == before_supervisors
+        summary["preserved_debug_app_pids"] = before_debug
+        summary["preserved_debug_supervisor_pids"] = before_supervisors
+    finally:
+        try:
+            if bundle.exists():
+                with contextlib.redirect_stdout(log):
+                    release_macos.stop_release(bundle, release_macos.release_pids(bundle))
+                subprocess.run([str(release_macos.REGISTER), "-u", str(bundle)],
+                    stdout=log, stderr=subprocess.STDOUT)
+        finally:
+            for child in owned_children:
+                child.wait(timeout=5)
+            if original_directory is None:
+                os.environ.pop("AGENT_DATA_DIR", None)
+            else:
+                os.environ["AGENT_DATA_DIR"] = original_directory
+            log.close()
+assert not run_flutter.app_pids("release")
+summary["temporary_release_stopped_and_removed"] = True
+print(json.dumps(summary, indent=2))

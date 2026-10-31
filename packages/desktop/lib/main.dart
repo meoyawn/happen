@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
@@ -8,6 +7,7 @@ import 'package:server/server.dart';
 
 import 'app.dart';
 import 'database.dart';
+import 'lifecycle.dart';
 import 'session.dart';
 
 void main() {
@@ -30,7 +30,6 @@ class _HappenDesktopState extends State<HappenDesktop> {
   DesktopSession? _session;
   String? _error;
   late final Future<void> _opening;
-  late final AppLifecycleListener _lifecycle;
   Future<void>? _closing;
 
   @override
@@ -39,13 +38,6 @@ class _HappenDesktopState extends State<HappenDesktop> {
     // Hot reload never re-enters initState: the server, socket, database owner,
     // selections, and composer state live for this application instance.
     _opening = _open();
-    _lifecycle = AppLifecycleListener(
-      onResume: () => unawaited(_refreshProjects()),
-      onExitRequested: () async {
-        await _close();
-        return AppExitResponse.exit;
-      },
-    );
   }
 
   Future<void> _refreshProjects() async {
@@ -61,11 +53,11 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   Future<void> _open() async {
     try {
-      final home = Platform.environment['HOME'];
+      final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
       final directory =
           Platform.environment['AGENT_DATA_DIR'] ??
           (home == null
-              ? throw StateError('Set AGENT_DATA_DIR or HOME')
+              ? throw StateError('Set AGENT_DATA_DIR, HOME, or USERPROFILE')
               : '$home/.local/share/agent-server');
       _server = await AgentServer.startEmbedded(directory: directory);
       _lifetime.throwIfCancelled();
@@ -73,15 +65,16 @@ class _HappenDesktopState extends State<HappenDesktop> {
       _lifetime.throwIfCancelled();
       _client = await AgentClient.connect(
         _server!.uri,
+        token: _server!.token,
         cancellation: _lifetime,
       );
       _lifetime.throwIfCancelled();
-      final session = _session = DesktopSession(_client!, _database!);
+      final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
       await session.load();
       _lifetime.throwIfCancelled();
       if (mounted) setState(() {});
     } on CancelledException {
-      // The window can close while the embedded owners are starting.
+      // Quit can cancel startup before all embedded owners are ready.
     } catch (error) {
       _error = error.toString();
       if (mounted) setState(() {});
@@ -93,18 +86,23 @@ class _HappenDesktopState extends State<HappenDesktop> {
   Future<void> _closeOwners() async {
     _lifetime.cancel();
     await _opening;
-    if (_session case final session?) {
-      await session.close();
-    } else {
-      await _client?.close();
-      await _database?.close();
+    try {
+      if (_session case final session?) {
+        await session.close();
+      } else {
+        try {
+          await _client?.close();
+        } finally {
+          await _database?.close();
+        }
+      }
+    } finally {
+      await _server?.close();
     }
-    await _server?.close();
   }
 
   @override
   void dispose() {
-    _lifecycle.dispose();
     unawaited(_close());
     super.dispose();
   }
@@ -112,6 +110,11 @@ class _HappenDesktopState extends State<HappenDesktop> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Happen',
+    builder: (context, child) => DesktopLifecycle(
+      onQuit: _close,
+      onResume: () => unawaited(_refreshProjects()),
+      child: child!,
+    ),
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,

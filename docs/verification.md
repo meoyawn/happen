@@ -18,8 +18,30 @@ checkout. See [api.md](api.md) for configuration and the public API.
 - Verify streaming tool calls, provider state after save/load, append-only GPT
   effort updates, fixed DeepSeek effort, cancellation, incomplete streams, restart,
   independent forks, and validated export/import.
+- Run `dart test test/server_test.dart test/gpt_test.dart -r expanded` for active
+  turns outliving RPC deadlines, simulated 24/48/72-hour observation, legacy step
+  limits, queued follow-ups, and GPT's five-minute event idle limit and bounded
+  stream recovery over HTTP/SSE and WebSocket. Check cancellation during backoff
+  and that recovery does not repeat executed tools. Accelerated clocks keep these
+  regressions short; real server/network/agent/storage owners handle the work.
+  Run `dart run tool/verify_long_turn.dart` separately for two real-time model
+  responses lasting 606 seconds. Both must finish durably, without retries or
+  retained task owners. It uses local provider fixtures and temporary data.
 - Verify global MCP processes are shared across tasks and supervised; task
   cancellation must not terminate unrelated calls or the shared server.
+- Run `dart test test/file_search_test.dart test/server_test.dart -r expanded`
+  for server-side file/directory search, exact directory priority, Git exclusions,
+  plain folders including empty directories, bounded results,
+  cancellation and out-of-order replies over UDS, and 100 simultaneous task
+  streams with searches on the same WebSocket. The streaming fixture withholds
+  event acknowledgements, checks that search replies still pass and buffered
+  events retain their per-task order, then verifies bounded backlog disconnection.
+- Run `flutter test --no-pub packages/desktop/test/view_test.dart -r expanded`
+  for new/existing draft mentions, folder selection, debounce, keyboard/tap selection, caret and
+  suffix preservation, late replies, IME/email input, retry, task switches, and
+  disconnect cancellation. The geometry regression checks that the composer,
+  conversation viewport and reading scroll position stay fixed while the popup
+  loads, changes between 1/20/0 results, fails, and closes.
 - Run `dart test test/server_tools_test.dart` for append-only GPT declarations
   after config edits during active and idle tasks, direct and code-mode calls,
   invalid edits, removals, and catalog restoration after compaction and restart.
@@ -47,6 +69,17 @@ controls, keyboard input, archive/restore, and toast expiry. `moon run dev` veri
 the actual macOS build; use the Dart MCP hot-reload/runtime-error tools against
 that app's VM service. Native menu and browser return behavior also need a native
 build. Fixture tests must not sign out or replace the user's live credentials.
+
+For attachments, run `dart test test/attachments_test.dart test/server_test.dart
+test/deepseek_test.dart --reporter expanded` and `flutter test --no-pub
+packages/desktop/test/session_test.dart packages/desktop/test/view_test.dart
+--reporter expanded`. The server fixtures exercise a real 64 MiB-plus image,
+large acknowledged blocks, connection ownership, cancellation cleanup, both
+Codex detail budgets, durable image history, and all provider wire formats.
+The desktop fixture sends a 100 MiB source through a real TCP proxy and inspects
+the actual request to prove preparation happens before the 32 MiB transport
+budget. Widget tests exercise the native drop event adapter, clipboard channel,
+draft retention, attachment cleanup and ordinary text paste.
 
 ## Live comparisons
 

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:desktop/composer_attachments.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +11,99 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  test('remote desktop prepares a 100 MiB image before transport and preserves originals for retry', () async {
+    final root = await Directory.systemTemp.createTemp('desktop-images-server-');
+    final local = await Directory.systemTemp.createTemp('desktop-images-client-');
+    final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final proxy = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final sockets = <WebSocket>[];
+    final sent = <Json>[], modelInput = <Json>[];
+    AgentServer? server;
+    DesktopSession? desktop;
+    await File('${root.path}/config.yaml').writeAsString('{}');
+    await File('${root.path}/auth.json').writeAsString(jsonEncode({
+      'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
+      'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
+    }));
+    provider.listen((request) async {
+      modelInput.add(jsonObject(jsonDecode(await utf8.decoder.bind(request).join())));
+      request.response.headers.contentType = ContentType('text', 'event-stream');
+      request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
+        'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Received'}]}],
+      }})}\n\n');
+      await request.response.close();
+    });
+    try {
+      server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml', port: 0,
+        endpoint: 'http://127.0.0.1:${provider.port}/responses');
+      proxy.listen((request) async {
+        final outgoing = await WebSocket.connect(server!.uri.toString());
+        final incoming = await WebSocketTransformer.upgrade(request);
+        sockets.addAll([incoming, outgoing]);
+        incoming.listen((raw) {
+          final message = jsonObject(jsonDecode(raw as String));
+          if (message['method'] == 'task.start' || message['method'] == 'task.send') sent.add(message);
+          outgoing.add(raw);
+        }, onDone: outgoing.close);
+        outgoing.listen(incoming.add, onDone: incoming.close);
+      });
+      final session = desktop = DesktopSession(
+        await AgentClient.connect(Uri.parse('ws://127.0.0.1:${proxy.port}/ws')),
+        await openDesktopDatabase(local.path), attachmentDirectory: '${local.path}/attachments',
+      );
+      await session.load();
+      await session.addProject(root.path);
+      final image = await _largeBitmap('${local.path}/100 MiB.bmp');
+      final small = await File('${local.path}/small.png').writeAsBytes(base64Decode(_png));
+      final file = await File('${local.path}/report.txt').writeAsString('File from another machine');
+      final images = [
+        ComposerAttachment(name: '100 MiB.bmp', path: image.path, image: true),
+        ComposerAttachment(name: 'small.png', path: small.path, image: true),
+      ];
+      expect(await session.send('', attachments: [...images,
+        ComposerAttachment(name: 'report.txt', path: file.path, image: false),
+      ]), isTrue, reason: session.error);
+      await _until(session, () => session.task?.running == false);
+      final attachments = sent.single['params']['attachments'] as List;
+      final transmittedImages = attachments.where((part) => part['type'] == 'image').toList();
+      expect(transmittedImages, hasLength(2));
+      expect(transmittedImages.any((part) => part.containsKey('path') || part.containsKey('upload_id')), isFalse);
+      expect(transmittedImages.fold<int>(0, (size, part) => size + attachmentDataUrl(jsonObject(part)).length), lessThanOrEqualTo(32 * 1024 * 1024));
+      final header = ByteData.sublistView(base64Decode(transmittedImages.first['data'] as String));
+      expect((header.getUint32(16), header.getUint32(20)), (1600, 1600));
+      expect(transmittedImages.last['data'], _png, reason: 'Small source bytes should be unchanged');
+      expect(modelInput, hasLength(1));
+      final user = (modelInput.single['input'] as List).lastWhere((item) => item['role'] == 'user');
+      expect((user['content'] as List).where((part) => part['type'] == 'input_image'), hasLength(2));
+      expect(await image.length(), 100 * 1024 * 1024 + 54);
+
+      void cancelPreparation() {
+        if (session.attachmentStatus == 'Preparing images…') session.cancelUpload();
+      }
+      session.addListener(cancelPreparation);
+      await expectLater(session.send('', attachments: images), throwsA(isA<CancelledException>()));
+      session.removeListener(cancelPreparation);
+      expect(sent, hasLength(1));
+      expect(session.submitting, isFalse);
+      expect(await image.exists(), isTrue);
+      final oversized = await File('${local.path}/too-large.png').open(mode: FileMode.write);
+      try { await oversized.truncate(1024 * 1024 * 1024 + 1); } finally { await oversized.close(); }
+      expect(await session.send('', attachments: [
+        ComposerAttachment(name: 'too-large.png', path: '${local.path}/too-large.png', image: true),
+      ]), isFalse);
+      expect(session.error, contains('1 GiB'));
+      expect(sent, hasLength(1));
+    } finally {
+      await desktop?.close();
+      for (final socket in sockets) { await socket.close(); }
+      await server?.close();
+      await proxy.close(force: true);
+      await provider.close(force: true);
+      await root.delete(recursive: true);
+      await local.delete(recursive: true);
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('streams nested code-mode calls, cancels, and keeps tasks through remote changes', () async {
     final root = await Directory.systemTemp.createTemp('desktop-contract-');
     final work = await Directory('${root.path}/work').create();
@@ -110,6 +205,8 @@ void main() {
     try {
       await git(['init', '-q']);
       var desktop = await open();
+      expect(desktop.dictationMode, 'live');
+      await desktop.chooseDictationMode('on_stop');
       expect(desktop.providers.first['status'], 'signed_in');
       expect(
         jsonEncode(desktop.providers),
@@ -145,9 +242,19 @@ void main() {
       expect(requests.first['model'], 'gpt-6-astra');
       expect(requests.first['reasoning']['effort'], 'low');
       await desktop.chooseDeliveryMode('queue');
-      expect(await desktop.send('queued follow-up'), isTrue);
+      desktop.chooseReasoning('max');
+      expect(desktop.reasoning, 'max');
+      expect(await desktop.send('queued follow-up'), isTrue, reason: desktop.error);
       await desktop.chooseDeliveryMode('steer');
-      expect(await desktop.send('steer this turn'), isTrue);
+      desktop.chooseReasoning('high');
+      expect(desktop.reasoning, 'high');
+      expect(await desktop.send('steer this turn'), isTrue, reason: desktop.error);
+      await expectLater(desktop.client.request('task.send', {
+        'task_id': desktop.task!.id, 'prompt': 'invalid effort', 'reasoning': 'ultra',
+      }), throwsA(isA<StateError>().having((error) => error.message, 'message', contains('Unsupported single-agent GPT reasoning effort'))));
+      await expectLater(desktop.client.request('task.send', {
+        'task_id': desktop.task!.id, 'prompt': 'change model', 'model': 'gpt-6.1-sol',
+      }), throwsStateError);
       expect(desktop.task!.pending.length, 2);
       expect(conversation(desktop.task!).map((e) => e.role), containsAll(['Queued', 'Steer pending']));
       final pendingTimes = {
@@ -157,6 +264,7 @@ void main() {
       expect(pendingTimes.keys, unorderedEquals(['queued follow-up', 'steer this turn']));
       expect(pendingTimes.values, everyElement(isNotNull), reason: 'Pending messages show their actual send time');
       expect(desktop.task!.events.values.where((e) => e['type'] == 'turn.started').length, 1);
+      desktop.chooseReasoning('medium');
       firstReply.complete();
       await _until(desktop, () => !desktop.task!.running && desktop.task!.pending.isEmpty);
       expect(
@@ -180,6 +288,20 @@ void main() {
       expect((requests[2]['input'] as List).where((e) => e['role'] == 'user').last['content'], 'steer this turn');
       expect((requests[2]['input'] as List).any((e) => e['content'] == 'queued follow-up'), isFalse);
       expect((requests.last['input'] as List).where((e) => e['role'] == 'user').last['content'], 'queued follow-up');
+      for (final (request, effort) in [(requests[2], 'high'), (requests.last, 'max')]) {
+        final input = (request['input'] as List).map(jsonObject).toList();
+        final user = input.lastIndexWhere((item) => item['role'] == 'user');
+        expect(input[user - 1], {'type': 'configuration_update', 'reasoning': {'effort': effort}});
+      }
+      for (final request in requests) {
+        expect(request['reasoning'], {'effort': 'low'});
+        expect(request['instructions'], requests.first['instructions']);
+        expect(request['tools'], requests.first['tools']);
+      }
+      expect(requests[2]['input'].take((requests[1]['input'] as List).length), requests[1]['input']);
+      expect(requests.last['input'].take((requests[2]['input'] as List).length), requests[2]['input']);
+      expect(desktop.task!.reasoning, 'max');
+      expect(desktop.reasoning, 'medium', reason: 'Committed updates must preserve a newer unsent selection');
       final taskId = desktop.task!.id;
 
       desktop.chooseReasoning('high');
@@ -238,6 +360,7 @@ void main() {
       desktop = await open();
       expect(desktop.defaultProviderId, 'deepseek');
       expect(desktop.deliveryMode, 'queue');
+      expect(desktop.dictationMode, 'on_stop');
       expect(desktop.project!.id, 'https://github.com/acme/again');
       expect(desktop.project!.tasks.single.id, taskId);
       expect(desktop.project!.tasks.single.archived, isTrue);
@@ -331,6 +454,23 @@ void main() {
       await root.delete(recursive: true);
     }
   });
+}
+
+const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+
+Future<File> _largeBitmap(String path) async {
+  const pixels = 5120, size = 54 + pixels * pixels * 4;
+  final header = ByteData(54)..setUint8(0, 0x42)..setUint8(1, 0x4d)
+    ..setUint32(2, size, Endian.little)..setUint32(10, 54, Endian.little)
+    ..setUint32(14, 40, Endian.little)..setUint32(18, pixels, Endian.little)
+    ..setUint32(22, pixels, Endian.little)..setUint16(26, 1, Endian.little)
+    ..setUint16(28, 32, Endian.little)..setUint32(34, pixels * pixels * 4, Endian.little);
+  final file = File(path), output = await File(path).open(mode: FileMode.write);
+  try {
+    await output.writeFrom(header.buffer.asUint8List());
+    await output.truncate(size);
+  } finally { await output.close(); }
+  return file;
 }
 
 Future<void> _until(DesktopSession session, bool Function() condition) async {

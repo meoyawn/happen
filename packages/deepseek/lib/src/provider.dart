@@ -273,6 +273,13 @@ class DeepSeekProvider implements ModelProvider {
             if ((part['text'] as String).isNotEmpty) {
               content.add({'type': 'text', 'text': part['text']});
             }
+          case 'file':
+            content.add({'type': 'text', 'text': attachedFileText(part)});
+          case 'image':
+            content.add({
+              'type': 'image',
+              'source': {'type': 'base64', 'media_type': part['mime_type'], 'data': part['data']},
+            });
           case 'reasoning':
             if (item.role != 'assistant') {
               throw const ModelFailure(
@@ -432,15 +439,21 @@ class DeepSeekProvider implements ModelProvider {
                 .toList(),
         });
       } else {
-        if (item.content.any((part) => part['type'] != 'text')) {
+        if (item.content.any((part) => !{'text', 'image', 'file'}.contains(part['type']))) {
           throw const ModelFailure(
             'invalid_request',
-            'Chat message requires text',
+            'Unsupported Chat message content',
           );
         }
         messages.add({
           'role': item.role == 'developer' ? 'system' : item.role,
-          'content': item.text,
+          'content': item.content.every((part) => part['type'] == 'text') ? item.text : [
+            for (final part in item.content)
+              if (part['type'] == 'image')
+                {'type': 'image_url', 'image_url': {'url': attachmentDataUrl(part)}}
+              else
+                {'type': 'text', 'text': part['type'] == 'file' ? attachedFileText(part) : part['text']},
+          ],
         });
       }
     }

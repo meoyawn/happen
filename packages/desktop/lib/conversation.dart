@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 
 import 'conversation_markdown.dart';
 import 'session.dart';
+import 'composer_attachments.dart';
 
 class ConversationTranscript extends StatefulWidget {
   const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry});
@@ -111,7 +112,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                   itemCount: entries.length + (task.running ? 1 : 0),
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
-                    if (index == entries.length) return _TurnClock(key: const ValueKey('working'), startedAt: startedAt);
+                    if (index == entries.length) return _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus);
                     final entry = entries[index];
                     return Padding(
                       key: ValueKey(entry.id),
@@ -178,7 +179,11 @@ class _Message extends StatelessWidget {
                 border: pending ? Border.all(color: conversationBorder) : null,
                 borderRadius: BorderRadius.circular(18),
               ),
-              child: body,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
+                if (entry.attachments.isNotEmpty) AttachmentRail(attachments: entry.attachments, directory: directory),
+                if (entry.attachments.isNotEmpty && entry.text.isNotEmpty) const SizedBox(height: 10),
+                if (entry.text.isNotEmpty) body,
+              ]),
             ),
           ))
         else
@@ -244,8 +249,9 @@ class _TurnStatus extends StatelessWidget {
 }
 
 class _TurnClock extends StatefulWidget {
-  const _TurnClock({super.key, required this.startedAt});
+  const _TurnClock({super.key, required this.startedAt, this.status});
   final DateTime? startedAt;
+  final String? status;
 
   @override
   State<_TurnClock> createState() => _TurnClockState();
@@ -274,7 +280,7 @@ class _TurnClockState extends State<_TurnClock> {
     child: Row(children: [
       const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
       const SizedBox(width: 10),
-      Text('Working${widget.startedAt == null ? '…' : ' · ${_duration(widget.startedAt!, DateTime.now())}'}',
+      Text('${widget.status ?? 'Working'}${widget.startedAt == null ? '…' : ' · ${_duration(widget.startedAt!, DateTime.now())}'}',
         style: const TextStyle(fontSize: 12, color: conversationMuted)),
     ]),
   );

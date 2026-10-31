@@ -125,6 +125,39 @@ void main() {
     await tester.tap(find.text('runtime_status'));
     await tester.pumpAndSettle();
     expect(find.text('{}\n\nOne active app'), findsOneWidget);
+
+    await emit('turn.started', {});
+    session.client.events.add({'task_id': task.id, 'type': 'text.delta', 'delta': 'Abandoned partial answer'});
+    await tester.pump();
+    session.client.events.add({'task_id': task.id, 'type': 'model.retrying', 'attempt': 1, 'max_retries': 5});
+    await tester.pump();
+    expect(find.textContaining('Reconnecting… 1/5'), findsOneWidget);
+    expect(find.text('Abandoned partial answer', findRichText: true), findsNothing);
+    session.client.events.add({'task_id': task.id, 'type': 'text.delta', 'delta': 'Recovered answer'});
+    await tester.pump();
+    expect(find.textContaining('Reconnecting…'), findsNothing);
+    expect(find.text('Recovered answer', findRichText: true), findsOneWidget);
+    await emit('turn.completed', {});
+    await tester.pumpAndSettle();
+
+    // Failures before a durable sequence is available must remain in the
+    // conversation, including after rebuilding the transcript.
+    session.client.events.add({
+      'task_id': task.id,
+      'type': 'turn.failed',
+      'data': {'error': 'Worker exited before replying'},
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Something went wrong'), findsOneWidget);
+    expect(find.text('Worker exited before replying'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    await tester.pumpAndSettle();
+    expect(find.text('Something went wrong'), findsOneWidget);
+    await emit('turn.started', {});
+    await emit('turn.completed', {});
+    await tester.pumpAndSettle();
+    expect(find.text('Something went wrong'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

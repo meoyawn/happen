@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:cancellation_token/cancellation_token.dart';
 export 'package:cancellation_token/cancellation_token.dart';
+export 'src/attachments.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -157,15 +158,19 @@ Future<Object?> callIsolate(
   String method,
   Json params, {
   void Function(Json)? onEvent,
-  Duration timeout = const Duration(minutes: 10),
+  Duration? timeout = const Duration(minutes: 10),
   CancellationToken? cancellation,
 }) async {
   cancellation?.throwIfCancelled();
+  if (timeout == null && cancellation == null) {
+    throw ArgumentError('Calls without a deadline require caller cancellation');
+  }
   final port = ReceivePort();
   final result = Completer<Object?>();
   final operationId = newId();
-  final deadline = TimeoutCancellationToken(timeout);
-  final token = cancellation == null ? deadline : cancellation.merge(deadline);
+  final deadline = timeout == null ? null : TimeoutCancellationToken(timeout);
+  final token = deadline == null ? cancellation!
+      : cancellation == null ? deadline : cancellation.merge(deadline);
   final subscription = port.listen((raw) {
     final message = jsonObject(raw);
     if (message.containsKey('event')) {
@@ -209,7 +214,7 @@ Future<Object?> callIsolate(
     ]).asCancellable(token);
   } finally {
     hook.dispose();
-    deadline.cancel();
+    deadline?.cancel();
     await subscription.cancel();
     port.close();
   }

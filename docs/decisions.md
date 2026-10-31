@@ -1428,3 +1428,752 @@ hot reload cannot repair native mappings already created with the old manifest.
 The report's exact preceding rebuild sequence was not recorded. The loader
 mechanism and live rebuild were reproduced locally; x86_64 execution, other
 operating systems, notarized distribution, and long-running soaks were not tested.
+
+## 2026-10-31 — File autocomplete and overlapping WebSocket work
+
+User requirements: `@` file autocomplete backed by the server for both new and
+existing desktop tasks; keep it simple and usable over mobile networks while
+100 other tasks stream on the same connection.
+
+Add `files.search` to the existing WebSocket. It takes an absolute server working
+directory, a query and optional limit; it needs neither a task ID nor a model
+request. Return relative file/directory paths; directories end in `/`. Selection inserts `@path` or
+`@"path with spaces"` as ordinary prompt text, without reading file contents or
+changing the attachment/provider contract. See [api.md](api.md) for wire fields
+and limits.
+
+Use Git's tracked/untracked filename listing with standard untracked exclusions.
+Git is optional: plain folders fall back to an asynchronous `dart:io` walk that
+prunes common generated/VCS directories and does not follow directory symlinks.
+No required ripgrep binary, watcher, persistent index or client checkout mirror.
+Cache at most four path lists, reusing each for ten seconds; cap scans at
+100,000 paths/entries and 8 MiB. Rank filenames, prefixes and substrings before
+subsequences; return 20 matches by default, at most 50 and 32 KiB of paths.
+Derive Git parent directories from indexed files, preserving untracked exclusion
+rules without another filesystem walk. Empty Git directories or directories
+containing only ignored files are therefore absent; the plain-folder walk does
+include empty directories. Exact basenames and paths take priority over
+descendants, following Harness's mention ranking: `@desktop` puts
+`packages/desktop/` before `desktop-guide.md`. Directory selection inserts the
+trailing slash and the composer uses folder icons. Async metadata checks exclude
+deleted paths and recognize submodule directories. Filesystem
+calls are asynchronous; CPU-only index processing and matching yield every 1,024
+entries so task streams and unrelated RPCs can progress.
+
+Each connection owns its latest search. Supersession, `files.cancel`, disconnect
+and shutdown cancel its token and terminate/reap an owned Git process or cancel
+the directory subscription. Search has a five-second server deadline; the client
+allows ten seconds including network time. Cancellation releases the pending
+client reply immediately without stopping tasks or another connection's search.
+The composer debounces for 200 ms, caches 20 exact queries for ten seconds, and
+rejects results for an obsolete token, caret, project or widget. It supports
+Arrow keys, Enter/Tab, pointer selection, Escape, quoting, IME composition and
+replacement within a draft. It saves programmatic insertions in the draft too.
+
+The user additionally required Harness's stable autocomplete layout. The initial
+inline suggestion column resized the conversation viewport as results changed.
+Use the same `OverlayPortal` and composited target/follower structure as Harness,
+anchored to the whole composer: bottom-left of the menu follows top-left of the
+composer with a 13 px horizontal inset and 4 px gap. The menu width is the
+composer width minus 26 px; it scrolls within a 320 px maximum height. Showing,
+changing and hiding it never contributes height to the composer or transcript.
+Overlay visibility changes after the frame, and the overlay shares the text
+field's tap region so pointer selection keeps editor focus. There is no size
+animation or reserved suggestion area in the conversation layout.
+
+The existing dispatcher already permits overlapping requests and correlates
+replies by ID. Its 32 pending RPC limit does not count running task streams:
+start/send acknowledge admission before completion. Delayed-acknowledgement
+testing exposed a separate defect: the server disconnected after exhausting
+256 event credits, preventing a file search on that connection from finishing.
+Keep the acknowledgement wire contract, but queue notifications in order while
+credits are unavailable. Bound that queue to 1,024 events and 2 MiB;
+acknowledgements drain it and RPC replies bypass it. An indefinitely stalled
+consumer still disconnects at the bound and can retrieve durable history.
+
+Sources inspected and pinned for this decision:
+
+- OpenCode `958f965d35ed44d32b018fd55b02a5357a7748fd`,
+  `packages/core/src/filesystem/search.ts` and
+  `packages/tui/src/component/prompt/autocomplete.tsx`: location-owned filename
+  indexes, ten-second refresh, bounded replies and in-composer selection.
+- Codex `a795f961be68383738e56ac396742b3e8451696a`,
+  `codex-rs/app-server/src/fuzzy_file_search.rs`,
+  `codex-rs/file-search/src/lib.rs`, and
+  `codex-rs/tui/src/bottom_pane/chat_composer.rs`: cancellable bounded search,
+  ignore-aware enumeration and caret-aware replacement. Its
+  `codex-rs/app-server-transport/src/transport/websocket.rs` also retains a bounded
+  outbound channel with headroom for ordinary output bursts. Happen does not
+  claim its search-session, image mention or full ranking behavior.
+- Harness `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`,
+  `client/lib/services/completion_catalog.dart` and
+  `client/lib/ui/completion_ranking.dart`: distinguish folders from files, preserve
+  the directory slash on insertion, and prioritize exact paths/basenames over
+  descendants. `client/lib/ui/chat_view.dart`, `_composer`, `_updateSlashOverlay`
+  and `_slashMenu`, provide the overlay anchor, width, visibility and scrolling
+  behavior used here. Its Codex checkout `f3875db6d943a4447be6883b352a89d232a41219`,
+  `codex-rs/file-search/src/lib.rs`, indexes directories and scores with Nucleo.
+  Happen keeps its small bounded matcher; it does not claim Nucleo scoring parity.
+- [Git's ls-files reference](https://git-scm.com/docs/git-ls-files) for NUL-delimited
+  names and `--cached --others --exclude-standard`. The fallback walk does not
+  implement `.gitignore` or `.ignore` parsing itself.
+
+Reproduce source inspection with `git show REVISION:PATH` in the local checkouts.
+Verification environment: macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8
+(`737ba8f885`). Commands:
+
+    dart test test/file_search_test.dart test/server_test.dart -r expanded
+    flutter test --no-pub packages/desktop/test/view_test.dart -r expanded
+    dart test -r expanded
+    flutter test --no-pub packages/desktop/test -r expanded
+    dart analyze
+    git diff --check
+
+The full server suite passed 46 tests and the desktop suite passed 16. The
+100-task fixture uses real server, network, agent and SQLite owners and real
+HTTP/SSE provider streams. It searches and pings before those streams end,
+withholds acknowledgements on another subscribed socket, receives a search
+reply with the event window exhausted, then checks 300 deltas' per-task ordering
+after acknowledging. Further unacknowledged output verifies bounded disconnect.
+Before the queue repair the delayed-acknowledgement case failed with
+`1008 Event backlog exceeded`; afterwards it passes. UDS coverage delivers
+out-of-order RPC replies, cancels one search, and delivers its obsolete reply
+after a newer result. Widget tests cover new/existing drafts, keyboard/tap
+selection, debounce, late replies, IME/email input, retries and lifecycle cleanup.
+Analysis and whitespace checks pass; no Dart formatter was run.
+
+After the directory and overlay follow-ups, the complete suites passed 62 server
+tests and 24 desktop tests. The layout regression first failed with the inline
+menu: loading alone reduced the transcript viewport's bottom edge from 736 to
+704 logical pixels. With the overlay it preserves the exact editor rectangle,
+transcript viewport and a nonzero reading scroll position through debounce,
+loading, 1/20/0 results, errors and dismissal. New-task composer geometry, folder
+icons/insertion, exact directory ranking and plain-folder empty directories also
+pass. The desktop fixture uses desktop_drop's existing test transport to register
+its Flutter view without native FFI; autocomplete and transcript layout use the
+actual widgets. No production test hook was added.
+
+A separate native macOS instance with temporary `AGENT_DATA_DIR` built and hot
+reloaded successfully. After selecting this checkout, entering `@file_auto`
+rendered `packages/desktop/lib/file_autocomplete.dart` from the embedded server.
+The widget inspector confirmed the suggestion and runtime errors were empty.
+That first isolated check did not update the user's open window. Subsequent
+checks loaded the current build against the existing desktop data and confirmed
+`@desktop` returns `packages/desktop/` first. The overlay change also accepted
+native hot reload with no runtime errors. No task prompt was sent for these UI
+checks.
+
+Tradeoffs: TTL caches allow brief filename staleness, separate connections can
+duplicate an initial scan, and very large trees return a bounded partial index.
+Async filesystem APIs cannot guarantee disk/NFS latency. Delayed acknowledgements
+and obsolete replies were simulated locally; this is not a cellular-network,
+cross-platform or long-duration capacity benchmark.
+
+## 2026-10-31 — Code-mode output budgets
+
+Replace the 65,536 UTF-16-unit exception in `text()` with Codex's bounded
+collection and response truncation. Two ordinary shell results could exceed
+that old check and fail an otherwise successful cell, losing its output and
+explicit state. Output pressure now preserves a fixed beginning and rolling
+end, reports omissions, and lets the cell finish.
+
+Default the response to 10,000 approximate tokens and honor a first-line
+`// @exec: {"max_output_tokens": 20000}` override. Validate pragma fields as
+non-negative JavaScript-safe integers; null uses the default, and zero retains
+only truncation diagnostics for nonempty output. Estimate one token per four
+UTF-8 bytes, preserve code-point boundaries, and place warning/omission text
+outside the retained-text budget. Text-only results that fit retain their item
+boundaries; oversized results combine their text for head/tail truncation.
+
+Bound collection inside QuickJS to 1 MiB of text and 32,768 logical items before
+crossing FFI, independently of the requested response budget. Retain a fixed
+prefix and rolling suffix with explicit loss counts. Prefix/suffix cursors avoid
+copying the entire retained tail after every small write. A split text item
+continues its original line across the omission notice. The public result keeps
+the existing `output`/`values` shape. The tool description advertises the output
+override; `yield_time_ms` remains an ignored comment field, and this change does
+not implement yielded cells or media output.
+
+Source evidence: local Codex `a795f961be68383738e56ac396742b3e8451696a`, compared
+with the previously pinned `2681f8cba2831ef72bca2c0672b2e49d5f690745`. The relevant
+budget, collection and formatting sources are identical between these revisions:
+
+- `codex-rs/code-mode-protocol/src/runtime.rs`, `description.rs`, and `host/mod.rs`;
+- `codex-rs/code-mode-runtime/src/output/output_collection.rs`;
+- `codex-rs/utils/output-truncation/src/lib.rs` and
+  `codex-rs/utils/string/src/truncate.rs`.
+
+Reproduce source reads with `git show REVISION:PATH` in the Codex checkout and
+compare with `git diff OLD_REVISION NEW_REVISION -- PATH`. Verification on macOS
+arm64, Dart 3.13.7:
+
+    dart test test/code_mode_test.dart -r expanded
+    dart analyze packages/code_mode packages/agent/lib/src/tool_specs.dart test/code_mode_test.dart
+    dart test -r expanded
+    git diff --check
+
+The batched-output regression first failed with `Cell output limit exceeded`.
+All eight cell lifecycle tests now pass, including continuation/state after
+80,000 characters, token overrides, zero/default budgets, UTF-8 truncation,
+invalid pragmas before host dispatch, multi-megabyte output, item pressure,
+cancellation and CPU interruption. Scoped analysis passes; no formatter was run.
+The final full-suite run in the concurrently changing checkout passed 58 tests
+and failed two newly added cases: `turns have no step limit, including resumed
+tasks with legacy limits` (the separate agent step cap) and `GPT http resets its
+five-minute event idle limit and releases a silent stream` (a test timeout).
+The earlier RPC-deadline failure passed in isolation and on this full rerun.
+
+Tradeoffs: token counts are Codex's byte estimate, not tokenizer measurements.
+Large budgets cannot recover text already discarded by collection. This matches
+the text-output limits and truncation policy, not the complete Codex runtime;
+QuickJS's separate memory, CPU, source and store limits still apply. Evidence is
+from the real embedded QuickJS boundary and local provider fixtures, not a new
+live-model or cross-platform run.
+
+## 2026-10-31 — GPT reasoning changes on active-task messages
+
+User requirement: allow the desktop to change GPT reasoning while a task is
+running. Keep the existing composer contract: a selection accompanies the next
+message. Steer applies it within the active turn at the next model boundary;
+Queue retains it with that message until its turn starts. Selecting a level
+alone does not submit input or interrupt an in-flight provider request.
+
+Allow `reasoning` on active `task.send` requests, validate it against the frozen
+task model/settings before admitting input, and wait for startup configuration
+when a message arrives immediately after task creation. Recheck the current task
+owner after asynchronous validation. Keep model/provider changes prohibited and
+retain DeepSeek/OpenCode's fixed-effort policy.
+
+The agent commits a changed effort immediately before its associated user input
+in one batch with `effective_reasoning`. Each steered message can select its own
+effort; queued messages retain their selected effort independently. Repeated
+levels add no update. The existing GPT adapter emits `configuration_update` and
+keeps the original top-level reasoning and earlier input untouched. Cancellation
+or archive discards uncommitted input and its effort together. The desktop keeps
+a newer unsent selection when earlier configuration events arrive.
+
+Sources inspected on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+- Pinned Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`,
+  `codex-rs/protocol/src/models.rs` and `models/configuration_update.rs`, using
+  `git show COMMIT:PATH`: a durable configuration item carries reasoning effort
+  and takes effect at its history position. No new GPT wire shape was introduced.
+- The [OpenAI reasoning guide](https://developers.openai.com/api/docs/guides/reasoning#change-reasoning-mid-conversation),
+  read 2026-10-31: append updates between responses before user input, retain the
+  original request-level effort, preserve update positions, and avoid adjacent
+  updates. The existing compaction restoration contract remains unchanged.
+
+Verification: the widget and UDS session regressions first failed because the
+desktop kept the running task at `low`. After enabling the selector alone, the
+session regression failed with `Change task settings between turns`. Both pass
+after the server/agent repair. The session fixture checks a steered `high` and a
+queued `max`, exact update placement, stable earlier prefixes and top-level
+settings, invalid effort rejection, unsent selection preservation, and restart.
+Existing server checks now cover immediate-start admission and archive discarding
+the queued effort; both Console provider identities reject changed effort before
+pending-message admission. These use local protocol fixtures, not new live GPT
+inference or cache-hit measurements.
+
+Reproduce from the repository root, without running the Dart formatter:
+
+    dart test --reporter expanded
+    dart analyze
+    cd packages/desktop
+    flutter test --no-pub test/session_test.dart test/view_test.dart --reporter expanded
+
+All 55 repository tests and whole-repository analysis pass. The full desktop run
+passes the reasoning checks but currently has three failures in the concurrently
+added `dictation_test.dart` (Stop hit testing and recording cleanup). Those
+dictation changes are outside this repair. Pending effort remains memory-only
+until its message is committed, matching the existing pending-input policy.
+
+## 2026-10-31 — Composer dictation and direct desktop uploads
+
+User requirement: copy `harness/client` dictation into the desktop composer and
+use its architecture with the minimum audio hops. One desktop-owned service
+captures the local microphone and sends multipart WAV directly to OpenAI's
+`/backend-api/transcribe`. The task server never receives audio, Base64 chunks,
+or transcription responses. Only the final text enters a task when the user
+sends it. This replaces the unfinished server-relay implementation in the
+working tree.
+
+Keep authentication refresh in the existing network-isolate owner. The local
+desktop requests access credentials through `auth.desktop` over its private
+UDS connection; TCP listeners reject that method. No refresh token is returned.
+The desktop rechecks the account before uploading and after a 401 refresh.
+Login, logout, disconnect, composer navigation, Escape, and application shutdown
+cancel owned work. Audio remains in memory for the current attempt and manual
+retry, and is cleared after completion or cancellation. Transient retries reuse
+the prepared bytes and authorization; they do not relay audio or refresh the
+account on every retry. Credentials and HTTP error bodies are excluded from
+diagnostics, telemetry, and task history.
+
+Use the reference's compact 28-to-72-pixel microphone control, six-bar RMS
+waveform, spinner, Stop, Cancel, and retry rail. The editor and model controls
+stay mounted. Stop inserts at the current selection with the reference's
+Unicode spacing; Enter finishes and sends once. IME composition defers insertion.
+Recording shorter than 250 ms is discarded; 595 seconds finishes the recording.
+The macOS bridge emits 16 kHz mono PCM16 with the reference's gain processing.
+Microphone permission is requested only after explicit activation; a denial
+offers the system microphone settings.
+
+Reference: Harness commit `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`, inspected
+as local source on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+- `client/lib/services/dictation_service.dart`: local auth ownership, direct
+  HTTP, capture phases, duration bounds, same-audio retry, cancellation, and
+  default non-streaming behavior.
+- `client/lib/services/desktop_backend_auth.dart` and
+  `desktop_http_session.dart`: local backend authorization and client-owned HTTP.
+- `client/lib/ui/dictation_controls.dart`, `composer_dictation_session.dart`,
+  `client/macos/Runner/DictationAudioBridge.swift`, and
+  `client/docs/compact-dictation-reference.md`: compact controls, native capture,
+  editing and insertion semantics. Reproduce with `git show COMMIT:PATH` in the
+  Harness checkout. The inspected files are clean at that revision.
+
+Adaptation: keep Happen's credential owner and HTTP client identity. This ports
+the reference's default non-streaming composer path; experimental live partials,
+sidebar badges, global dictation shortcuts, recording history and settings are
+outside the requested composer scope. Happen does not claim Harness's complete
+workspace-policy/routing or browser-session implementation. The desktop has one
+small reusable HTTP pool in addition to the task network owner; this avoids
+audio serialization and server forwarding while retaining coalesced refresh.
+
+Verification commands (no Dart formatter):
+
+    dart test test/dictation_test.dart -r expanded
+    cd packages/desktop
+    flutter test --no-pub test/dictation_test.dart -r expanded
+    flutter build macos --debug --no-pub
+    cd ../..
+    dart analyze packages/desktop packages/server packages/gpt/lib/src/transcription.dart test/dictation_test.dart
+    git diff --check
+
+The original composer tests reproduced premature hit testing during the pill's
+expansion and a framework notification during navigation cleanup. Checks now
+target the continuously visible Stop slot; cancellation publishes after native
+release so the new composer is not rebuilt during disposal. Final verification
+also reproduced focus loss after Retry and Escape cancelling an active IME
+composition. The controls now share the editor's tap region, and Escape defers
+to composition.
+
+Verification: all five direct-transcription transport tests and all 23 desktop
+tests pass, including the six composer dictation cases. Scoped analysis,
+`git diff --check`, and the native debug macOS build pass. The broad repository
+run passed 61 tests and failed the concurrently changed image-attachment server
+test with `ImageException: Invalid IDAT checksum`; dictation did not introduce
+or modify that image path.
+
+MCP hot reload succeeded in the running desktop and the subsequent runtime-error
+check was empty. The loaded widget tree includes the composer and DictationButton
+with no ErrorWidget. A read-only native `status` call confirmed that the loaded
+runner has the microphone bridge, 16000 Hz capture, permission already granted,
+and no active recording. No live microphone recording or OpenAI audio upload was
+made during verification; recognition quality and actual device audio remain
+unmeasured. Transport tests use a local HTTP fixture, separate from that native
+bridge check. No Dart formatter was run.
+The native Happen app rebuilt with `flutter run -d macos --debug --hot --print-dtd`,
+accepted hot reload, and reported no runtime errors. No Dart formatter was run.
+
+## 2026-10-31 — Cancellation-owned turns and Codex stream deadlines
+
+The reported desktop error exactly matches `callIsolate`'s default ten-minute
+deadline. The server applied it to the complete agent turn, including model
+requests and tool work; the agent independently applied it to model responses and
+compaction. Progress could not extend either timer. When the outer timer fired,
+the server stopped observing durable events and reported a transient failure.
+
+Follow the user's local Codex checkout: turns and model/compaction calls have no
+cumulative wall-clock deadline. Allow an explicit null `callIsolate` timeout only
+with caller-owned cancellation. Other RPCs retain their deadlines. The server
+observes the turn until its terminal event and reply; Stop, archive and shutdown
+continue cancelling the agent through its mailbox. The observation token is
+released with that invocation. Nested model calls use the existing turn token.
+Worker exit detection and per-tool execution bounds remain active.
+
+GPT HTTP/SSE and WebSocket wait up to five minutes for each provider event. Match
+Codex's fifteen-second WebSocket connection limit and absence of a total HTTP
+response deadline. Measure idleness around each iterator `moveNext` future.
+Putting `Stream.timeout` outside the asynchronous SSE decoder caused an idle
+error to wait for decoder cancellation before reaching the consumer; a silent
+fixture remained stuck until the test's thirty-second deadline. A future timeout
+reaches the transport's cleanup immediately, which releases its owned raw input
+subscription and leaves the shared HTTP pool usable. Provider credentials and
+stream contents are excluded from these errors.
+
+Pinned sources inspected with `git show REVISION:PATH` in
+`/Users/meoyawn/Developer/github/codex`, revision
+`a795f961be68383738e56ac396742b3e8451696a`:
+
+- `codex-rs/core/src/tasks/mod.rs` and `tasks/regular.rs`: task-owned cancellation,
+  spawned turn future and regular turn loop without a duration deadline.
+- `codex-rs/model-provider-info/src/lib.rs`: 300,000 ms stream-idle default and
+  15,000 ms WebSocket connection default.
+- `codex-rs/codex-api/src/sse/responses.rs` and
+  `endpoint/responses_websocket.rs`: timeout around the next transport event.
+- `codex-rs/codex-client/src/provider.rs`: requests start with `timeout: None`.
+
+Verification on macOS arm64, Dart 3.13.7 and Flutter 3.47.8:
+
+- The accelerated server regression failed before the fix with the screenshot's
+  exact `TimeoutException after 0:10:00.000000` error. It passes after removing
+  the turn deadline, completes the response and queued follow-up durably, and
+  checks that task owners are released. Only the server's long RPC timers are
+  accelerated; its real agent, storage and network owners perform the work.
+- Both GPT transport regressions first failed against the original client with
+  `TimeoutException after 0:03:00.000000: No stream event`. They pass with the
+  five-minute event waits and exercise the shared-pool behavior after silence.
+- The native Happen app accepted hot reload and reported no runtime errors.
+- The final whole-repository run passed 61 tests; `dart analyze` and
+  `git diff --check` were clean. The eight focused desktop app/session/conversation
+  checks passed. The full desktop run passed 20 checks and failed the same three
+  dictation cases already recorded above (Stop hit testing and recording cleanup).
+
+Reproduction from the repository root, without running the Dart formatter:
+
+    dart test test/server_test.dart test/gpt_test.dart -r expanded
+    dart run tool/verify_long_turn.dart
+    dart test --reporter expanded
+    dart analyze
+    flutter test --no-pub packages/desktop/test --reporter expanded
+    git diff --check
+
+The separate real-time probe holds HTTP/SSE and WebSocket model responses for
+606 seconds, with periodic events and ordinary UDS task-status requests. This
+crosses both former ten-minute deadlines without changing production timers.
+The run confirmed both turns still running and status requests responsive at
+600 and 606 seconds. Its provider fixture then overlapped an unawaited flush with
+close. After serializing and awaiting fixture writes, a ten-second rerun checked
+two durable completions, unchanged request count and zero retained task owners.
+Completion after the full 606 seconds was not rerun. The optional seconds
+argument selects a shorter fixture check: `dart run tool/verify_long_turn.dart 10`.
+
+These runs use a local provider fixture and temporary task data, not live-model,
+cross-platform, mobile-network, or multi-week availability evidence. Without a
+total turn deadline, an unresponsive worker requires cancellation or worker-exit
+handling; increasing task duration does not itself authorize a timeout.
+
+## 2026-10-31 — Unlimited model steps and bounded stream recovery
+
+The user clarified that tasks may run for 24, 48, 72 hours or longer, then
+selected the local Codex checkout as the behavior reference. In addition to the
+deadline repair above, remove the agent's model-step cap, its saved configuration
+default and CLI `--max-steps`. Ignore legacy `max_steps` when resuming tasks.
+Compaction and targeted durable history access retain their existing behavior.
+Stop/archive/shutdown, model completion and terminal failures still end a turn.
+This does not add execution after quitting the desktop or automatic crash/restart
+continuation.
+
+Read-only inspection of attachment task `a0164f4f58a4917078ee5e0e1008c84b` found `turn.started` at
+`2026-10-31T00:47:31.719679Z`, its last completed cell at sequence 60, and
+`turn.cancelled` at `2026-10-31T00:57:31.715202Z` (sequence 61). The dictation task
+also cancelled exactly ten minutes after starting. The cell output overflow in
+the screenshot was followed by more successful calls, so it was not the terminal
+event. The saved 64-step limit would independently stop a longer continuation.
+The task database's `events` table can reproduce the timestamps without reading
+prompts, tool contents or credentials:
+
+    SELECT seq, type, created_at FROM events
+    WHERE type IN ('turn.started', 'turn.cancelled') OR seq IS 60 ORDER BY seq;
+
+Allow five retries for disconnected/idle GPT streams, socket/HTTP/WebSocket
+connection failures, timeouts and retryable server errors. Use Codex's 200 ms
+exponential backoff with ten-percent jitter and cancellation during backoff.
+Reuse the same model input; only a complete response reaches the agent's tool
+executor. Executed tools retain their durable results and are not repeated by
+transport recovery. Explicit `response.incomplete`, authentication/validation/quota
+errors and context overflow remain terminal here; the agent retains its separate
+bounded context-overflow compaction path. This adopts the relevant recovery
+behavior, not all Codex transport features: server retry advice, transport fallback
+and optional unbounded connection retries remain unimplemented.
+
+Send ephemeral `model.retrying` events with bounded attempt counts. The desktop
+clears abandoned partial text and shows reconnecting progress until output
+resumes. Preserve unsequenced terminal notifications in the task's UI projection
+so an early worker failure appears in the transcript and survives widget/task
+rebuilds. Clear that transient terminal state on a new turn or a durable terminal
+event. It is not a replacement for server-owned durable history.
+
+Additional sources inspected at Codex revision
+`a795f961be68383738e56ac396742b3e8451696a`:
+
+- `codex-rs/core/src/session/turn.rs` continues while follow-up work or pending
+  input remains, with no duration or step cap. The earlier pinned revision
+  `2681f8cba2831ef72bca2c0672b2e49d5f690745` has the same continuation policy.
+- `codex-rs/core/src/responses_retry.rs` implements bounded stream recovery and
+  reconnecting notices; `codex-rs/model-provider-info/src/lib.rs` defaults to five
+  stream retries. `codex-rs/protocol/src/error.rs` distinguishes retryable streams
+  and connections from terminal incomplete responses.
+- `codex-rs/async-utils/src/backoff.rs` defines the retry delays and jitter.
+  Reproduce with `git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8, without a formatter:
+
+    dart test test/server_test.dart test/gpt_test.dart --reporter expanded
+    flutter test --no-pub packages/desktop/test/app_test.dart packages/desktop/test/session_test.dart packages/desktop/test/conversation_test.dart --reporter expanded
+    dart test --reporter expanded
+    dart analyze
+    git diff --check
+
+The server clock regression fails with the original ten-minute deadline and
+passes through simulated 24, 48 and 72 hours, then verifies explicit cancellation
+and its committed terminal event. The continuation regression first failed at
+64 model steps, then passed two 70-cell turns, including a resumed task with a
+saved one-step limit. Recovery first failed on a disconnected model response,
+then passed after two disconnections with one executed tool and two committed
+model replies. Both GPT transports check idle-clock reset, five-retry exhaustion,
+cancellation during backoff and pool reuse. Explicit incomplete responses are
+not retried. The desktop regression first failed to show an unsequenced error
+and then failed to show reconnecting progress; both now pass, including rebuild
+and subsequent-turn clearing. Native Happen accepted hot reload.
+
+The final full server suite passes all 61 tests; whole-repository analysis and
+whitespace checks pass. The focused desktop conversation/session suite passes
+eight tests. The full desktop run passes 20 tests and fails three separate
+dictation cases in the concurrently edited checkout (Stop hit testing, retry and
+navigation cleanup), matching the earlier failures outside this repair. Native
+hot reload reports no runtime errors.
+
+The real-time HTTP/SSE and WebSocket probe observed both tasks still running and
+responsive at 600 and 606 seconds. Its first release hit a fixture-only
+`StreamSink is bound to a stream` race from closing during an unawaited flush.
+The fixture now serializes and awaits its writes. A corrected
+`dart run tool/verify_long_turn.dart 12` run completes both turns durably, observes
+no retries and releases all task owners. The 606-second run establishes continued
+execution across the old deadlines; durable completion is verified separately by
+the corrected shorter probe and automated server tests.
+
+These are local transport fixtures and accelerated-clock observations, not a
+72-hour soak, new live-provider inference or cross-platform evidence. Terminal
+service failures can still stop work; unlimited duration does not guarantee
+provider availability or operating-system uptime.
+
+## 2026-10-31 — Local macOS desktop launch and release workflows
+
+Initial implementation and verification. The stop-only reinstallation policy
+in the following entry supersedes the restart behavior recorded here.
+
+User requirements: follow the Spotify checkout's debug hot-reload and release
+reinstallation workflows, allow one debug and one release instance, and keep
+all workflow state outside the application. The standalone `release` target
+must only build; it must not log, lock, inspect, launch, or reuse app processes.
+
+`moon run release` directly invokes `flutter build macos --release` in
+`packages/desktop`. It has no Python wrapper or workflow state. Ordinary Flutter
+and Moon build output/caches remain standard build-tool behavior. Installation
+and process management belong to `release-reinstall`; `reinstall-release` is
+its alias. The dependency builds first, then the installer verifies identity,
+required native frameworks, and the deep/strict code signature before staging
+and replacing `/Applications/Happen.app`. Failed replacement validation restores
+the previous bundle. An installed release is restarted only if its exact
+executable was running; debug remains running independently.
+
+`moon run dev` uses a standard-library Python launcher with a checkout-local
+launch lock, live executable discovery, and Flutter supervisor discovery by
+working directory. Include the Flutter shell entrypoint before it execs the
+snapshot, so simultaneous cold launches also reuse startup. A debug process is
+recognized by this checkout's Debug bundle; release discovery excludes Flutter's
+Debug/Profile product paths. Separate mode checks allow one of each. Existing
+duplicates produce PIDs and exit status 2 instead of another launch. There is
+no runtime singleton code or new Dart dependency.
+
+New debug sessions expose a FIFO for `r`, `R`, and `q`, private build output,
+and supervisor metadata. All of these, plus launch/reinstallation locks, live
+in the repository's ignored `.local/run/`, outside `Happen.app`. An existing
+externally started debug session retains its terminal/VM controls. At the user's
+request, release launch/reuse is internal to reinstallation, with no separate
+Moon launch target. Reinstallation uses the guarded launcher's release path,
+shares its launch lock and rechecks the full executable path before SIGTERM;
+it never signals the debug app by a name-only match.
+
+Reference: `/Users/meoyawn/Developer/spotify` at
+`24975638f3ccf55111c60ef38831fb8d2bb9368f`, `tools/run_flutter.py`,
+`tools/release_macos.py`, `moon.yml`, and `README.md`. Reproduce source inspection
+with `git show REVISION:PATH` in that checkout. Happen adapts its bundle identity,
+native framework verification, and Python invocation, separates the instance
+checks by mode, and makes standalone release building a direct Flutter command
+per the user's clarification. No Python packages are required.
+
+Verification environment: macOS 26.4 arm64, Python 3.9.6, Flutter 3.47.8,
+Dart 3.13.7, Moon 2.6.5. From the repository root:
+
+    python3 -m unittest discover -s packages/desktop/tool -p 'test_*.py' -v
+    moon run dev -- --status
+    moon run dev
+    moon run release
+    python3 docs/evidence/desktop-workflows.py.txt
+    git diff --check
+
+The native verification script requires one live debug session and no running
+release. It installs into a temporary directory with spaces and a `Debug`
+ancestor, uses a temporary `AGENT_DATA_DIR`, injects a post-replacement validation
+failure, and stops/unregisters/removes its release afterwards. Child commands
+receive no inherited `MOON_*` settings from a hosting application's workspace.
+The launcher tests use real subprocesses, `ps`,
+`lsof`, file locks and FIFO I/O with a local Flutter stand-in; they cover eight
+concurrent starts, reuse, input delivery, exit/relaunch and duplicate refusal.
+
+Eight concurrent requests reused the live debug app and supervisor. The signed
+63.9 MB release built successfully; both built and installed bundles contained
+no workflow logs, locks, metadata, or launch scripts. Temporary installation
+left a stopped release stopped. Eight concurrent release requests reused one
+process. Reinstallation changed its PID; fault injection restored the previous
+executable's inode and restarted it. The original debug app/supervisor PIDs
+remained unchanged throughout. No Dart formatter was run.
+
+After making standalone `release` a direct Flutter invocation, another native
+build passed and every file's size/mtime in `.local/run/` remained unchanged.
+Signature verification was performed separately after the build, outside that
+target. The installer retains all verification and process management.
+
+Incremental installation validation also exposed a stale outer app signature:
+`App.framework` verified independently, but the app's sealed framework hash
+still referred to the preceding build. The outer signature was timestamped
+04:20:30 while the newly embedded framework was timestamped 04:21:47. The
+installed Flutter SDK at `737ba8f885dc774b53b442759999a312c9461e4e`,
+`packages/flutter_tools/bin/xcode_backend.dart`, copies and re-signs that
+framework in the embed script; its Xcode template declares no script outputs.
+Declare the embedded `App.framework` directory as that phase's output so
+Xcode's outer signing task observes its updates. The next direct release build
+passed deep/strict verification. This changes build dependencies, not signing
+identity or runtime behavior. The source reference and failure can be checked
+with `codesign --verify --deep --strict --verbose=4` on both the app and its
+embedded framework; the outer `Contents/_CodeSignature/CodeResources` records
+the sealed nested hash.
+
+A subsequent incremental release build refreshed the outer signature again and
+passed deep/strict verification. The final temporary install/restart/rollback
+probe passed with debug app PID 52001 and Flutter PID 50665 unchanged. A managed
+native debug session also reported `Reloaded 0 libraries in 96ms` through its
+local Flutter controls. Built and installed bundles still contained no workflow
+logs or locks.
+
+Tradeoffs: the guard applies to these checkout-local commands. Direct Flutter
+or executable launches can bypass it, and other checkouts do not share its lock.
+No application-level enforcement, Windows support, notarization, or crash/power-
+loss atomicity across the two directory renames is claimed. Rollback evidence
+uses an injected validation failure, not a real disk or signing-service failure.
+
+## 2026-10-31 — Live composer dictation and a Settings screen
+
+The user expanded composer dictation to show words while speaking, requested a
+saved Live / On stop choice, and requested Settings as a separate screen. Live
+is the default when no preference is saved. Store `dictation_mode` in the
+desktop's existing settings table; capture the mode once per recording. A
+normal navigation route replaces the Settings dialog, with a Back button and
+the existing account, provider, delivery, and archived-task controls. The chat
+route remains mounted so returning preserves its draft and conversation.
+Opening Settings cancels an active recording before covering the composer.
+
+Use the live branch from Harness at the same pinned revision
+`6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`,
+`client/lib/services/dictation_service.dart` and
+`client/lib/ui/composer_dictation_session.dart`. Reproduce inspection using
+`git show REVISION:PATH` in `/Users/meoyawn/Developer/harness`. The service uses
+`/backend-api/dictation/stream?dictation_surface=composer` with the
+`chatgpt-dictation` and `codex-desktop` subprotocols, PCM16 session configuration,
+`audio.append`, segment/final revisions, and explicit session close. Happen
+retains its own HTTP user agent and originator. This is the explicitly selected
+live path; it does not infer account entitlements from a remote feature gate.
+
+Audio still travels directly from the desktop to OpenAI. The local UDS backend
+supplies credentials once before capture; no audio, interim transcript, or
+provider response enters the task server. Buffer microphone frames during the
+handshake and replay them once after session startup. Startup/handshake waits
+are bounded to ten seconds each and finalization to eight seconds, all owned
+by the recording's cancellation token. Socket errors, missing final segments,
+and unexpected session closure fall back to the existing direct HTTP upload
+of the retained complete recording. The composer reports that fallback while
+recording. Cancellation closes the owned connection and prevents fallback.
+Redirects are refused so account credentials are never forwarded to another
+endpoint. Only final user-submitted text becomes task history.
+
+The editor now updates the active dictated range as revisions arrive. Preserve
+manual edits and cursor movement, defer updates through IME composition, and
+restore only untouched dictated ranges on Cancel. Final revisions use a counter
+independent from partial revisions, so a lower-numbered first final is accepted.
+Keep partial text available when transcription fails and the user can retry.
+Happen has plain text rather than Harness's inline mention atoms. Limit the
+token edit matrix to 250,000 cells for unusually large ASR replacements; beyond
+that bound, preserve the manually consumed prefix without trying to realign
+every token. This avoids quadratic work on the UI thread.
+
+Verification environment: macOS 26.4 arm64, Dart 3.13.7, Flutter 3.47.8. No Dart
+formatter was run. The wire fixtures cover partial/final ordering, cancellation
+during handshake/startup/recording/finalization, incomplete finalization, and
+redirect refusal. Composer checks cover live updates before Stop, unchanged
+per-recording mode, Cancel, Enter sending once, complete-audio HTTP fallback,
+manual edits, and restoring drafts on navigation. The navigation check initially
+failed because the editable widget had detached before rollback; the composer
+now restores its controller directly during disposal. Existing Settings and
+session checks cover the full screen, Back preserving the draft, saved mode,
+and restoration after reopening the database.
+
+The live OpenAI probe used generated Samantha speech converted to 16 kHz mono
+PCM16, streamed in real time through the same production transport and the
+running desktop's local credential owner. It received 21 updates before Stop;
+the first arrived 2,563 ms after starting authorization/connection. The final
+transcript at 8,917 ms exactly matched the generated two-sentence input. No
+microphone recording or private conversation was used for this network probe.
+The existing native microphone bridge is unchanged.
+
+Reproduction commands from the repository root:
+
+    dart test test/transcription_stream_test.dart test/dictation_test.dart -r expanded
+    flutter test --no-pub packages/desktop/test/dictation_test.dart packages/desktop/test/session_test.dart -r expanded
+    flutter test --no-pub packages/desktop/test/view_test.dart --plain-name Settings -r expanded
+    dart analyze
+    git diff --check
+    say -v Samantha -o /tmp/happen-live-dictation.aiff 'The quick brown fox jumps over the lazy dog. This is a test of live dictation in the desktop composer.'
+    afconvert -f WAVE -d LEI16@16000 -c 1 /tmp/happen-live-dictation.aiff /tmp/happen-live-dictation.wav
+    dart run tool/verify_dictation.dart SOCKET_PATH /tmp/happen-live-dictation.wav
+
+`SOCKET_PATH` is the private Unix socket of a running Happen desktop, discoverable
+with `lsof -n -U -a -p APP_PID`. The probe prints timings, transcript lengths,
+and the supplied audio's final text, never credentials. Hosted-service access,
+network conditions, and the upstream five-minute live-session lifetime can
+still trigger the on-stop fallback. This is one successful account/environment
+probe, not cross-platform or long-duration service availability evidence.
+
+Final verification passes all 72 repository tests and all 35 desktop tests.
+Whole-repository analysis and whitespace checks pass. The running desktop
+accepted hot reload and reported no runtime errors. Earlier full runs caught
+transient errors in the concurrently edited attachment code; the final complete
+runs above include that code and pass.
+
+## 2026-10-31 — Reinstallation leaves the release stopped
+
+User correction: reinstallation must stop the old release and install the new
+bundle without restarting it. This replaces the initial Spotify-derived policy
+of restoring the release's running state. Successful installation and rollback
+both leave the release stopped; opening it afterwards is a separate user action.
+
+Keep the existing full-executable-path check before SIGTERM and wait for exit
+before replacing the bundle. Keep signature/framework validation, staged
+replacement, rollback and local locks. Remove the restart helper and all calls
+to it, including the rollback path. Remove the debug launcher's unused release
+launch flags as well; no production caller needs them now. Debug launch/hot
+reload and the standalone build-only `release` target retain their behavior.
+Update the Moon task description and user documentation to state stop-only
+reinstallation. No application code, runtime logging, or bundled locks changed.
+
+Verification on macOS 26.4 arm64, Python 3.9.6, using the existing signed release
+bundle and a running debug session:
+
+    python3 docs/evidence/desktop-workflows.py.txt
+    python3 -m unittest discover -s packages/desktop/tool -p 'test_*.py' -v
+    moon query tasks
+    git diff --check
+
+The updated native check failed before the fix with `Reinstallation must leave
+the release stopped`. After the fix it passes initial stopped installation,
+stopping a live release without relaunch, and injected post-replacement
+validation failure restoring the previous executable's inode without relaunch.
+It uses a temporary installation and data directory, then unregisters/removes
+them and reaps its child processes. Debug app PID 60675 and Flutter PID 59586
+remain unchanged; no tooling logs/locks appear in the installed bundle. Both
+launcher tests pass. No Dart formatter or additional native build was needed.
+
+The existing limits on direct launches, other checkouts and crash/power-loss
+atomicity still apply. Rollback is verified through fault injection rather than
+a real disk or signing-service failure.

@@ -45,7 +45,6 @@ ArgParser parser() {
       ..addOption('provider', allowed: ['gpt', 'deepseek', 'opencode'])
       ..addOption('model')
       ..addOption('reasoning')
-      ..addOption('max-steps', defaultsTo: '64')
       ..addOption('resume')
       ..addFlag('json', negatable: false)
       ..addFlag('telemetry', defaultsTo: true),
@@ -220,7 +219,6 @@ Future<void> run(List<String> arguments) async {
             if (command.wasParsed('model')) 'model': command['model'],
             if (command.wasParsed('reasoning'))
               'reasoning': command['reasoning'],
-            'max_steps': int.parse(command['max-steps'] as String),
             'telemetry': command['telemetry'],
           }),
         );

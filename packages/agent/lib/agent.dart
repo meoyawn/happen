@@ -136,7 +136,7 @@ class _Agent {
       final baseline = jsonObject(config['provider_settings']);
       final previousEffort =
           await _metadata('effective_reasoning') ?? baseline['reasoning'];
-      final effort =
+      var effort =
           settings['reasoning'] as String? ?? previousEffort as String;
       if (effort != previousEffort && config['reasoning_updates'] != true) {
         throw ArgumentError('Reasoning effort is fixed for this task');
@@ -243,7 +243,7 @@ class _Agent {
         );
       }
       if (!compact) {
-        update('input.committed', ConversationItem.text('user', prompt), {
+        update('input.committed', ConversationItem.user(prompt, attachments: settings['attachments']), {
           if (settings['message_id'] != null)
             'message_id': settings['message_id'],
           if (settings['sent_at'] != null) 'sent_at': settings['sent_at'],
@@ -282,22 +282,40 @@ class _Agent {
         if (_steering.isEmpty) return false;
         final messages = _steering.toList();
         _steering.clear();
-        final entries = await callIsolate(writer, 'append_batch', {
-          'events': [
-            for (final message in messages)
-              {
-                'type': 'input.committed',
-                'data': {
-                  'message_id': message['id'],
-                  'delivery': 'steer',
-                  if (message['created_at'] != null) 'sent_at': message['created_at'],
-                  'item': ConversationItem.text(
-                    'user',
-                    message['prompt'] as String,
-                  ).toJson(),
-                },
+        final updates = <Json>[];
+        for (final message in messages) {
+          if (message['reasoning'] case final String selected when selected != effort) {
+            if (config['reasoning_updates'] != true) {
+              throw ArgumentError('Reasoning effort is fixed for this task');
+            }
+            updates.add({
+              'type': 'configuration.updated',
+              'data': {
+                'effort': selected,
+                'item': ConversationItem(
+                  kind: 'configuration',
+                  settings: {'reasoning': selected},
+                ).toJson(),
               },
-          ],
+            });
+            effort = selected;
+          }
+          updates.add({
+            'type': 'input.committed',
+            'data': {
+              'message_id': message['id'],
+              'delivery': 'steer',
+              if (message['created_at'] != null) 'sent_at': message['created_at'],
+              'item': ConversationItem.user(
+                message['prompt'] as String,
+                attachments: message['attachments'],
+              ).toJson(),
+            },
+          });
+        }
+        final entries = await callIsolate(writer, 'append_batch', {
+          'events': updates,
+          'metadata': {'effective_reasoning': effort},
         }) as List;
         for (final raw in entries) {
           final entry = jsonObject(raw);
@@ -415,6 +433,7 @@ class _Agent {
             method,
             {'provider': config['provider'], ...request().toJson()},
             onEvent: event,
+            timeout: null,
             cancellation: cancellation,
           ),
         );
@@ -488,8 +507,7 @@ class _Agent {
       }
 
       var overflowRecovered = false;
-      final maxSteps = config['max_steps'] as int? ?? 64;
-      for (var step = 0; step < maxSteps; step++) {
+      while (true) {
         cancellation.throwIfCancelled();
         await takeSteering();
         await refreshMcp();
@@ -511,7 +529,6 @@ class _Agent {
           if (error.code == 'context_overflow' && !overflowRecovered) {
             overflowRecovered = true;
             await compactContext('overflow');
-            step--;
             continue;
           }
           rethrow;
@@ -693,7 +710,6 @@ class _Agent {
           input.add(item);
         }
       }
-      throw StateError('Agent step limit reached');
     } catch (error) {
       telemetry.observe('turn', total.elapsed);
       event(

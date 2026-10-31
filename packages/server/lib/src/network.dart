@@ -233,6 +233,20 @@ void _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
+      if (request['method'] == 'auth.desktop') {
+        if (loginCancellation != null) throw StateError('Finish signing in before starting dictation');
+        try {
+          final credentials = await auth.credentials(refresh: params['refresh'] == true).asCancellable(cancellation);
+          cancellation.throwIfCancelled();
+          reply?.send({'result': credentials});
+        } on CancelledException {
+          rethrow;
+        } catch (_) {
+          // Malformed credential files and provider replies can contain secrets.
+          throw StateError('Sign in to ChatGPT on this computer to use dictation');
+        }
+        return;
+      }
       if (request['method'] == 'auth.cancel') {
         if (loginId == params['login_id'] && loginOwner == params['owner']) {
           loginCancellation?.cancel();
@@ -263,6 +277,7 @@ void _networkMain(List<Object?> args) async {
               },
             });
           if (provider == 'gpt') {
+            (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'gpt'}});
             await auth.login(cancellation: cancellation, notify: notify);
           } else {
             await consoleAuth.login(
@@ -283,6 +298,7 @@ void _networkMain(List<Object?> args) async {
       if (request['method'] == 'auth.logout') {
         final provider = requiredString(params, 'provider');
         if (provider == 'gpt') {
+          (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'gpt'}});
           await auth.signOut();
         } else if (provider == 'opencode' || provider == 'deepseek' && backend == 'opencode') {
           await consoleAuth.signOut();
@@ -404,6 +420,7 @@ void _networkMain(List<Object?> args) async {
                           ? gptOptions['settings']['reasoning']
                           : GptModel(model).defaultReasoning,
                       'reasoning_updates': GptModel(model).reasoningUpdates,
+                      'input_modalities': ['text', 'image'],
                     },
                 ],
               },
@@ -431,6 +448,7 @@ void _networkMain(List<Object?> args) async {
                       model: deepseek.defaultModel,
                     )['reasoning'],
                     'reasoning_updates': false,
+                    'input_modalities': ['text', 'image'],
                   },
                 ],
               },
@@ -446,6 +464,7 @@ void _networkMain(List<Object?> args) async {
                   'reasoning_levels': ['off', 'low', 'high', 'max'],
                   'default_reasoning': opencode.resolveSettings(jsonObject(openCodeOptions['settings'] ?? {}))['reasoning'],
                   'reasoning_updates': false,
+                  'input_modalities': ['text', 'image'],
                 }],
               },
             ],

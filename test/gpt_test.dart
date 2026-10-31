@@ -211,7 +211,110 @@ void main() {
     );
   }
 
-  test('GPT cancellation and partial streams do not retry or close the shared pool', () async {
+  for (final transport in ['http', 'websocket']) {
+    test('GPT $transport resets its idle limit, retries silence five times, and remains cancellable', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final http = HttpClient();
+      final sockets = <WebSocket>[];
+      final release = Completer<void>();
+      var requests = 0;
+      Future<void> respond(Json body, Future<void> Function(Json) send) async {
+        requests++;
+        await send({'type': 'response.created'});
+        if (body['instructions'] == 'silent') {
+          await release.future;
+          return;
+        }
+        for (var i = 0; i < 2; i++) {
+          // The client clock runs 600x faster: 380 ms is between the previous
+          // three-minute limit and Codex's five-minute event-idle limit.
+          await Future<void>.delayed(const Duration(milliseconds: 380));
+          await send({'type': 'response.output_text.delta', 'delta': 'tick'});
+        }
+        await send({'type': 'response.completed', 'response': {
+          'status': 'completed', 'output': [
+            {'type': 'message', 'role': 'assistant', 'content': [
+              {'type': 'output_text', 'text': 'Long response finished'},
+            ]},
+          ],
+        }});
+      }
+      server.listen((request) async {
+        if (WebSocketTransformer.isUpgradeRequest(request)) {
+          final socket = await WebSocketTransformer.upgrade(request);
+          sockets.add(socket);
+          socket.listen((raw) async {
+            await respond(jsonObject(jsonDecode(raw as String)), (event) async {
+              if (socket.readyState == WebSocket.open) socket.add(jsonEncode(event));
+            });
+          });
+        } else {
+          try {
+            final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+            request.response.headers.contentType = ContentType('text', 'event-stream');
+            request.response.bufferOutput = false;
+            await respond(body, (event) async {
+              request.response.write('data: ${jsonEncode(event)}\n\n');
+              await request.response.flush();
+            });
+          } catch (_) {
+            // A timed-out or cancelled client owns closing its stream.
+          } finally {
+            await request.response.close();
+          }
+        }
+      });
+      final cancellation = CancellationToken();
+      final client = ResponsesClient(
+        http: http,
+        endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
+        credentials: ({bool refresh = false}) async => {
+          'access_token': 'fixture', 'account_id': 'fixture',
+        },
+      );
+      addTearDown(() async {
+        cancellation.cancel();
+        release.complete();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        http.close(force: true);
+        await server.close(force: true);
+      });
+      final deltas = <String>[];
+      final retries = <int>[];
+      var cancelOnRetry = false;
+      Future<ResponsesReply> run(String mode) => runZoned(
+        () => client.respond(
+          model: 'gpt-6.1-sol', instructions: mode, input: [], tools: [],
+          sessionId: newId(), cancellation: cancellation, transport: transport,
+          onEvent: (event) {
+            if (event['type'] == 'text.delta') deltas.add(event['delta'] as String);
+            if (event['type'] == 'model.retrying') {
+              retries.add(event['attempt'] as int);
+              if (cancelOnRetry) cancellation.cancel();
+            }
+          },
+        ),
+        zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
+          parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 600
+              : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
+      );
+      expect((await run('active')).text, 'Long response finished');
+      expect(deltas, ['tick', 'tick']);
+      await expectLater(run('silent'), throwsA(isA<ModelFailure>().having(
+        (error) => error.code, 'code', 'stream_idle_timeout',
+      )));
+      expect(retries, [1, 2, 3, 4, 5]);
+      expect((await run('active')).text, 'Long response finished');
+      expect(requests, 8, reason: 'Retry exhaustion must not close the shared pool');
+      cancelOnRetry = true;
+      await expectLater(run('silent'), throwsA(isA<CancelledException>()));
+      expect(requests, 9, reason: 'Cancellation during backoff must not send another request');
+    });
+  }
+
+  test('GPT cancellation and provider incomplete responses do not retry or close the shared pool', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final http = HttpClient();
     final started = Completer<void>();
@@ -233,7 +336,7 @@ void main() {
         started.complete();
       } else {
         request.response.write(
-          'data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+          'data: {"type":"response.incomplete","response":{"status":"incomplete"}}\n\n',
         );
         await request.response.close();
       }
@@ -277,7 +380,7 @@ void main() {
       onTimeout: () => throw StateError('GPT cancellation did not settle'),
     );
     await expectLater(
-      run('partial', CancellationToken()).timeout(const Duration(seconds: 3)),
+      run('incomplete', CancellationToken()).timeout(const Duration(seconds: 3)),
       throwsA(
         isA<ModelFailure>().having(
           (e) => e.code,

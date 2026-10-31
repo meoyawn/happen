@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -13,7 +15,10 @@ void main() {
     late AgentServer server;
     late AgentClient client;
     final requests = <Json>[];
+    final streaming = <HttpResponse>[];
+    late Completer<void> releaseStreams;
     var sequence = 0;
+    var interruptedReplies = 0;
 
     setUp(() async {
       root = await Directory.systemTemp.createTemp('agent-contract-');
@@ -31,6 +36,9 @@ void main() {
         }),
       );
       requests.clear();
+      interruptedReplies = 0;
+      streaming.clear();
+      releaseStreams = Completer<void>();
       provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       provider.listen((request) async {
         try {
@@ -42,7 +50,9 @@ void main() {
           final userIndex = input.lastIndexWhere(
             (item) => item['role'] == 'user',
           );
-          final prompt = input[userIndex]['content'] as String;
+          final content = input[userIndex]['content'];
+          final prompt = content is String ? content
+              : (content as List).where((part) => part['type'] == 'input_text').firstOrNull?['text'] ?? '';
           request.response.headers.contentType = ContentType(
             'text',
             'event-stream',
@@ -55,9 +65,25 @@ void main() {
             await request.response.close();
             return;
           }
-          final hasOutput = input
+          if (prompt == 'stream') {
+            request.response.bufferOutput = false;
+            streaming.add(request.response);
+            request.response.write('data: {"type":"response.created"}\n\n');
+            await request.response.flush();
+            await releaseStreams.future;
+            await request.response.close();
+            return;
+          }
+          final completedCalls = input
               .skip(userIndex + 1)
-              .any((item) => item['type'] == 'custom_tool_call_output');
+              .where((item) => item['type'] == 'custom_tool_call_output')
+              .length;
+          final hasOutput = completedCalls >= (prompt == 'long' ? 70 : 1);
+          if (prompt == 'recover' && hasOutput && interruptedReplies++ < 2) {
+            request.response.write('data: {"type":"response.output_text.delta","delta":"Abandoned partial answer"}\n\n');
+            await request.response.close();
+            return;
+          }
           final output = hasOutput
               ? <Json>[
                   {
@@ -80,7 +106,9 @@ void main() {
                     'namespace': 'functions',
                     'call_id': 'call_${++sequence}',
                     'name': 'exec',
-                    'input': prompt == 'continue'
+                    'input': prompt == 'long'
+                        ? 'text("Step $completedCalls");'
+                        : prompt == 'continue'
                         ? 'text(load("sum"));'
                         : '''
                     const file = await tools.exec_command({cmd:"cat numbers.txt",login:false});
@@ -128,6 +156,7 @@ void main() {
     tearDown(() async {
       await client.close();
       await server.close();
+      releaseStreams.complete();
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
@@ -144,13 +173,102 @@ void main() {
       return completion.timeout(const Duration(seconds: 15));
     }
 
+    test('turns stay active after 24, 48 and 72 hours and still stop explicitly', () async {
+      await client.close();
+      await server.close();
+      final clock = FakeAsync();
+      // Advance long deadlines in the server's isolate while real sockets and
+      // workers continue running. Keep transport heartbeats on real time.
+      server = await runZoned(
+        () => AgentServer.start(
+          directory: root.path,
+          configPath: '${root.path}/config.yaml',
+          port: 0,
+          endpoint: 'http://127.0.0.1:${provider.port}/responses',
+        ),
+        zoneSpecification: ZoneSpecification(createTimer: (_, parent, zone, duration, callback) {
+          if (duration < const Duration(minutes: 10)) {
+            return parent.createTimer(zone, duration, callback);
+          }
+          return clock.run((_) => Timer(duration, () => zone.run(callback)));
+        }),
+      );
+      client = await AgentClient.connect(server.uri);
+      final terminal = <Json>[];
+      final subscription = client.events.stream.where(
+        (event) => {'turn.completed', 'turn.cancelled', 'turn.failed'}.contains(event['type']),
+      ).listen(terminal.add);
+      addTearDown(subscription.cancel);
+      final id = jsonObject(await client.request('task.start', {
+        'cwd': work.path, 'prompt': 'stream',
+      }))['task_id'] as String;
+      while (streaming.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      for (final hours in [24, 48, 72]) {
+        clock.elapse(const Duration(hours: 24));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(terminal, isEmpty, reason: 'A turn must survive $hours hours');
+        expect(jsonObject(await client.request('task.subscribe', {'task_id': id}))['running'], isTrue);
+        expect(jsonObject(await client.request('ping'))['version'], '0.1.0');
+      }
+      final stopped = client.events.stream.firstWhere((event) => event['type'] == 'turn.cancelled');
+      await client.request('task.cancel', {'task_id': id});
+      final event = await stopped.timeout(const Duration(seconds: 5));
+      expect(terminal.map((event) => event['type']), ['turn.cancelled']);
+      final history = await client.request('history.page', {'task_id': id}) as List;
+      expect(history.last['id'], event['id']);
+      expect(jsonObject(await client.request('task.subscribe', {'task_id': id}))['running'], isFalse);
+    });
+
+    test('turns have no step limit, including resumed tasks with legacy limits', () async {
+      final first = await turn('task.start', {'cwd': work.path, 'prompt': 'long'});
+      expect(first['type'], 'turn.completed', reason: first.toString());
+      final id = first['task_id'] as String;
+      final store = TaskStore(root.path, id, create: false);
+      try {
+        final config = {...jsonObject(store.metadata('config')), 'max_steps': 1};
+        store.append('task.configuration_migrated', config, metadata: {'config': config});
+      } finally {
+        store.close();
+      }
+      final resumed = await turn('task.send', {'task_id': id, 'prompt': 'long'});
+      expect(resumed['type'], 'turn.completed', reason: resumed.toString());
+      expect(requests.length, 142);
+      expect((requests.last['input'] as List).where((item) => item['type'] == 'custom_tool_call_output'), hasLength(140));
+    });
+
+    test('interrupted model streams recover without repeating executed tools', () async {
+      final retries = <Json>[];
+      final subscription = client.events.stream.where((event) => event['type'] == 'model.retrying').listen(retries.add);
+      addTearDown(subscription.cancel);
+      final result = await turn('task.start', {'cwd': work.path, 'prompt': 'recover'});
+      expect(result['type'], 'turn.completed', reason: result.toString());
+      expect(result['data']['text'], 'Verified 42 ✓');
+      expect(retries.map((event) => event['attempt']), [1, 2]);
+      expect(requests.length, 4);
+      expect(await File('${work.path}/result.txt').readAsString(), '42\n');
+      final history = await client.request('history.page', {'task_id': result['task_id']}) as List;
+      expect(history.where((event) => event['type'] == 'tool.started'), hasLength(1));
+      expect(history.where((event) => event['type'] == 'model.completed'), hasLength(2));
+    });
+
     test(
-      'executes tools, resumes after restart, forks and imports independently',
+      'executes tools and preserves attached images across restart, fork and import',
       () async {
+        // A padded PNG exercises payloads larger than the old 2 MiB frame/context budget.
+        final image = base64Encode([
+          ...base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='),
+          ...List.filled(2 * 1024 * 1024, 0),
+        ]);
         final first = await turn('task.start', {
           'settings': {'verbosity': 'low'},
           'cwd': work.path,
           'prompt': 'calculate',
+          'attachments': [
+            {'type': 'image', 'name': 'screenshot.png', 'mime_type': 'image/png', 'data': image},
+            {'type': 'file', 'name': 'numbers.txt', 'path': '${work.path}/numbers.txt'},
+          ],
         });
         expect(first['type'], 'turn.completed', reason: first.toString());
         final toolResult = (requests.last['input'] as List).lastWhere(
@@ -234,6 +352,15 @@ void main() {
           'prompt': 'continue',
         });
         expect(moved['type'], 'turn.completed', reason: moved.toString());
+        for (final request in requests) {
+          final user = (request['input'] as List).firstWhere((item) => item['role'] == 'user' && item['content'] is List);
+          final parts = user['content'] as List;
+          expect(parts.where((part) => part['type'] == 'input_image').single['image_url'], 'data:image/png;base64,$image');
+          expect(parts.where((part) => part['type'] == 'input_text').map((part) => part['text']).join('\n'), contains('${work.path}/numbers.txt'));
+        }
+        final history = await client.request('history.page', {'task_id': imported['task_id']}) as List;
+        final input = history.firstWhere((event) => event['type'] == 'input.committed')['data']['item'];
+        expect((input['content'] as List).firstWhere((part) => part['type'] == 'image')['data'], image);
 
         await File(bundle).writeAsString(
           (await File(
@@ -255,13 +382,14 @@ void main() {
         expect(metrics['resident_tasks'], 0);
         expect(metrics['active_tasks'], 0);
       }
-      final started = jsonObject(await client.request('task.start', {'cwd': work.path, 'prompt': 'wait'}));
+      final started = jsonObject(await client.request('task.start', {'cwd': work.path, 'prompt': 'wait', 'reasoning': 'low'}));
       final id = started['task_id'] as String;
-      await client.request('task.send', {'task_id': id, 'prompt': 'do not deliver', 'delivery': 'queue'});
+      await client.request('task.send', {'task_id': id, 'prompt': 'do not deliver', 'delivery': 'queue', 'reasoning': 'high'});
       await client.request('task.archive', {'task_id': id});
       final history = (await client.request('history.page', {'task_id': id}) as List).map(jsonObject).toList();
       expect(history.last['type'], 'task.archived');
       expect(history.any((event) => event['type'] == 'turn.cancelled'), isTrue);
+      expect(history.any((event) => event['type'] == 'configuration.updated'), isFalse);
       expect(history.any((event) => event['data']['item']?['content']?.toString().contains('do not deliver') == true), isFalse);
 
       final old = await Directory('${root.path}/staging/${'a' * 32}').create(recursive: true);
@@ -286,25 +414,164 @@ void main() {
       expect(jsonObject(await client.request('telemetry'))['resident_tasks'], 0);
     });
 
-    test(
-      'one multiplexed socket serves independent tasks and cancellation',
-      () async {
-        final stopped = client.events.stream.firstWhere(
-          (event) => event['type'] == 'turn.cancelled',
-        );
-        final waiting = jsonObject(
-          await client.request('task.start', {
-            'cwd': work.path,
-            'prompt': 'wait',
-          }),
-        );
-        while (!requests.any(
-          (request) => (request['input'] as List).any(
-            (item) => item['content'] == 'wait',
-          ),
-        )) {
-          await Future<void>.delayed(const Duration(milliseconds: 5));
+    test('active turns outlive RPC deadlines and still drain queued input', () async {
+      await client.close();
+      await server.close();
+      // Advance long RPC deadlines 600 times faster without changing production
+      // configuration. Agent/network isolates retain their real transport clocks.
+      server = await runZoned(
+        () => AgentServer.start(
+          directory: root.path,
+          configPath: '${root.path}/config.yaml',
+          port: 0,
+          endpoint: 'http://127.0.0.1:${provider.port}/responses',
+        ),
+        zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
+          parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 600 : duration, callback)),
+      );
+      client = await AgentClient.connect(server.uri);
+      final terminal = <Json>[];
+      final finished = Completer<void>();
+      final events = client.events.stream.listen((event) {
+        if ({'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) {
+          terminal.add(event);
+          if (terminal.length == 2 && !finished.isCompleted) finished.complete();
         }
+      });
+      addTearDown(events.cancel);
+      final id = jsonObject(await client.request('task.start', {
+        'cwd': work.path, 'prompt': 'stream',
+      }))['task_id'] as String;
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (streaming.isEmpty) {
+        if (DateTime.now().isAfter(deadline)) fail('Provider stream did not start');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await client.request('task.send', {'task_id': id, 'prompt': 'continue', 'delivery': 'queue'});
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(terminal, isEmpty, reason: 'An RPC deadline must not stop a running turn');
+      expect(jsonObject(await client.request('task.subscribe', {'task_id': id}))['running'], isTrue);
+      expect(jsonObject(await client.request('ping'))['version'], '0.1.0');
+      streaming.single.write('data: ${jsonEncode({
+        'type': 'response.completed',
+        'response': {'status': 'completed', 'output': [
+          {'type': 'message', 'role': 'assistant', 'content': [
+            {'type': 'output_text', 'text': 'Long turn finished'},
+          ]},
+        ]},
+      })}\n\n');
+      await streaming.single.flush();
+      await finished.future.timeout(const Duration(seconds: 10));
+      expect(terminal.map((event) => event['type']), ['turn.completed', 'turn.completed']);
+      expect(terminal.first['data']['text'], 'Long turn finished');
+      expect(terminal.every((event) => event['seq'] is int), isTrue);
+      expect(jsonObject(await client.request('telemetry'))['resident_tasks'], 0);
+    });
+
+    test(
+      'one socket searches files while 100 tasks stream, and cancels one task independently',
+      () async {
+        final taskIds = <String>[];
+        final deltas = <String, String>{};
+        final subscription = client.events.stream.listen((event) {
+          if (event['type'] == 'text.delta') {
+            deltas.update(event['task_id'] as String, (text) => text + (event['delta'] as String), ifAbsent: () => event['delta'] as String);
+          }
+        });
+        addTearDown(subscription.cancel);
+        for (var i = 0; i < 100; i++) {
+          taskIds.add(jsonObject(await client.request('task.start', {
+            'cwd': work.path,
+            'prompt': 'stream',
+          }))['task_id'] as String);
+        }
+        Future<void> until(bool Function() ready) async {
+          final deadline = DateTime.now().add(const Duration(seconds: 20));
+          while (!ready()) {
+            if (DateTime.now().isAfter(deadline)) fail('Timed out: ${streaming.length} provider streams, ${deltas.length} task deltas');
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+        }
+        await until(() => streaming.length == 100);
+        Future<void> pulse(String text) async {
+          for (final response in streaming) {
+            response.write('data: ${jsonEncode({'type': 'response.output_text.delta', 'delta': text})}\n\n');
+          }
+          await Future.wait(streaming.map((response) => response.flush()));
+        }
+        await pulse('first ');
+        await until(() => deltas.length == 100);
+        expect(jsonObject(await client.request('telemetry'))['active_tasks'], 100);
+
+        final token = CancellationToken();
+        final search = client.searchFiles(work.path, 'numbers', cancellation: token);
+        final ping = client.request('ping');
+        await pulse('second');
+        expect((await search.timeout(const Duration(seconds: 5)))['paths'], ['numbers.txt']);
+        expect(jsonObject(await ping)['version'], '0.1.0');
+        await until(() => deltas.values.every((text) => text == 'first second'));
+        expect(deltas.keys, unorderedEquals(taskIds));
+        token.cancel();
+        // Hold event acknowledgements to model a mobile uplink falling behind.
+        // RPC replies must still pass while the event window is exhausted.
+        final slow = await WebSocket.connect(server.uri.toString());
+        final replies = <int, Completer<Json>>{};
+        final slowText = <String, String>{};
+        final disconnected = Completer<void>();
+        var rpcId = 0, slowDeltas = 0;
+        final slowEvents = slow.listen((raw) {
+          final message = jsonObject(jsonDecode(raw as String));
+          if (message['event']?['type'] == 'text.delta') {
+            slowDeltas++;
+            final event = jsonObject(message['event']);
+            slowText.update(event['task_id'] as String, (text) => text + (event['delta'] as String), ifAbsent: () => event['delta'] as String);
+          }
+          if (message['id'] case final int id) {
+            final reply = replies.remove(id);
+            if (message.containsKey('error')) {
+              reply?.completeError(StateError(message['error'].toString()));
+            } else {
+              reply?.complete(jsonObject(message['result']));
+            }
+          }
+        }, onDone: () {
+          for (final reply in replies.values) {
+            reply.completeError(StateError('Socket closed: ${slow.closeCode} ${slow.closeReason}'));
+          }
+          replies.clear();
+          disconnected.complete();
+        });
+        addTearDown(() async { await slow.close(); await slowEvents.cancel(); });
+        Future<Json> slowCall(String method, Json params) {
+          if (slow.readyState != WebSocket.open) {
+            throw StateError('Socket closed: ${slow.closeCode} ${slow.closeReason}');
+          }
+          final id = ++rpcId, reply = Completer<Json>();
+          replies[id] = reply;
+          slow.add(jsonEncode({'id': id, 'method': method, 'params': params}));
+          return reply.future.timeout(const Duration(seconds: 5));
+        }
+        for (final id in taskIds) {
+          await slowCall('task.subscribe', {'task_id': id});
+        }
+        for (var i = 0; i < 3; i++) {
+          await pulse(' buffered$i');
+        }
+        await until(() => deltas.values.every((text) => text.endsWith(' buffered0 buffered1 buffered2')));
+        expect((await slowCall('files.search', {'cwd': work.path, 'query': 'numbers'}))['paths'], ['numbers.txt']);
+        expect(slowDeltas, 256);
+        slow.add(jsonEncode({'method': 'events.ack', 'params': {'count': 100}}));
+        await until(() => slowDeltas == 300);
+        expect(slowText.keys, unorderedEquals(taskIds));
+        expect(slowText.values, everyElement(' buffered0 buffered1 buffered2'));
+        // An indefinitely stalled client still has a bounded backlog.
+        for (var i = 0; i < 12; i++) {
+          await pulse(' stalled');
+        }
+        await disconnected.future.timeout(const Duration(seconds: 5));
+        expect(slow.closeCode, 1008);
+        await slow.close();
+        final stopped = client.events.stream.firstWhere((event) => event['type'] == 'turn.cancelled');
         final success = client.events.stream.firstWhere(
           (event) => event['type'] == 'turn.completed',
         );
@@ -312,15 +579,16 @@ void main() {
           'cwd': work.path,
           'prompt': 'calculate',
         });
-        await client.request('task.cancel', {'task_id': waiting['task_id']});
+        await client.request('task.cancel', {'task_id': taskIds.first});
         expect(
           (await success.timeout(const Duration(seconds: 10)))['data']['text'],
           'Verified 42 ✓',
         );
         expect(
           (await stopped.timeout(const Duration(seconds: 5)))['task_id'],
-          waiting['task_id'],
+          taskIds.first,
         );
+        expect(jsonObject(await client.request('telemetry'))['active_tasks'], 99);
         expect((await client.request('ping') as Map)['version'], '0.1.0');
       },
     );

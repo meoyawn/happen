@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:ai/ai.dart' show ModelFailure, decodeSse;
 import 'package:protocol/protocol.dart';
@@ -68,6 +69,36 @@ class ResponsesClient {
       'text': {'verbosity': verbosity},
       'max_output_tokens': ?maxOutputTokens,
     };
+    const maxRetries = 5;
+    for (var retries = 0; ; retries++) {
+      try {
+        return await _respond(body, sessionId, transport, cancellation, onEvent);
+      } on CancelledException {
+        rethrow;
+      } catch (error) {
+        cancellation.throwIfCancelled();
+        final retryable = switch (error) {
+          SocketException() || HttpException() || WebSocketException() || TimeoutException() => true,
+          ModelFailure(:final code) => {
+            'stream_disconnected', 'stream_idle_timeout', 'retryable_provider_error',
+          }.contains(code),
+          _ => false,
+        };
+        if (!retryable || retries >= maxRetries) rethrow;
+        onEvent?.call({'type': 'model.retrying', 'attempt': retries + 1, 'max_retries': maxRetries});
+        final milliseconds = (200 * (1 << retries) * (.9 + Random().nextDouble() * .2)).round();
+        await cancellableDelay(Duration(milliseconds: milliseconds), cancellation);
+      }
+    }
+  }
+
+  Future<ResponsesReply> _respond(
+    Json body,
+    String sessionId,
+    String transport,
+    CancellationToken cancellation,
+    void Function(Json)? onEvent,
+  ) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       cancellation.throwIfCancelled();
       final auth = await credentials(refresh: attempt != 0)
@@ -108,10 +139,7 @@ class ResponsesClient {
           ..set(HttpHeaders.acceptHeader, 'text/event-stream')
           ..contentType = ContentType.json;
         request.write(jsonEncode(body));
-        final response = await request
-            .close()
-            .timeout(const Duration(seconds: 60))
-            .asCancellable(cancellation);
+        final response = await request.close().asCancellable(cancellation);
         if (response.statusCode != 200) {
           final detail = await _errorBody(response, cancellation);
           if (response.statusCode == 401 && attempt == 0) continue;
@@ -120,7 +148,7 @@ class ResponsesClient {
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
-          decodeSse(incoming.stream.timeout(const Duration(minutes: 3))),
+          decodeSse(incoming.stream),
           cancellation,
           onEvent,
         );
@@ -129,8 +157,8 @@ class ResponsesClient {
         rethrow;
       } finally {
         hook.dispose();
-        await closeBody?.call();
         request?.abort();
+        await closeBody?.call();
       }
     }
     throw const ModelFailure(
@@ -166,11 +194,11 @@ class ResponsesClient {
                 }
                 return value;
               })
-              .timeout(const Duration(seconds: 30))
+              .timeout(const Duration(seconds: 15))
               .asCancellable(cancellation);
       cancellation.throwIfCancelled();
       socket.add(jsonEncode({'type': 'response.create', ...body}));
-      final events = socket.timeout(const Duration(minutes: 3)).map((raw) {
+      final events = socket.map((raw) {
         final text = raw is String ? raw : utf8.decode(raw as List<int>);
         if (utf8.encode(text).length > 8 * 1024 * 1024) {
           throw const FormatException('GPT event too large');
@@ -194,9 +222,16 @@ class ResponsesClient {
     void Function(Json)? onEvent,
   ) async {
     final items = <int, Json>{};
+    // Match the pinned Codex provider's event-idle limit, not a response or turn
+    // wall-clock deadline. Parsed SSE events and WebSocket messages both reset it.
     final iterator = StreamIterator(events);
     try {
-      while (await iterator.moveNext().asCancellable(
+      while (await iterator.moveNext().timeout(
+        const Duration(minutes: 5),
+        onTimeout: () => throw const ModelFailure(
+          'stream_idle_timeout', 'GPT stream was idle for 5 minutes',
+        ),
+      ).asCancellable(
         cancellation,
         onCancel: () => unawaited(iterator.cancel()),
       )) {
@@ -234,7 +269,7 @@ class ResponsesClient {
         }
       }
       throw const ModelFailure(
-        'incomplete_response',
+        'stream_disconnected',
         'GPT stream ended before completion',
       );
     } finally {
@@ -255,6 +290,13 @@ class ResponsesClient {
       return const ModelFailure(
         'context_overflow',
         'GPT context limit exceeded',
+      );
+    }
+    if (status != null && (status == 408 || status >= 500 && status <= 599) ||
+        {'server_error', 'internal_server_error'}.contains(code)) {
+      return ModelFailure(
+        'retryable_provider_error',
+        'GPT request failed${status == null ? '' : ' (HTTP $status)'}',
       );
     }
     // Do not echo arbitrary response bodies into persisted task errors.

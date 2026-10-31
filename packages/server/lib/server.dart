@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:agent/agent.dart';
+import 'package:ai/ai.dart';
 import 'package:gpt/gpt.dart';
 import 'package:protocol/protocol.dart';
 import 'package:storage/storage.dart';
@@ -11,6 +14,8 @@ import 'package:telemetry/telemetry.dart';
 
 import 'src/network.dart';
 import 'src/client_tools.dart';
+import 'src/file_search.dart';
+import 'src/attachments.dart';
 
 class AgentServer {
   AgentServer._(
@@ -31,6 +36,7 @@ class AgentServer {
   final ReceivePort _networkEvents;
   final _lifetime = CancellationToken();
   final _clientTools = ClientToolBridge();
+  final _files = FileSearch();
   String? socketPath;
   Directory? _socketDirectory;
   FileStat? _socketStat;
@@ -154,13 +160,24 @@ class AgentServer {
     }
   }
 
-  /// Embedding keeps the client and server in one process, using UDS for the API.
+  /// One process, using UDS on Unix and authenticated loopback on Windows.
   static Future<AgentServer> startEmbedded({
     required String directory,
     String? endpoint,
     String? configPath,
     bool telemetry = true,
   }) async {
+    if (Platform.isWindows) {
+      return start(
+        directory: directory,
+        host: '127.0.0.1',
+        port: 0,
+        token: newId(),
+        endpoint: endpoint,
+        configPath: configPath,
+        telemetry: telemetry,
+      );
+    }
     final sockets = await Directory.systemTemp.createTemp('happen-');
     try {
       final permissions = await Process.run('chmod', ['700', sockets.path]);
@@ -216,13 +233,13 @@ class AgentServer {
     }
     final socket = await WebSocketTransformer.upgrade(request);
     socket.pingInterval = const Duration(seconds: 30);
-    final client = _Client(socket);
+    final client = _Client(socket, directory);
     _clients.add(client);
     socket.listen(
       (raw) async {
         Object? id;
         try {
-          if (raw is! String || utf8.encode(raw).length > maxFrameBytes) {
+          if (raw is! String || utf8.encode(raw).length > maxClientFrameBytes) {
             throw const FormatException('Invalid or oversized frame');
           }
           final request = jsonObject(jsonDecode(raw));
@@ -234,13 +251,13 @@ class AgentServer {
             return;
           }
           if (request['method'] == 'events.ack') {
-            client.credits =
-                (client.credits +
-                        ((request['params']?['count'] as int?) ?? 1).clamp(
-                          0,
-                          256,
-                        ))
-                    .clamp(0, 256);
+            client.acknowledge(((request['params']?['count'] as int?) ?? 1).clamp(0, 256));
+            return;
+          }
+          if (request['method'] == 'files.cancel') {
+            if (request['params']?['request_id'] == client.fileSearchId) {
+              client.fileSearch?.cancel();
+            }
             return;
           }
           if (id == null) throw const FormatException('Request ID is required');
@@ -254,6 +271,7 @@ class AgentServer {
               requiredString(request, 'method'),
               jsonObject(request['params'] ?? {}),
               client,
+              id,
             );
             _requests.add(operation);
             final result = await operation;
@@ -277,6 +295,7 @@ class AgentServer {
   void _detach(_Client client) {
     if (!_clients.remove(client)) return;
     client.cancellation.cancel();
+    unawaited(client.attachments.close());
     _clientTools.detach(client.id);
     if (!_networkExited) {
       unawaited(
@@ -336,10 +355,35 @@ class AgentServer {
     }
   }
 
-  Future<Object?> _dispatch(String method, Json params, _Client client) async {
+  Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId) async {
     _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
     final receivedAt = DateTime.now().toUtc().toIso8601String();
+    if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
+    if (method == 'task.start' || method == 'task.send') {
+      final claimed = await client.attachments.claim(params['attachments']);
+      var committed = false;
+      try {
+      final prompt = params['prompt'] ?? '';
+      if (prompt is! String) throw const FormatException('Prompt must be text');
+      final envelope = {...params}..remove('attachments');
+      final attachments = await prepareInputAttachments(claimed.parts,
+        cancellation: client.cancellation,
+        envelopeBytes: utf8.encode(jsonEncode({'id': requestId, 'method': method, 'params': envelope})).length);
+      validateUserInput(prompt, attachments);
+      params = {...params, 'prompt': prompt, if (attachments.isNotEmpty) 'attachments': attachments};
+      client.cancellation.throwIfCancelled();
+      final result = await _dispatchPrepared(method, params, client, requestId, receivedAt);
+      committed = true;
+      return result;
+      } finally {
+        await client.attachments.release(claimed.ids, committed: committed);
+      }
+    }
+    return _dispatchPrepared(method, params, client, requestId, receivedAt);
+  }
+
+  Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt) async {
     if (method.startsWith('mcp.')) {
       if (!{
         'mcp.status',
@@ -359,6 +403,20 @@ class AgentServer {
     switch (method) {
       case 'ping':
         return {'version': '0.1.0'};
+      case 'files.search':
+        client.fileSearch?.cancel();
+        final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
+        client.fileSearch = deadline;
+        client.fileSearchId = requestId;
+        try {
+          return await _files.search(params, deadline.merge(client.cancellation));
+        } finally {
+          if (identical(client.fileSearch, deadline)) {
+            client.fileSearch = null;
+            client.fileSearchId = null;
+          }
+          deadline.cancel();
+        }
       case 'providers.list':
         return callIsolate(
           network.port,
@@ -366,6 +424,13 @@ class AgentServer {
           {},
           cancellation: client.cancellation,
         );
+      case 'auth.desktop':
+        // Access credentials are only available to the local desktop connection.
+        // Audio and transcription never pass through the task WebSocket.
+        if (socketPath == null) throw StateError('Desktop authorization requires a local Unix socket');
+        return callIsolate(network.port, method, {
+          'refresh': params['refresh'] == true, 'owner': client.id,
+        }, cancellation: client.cancellation);
       case 'auth.login':
       case 'auth.cancel':
       case 'auth.logout':
@@ -402,7 +467,7 @@ class AgentServer {
         client.subscriptions.add(id);
         _begin(
           task,
-          requiredString(params, 'prompt'),
+          params['prompt'] as String,
           settings: {...params, 'sent_at': receivedAt}..remove('settings'),
         );
         return {'task_id': id};
@@ -457,17 +522,34 @@ class AgentServer {
           if (!{'steer', 'queue'}.contains(mode)) {
             throw ArgumentError('Delivery must be steer or queue');
           }
+          if (method == 'task.send' && task.busy && params['reasoning'] != null) {
+            await task.ready?.future.asCancellable(client.cancellation);
+            final config = task.config;
+            if (config == null) throw StateError('Task configuration is unavailable');
+            final effort = requiredString(params, 'reasoning');
+            final baseline = jsonObject(config['provider_settings']);
+            if (config['reasoning_updates'] != true && effort != baseline['reasoning']) {
+              throw ArgumentError('Reasoning effort is fixed for this task');
+            }
+            await callIsolate(network.port, 'validate_settings', {
+              'provider': config['provider'],
+              'model': config['model'],
+              'settings': {...baseline, 'reasoning': effort},
+            }, cancellation: client.cancellation);
+            // Validation can outlive the current turn. Admit against its latest owner.
+            task = _tasks[id] ?? task;
+          }
           if (method == 'task.send' && task.busy) {
             if (task.cancelled) throw StateError('Task is stopping');
             if (task.pending.length >= 32) {
               throw StateError('Pending message limit reached');
             }
             if (params.keys.any(
-              (key) => !{'task_id', 'prompt', 'delivery'}.contains(key),
+              (key) => !{'task_id', 'prompt', 'attachments', 'delivery', 'reasoning'}.contains(key),
             )) {
               throw ArgumentError('Change task settings between turns');
             }
-            final prompt = requiredString(params, 'prompt');
+            final prompt = params['prompt'] as String;
             final pendingBytes = task.pending.fold<int>(0, (size, message) => size + utf8.encode(message['prompt'] as String).length);
             if (pendingBytes + utf8.encode(prompt).length > 512 * 1024) {
               throw StateError('Pending messages exceed 512 KiB');
@@ -475,9 +557,14 @@ class AgentServer {
             final message = <String, dynamic>{
               'id': newId(),
               'prompt': prompt,
+              if (params['attachments'] != null) 'attachments': params['attachments'],
               'delivery': mode,
               'created_at': receivedAt,
+              if (params['reasoning'] != null) 'reasoning': params['reasoning'],
             };
+            if (utf8.encode(jsonEncode([...task.pending, message])).length > maxClientFrameBytes - 1024) {
+              throw StateError('Pending messages exceed the 64 MiB transport budget');
+            }
             task.pending.add(message);
             _broadcast(id, {
               'task_id': id,
@@ -583,6 +670,7 @@ class AgentServer {
         _lifetime.throwIfCancelled();
         if (entry is! Directory) continue;
         final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
+        if (_clients.any((client) => client.id == id)) continue;
         try { validateTaskId(id); } on FormatException { continue; }
         if (!await File('${entry.path}/history.sqlite').exists() || _tasks.containsKey(id)) continue;
         final task = _Task(id, null);
@@ -676,7 +764,7 @@ class AgentServer {
       );
     }
     if (task.busy || task.maintenance) throw StateError('Task is busy');
-    if (!compact && prompt.isEmpty) {
+    if (!compact && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
       throw const FormatException('Prompt is required');
     }
     if (_tasks.values.where((task) => task.busy).length >= maxAgents) {
@@ -691,6 +779,7 @@ class AgentServer {
       effective['cwd'] = cwd.path;
     }
     task.busy = true;
+    task.ready = Completer<void>();
     _tasks[task.id] = task;
     task.cancelled = false;
     telemetry.add('turns_started');
@@ -704,6 +793,9 @@ class AgentServer {
     required Json settings,
   }) async {
     Json? terminal;
+    // Stop/archive/shutdown cancel the agent through its mailbox. Observe until
+    // it commits its terminal event, regardless of the turn's total duration.
+    final turnLifetime = CancellationToken();
     try {
       task.writer = await startStore(
         directory,
@@ -752,6 +844,7 @@ class AgentServer {
           'metadata': {'config': task.config},
         });
       }
+      task.ready!.complete();
       task.agent = await startAgent(
         taskId: task.id,
         config: task.config!,
@@ -767,6 +860,8 @@ class AgentServer {
         task.agent!.port,
         'turn',
         {'prompt': prompt, 'compact': compact, 'settings': settings},
+        timeout: null,
+        cancellation: turnLifetime,
         onEvent: (event) {
           if (event['type'] == 'input.committed') {
             final id = event['data']?['message_id'];
@@ -796,6 +891,8 @@ class AgentServer {
         'data': {'error': error.toString()},
       };
     } finally {
+      turnLifetime.cancel();
+      if (!task.ready!.isCompleted) task.ready!.complete();
       await task.agent?.close();
       await task.writer?.close();
       task.agent = null;
@@ -814,7 +911,11 @@ class AgentServer {
           _begin(
             task,
             next['prompt'] as String,
-            settings: {'message_id': next['id'], 'sent_at': next['created_at']},
+            settings: {
+              'message_id': next['id'], 'sent_at': next['created_at'],
+              if (next['attachments'] != null) 'attachments': next['attachments'],
+              if (next['reasoning'] != null) 'reasoning': next['reasoning'],
+            },
           );
         } catch (_) {
           _discardPending(task, 'could_not_start');
@@ -871,8 +972,10 @@ class AgentServer {
     _lifetime.cancel();
     try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
     _clientTools.close();
+    _files.clear();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
+      await client.attachments.close();
       if (!_networkExited) {
         await callIsolate(network.port, 'mcp.detach', {'owner': client.id});
       }
@@ -914,23 +1017,39 @@ class _Task {
   IsolateOwner? writer, agent;
   Future<void>? running;
   Completer<void>? backgroundMaintenance;
+  Completer<void>? ready;
   final pending = <Json>[];
   final offered = <String>{};
 }
 
 class _Client {
-  _Client(this.socket);
+  _Client(this.socket, String directory) {
+    attachments = AttachmentUploads(directory, id);
+  }
   final WebSocket socket;
   final id = newId();
+  late final AttachmentUploads attachments;
   final cancellation = CancellationToken();
+  CancellationToken? fileSearch;
+  Object? fileSearchId;
   final subscriptions = <String>{};
+  final _events = Queue<({String frame, int bytes})>();
+  int _queuedBytes = 0;
   int credits = 256, inFlight = 0;
   void send(Json message) {
     if (socket.readyState == WebSocket.open) socket.add(jsonEncode(message));
   }
 
   void event(Json event) {
-    if (credits-- <= 0) {
+    if (socket.readyState != WebSocket.open) return;
+    final frame = jsonEncode({'event': event});
+    if (credits > 0) {
+      credits--;
+      socket.add(frame);
+      return;
+    }
+    final bytes = utf8.encode(frame).length;
+    if (_events.length >= 1024 || _queuedBytes + bytes > maxClientFrameBytes) {
       unawaited(
         socket.close(
           1008,
@@ -939,13 +1058,24 @@ class _Client {
       );
       return;
     }
-    send({'event': event});
+    _events.add((frame: frame, bytes: bytes));
+    _queuedBytes += bytes;
+  }
+
+  void acknowledge(int count) {
+    credits = (credits + count).clamp(0, 256);
+    while (credits > 0 && _events.isNotEmpty && socket.readyState == WebSocket.open) {
+      final next = _events.removeFirst();
+      _queuedBytes -= next.bytes;
+      credits--;
+      socket.add(next.frame);
+    }
   }
 }
 
 /// The CLI uses the same multiplexed WebSocket protocol as other clients.
 class AgentClient {
-  AgentClient._(this.socket) {
+  AgentClient._(this.socket, {required this.sharedFilesystem}) {
     _subscription = socket.listen(
       (raw) {
         final message = jsonObject(jsonDecode(raw as String));
@@ -971,6 +1101,7 @@ class AgentClient {
     );
   }
   final WebSocket socket;
+  final bool sharedFilesystem;
   late final StreamSubscription<dynamic> _subscription;
   final events = StreamController<Json>.broadcast();
   final _pending = <int, Completer<Object?>>{};
@@ -1008,7 +1139,7 @@ class AgentClient {
         await socket.close();
         lifetime.throwIfCancelled();
       }
-      return AgentClient._(socket);
+      return AgentClient._(socket, sharedFilesystem: uri.scheme == 'unix');
     } finally {
       hook.dispose();
       deadline.cancel();
@@ -1016,17 +1147,87 @@ class AgentClient {
     }
   }
 
-  Future<Object?> request(String method, [Json params = const {}]) async {
+  Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
+
+  Future<Json> uploadAttachment(String path, {required String name, required String type,
+    required CancellationToken cancellation, void Function(int sent, int total)? onProgress}) async {
+    cancellation.throwIfCancelled();
+    final id = newId();
+    var complete = false;
+    final file = File(path);
+    final size = await file.length();
+    cancellation.throwIfCancelled();
+    try {
+      await _request('attachments.begin', {'upload_id': id, 'name': name, 'type': type, 'size': size}, cancellation: cancellation);
+      var sent = 0;
+      final block = BytesBuilder(copy: false);
+      Future<void> append() async {
+        cancellation.throwIfCancelled();
+        final bytes = block.takeBytes();
+        await _request('attachments.append', {'upload_id': id, 'offset': sent, 'data': base64Encode(bytes)}, cancellation: cancellation);
+        sent += bytes.length;
+        onProgress?.call(sent, size);
+      }
+      final input = ownStream(file.openRead(), cancellation);
+      try {
+        await for (final chunk in input.stream) {
+          cancellation.throwIfCancelled();
+          for (var offset = 0; offset < chunk.length;) {
+            final end = (offset + maxAttachmentChunkBytes - block.length).clamp(0, chunk.length);
+            block.add(chunk.sublist(offset, end));
+            offset = end;
+            if (block.length == maxAttachmentChunkBytes) await append();
+          }
+        }
+        if (block.isNotEmpty) await append();
+      } finally { await input.close(); }
+      final result = jsonObject(await _request('attachments.finish', {'upload_id': id}, cancellation: cancellation));
+      complete = true;
+      return result;
+    } finally {
+      if (!complete) await discardAttachment(id);
+    }
+  }
+
+  Future<void> discardAttachment(String id) async {
+    if (socket.readyState != WebSocket.open) return;
+    try {
+      await _request('attachments.cancel', {'upload_id': id}, timeout: const Duration(seconds: 10));
+    } catch (_) { /* Disconnect and server maintenance also release partial uploads. */ }
+  }
+
+  Future<Json> searchFiles(String cwd, String query, {required CancellationToken cancellation}) async =>
+      jsonObject(await _request('files.search', {'cwd': cwd, 'query': query},
+          cancellation: cancellation, timeout: const Duration(seconds: 10)));
+
+  Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
+      jsonObject(await _request('auth.desktop', {'refresh': refresh}, cancellation: cancellation,
+        timeout: const Duration(seconds: 30)));
+
+  Future<Object?> _request(String method, Json params, {
+    CancellationToken? cancellation,
+    Duration timeout = const Duration(minutes: 5),
+  }) async {
+    cancellation?.throwIfCancelled();
     if (socket.readyState != WebSocket.open) {
       throw StateError('Connection is closed');
     }
-    final id = ++_next, result = Completer<Object?>();
+    final id = ++_next;
+    final deadline = TimeoutCancellationToken(timeout);
+    final token = cancellation == null ? deadline : cancellation.merge(deadline);
+    final result = CancellableCompleter<Object?>(token, onCancel: () {
+      _pending.remove(id);
+      if (method == 'files.search' && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({'method': 'files.cancel', 'params': {'request_id': id}}));
+      }
+    });
     _pending[id] = result;
     socket.add(jsonEncode({'id': id, 'method': method, 'params': params}));
     try {
-      return await result.future.timeout(const Duration(minutes: 5));
+      return await result.future;
     } finally {
       _pending.remove(id);
+      deadline.cancel();
     }
   }
 

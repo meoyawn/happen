@@ -16,7 +16,6 @@ Json initialConfiguration(Json input, String cwd, bool telemetry) {
     'instructions': '${input['base_instructions']}\n\n$agentInstructions',
     'tools': [codeDefinition.toJson()],
     'host_catalog': hostCatalog,
-    'max_steps': (input['max_steps'] as int? ?? 64).clamp(1, 256),
     'telemetry': input['telemetry'] ?? telemetry,
     'global_directory': input['global_directory'],
   };

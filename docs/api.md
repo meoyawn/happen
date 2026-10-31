@@ -47,15 +47,42 @@ Keep the resulting `bundle/bin` and `bundle/lib` directories together.
 
 ## Desktop development
 
-Run `moon run dev` from the repository root. It starts the macOS Flutter client
-with stateful hot reload (`r`; `R` restarts). The Dart server is embedded in the
+Run `moon run dev` from the repository root. The guarded launcher starts or reuses
+one macOS debug session, including its Flutter supervisor during a build.
+New sessions return a PID, log path, and input pipe; send `r` for stateful hot
+reload with `printf r > .local/run/flutter-input` (`R` restarts; `q` quits).
+Use `moon run dev -- --status` to inspect without launching. Existing sessions
+started elsewhere keep their original terminal/VM controls. Logs and locks are
+local tooling files outside the app bundle. The Dart server is embedded in the
 same process; the UI uses its WebSocket API over a private Unix socket. Native
 Swift/plugin changes and startup-only configuration need a rebuild/relaunch.
+
+`moon run release` directly builds the macOS release without workflow logging,
+locks, or process inspection/reuse. `moon run release-reinstall`
+stops the installed release before replacing `/Applications/Happen.app` and
+leaves it stopped, including after rollback.
+One debug and one release may coexist; reinstallation leaves debug running.
+See [the desktop README](../packages/desktop/README.md) for custom installation
+paths and the guard's scope.
 
 Open a project folder from the sidebar, then create a task and use the composer.
 Enter sends; Shift+Enter inserts a newline. Model and reasoning controls stay in
 the composer. Streamed responses appear as they arrive, and code-mode host calls
 are nested beneath their parent code cell.
+
+On macOS, paste images with Command+V or the composer's Paste menu, or drop images
+and files onto the composer. Attachments have previews and removal controls and
+can be sent without text. Failed sends retain the draft. The local desktop sends
+image paths to its embedded server; the server prepares the pixels for the model
+and stores the resulting image bytes with the message.
+
+With a remote `AgentClient`, the desktop snapshots images into inline bytes.
+It accepts source images up to 1 GiB and prepares oversized images off the UI
+thread to fit Codex's 32 MiB encoded image budget before sending. Smaller sources
+remain unchanged when the combined budget permits. Preparation and file uploads
+are cancellable. Remote file attachments upload their contents; local files and
+folders remain server path references. Server selection and SSH management still
+need a client UI.
 
 Open Settings from the gear or **Happen → Settings…** (Command+,). Accounts have
 separate sign-in, sign-out, and switch-account actions for ChatGPT and OpenCode.
@@ -211,11 +238,32 @@ same `id` and either `result` or `error`. Notifications use `{"event": {...}}`.
 Task operations acknowledge admission before emitting their durable events;
 wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outcome.
 
+Turns and model/compaction calls have no cumulative wall-clock deadline or model
+step limit. Legacy `max_steps` fields in existing task configurations are ignored;
+the CLI no longer accepts `--max-steps`. Stop, archive, and server shutdown cancel
+owned work. Quitting the desktop stops its embedded server. GPT HTTP/SSE and WebSocket
+responses have a five-minute idle limit between provider events; each event
+starts a fresh wait. Tool-specific execution limits still apply.
+
+Interrupted/idle GPT streams, connection failures, and retryable server errors
+allow five retries with exponential backoff and cancellation. Explicit incomplete
+responses and terminal provider failures are not retried. Already executed tools
+retain their durable results; retrying a model request does not execute them
+again. Ephemeral `model.retrying` notifications contain `task_id`, `turn_id`,
+`attempt` (1–5), and `max_retries` (5). The desktop shows reconnecting progress,
+discards abandoned partial response text, and retains terminal failures in the
+conversation, including failures without a durable sequence number.
+
 | Method | Parameters and behavior |
 | --- | --- |
 | `ping` | Returns the server version. |
-| `task.start` | `prompt`, optional `cwd`, `provider`, `model`, `reasoning`, `settings`, `max_steps`, `client_tools`. Returns `task_id`. |
-| `task.send` | `task_id`, `prompt`, optional `delivery` (`steer` or `queue`; server default `queue`). While idle, also accepts `reasoning`, `cwd`, `instructions`. |
+| `files.search` | Absolute server `cwd`, `query` (empty allowed, at most 256 characters), optional `limit` (1–50, default 20). Returns relative `paths` (directories end in `/`) and `truncated`. No task ID or model call is required. |
+| `task.start` | `prompt` and/or `attachments`, optional `cwd`, `provider`, `model`, `reasoning`, `settings`, `client_tools`. Returns `task_id`. |
+| `task.send` | `task_id`, `prompt` and/or `attachments`, optional `delivery` (`steer` or `queue`; server default `queue`), `reasoning`. While idle, also accepts `cwd`, `instructions`. |
+| `attachments.begin` | Client-generated `upload_id`, `type` (`image` or `file`), basename `name`, and byte `size` (up to 1 GiB). Reserves a connection-owned upload. |
+| `attachments.append` | `upload_id`, exact byte `offset`, base64 `data` (up to 24 MiB decoded per block). Returns the acknowledged next `offset`. |
+| `attachments.finish` | `upload_id`. Requires the declared byte count and returns an attachment containing its `upload_id`. |
+| `attachments.cancel` | `upload_id`. Releases a pending upload and its staged bytes. |
 | `task.compact` | `task_id`. Installs a checkpoint only after successful compaction. |
 | `task.cancel` | `task_id`. Cancels the active operation and its owned tools. |
 | `task.archive` / `task.unarchive` | `task_id`. Stops work and archives a task, or restores it. History is retained. |
@@ -230,13 +278,53 @@ wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outco
 | `auth.login` | `provider`, `login_id`. Starts browser/device authorization; `auth.login` events supply its URL and optional device code. |
 | `auth.cancel` | `login_id`. Cancels this connection's active authorization. |
 | `auth.logout` | `provider` (`gpt` or `opencode`). Cancels credential operations and removes Happen's login. |
+| `auth.desktop` | Local Unix sockets only. Optional `refresh` boolean; returns `access_token` and `account_id` for the desktop's direct OpenAI requests. Never returns a refresh token. TCP listeners reject it. |
 | `maintenance.run` | Runs the same coalesced maintenance sweep used at startup and every 24 hours. |
 
 Steer messages join the active turn before its next model request. Queue messages
 start subsequent turns in order. Pending input is bounded to 32 messages and
-512 KiB per task, and becomes durable only when committed to history. Cancellation,
+512 KiB of text plus a 64 MiB serialized budget per task, and becomes durable only
+when committed to history. Cancellation,
 archive, or a failed turn discards remaining pending input. Clients receive
 `input.pending`, `input.committed`, and `input.discarded` events.
+
+Attachments use one of these shapes:
+
+```json
+{"type":"image","name":"screenshot.png","mime_type":"image/png","data":"BASE64","detail":"high"}
+{"type":"image","name":"photo.jpg","path":"/absolute/server/photo.jpg"}
+{"type":"file","name":"report.pdf","path":"/absolute/server/report.pdf"}
+{"type":"file","name":"report.pdf","upload_id":"RETURNED_UPLOAD_ID"}
+```
+
+Inline images accept PNG, JPEG, GIF and WebP. Server paths and uploads also accept
+formats decoded by the image package, such as BMP and TIFF. The macOS clipboard
+bridge converts HEIC/HEIF snapshots to PNG. Images default to `high`: maximum
+2,048-pixel edge and 2,500 32-pixel patches. `original` uses a 6,000-pixel edge and
+10,000 patches. GIFs become a static PNG frame; JPEG resizing uses quality 85.
+Image-only inputs are valid; text is limited to 512 KiB. Client WebSocket messages
+are bounded to 64 MiB. History pages obey that byte budget as well as their row
+limit, so clients must continue until an empty page.
+
+Upload identifiers work only on the connection that created them. Interrupted
+uploads are removed on cancellation/disconnection; retry starts a fresh upload
+from the retained client file. Uploaded ordinary files receive durable server
+paths. Accepted image uploads are removed after their prepared bytes are handed
+to the task. Images survive restart, fork and export/import; ordinary file
+references require their server paths to remain available. GPT receives
+`input_image`, DeepSeek Messages receives base64 image blocks, and DeepSeek Chat
+receives `image_url` content. File references become quoted path context.
+
+On GPT models advertising `reasoning_updates`, reasoning can be selected while
+the task runs. The desktop sends the selected level with the next message.
+Each pending message retains its own `reasoning`: Steer applies it before that
+message at the next model boundary; Queue applies it when that message starts
+its turn. Invalid levels are rejected before admission. A changed level appends
+a durable `configuration.updated` immediately before its user message, with
+`effective_reasoning` committed in the same transaction. The GPT adapter encodes
+this as `configuration_update`, preserving the original request-level effort
+and earlier input prefix. Choosing a level alone does not start a model request.
+DeepSeek/OpenCode effort and every task's model/provider stay fixed.
 
 Pending messages include `created_at`, the server's UTC receipt time in ISO 8601
 format. On commitment, `data.sent_at` preserves this time for queued and steered
@@ -261,10 +349,43 @@ and `history__search_contents`. Forks and imports preserve historical item IDs.
 
 Clients acknowledge consumed notifications with
 `{"method":"events.ack","params":{"count":1}}`. Each connection starts with
-256 event credits. Slow clients are disconnected when credits are exhausted;
-reconnect and read durable task events with `history.page`. `AgentClient` handles
+256 event credits. When credits are exhausted, notifications wait in an ordered
+queue bounded to 1,024 events and 64 MiB. Acknowledgements drain that queue;
+RPC replies bypass it, so a file search can finish while task events are waiting.
+Clients exceeding either backlog bound are disconnected; reconnect and read
+durable task events with `history.page`. `AgentClient` handles
 these acknowledgements automatically. Event subscriptions themselves belong to
 the live connection.
+
+Requests are dispatched concurrently and replies are correlated by `id`; replies
+may arrive out of request order. The 32-request admission bound counts pending
+RPCs, not running task streams. Task start/send acknowledge admission promptly,
+so 100 running tasks do not consume 100 request slots. There is no separate
+WebSocket or task execution slot for autocomplete.
+
+File search operates on the server's filesystem, including for new-task drafts.
+Git checkouts include tracked and untracked files and their parent directories,
+with Git's standard exclusions for untracked files. Empty Git directories and
+directories containing only ignored files are not indexed. Plain folders or hosts without Git use an asynchronous
+directory walk that skips `.git`, `.hg`, `.svn`, `node_modules`, `.dart_tool`,
+`build`, and `.cache`, without following directory symlinks. Only names are
+searched; no file contents are read or attached to prompts. Exact basenames and
+paths rank first, so `desktop` surfaces `packages/desktop/` before its descendants
+or files like `desktop-guide.md`. Prefixes, substrings and compact subsequences
+follow. Selection inserts the relative reference, including the trailing `/` for
+a directory. Plain-folder scans include empty directories too.
+
+The server reuses a filename index for up to ten seconds and retains at most four
+indexes. Each scan
+is bounded to 100,000 paths/entries and 8 MiB of filename data, and each result's
+path payload is bounded to 32 KiB. `truncated` means more matches or unscanned files
+may exist. File search has a five-second server deadline. A newer search on the
+same connection cancels its predecessor; different connections are independent.
+Clients may send `{"method":"files.cancel","params":{"request_id":101}}`
+without an `id` to cancel their search request 101. Late cancellation cannot
+cancel a newer request. Cancellation, disconnection, and shutdown terminate the
+owned scan; none of them cancel a running task. `AgentClient.searchFiles` accepts
+a cancellation token and uses a ten-second deadline including network time.
 
 ## Client tools
 

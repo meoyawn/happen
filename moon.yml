@@ -4,11 +4,46 @@ toolchains:
   default: system
 tasks:
   dev:
-    description: Run the Flutter desktop with stateful hot reload
-    command: env -C packages/desktop flutter run -d macos --debug --hot --print-dtd
-    preset: server
+    description: Launch or reuse one Flutter desktop with stateful hot reload
+    command: python3 packages/desktop/tool/run_flutter.py
+    preset: utility
     inputs: []
     options:
-      interactive: true
+      interactive: false
       cache: false
       shell: false
+      outputStyle: stream
+
+  release:
+    description: Build the macOS release
+    command: env -C packages/desktop flutter build macos --release
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      outputStyle: stream
+
+  release-reinstall:
+    description: Build/install the release, stopping its old process
+    command: python3 packages/desktop/tool/release_macos.py
+    deps:
+      - '~:release'
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      outputStyle: stream
+
+  reinstall-release:
+    description: Alias for release-reinstall
+    command: noop
+    deps:
+      - '~:release-reinstall'
+    preset: utility
+    inputs: []
+    options:
+      cache: false

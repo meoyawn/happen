@@ -15,6 +15,12 @@ const _exec = ToolDefinition(
   grammar: 'start: /[\\s\\S]+/',
 );
 
+const _image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+ConversationItem _attachedUser(String text) => ConversationItem.user(text, attachments: [
+  {'type': 'image', 'name': 'screenshot.png', 'mime_type': 'image/png', 'data': _image},
+  {'type': 'file', 'name': 'report.txt', 'path': '/project/report.txt'},
+]);
+
 void main() {
   late _Harness harness;
   setUp(() async => harness = await _Harness.open());
@@ -93,7 +99,7 @@ void main() {
     };
     final events = <Json>[];
     final first = await harness.provider.respond(
-      request([ConversationItem.text('user', 'Run the code')]),
+      request([_attachedUser('Run the code')]),
       cancellation: CancellationToken(),
       onEvent: events.add,
     );
@@ -119,7 +125,7 @@ void main() {
     );
     await harness.provider.respond(
       request([
-        ConversationItem.text('user', 'Run the code'),
+        _attachedUser('Run the code'),
         ...restored.output,
         ConversationItem.toolResult(restored.calls.single, '✓'),
       ]),
@@ -141,6 +147,10 @@ void main() {
     final messages = (harness.bodies.last['messages'] as List)
         .map(jsonObject)
         .toList();
+    expect(messages.first['content'][1], {
+      'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': _image},
+    });
+    expect(messages.first['content'][2]['text'], contains('Path: "/project/report.txt"'));
     expect(messages[1]['content'], [
       {
         'type': 'thinking',
@@ -366,7 +376,7 @@ void main() {
       }
     };
     final first = await provider.respond(
-      request([ConversationItem.text('user', 'Recall')]),
+      request([_attachedUser('Recall')]),
       cancellation: CancellationToken(),
     );
     expect(first.calls.single.input, 'text(42);');
@@ -376,7 +386,7 @@ void main() {
     );
     await provider.respond(
       request([
-        ConversationItem.text('user', 'Recall'),
+        _attachedUser('Recall'),
         ...restored.output,
         ConversationItem.toolResult(restored.calls.single, '42'),
         ConversationItem(
@@ -399,6 +409,9 @@ void main() {
     );
     expect(harness.paths, ['/v1/chat/completions', '/v1/chat/completions']);
     expect(harness.headers.first['uses-bearer'], true);
+    final attached = (harness.bodies.last['messages'] as List).firstWhere((item) => item['role'] == 'user')['content'] as List;
+    expect(attached[1], {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,$_image'}});
+    expect(attached[2]['text'], contains('Path: "/project/report.txt"'));
     expect(
       (harness.bodies.last['tools'] as List).last['function']['name'],
       'client__browser_title',

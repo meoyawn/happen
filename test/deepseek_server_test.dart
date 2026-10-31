@@ -13,7 +13,9 @@ void main() {
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     AgentServer? server;
     AgentClient? client;
+    final denialStarted = Completer<void>(), releaseDenial = Completer<void>();
     addTearDown(() async {
+      if (!releaseDenial.isCompleted) releaseDenial.complete();
       await client?.close();
       await server?.close();
       await provider.close(force: true);
@@ -57,6 +59,8 @@ void main() {
       expect(body['model'], 'deepseek-v4.1-flash-free');
       expect(body['reasoning_effort'], 'low');
       if (denied) {
+        denialStarted.complete();
+        await releaseDenial.future;
         request.response.statusCode = 429;
         request.response.write(
           jsonEncode({
@@ -126,10 +130,17 @@ void main() {
     expect(await File('${root.path}/verified.txt').readAsString(), '42\n');
     expect(requests.length, 2);
     denied = true;
-    final failed = await turn('task.send', {
+    final failure = turn('task.send', {
       'task_id': first['task_id'],
       'prompt': 'Continue.',
     });
+    await denialStarted.future.timeout(const Duration(seconds: 15));
+    await expectLater(client.request('task.send', {
+      'task_id': first['task_id'], 'prompt': 'Change effort', 'reasoning': 'high', 'delivery': 'steer',
+    }), throwsA(isA<StateError>().having((error) => error.message, 'message', contains('Reasoning effort is fixed for this task'))));
+    expect(jsonObject(await client.request('task.subscribe', {'task_id': first['task_id']}))['pending'], isEmpty);
+    releaseDenial.complete();
+    final failed = await failure;
     expect(failed['type'], 'turn.failed');
     expect(failed['data']['error'], contains('free_usage_limit'));
     expect(requests.length, 3);
