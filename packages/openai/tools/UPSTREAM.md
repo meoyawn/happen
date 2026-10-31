@@ -35,3 +35,13 @@ outside the repository to capture oracle results. Checked-in tests execute Dart.
 
 Upstream Apache-2.0 text is in `CODEX-LICENSE`; transliteration and stop-word
 notices are in `DEUNICODE-LICENSE` and `STOPWORDS-LICENSE`.
+
+The code-mode-only description contract also follows
+`codex-rs/core/src/tools/spec_plan.rs` (`register_code_mode_executors`) and
+`codex-rs/code-mode-protocol/src/description.rs`
+(`build_exec_tool_description`): eager nested tool declarations belong in the
+exec description; ranked search receives the deferred catalog. Happen renders
+its implemented shell, patch, history, resource, and search tools there, with
+ALL_TOOLS and nested-search guidance. Web retains its separate eager definition.
+Runtime helpers and shell options are described only where implemented; the
+upstream V8, yield/wait, media, and PTY capabilities are not claimed.

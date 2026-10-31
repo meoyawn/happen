@@ -1048,7 +1048,10 @@ class _Catalog {
     }
     for (final item in input) {
       for (final tool in item.tools) {
-        if (openCode) continue;
+        // External tools stay in Code Mode. Native provider upgrades must
+        // still reach the catalog of tasks created before those tools existed.
+        if (openCode && !{'provider_tools', 'provider_additions'}.contains(
+          item.native['harness']?['context'])) continue;
         if (!definitions.containsKey(key(tool))) deferred.add(key(tool));
         _add(tool);
       }

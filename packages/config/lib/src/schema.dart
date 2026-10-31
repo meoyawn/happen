@@ -98,6 +98,22 @@ const globalConfigSchema = <String, Object?>{
           },
           'enabled': {'type': 'boolean'},
           'legacy_fallback': {'type': 'boolean'},
+          'oauth': {
+            'oneOf': [
+              {'const': false},
+              {
+                'type': 'object', 'additionalProperties': false,
+                'properties': {
+                  'client_id': _nonemptyString,
+                  'client_secret_env': _nonemptyString,
+                  'token_endpoint_auth_method': {'enum': ['none', 'client_secret_basic', 'client_secret_post']},
+                  'scopes': {'type': 'array', 'items': _nonemptyString},
+                  'callback_port': {'type': 'integer', 'minimum': 0, 'maximum': 65535},
+                },
+                'dependencies': {'client_secret_env': ['client_id'], 'token_endpoint_auth_method': ['client_id']},
+              },
+            ],
+          },
         },
         'oneOf': [
           {
@@ -114,6 +130,7 @@ const globalConfigSchema = <String, Object?>{
           'inherit_env': ['command'],
           'headers': ['url'],
           'header_env': ['url'],
+          'oauth': ['url'],
         },
       },
     },

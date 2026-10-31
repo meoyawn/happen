@@ -1,9 +1,11 @@
 import 'package:protocol/protocol.dart';
 import 'package:ai/ai.dart';
 
+import 'declarations.dart';
+import 'history_tools.dart';
 import 'web_search.dart';
 
-final codeDefinition = ToolDefinition(
+ToolDefinition get codeDefinition => ToolDefinition(
   name: 'exec',
   namespace: 'functions',
   format: 'text',
@@ -27,7 +29,7 @@ const toolSearchDefinition = ToolDefinition(
 );
 
 // Codex 0.164 wire names and grammar; see docs/decisions.md.
-const codeTool = <String, dynamic>{
+Map<String, dynamic> get codeTool => <String, dynamic>{
   'type': 'namespace',
   'name': 'functions',
   'description': '',
@@ -35,7 +37,7 @@ const codeTool = <String, dynamic>{
     {
       'type': 'custom',
       'name': 'exec',
-      'description': 'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value). Output defaults to 10000 tokens; override with a first-line // @exec: {"max_output_tokens": 20000} pragma. Oversized text is truncated, preserving its beginning and end.',
+      'description': _codeDescription(),
       'format': {
         'type': 'grammar',
         'syntax': 'lark',
@@ -53,6 +55,35 @@ SOURCE: /[\s\S]+/
   ],
 };
 
+// Codex code-mode-protocol/description.rs renders eager nested declarations
+// into exec itself; tool_search only indexes the deferred external catalog.
+String _codeDescription() {
+  final enabled = [
+    ...hostCatalog.where((tool) => tool['name'] != 'web__run'),
+    ...historyCatalog, ...mcpResourceCatalog,
+    {...toolSearchDefinition.toJson(), 'format': 'json'},
+  ].map(describeTool).toList()..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+  return [
+    'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value). Output defaults to 10000 tokens; override with a first-line // @exec: {"max_output_tokens": 20000} pragma. Oversized text is truncated, preserving its beginning and end.',
+    r'''All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers.
+Nested tool methods take either a string or an object as their input argument.
+Nested tools return either an object or a string, based on the description.
+Each execution uses a fresh JavaScript context. Use the host tools for file, process, and network access.
+
+Global helpers:
+- `text(value)`: Appends a text item. Non-string values are stringified with JSON.stringify when possible.
+- `store(key: string, value: any)`: stores a serializable value under a string key for later exec calls in the same session.
+- `load(key: string)`: returns the stored value for a string key, or undefined if it is missing.
+- `ALL_TOOLS`: metadata for the enabled nested tools as { name, description } entries.''',
+    r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
+To find one, filter `ALL_TOOLS` by `name` and `description`.
+
+Tool availability can change between calls.''',
+    r'''Use `await tools.tool_search({query: "...", limit: 8})` for BM25-ranked discovery of deferred tools (up to `limit` matches; 8 by default). It returns `{tools: [{name, description}]}` with callable names and full TypeScript declarations. Print results with `text()` and inspect unfamiliar declarations before calling `tools[result.name](arguments)` in a later execution.''',
+    for (final tool in enabled) '### `${tool['name']}`\n${tool['description']}',
+  ].join('\n\n');
+}
+
 const hostCatalog = <Json>[
   webSearchHost,
   {
@@ -63,11 +94,11 @@ const hostCatalog = <Json>[
       'properties': {
         'cmd': {'type': 'string', 'description': 'Shell command to execute.'},
         'workdir': {'type': 'string', 'description': 'Working directory for the command. Defaults to the turn cwd.'},
-        'tty': {'type': 'boolean', 'description': 'True allocates a PTY for the command; false or omitted uses plain pipes.'},
+        'tty': {'type': 'boolean', 'description': 'Only false or omitted is supported; commands use plain pipes.'},
         'yield_time_ms': {'type': 'number', 'description': 'Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.'},
         'max_output_tokens': {'type': 'number', 'description': 'Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.'},
         'shell': {'type': 'string', 'description': "Shell binary to launch. Defaults to the user's default shell."},
-        'login': {'type': 'boolean', 'description': 'True runs the shell with -l/-i semantics; false disables them. Defaults to true.'},
+        'login': {'type': 'boolean', 'description': 'True starts a login shell (-l); false omits -l. Defaults to true.'},
       },
       'required': ['cmd'], 'additionalProperties': false,
     },

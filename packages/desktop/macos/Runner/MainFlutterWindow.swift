@@ -96,6 +96,16 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         result(nil)
         return
       }
+      if call.method == "openMcpLoginUrl" {
+        guard let value = call.arguments as? String, let url = URL(string: value),
+              url.user == nil, url.password == nil, url.fragment == nil,
+              url.scheme == "https" || (url.scheme == "http" && ["127.0.0.1", "localhost", "::1"].contains(url.host ?? "")) else {
+          result(FlutterError(code: "invalid_url", message: "Invalid MCP sign-in URL", details: nil))
+          return
+        }
+        result(NSWorkspace.shared.open(url))
+        return
+      }
       guard call.method == "openLoginUrl" else {
         result(FlutterMethodNotImplemented)
         return

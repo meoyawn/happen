@@ -106,13 +106,14 @@ void _networkMain(List<Object?> args) async {
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
   final repositoryInstructions = RepositoryInstructions();
-  final skills = FilesystemSkills(directory, homeDirectory: startup['skills_home'] as String?);
+  final skills = FilesystemSkills(homeDirectory: startup['skills_home'] as String?);
   String? loginId, loginOwner;
   CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
   final lifetime = CancellationToken();
   final mcp = McpManager(
     http: http,
+    directory: directory,
     publicUrl: global['public_url'] as String?,
     onEvent: (owner, event) => (startup['events'] as SendPort?)?.send({
       'owner': owner,
@@ -350,6 +351,23 @@ void _networkMain(List<Object?> args) async {
         await initialized.asCancellable(cancellation);
         final Object? result;
         switch (request['method']) {
+          case 'mcp.auth.login':
+            final name = requiredString(params, 'server');
+            final login = requiredString(params, 'login_id');
+            try {
+              final signingIn = mcp.login(name, cancellation, (url) => reply?.send({'event': {
+                'type': 'mcp.auth.login', 'server': name, 'login_id': login, 'url': url,
+              }}));
+              configEvent('mcp.auth.changed', {'server': name});
+              result = await signingIn;
+            } finally {
+              configEvent('mcp.auth.changed', {'server': name});
+            }
+          case 'mcp.auth.logout':
+            final name = requiredString(params, 'server');
+            await mcp.logout(name, cancellation);
+            configEvent('mcp.auth.changed', {'server': name});
+            result = null;
           case 'mcp.status':
             result = mcp.status();
           case 'mcp.inventory':

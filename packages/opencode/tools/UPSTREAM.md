@@ -32,3 +32,9 @@ are independent of Dart. Source hashes, cases, and reproduction details live in
 
 Upstream MIT text is in `OPENCODE-LICENSE`;
 the Dart instruction-diff port's BSD notice is in `JSDIFF-LICENSE`.
+
+Skills use `packages/core/src/tool/plugin/skill.ts` for the native `skill({id})`
+contract and `packages/core/src/skill.ts` for model output. The independent output
+fixture is `test/fixtures/skills/opencode.json`. Catalog discovery and bounded
+presentation are shared server/agent behavior; OpenCode's unbounded catalog and
+its permission/plugin subsystems are not ported.

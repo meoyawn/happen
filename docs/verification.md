@@ -150,8 +150,12 @@ using the CLI's independent login. If both succeed, repeat the isolated CSV task
 above and independently verify its files. If the service returns a quota or
 client-access denial, record the status and safe error category, respect its
 retry interval, and stop that live route check. A CLI success alone does not
-establish that Happen can use the hosted route. Do not change to a paid model or
-identify Happen as another application to alter that outcome.
+establish that Happen can use the hosted route. Do not change to a paid model.
+At the user's request, Console inference uses the pinned OpenCode client headers
+and provider-generated session IDs. Happen still owns its credentials. Start a
+new OpenCode task, or fork a task with an older Happen ID, to use that ID format.
+[Live verification](evidence/opencode-live.json) covers reasoning off/max, native
+tools, code mode, continuation, and a cold server resume on the same task ID.
 
 For compaction, preserve multiple known facts and unfinished actions, compact,
 continue, retrieve an omitted historical tool result, and repeat after restart and

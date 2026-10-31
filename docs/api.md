@@ -19,6 +19,20 @@ or pass the global `--data-dir PATH` option to select another directory. It hold
 authentication references, `AGENTS.md`, and task databases. Global configuration
 defaults to `~/.config/happen/config.yaml`, independently of the data directory.
 
+Skills are discovered only in `~/.agents/skills/` globally and `.agents/skills/`
+locally. Local discovery walks from the nearest Git repository root down to the
+task working directory, or checks only that directory outside a repository.
+Install each skill in its own subdirectory with a `SKILL.md` file.
+
+Each `SKILL.md` needs YAML frontmatter with a `description`; `name` is optional
+and defaults to the containing directory. Only a bounded name/description/path
+catalog enters model context automatically: at most 2% of the task's context
+limit, shared across catalog updates until compaction. Descriptions can be
+shortened and entries omitted. Full bodies stay on disk and load when selected,
+including files omitted from the catalog. OpenCode uses its native
+`skill({id: "/full/path/to/SKILL.md"})` tool; OpenAI uses file tools. Compaction
+refreshes the catalog, and skills can be read again as needed.
+
 For a remote server, run the loopback listener on the remote machine and forward
 its port with SSH:
 

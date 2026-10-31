@@ -28,6 +28,7 @@ void main() {
     Future<void> configure(String description, {String? instructions = guidance}) =>
       config.writeAsString(configuration(description, instructions: instructions), flush: true);
     await configure('Inspect the supervised process');
+    await File('${root.path}/note.txt').writeAsString('before\n');
     await File('${root.path}/auth.json').writeAsString(jsonEncode({
       'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture',
       'account_id': 'fixture',
@@ -60,6 +61,11 @@ void main() {
             text(await tools.tool_search({query:"mcp__archive__probe",limit:1}));
             text(ALL_TOOLS.find(t => t.name === "mcp__archive__probe"));
             text(await tools.mcp__archive__probe({action:"inspect"}));
+            text(await tools.tool_search({query:"filesystem read_file write_file exec_command terminal",limit:3}));
+            const before = await tools.exec_command({cmd:"cat note.txt", shell:"/bin/sh", login:false});
+            await tools.apply_patch("*** Begin Patch\\n*** Update File: note.txt\\n@@\\n-before\\n+after\\n*** End Patch");
+            const after = await tools.exec_command({cmd:"cat note.txt", shell:"/bin/sh", login:false});
+            text({before:before.output, after:after.output});
           ''',
         });
       } else if ((prompt == 'native' || prompt == 'again') && results.isEmpty) {
@@ -120,6 +126,14 @@ void main() {
     final id = started['task_id'];
     final prefix = requests.single['input'] as List;
     final initialTools = requests.single['tools'];
+    final exec = (initialTools as List).singleWhere((tool) => tool['name'] == 'functions')['tools']
+        .singleWhere((tool) => tool['name'] == 'exec');
+    final description = exec['description'] as String;
+    for (final name in ['exec_command', 'write_stdin']) {
+      expect(description, contains('declare const tools: { $name('));
+    }
+    expect(description, contains('apply_patch(input: string)'));
+    expect(description, contains('ALL_TOOLS'));
     expect(definitions(requests.single), isEmpty);
     expect(jsonEncode(prefix), isNot(contains('unused_schema_')));
     expect(jsonEncode(prefix), isNot(contains('client_schema_')));
@@ -141,7 +155,11 @@ void main() {
     expect((requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer')['content'],
       contains('Deferred tool namespaces:'));
     expect(jsonDecode(printed[1] as String)['description'], contains('declare const tools: { mcp__archive__probe('));
-    expect(jsonDecode(jsonDecode(printed.last as String)['content'][0]['text'])['pid'], isPositive);
+    expect(jsonDecode(jsonDecode(printed[2] as String)['content'][0]['text'])['pid'], isPositive);
+    expect(jsonDecode(printed[3] as String), {'tools': []},
+      reason: 'Codex search indexes deferred tools; built-ins are advertised in functions.exec');
+    expect(jsonDecode(printed.last as String), {'before': 'before\n', 'after': 'after\n'});
+    expect(await File('${root.path}/note.txt').readAsString(), 'after\n');
 
     await turn('task.send', {'task_id': id, 'prompt': 'native'});
     expect(definitions(requests.last).map((tool) => tool['name']), ['probe']);
@@ -177,6 +195,7 @@ void main() {
     final history = await client.request('history.page', {'task_id': id, 'limit': 500}) as List;
     final legacyConfig = jsonObject(history.firstWhere((event) => event['type'] == 'task.created')['data']);
     legacyConfig['tools'] = (legacyConfig['tools'] as List).where((tool) => tool['name'] != 'tool_search').toList();
+    (legacyConfig['tools'] as List).singleWhere((tool) => tool['name'] == 'exec')['description'] = 'Run JavaScript code.';
     legacyConfig['instructions'] = 'Legacy frozen instructions.';
     final legacyId = newId();
     final store = TaskStore(root.path, legacyId);
@@ -194,10 +213,14 @@ void main() {
     final legacyPrefix = requests[beforeLegacy];
     expect((legacyPrefix['input'] as List).first['content'], 'Earlier question');
     expect(legacyPrefix['input'][1]['content'][0]['text'], 'Earlier answer');
-    expect(definitions(legacyPrefix).map((tool) => tool['type']), ['tool_search']);
+    expect(definitions(legacyPrefix).map((tool) => tool['type']), ['custom', 'tool_search']);
+    expect(definitions(legacyPrefix).singleWhere((tool) => tool['name'] == 'exec')['description'], description);
+    await turn('task.send', {'task_id': legacyId, 'prompt': 'seed'});
+    expect(definitions(requests.last).map((tool) => tool['type']), ['custom', 'tool_search']);
     await turn('task.compact', {'task_id': legacyId});
     await turn('task.send', {'task_id': legacyId, 'prompt': 'seed'});
-    expect(definitions(requests.last).map((tool) => tool['type']), ['tool_search']);
+    expect(definitions(requests.last).map((tool) => tool['type']), ['custom', 'tool_search']);
+    expect(definitions(requests.last).singleWhere((tool) => tool['name'] == 'exec')['description'], description);
     expect(requests.skip(beforeLegacy).every((request) => request['instructions'] == 'Legacy frozen instructions.'), isTrue);
     expect(requests.skip(beforeLegacy).every((request) => jsonEncode(request['tools']) == jsonEncode(legacyPrefix['tools'])), isTrue);
   });

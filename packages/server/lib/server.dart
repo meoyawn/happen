@@ -42,6 +42,7 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
+  final _activity = StreamController<int>.broadcast();
   final _requests = <Future<Object?>>{};
   final _imports = <String, Future<String>>{};
   bool _closing = false;
@@ -49,6 +50,10 @@ class AgentServer {
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
   int _transfers = 0;
+
+  /// Activity belongs to this server instance, independent of client subscriptions.
+  int get activeTaskCount => _tasks.values.where((task) => task.busy).length;
+  Stream<int> get activeTaskCounts => _activity.stream;
 
   static Future<AgentServer> start({
     required String directory,
@@ -270,6 +275,10 @@ class AgentServer {
             client.mcpInventories[request['params']?['request_id']]?.cancel();
             return;
           }
+          if (request['method'] == 'mcp.auth.login.cancel') {
+            client.mcpLogins[request['params']?['request_id']]?.cancel();
+            return;
+          }
           if (id == null) throw const FormatException('Request ID is required');
           if (client.inFlight >= 32) {
             throw StateError('Too many outstanding requests');
@@ -394,6 +403,17 @@ class AgentServer {
   }
 
   Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt) async {
+    if (method == 'mcp.auth.login' || method == 'mcp.auth.logout') {
+      final deadline = TimeoutCancellationToken(const Duration(minutes: 5));
+      client.mcpLogins[requestId] = deadline;
+      try {
+        return await callIsolate(network.port, method, {...params, 'owner': client.id},
+          onEvent: client.event, cancellation: deadline.merge(client.cancellation));
+      } finally {
+        client.mcpLogins.remove(requestId);
+        deadline.cancel();
+      }
+    }
     if (method == 'mcp.inventory') {
       final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
       client.mcpInventories[requestId] = deadline;
@@ -409,6 +429,7 @@ class AgentServer {
       if (!{
         'mcp.status',
         'mcp.reload',
+        'mcp.auth.logout',
         'mcp.request',
         'mcp.events.subscribe',
         'mcp.events.unsubscribe',
@@ -464,7 +485,7 @@ class AgentServer {
         );
       case 'telemetry':
         return {
-          'active_tasks': _tasks.values.where((task) => task.busy).length,
+          'active_tasks': activeTaskCount,
           'resident_tasks': _tasks.length,
           'connected_clients': _clients.length,
           'pending_messages': _tasks.values.fold<int>(0, (count, task) => count + task.pending.length),
@@ -658,6 +679,8 @@ class AgentServer {
     if (!task.busy && !task.maintenance && task.pending.isEmpty && identical(_tasks[task.id], task)) {
       _tasks.remove(task.id);
     }
+    // Publish after any queued turn has been admitted, without a false idle gap.
+    _activity.add(activeTaskCount);
   }
 
   Future<void> _archive(_Task task, bool archived) async {
@@ -820,6 +843,7 @@ class AgentServer {
     task.ready = Completer<void>();
     _tasks[task.id] = task;
     task.cancelled = false;
+    _activity.add(activeTaskCount);
     telemetry.add('turns_started');
     task.running = _run(task, prompt, compact: compact, settings: effective);
   }
@@ -1030,6 +1054,7 @@ class AgentServer {
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
     );
     await Future.wait(_requests.toList().map((operation) => operation.catchError((Object _) => null)));
+    unawaited(_activity.close());
     await network.close();
     _networkEvents.close();
     for (final client in _clients.toList()) {
@@ -1071,6 +1096,7 @@ class _Client {
   final cancellation = CancellationToken();
   CancellationToken? fileSearch;
   final mcpInventories = <Object, CancellationToken>{};
+  final mcpLogins = <Object, CancellationToken>{};
   Object? fileSearchId;
   final subscriptions = <String>{};
   final _events = Queue<({String frame, int bytes})>();
@@ -1244,6 +1270,13 @@ class AgentClient {
       jsonObject(await _request('mcp.inventory', {'verbose': verbose, 'server': ?server},
         cancellation: cancellation, timeout: const Duration(seconds: 35)));
 
+  Future<Json> mcpLogin(String server, String loginId, {required CancellationToken cancellation}) async =>
+      jsonObject(await _request('mcp.auth.login', {'server': server, 'login_id': loginId},
+        cancellation: cancellation, timeout: const Duration(minutes: 6)));
+
+  Future<void> mcpLogout(String server, {required CancellationToken cancellation}) async =>
+      _request('mcp.auth.logout', {'server': server}, cancellation: cancellation);
+
   Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
       jsonObject(await _request('auth.desktop', {'refresh': refresh}, cancellation: cancellation,
         timeout: const Duration(seconds: 30)));
@@ -1266,6 +1299,9 @@ class AgentClient {
       }
       if (method == 'mcp.inventory' && socket.readyState == WebSocket.open) {
         socket.add(jsonEncode({'method': 'mcp.inventory.cancel', 'params': {'request_id': id}}));
+      }
+      if ((method == 'mcp.auth.login' || method == 'mcp.auth.logout') && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({'method': 'mcp.auth.login.cancel', 'params': {'request_id': id}}));
       }
     });
     _pending[id] = result;

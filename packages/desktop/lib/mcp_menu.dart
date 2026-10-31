@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
-/// Read-only inventory rows inside the composer's shared autocomplete popover.
+/// Runtime inventory and explicit authentication actions in the composer.
 class McpStatusMenu extends StatelessWidget {
   const McpStatusMenu({super.key, required this.inventory, required this.verbose,
-    required this.loading, required this.failed, required this.query, required this.onRetry});
+    required this.loading, required this.failed, required this.query, required this.onRetry,
+    this.onSignIn, this.onSignOut});
   final Json? inventory;
   final bool verbose, loading, failed;
   final String query;
   final VoidCallback onRetry;
+  final void Function(String server)? onSignIn, onSignOut;
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +28,7 @@ class McpStatusMenu extends StatelessWidget {
         if (all.isEmpty || rows.isEmpty)
           Padding(padding: const EdgeInsets.all(8), child: Text(all.isEmpty ? 'No MCP servers configured' : 'No commands', style: const TextStyle(fontSize: 13, color: muted))),
         for (final server in rows)
-          Semantics(enabled: false, child: Opacity(opacity: verbose ? 1 : .5,
+          Opacity(opacity: verbose || server['oauth_supported'] == true ? 1 : .5,
             child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                   LayoutBuilder(builder: (context, constraints) => Row(children: [
@@ -38,6 +40,14 @@ class McpStatusMenu extends StatelessWidget {
                       style: const TextStyle(fontSize: 13, height: 10 / 7, color: muted))),
                   ])),
                   Padding(padding: const EdgeInsets.only(top: 2), child: Text(_authLabel(server), style: const TextStyle(fontSize: 12, height: 4 / 3, color: muted))),
+                  if (server['oauth_supported'] == true)
+                    Align(alignment: Alignment.centerLeft, child: TextButton(
+                      onPressed: server['auth_status'] == 'signing_in' ? null : () {
+                        final action = server['auth_status'] == 'oauth' ? onSignOut : onSignIn;
+                        action?.call(server['name'] as String);
+                      },
+                      child: Text(server['auth_status'] == 'signing_in' ? 'Signing in…' : server['auth_status'] == 'oauth' ? 'Sign out' : 'Sign in'),
+                    )),
                   if (verbose) ...[
                     _detail('${_stateLabel(server)} · ${server['tool_count']} ${server['tool_count'] == 1 ? 'tool' : 'tools'}'),
                     if (server['error'] case final String error) _detail(error),
@@ -48,7 +58,7 @@ class McpStatusMenu extends StatelessWidget {
                     ] else _detail('Tool and resource inventory unavailable'),
                   ],
                 ])),
-          )),
+          ),
       ],
     ]);
   }
@@ -74,6 +84,8 @@ String _resourceLabels(Object? values, String uri) => (values as List? ?? []).is
 String _authLabel(Json server) => switch (server['auth_status']) {
   'not_authenticated' => 'Not authenticated',
   'configured_headers' => 'Configured HTTP headers',
+  'oauth' => 'Signed in',
+  'signing_in' => 'Waiting for browser sign-in',
   _ => 'Auth unsupported',
 };
 

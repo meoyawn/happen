@@ -383,13 +383,15 @@ class _Agent {
       };
       final additions = interface.definitions.where((tool) =>
         (interface.discovery == null || toolKey(tool) != toolKey(interface.discovery!)) &&
-        !initialTools.any((initial) => toolKey(initial) == toolKey(tool))).toList();
+        !initialTools.any((initial) => toolKey(initial) == toolKey(tool) &&
+          contextFingerprint(initial.toJson()) == contextFingerprint(tool.toJson()))).toList();
       if (additions.isNotEmpty) {
         final item = ConversationItem(kind: 'tools', tools: additions,
           native: {'harness': {'context': 'provider_additions'}});
         providerContext.add(item);
         final known = loaded();
-        final missing = additions.where((tool) => !known.containsKey(toolKey(tool))).toList();
+        final missing = additions.where((tool) => !known.containsKey(toolKey(tool)) ||
+          contextFingerprint(known[toolKey(tool)]!.toJson()) != contextFingerprint(tool.toJson())).toList();
         if (missing.isNotEmpty) {
           final update = ConversationItem(kind: 'tools', tools: missing, native: item.native);
           event(await _append('tools.updated', {'item': update.toJson()}));

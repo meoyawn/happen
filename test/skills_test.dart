@@ -15,7 +15,7 @@ void main() {
   late CancellationToken cancellation;
   setUp(() async {
     root = await Directory.systemTemp.createTemp('filesystem-skills-');
-    skills = FilesystemSkills(root.path + '/data', homeDirectory: root.path + '/home');
+    skills = FilesystemSkills(homeDirectory: root.path + '/home');
     cancellation = CancellationToken();
   });
   tearDown(() async {
@@ -29,16 +29,21 @@ void main() {
     return file;
   }
 
-  test('Codex local roots, canonical deduplication, hidden entries and nearest repository', () async {
+  test('only .agents skills roots, canonical deduplication, hidden entries and nearest repository', () async {
     final cwd = root.path + '/repo/sub';
     await Directory(cwd).create(recursive: true);
     await File(root.path + '/repo/.git').writeAsString('gitdir: elsewhere');
     final repo = await skill('repo/.agents/skills/a', 'same-name');
     await skill('repo/sub/.agents/skills/b', 'same-name');
-    await skill('repo/.codex/skills/compat', 'project-config');
     await skill('home/.agents/skills/global', 'home');
-    await skill('home/.codex/skills/legacy', 'legacy');
-    await skill('data/skills/happen', 'happen');
+    final excluded = [
+      await skill('repo/.codex/skills/compat', 'project-config'),
+      await skill('repo/sub/.codex/skills/compat', 'nested-config'),
+      await skill('home/.codex/skills/legacy', 'legacy'),
+      await skill('repo/.claude/skills/compat', 'project-claude'),
+      await skill('home/.claude/skills/compat', 'global-claude'),
+      await skill('data/skills/happen', 'happen'),
+    ];
     await skill('.agents/skills/outside', 'outside-repository');
     await skill('repo/sub/deeper/.agents/skills/unvisited', 'descendant');
     await skill('repo/.agents/skills/.hidden', 'hidden');
@@ -46,11 +51,12 @@ void main() {
     await Link(repo.parent.path + '/cycle').create(root.path + '/repo/.agents/skills');
     final catalog = await skills.catalog(cwd, cancellation);
     final entries = (catalog['skills'] as List).cast<Json>();
-    expect(entries.map((s) => s['name']), containsAll(['same-name', 'project-config', 'home', 'legacy', 'happen']));
-    expect(entries.where((s) => s['name'] == 'same-name'), hasLength(2), reason: 'Distinct files with the same name remain available');
-    expect(entries.map((s) => s['name']), isNot(anyOf(contains('outside-repository'), contains('descendant'), contains('hidden'))));
+    expect(entries.map((s) => s['name']), unorderedEquals(['same-name', 'same-name', 'home']));
     expect(entries.map((s) => s['path']).toSet(), hasLength(entries.length));
     expect(jsonEncode(catalog), isNot(contains('BODY_ONLY')));
+    for (final file in excluded) {
+      await expectLater(skills.read(cwd, await file.resolveSymbolicLinks(), cancellation), throwsStateError);
+    }
     final single = await skills.catalog(root.path + '/repo/sub/deeper', cancellation);
     expect((single['skills'] as List).any((s) => s['name'] == 'descendant'), isTrue);
     final nonRepo = await Directory(root.path + '/elsewhere').create();
@@ -88,7 +94,7 @@ void main() {
   });
 
   test('resource loading is complete, sorted, bounded, and resolves duplicate names by path', () async {
-    final file = await skill('data/skills/a', 'duplicate', body: 'first\n' + 'line\n' * 1000 + 'last');
+    final file = await skill('.agents/skills/a', 'duplicate', body: 'first\n' + 'line\n' * 1000 + 'last');
     await skill('home/.agents/skills/b', 'duplicate');
     for (var i = 0; i < 15; i++) {
       await File(file.parent.path + '/resource-' + i.toString().padLeft(2, '0')).writeAsString('reference');
@@ -134,6 +140,23 @@ void main() {
     final fallback = skillContext(current);
     expect(fallback.text!.runes.length, lessThanOrEqualTo(8000));
     expect(skillContext(current, maxTokens: 1).text, isNull);
+  });
+
+  test('changing implicit invocation policy updates an already-initialized catalog', () {
+    final current = catalog(2);
+    final entry = (current['skills'] as List)[1] as Json;
+    entry['implicit'] = false;
+    final initial = skillContext(current, maxTokens: 1000);
+    expect(initial.text, contains('skill-000'));
+    expect(initial.text, isNot(contains('skill-001')));
+    entry['implicit'] = true;
+    final enabled = skillContext(current, previous: initial.snapshot, maxTokens: 1000);
+    expect(enabled.text, contains('skill-001'));
+    expect(enabled.text, isNot(contains('skill-000')));
+    entry['implicit'] = false;
+    final disabled = skillContext(current, previous: enabled.snapshot, maxTokens: 1000);
+    expect(disabled.text, contains('Removed skill file:'));
+    expect(disabled.text, contains('skill-1/SKILL.md'));
   });
 
   test('updates share a cumulative budget across serialization and reset only on compaction', () {

@@ -7,6 +7,7 @@ import 'package:server/server.dart';
 
 import 'composer_text_controller.dart';
 import 'mcp_menu.dart';
+import 'mcp_auth.dart';
 
 typedef _Mention = ({int start, int end, String query});
 typedef _Command = ({int start, int end, String text});
@@ -214,7 +215,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     });
     if (_scroll.hasClients) _scroll.jumpTo(0);
     _mcpEvents = widget.client.events.stream.listen((event) {
-      if (event['type'] == 'mcp.config.reloaded' || event['type'] == 'mcp.config.error') unawaited(_loadMcp());
+      if (event['type'] == 'mcp.config.reloaded' || event['type'] == 'mcp.config.error' || event['type'] == 'mcp.auth.changed') unawaited(_loadMcp());
     }, onDone: () {
       _mcpRequest?.cancel();
       if (mounted && _mcpAnchor != null) setState(() { _mcpLoading = false; _mcpFailed = true; });
@@ -421,7 +422,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                 if (_suggestions.isEmpty) const Padding(padding: EdgeInsets.all(8), child: Text('Usage: /mcp [verbose]')),
               ] else if (_mcpAnchor != null)
                 McpStatusMenu(inventory: _inventory, verbose: _verbose, loading: _mcpLoading, failed: _mcpFailed,
-                  query: _mcpFilter, onRetry: () => unawaited(_loadMcp()))
+                  query: _mcpFilter, onRetry: () => unawaited(_loadMcp()),
+                  onSignIn: (server) => unawaited(showMcpAuthentication(context, widget.client, server)),
+                  onSignOut: (server) => unawaited(showMcpAuthentication(context, widget.client, server, signOut: true)))
               else ...[
               for (var index = 0; index < _paths.length; index++)
                 Semantics(

@@ -189,6 +189,37 @@ void main() {
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+  testWidgets('Option arrows work after focusing the sidebar and without a composer', (tester) async {
+    final project = session.project!, first = session.task!;
+    final second = DesktopTask('second', 'Second task')..loaded = true;
+    project.tasks.add(second);
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'Keep this draft');
+    await tester.tap(find.descendant(of: find.byKey(const ValueKey('sidebar')), matching: find.text(first.title)), kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    final sidebar = tester.getRect(find.byKey(const ValueKey('sidebar')));
+    await tester.tapAt(Offset(sidebar.center.dx, sidebar.top + 500), kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus, isFalse);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await tester.pumpAndSettle();
+    expect(session.task, same(second));
+    expect(session.drafts[first.id], 'Keep this draft');
+    project.available = false;
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altRight);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altRight);
+    await tester.pumpAndSettle();
+    expect(session.task, same(first));
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('Option arrows handle new drafts and an empty sidebar', (tester) async {
     final project = session.project!, first = session.task!;
     final last = DesktopTask('last', 'Last task')..loaded = true;
@@ -571,6 +602,32 @@ void main() {
     await tester.pump();
     expect(client.sent.single['prompt'], 'First line\n');
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('a pending paste cannot enter another task after switching drafts', (tester) async {
+    final first = session.task!, project = session.project!;
+    final second = DesktopTask('second', 'Second task')..loaded = true;
+    project.tasks.add(second);
+    final clipboard = Completer<Object?>();
+    const channel = MethodChannel('happen/clipboard');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) => clipboard.future);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'Same draft');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    await tester.runAsync(() => session.select(project, second));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Same draft');
+    clipboard.complete({'text': 'Late paste', 'images': [], 'files': []});
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Same draft');
+    expect(session.drafts[first.id], 'Same draft');
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('image paste retains the draft after rejection and sends with file attachments on retry', (tester) async {

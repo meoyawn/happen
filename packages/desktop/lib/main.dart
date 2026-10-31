@@ -8,6 +8,7 @@ import 'package:server/server.dart';
 import 'app.dart';
 import 'database.dart';
 import 'lifecycle.dart';
+import 'local_task_sleep.dart';
 import 'session.dart';
 
 void main() {
@@ -28,6 +29,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   IsolateOwner? _database;
   AgentClient? _client;
   DesktopSession? _session;
+  LocalTaskSleepInhibitor? _sleep;
   String? _error;
   late final Future<void> _opening;
   Future<void>? _closing;
@@ -38,6 +40,20 @@ class _HappenDesktopState extends State<HappenDesktop> {
     // Hot reload never re-enters initState: the server, socket, database owner,
     // selections, and composer state live for this application instance.
     _opening = _open();
+  }
+
+  void _watchLocalTasks() {
+    if (_lifetime.isCancelled || _server == null) return;
+    _sleep ??= LocalTaskSleepInhibitor(_server!, onError: (error) {
+      _session?.showError(error);
+      FlutterError.reportError(FlutterErrorDetails(exception: error, library: 'local task sleep'));
+    });
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _watchLocalTasks();
   }
 
   Future<void> _refreshProjects() async {
@@ -61,6 +77,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
               : '$home/.local/share/agent-server');
       _server = await AgentServer.startEmbedded(directory: directory);
       _lifetime.throwIfCancelled();
+      _watchLocalTasks();
       _database = await openDesktopDatabase(directory);
       _lifetime.throwIfCancelled();
       _client = await AgentClient.connect(
@@ -97,7 +114,11 @@ class _HappenDesktopState extends State<HappenDesktop> {
         }
       }
     } finally {
-      await _server?.close();
+      try {
+        await _server?.close();
+      } finally {
+        await _sleep?.close();
+      }
     }
   }
 

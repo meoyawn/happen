@@ -37,6 +37,7 @@ class _DesktopViewState extends State<DesktopView> {
   @override
   void initState() {
     super.initState();
+    _bindNavigation();
     _desktop.setMethodCallHandler((call) async {
       if (call.method == 'showSettings') await _settings();
     });
@@ -44,6 +45,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   @override
   void dispose() {
+    FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
     _desktop.setMethodCallHandler(null);
     super.dispose();
   }
@@ -284,6 +286,35 @@ class _DesktopViewState extends State<DesktopView> {
     if (confirmed == true && mounted) await session.removeProject(project);
   }
 
+  void _bindNavigation() {
+    FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
+    FocusManager.instance.addEarlyKeyEventHandler(_navigateKey);
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _bindNavigation();
+  }
+
+  KeyEventResult _navigateKey(KeyEvent event) {
+    // Sidebar clicks can leave focus outside the workspace's shortcut ancestry.
+    // Handle navigation before the focus tree, only while this route is current.
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true ||
+        event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final keyboard = HardwareKeyboard.instance;
+    if (!keyboard.isAltPressed || keyboard.isMetaPressed ||
+        keyboard.isControlPressed || keyboard.isShiftPressed) return KeyEventResult.ignored;
+    final offset = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowUp => -1,
+      LogicalKeyboardKey.arrowDown => 1,
+      _ => 0,
+    };
+    if (offset == 0) return KeyEventResult.ignored;
+    _selectAdjacentTask(offset);
+    return KeyEventResult.handled;
+  }
+
   void _selectAdjacentTask(int offset) {
     final tasks = [
       for (final project in session.projects)
@@ -299,16 +330,13 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: session,
-    builder: (context, _) => CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true): () => _selectAdjacentTask(-1),
-        const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true): () => _selectAdjacentTask(1),
-      },
-      child: Scaffold(
-        body: LayoutBuilder(builder: _workspace),
-      ),
+  Widget build(BuildContext context) => FocusScope(
+    autofocus: true,
+    child: Scaffold(
+      body: LayoutBuilder(builder: (context, constraints) => ListenableBuilder(
+        listenable: session,
+        builder: (context, _) => _workspace(context, constraints),
+      )),
     ),
   );
 

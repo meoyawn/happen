@@ -54,7 +54,7 @@ SkillContextUpdate skillContext(Json catalog, {
   final candidates = visible.where((skill) {
     final path = skill['path'] as String;
     return initial || before[path] == null ||
-      before[path]['shown'] == true && before[path]['fingerprint'] != entries[path]['fingerprint'];
+      before[path]['fingerprint'] != entries[path]['fingerprint'];
   }).toList();
   final removed = before.keys.where((path) =>
     before[path]['shown'] == true && (entries[path] == null ||

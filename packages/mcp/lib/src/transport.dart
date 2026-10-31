@@ -22,10 +22,12 @@ class McpFailure implements Exception {
 
 /// One shared transport generation. Requests have independent cancellation.
 class McpConnection {
-  McpConnection(this.config, this.http, this.onNotification);
+  McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge});
   final Json config;
   final HttpClient http;
   final void Function(Json) onNotification;
+  final Future<String?> Function(CancellationToken)? authorization;
+  final void Function(int status, List<String> headers, {required bool sentToken})? onAuthChallenge;
   final lifetime = CancellationToken();
   final _pending = <Object, _Pending>{};
   Process? _process;
@@ -307,6 +309,8 @@ class McpConnection {
       () => outgoing?.abort(token.exception),
     );
     try {
+      final access = await authorization?.call(token);
+      token.throwIfCancelled();
       outgoing = await http
           .postUrl(Uri.parse(requiredString(config, 'url')))
           .then((value) {
@@ -328,6 +332,7 @@ class McpConnection {
         }
         outgoing.headers.set(entry.key, value);
       }
+      if (access != null) outgoing.headers.set('Authorization', 'Bearer $access');
       outgoing.headers.set('MCP-Protocol-Version', version);
       if (_session != null && !modern) {
         outgoing.headers.set('Mcp-Session-Id', _session!);
@@ -349,6 +354,9 @@ class McpConnection {
       }
       outgoing.write(jsonEncode(body));
       final response = await outgoing.close().asCancellable(token);
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        onAuthChallenge?.call(response.statusCode, response.headers['www-authenticate'] ?? [], sentToken: access != null);
+      }
       if (!modern && body['method'] == 'initialize') {
         _session = response.headers.value('Mcp-Session-Id');
       }

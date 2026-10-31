@@ -6,15 +6,14 @@ import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'package:yaml/yaml.dart';
 
-/// Local host skills, following Codex 67f0994's roots, parser and bounded walk.
+/// Local host skills from user and repository .agents/skills directories.
+/// Uses Codex 67f0994's parser and bounded walk.
 /// Catalogs contain metadata only. Bodies are read afresh when explicitly loaded.
 class FilesystemSkills {
-  FilesystemSkills(this.globalDirectory, {String? homeDirectory, String? codexDirectory})
-    : homeDirectory = homeDirectory ?? Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'],
-      codexDirectory = codexDirectory ?? (homeDirectory == null ? Platform.environment['CODEX_HOME'] : null);
+  FilesystemSkills({String? homeDirectory})
+    : homeDirectory = homeDirectory ?? Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
 
-  final String globalDirectory;
-  final String? homeDirectory, codexDirectory;
+  final String? homeDirectory;
 
   Future<Json> catalog(String cwd, CancellationToken cancellation) async {
     final chain = <String>[];
@@ -30,14 +29,9 @@ class FilesystemSkills {
       cursor = parent;
     }
     final roots = <({String path, String scope})>[
-      for (final directory in repository ? chain.reversed : [chain.first]) ...[
+      for (final directory in repository ? chain.reversed : [chain.first])
         (path: p.join(directory, '.agents', 'skills'), scope: 'repo'),
-        (path: p.join(directory, '.codex', 'skills'), scope: 'repo'),
-      ],
-      (path: p.join(globalDirectory, 'skills'), scope: 'user'),
       if (homeDirectory != null) (path: p.join(homeDirectory!, '.agents', 'skills'), scope: 'user'),
-      if (codexDirectory != null || homeDirectory != null)
-        (path: p.join(codexDirectory ?? p.join(homeDirectory!, '.codex'), 'skills'), scope: 'user'),
     ];
     final skills = <Json>[], errors = <Json>[];
     final seenRoots = <String>{}, seenFiles = <String>{};
@@ -134,7 +128,12 @@ class FilesystemSkills {
   Future<Json> read(String cwd, String id, CancellationToken cancellation) async {
     final current = await catalog(cwd, cancellation);
     final skills = (current['skills'] as List).map(jsonObject).toList();
-    final exact = skills.where((skill) => skill['path'] == id).toList();
+    var pathId = id;
+    if (p.isAbsolute(id)) {
+      try { pathId = await File(id).resolveSymbolicLinks(); }
+      on FileSystemException { /* Missing IDs use the same unavailable error. */ }
+    }
+    final exact = skills.where((skill) => skill['path'] == pathId).toList();
     final matches = exact.isNotEmpty ? exact : skills.where((skill) => skill['name'] == id).toList();
     if (matches.length != 1) {
       throw StateError(matches.isEmpty ? 'Unable to load skill $id'
@@ -151,13 +150,17 @@ class FilesystemSkills {
       try {
         final folder = Directory(queue[index]);
         if (!visited.add(await folder.resolveSymbolicLinks())) continue;
-        await for (final entry in folder.list(followLinks: false)) {
-          cancellation.throwIfCancelled();
-          if (_resourceIgnored.contains(p.basename(entry.path))) continue;
-          if (entry is Directory) queue.add(entry.path);
-          if (entry is File && p.basename(entry.path) != 'SKILL.md') files.add(entry.path);
-          if (files.length >= 20000) break;
-        }
+        final stream = StreamIterator(folder.list(followLinks: false));
+        try {
+          while (await stream.moveNext().asCancellable(cancellation,
+            onCancel: () => unawaited(stream.cancel()))) {
+            final entry = stream.current;
+            if (_resourceIgnored.contains(p.basename(entry.path))) continue;
+            if (entry is Directory) queue.add(entry.path);
+            if (entry is File && p.basename(entry.path) != 'SKILL.md') files.add(entry.path);
+            if (files.length >= 20000) break;
+          }
+        } finally { await stream.cancel(); }
       } on FileSystemException { /* A resource can disappear during listing. */ }
       if (files.length >= 20000) break;
     }

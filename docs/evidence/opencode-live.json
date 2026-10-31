@@ -1,0 +1,72 @@
+{
+  "recorded_on": "2026-10-31",
+  "source_base_revision": "3ba3fe0379c1225c3dad53ed64d41d4fbc701df8",
+  "source_state": "working tree with concurrent skill and tool changes",
+  "opencode_source_revision": "e8238bae9b807b72ecfc75afd3a9fe2e6b07b944",
+  "platform": "macOS arm64",
+  "dart_version": "3.13.7",
+  "model": "deepseek-v4.1-flash-free",
+  "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+  "client_transport": "UDS",
+  "inference_transport": "direct HTTPS/SSE",
+  "request_overrides": false,
+  "credentials_owner": "Happen",
+  "credentials_recorded": false,
+  "identity": {
+    "user_agent": "opencode/latest/2.2.5/cli",
+    "client": "cli",
+    "session": "provider-generated task ID, ses_ plus 12 hex and 14 alphanumeric characters"
+  },
+  "checks": [
+    {
+      "reasoning": "off",
+      "terminal": "turn.completed",
+      "assistant": "READY",
+      "tools": []
+    },
+    {
+      "reasoning": "max",
+      "terminal": "turn.completed",
+      "assistant": "READY",
+      "tools": [
+        "write",
+        "read"
+      ],
+      "independently_verified_file": "42\n"
+    },
+    {
+      "reasoning": "max",
+      "continuation": "turn.completed",
+      "assistant": "CONTINUED",
+      "tools": [
+        "edit",
+        "shell",
+        "execute"
+      ],
+      "independently_verified_file": "43\n",
+      "shell_output": "43\n",
+      "execute_output": "42",
+      "tool_errors": 0
+    },
+    {
+      "reasoning": "max",
+      "cold_resume": "turn.completed",
+      "same_task_id": true,
+      "upstream_task_id_format": true,
+      "read_executed": true,
+      "assistant": "RESUMED43"
+    }
+  ],
+  "local_checks": {
+    "command": "dart test test/task_ids_test.dart test/deepseek_auth_test.dart test/deepseek_server_test.dart test/tool_interfaces_test.dart --concurrency=1",
+    "passed": 19,
+    "analysis_errors": 0,
+    "analysis_informational_style_lints": 9,
+    "desktop_hot_reload": "succeeded",
+    "desktop_runtime_errors": 0
+  },
+  "limitations": [
+    "New provider-generated task IDs and their continuation were verified. Existing legacy task IDs are not renamed by this change.",
+    "Only the selected free model was exercised; this is not evidence for other models, paid routes, or platforms."
+  ]
+}

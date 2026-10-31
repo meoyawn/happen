@@ -3850,3 +3850,289 @@ to pass with provider-generated IDs. All 332 root tests and 59 desktop tests
 pass; analysis of the changed provider/server/storage packages and root tests
 reports no issues. Whitespace checks pass. Dart MCP hot reload succeeds with
 no runtime errors. No Dart formatter was run.
+
+## 2026-10-31 — Skills use only .agents/skills
+
+User requirement: search for skills only in `.agents/skills/`, both globally and
+locally. The shared server scanner now selects `~/.agents/skills/` and each
+`.agents/skills/` directory from the nearest Git repository root down to the task
+working directory. Outside a repository, local discovery checks only the working
+directory. Home resolution still uses `HOME`, falling back to `USERPROFILE`.
+
+Remove repository `.codex/skills`, user `.codex/skills`, `$CODEX_HOME/skills`, and
+the application data directory's `skills` root. The scanner no longer accepts
+application-data or Codex directories. Explicit skill loads resolve against the
+same current catalog, so excluded files cannot be loaded by their paths. Keep
+canonical deduplication, symlink handling, hidden-entry filtering, bounded walks,
+parsing, and caller cancellation.
+
+Inspected Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
+`codex-rs/ext/skills/src/host_roots.rs`, in the pinned local checkout. Upstream
+keeps deprecated/configured roots alongside `.agents/skills`; the narrower
+selection here follows the user's explicit requirement. Tradeoff: skills in the
+removed locations need installation under an allowed root before discovery.
+
+Extend the existing filesystem regression with valid skills in allowed and
+excluded global/local directories. Before the fix it returned seven entries
+instead of three, including repository/nested Codex, user Codex, and data-directory
+skills. The fixed scanner returns only the three allowed entries and rejects
+explicit loads of excluded files. Resource-loading coverage now uses a local
+`.agents/skills` directory.
+
+Reproduce on macOS arm64, Dart 3.13.7:
+
+    ulimit -n 4096
+    dart test test/skills_test.dart test/server_test.dart test/deepseek_server_test.dart --concurrency=1 --reporter expanded
+    dart analyze packages/server packages/agent packages/opencode test/skills_test.dart
+    git diff --check
+
+All 19 focused tests pass. The first server run exhausted the shell's open-file
+limit in the existing 100-task fixture; the process-local limit above resolves
+it. Analysis exits successfully with informational style lints. Dart MCP hot
+reload succeeds in Happen with no runtime errors. Whitespace checks pass. Other
+operating systems were not executed, and no Dart formatter was run.
+
+## 2026-10-31 — Live OpenCode Console inference with provider-owned IDs
+
+User requirement: use OpenCode's client identity and provider-owned task IDs for
+the Console route. This supersedes the earlier Happen User-Agent requirement.
+The adapter sends `opencode/latest/2.2.5/cli`, `x-opencode-client: cli`, the selected
+organization in `x-opencode-org-id`, and the task ID in `x-opencode-session`.
+Happen retains ownership of its access and refresh credentials.
+
+The preceding live diagnosis isolated the remaining HTTP 429 to the session
+header: replacing a raw Happen task ID with a newly generated OpenCode session
+ID allowed the same authenticated request to complete. The provider-owned ID
+implementation now supplies that format through normal task creation. No
+additional request translation or session-ID mapping is needed for new tasks.
+The source contract is OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`,
+`packages/schema/src/{session-id,identifier}.ts` and
+`packages/core/src/session/model-request.ts`.
+
+[Sanitized live evidence](evidence/opencode-live.json) now establishes successful
+direct Happen inference on macOS arm64, Dart 3.13.7, against the exact free model.
+An isolated embedded server using Happen's existing login returned READY with
+reasoning off. A max-effort task called write/read and produced `42\n`; its next
+turn called edit/shell/execute, produced `43\n`, and returned 42 from JavaScript.
+Closing and recreating the server then resuming the same task ran read and
+returned RESUMED43. The task retained its provider-generated ID. Temporary
+verification code, task databases, credentials, and artifacts stayed outside the
+repository; the live run had no request proxy or header/body override.
+
+Reproduce the transport and task-ID regressions with:
+
+    dart test test/task_ids_test.dart test/deepseek_auth_test.dart test/deepseek_server_test.dart test/tool_interfaces_test.dart --concurrency=1
+
+All 19 tests pass. Analysis reports no errors and nine informational style lints
+in the concurrent skills implementation. Desktop hot reload succeeds and reports
+no runtime errors. For live reproduction, use `bin/agent.dart exec --provider
+opencode --reasoning off` for the greeting, `--reasoning max --cwd WORKDIR` for
+the file task, and `--resume TASK_ID` for subsequent invocations; each embedded
+CLI invocation recreates the server. See [verification.md](verification.md).
+
+Existing legacy task IDs are not renamed. Starting or forking an OpenCode task
+uses the new generator; the live result does not establish admission for old
+raw Happen IDs. Hosted quotas can still reject otherwise compatible requests,
+and no other model, paid route, or operating system was exercised.
+
+## 2026-10-31 — Bounded filesystem skill context and on-demand bodies
+
+User requirement: implement Codex-style local filesystem skills, share their
+catalog presentation across providers, and use OpenCode's native tool interface.
+The primary constraint is context growth with hundreds of installed skills.
+
+Keep the existing package boundary. The server owns filesystem discovery and
+reading. The agent owns catalog rendering, cumulative context accounting, and
+checkpoint restoration. OpenCode owns its native `skill({id})` declaration and
+model output. OpenAI uses its existing file tools. The generic `ai` package gains
+no skill-specific contract. A package merge or rename is unnecessary for this
+feature.
+
+Discovery uses the .agents-only roots recorded above. Follow user/repository
+symlinks, deduplicate canonical files, retain distinct files with the same name,
+skip hidden entries, and traverse at most six path components, 2,000 directories,
+and 20,000 entries per root. Sort repository skills before user skills, then by
+name/path. Parse YAML frontmatter, require a description, default the name to the
+containing directory, normalize scalar whitespace, and repair malformed unquoted
+prose where Codex does. Invalid files do not hide valid siblings. Optional
+`agents/openai.yaml` policy `allow_implicit_invocation: false` suppresses automatic
+listing while keeping explicit loading available; invalid optional policy fails
+open. Re-enabling a skill produces a bounded catalog update.
+
+Only presentation text enters model context. Retain inventory fingerprints and
+accounting in task metadata/history, outside conversation items. Allocate two
+percent of the task's configured context limit using Codex's approximate token
+cost, ceil(UTF-8 bytes / 4); the standalone renderer falls back to 8,000 Unicode
+characters when no limit is known. Include wrappers, root aliases, descriptions,
+and omission notices in the budget. Prefer compact name/path rows, distribute
+remaining space fairly among descriptions, cap descriptions at 1,024 Unicode
+scalars, and omit rows when necessary. This is a bounded catalog, not relevance
+ranking or a guarantee that every installed skill is advertised.
+
+Refresh metadata at model-step boundaries. Emit only additions, changes, and
+removals within the remaining cumulative budget; an unchanged catalog emits
+nothing. Restart, fork, and import preserve spent budget. A successful compaction
+atomically replaces both the context and its skill accounting with one current
+baseline. Failed compaction does not reset accounting. No separate catalog cache,
+embedding index, or host skills.list/search API is introduced.
+
+Bodies remain complete files on disk and are loaded only when selected. An
+omitted catalog row does not remove its file or prevent loading it by its explicit
+path. OpenCode resolves a full path (including filesystem aliases) or an
+unambiguous name against the current catalog, then returns the upstream skill
+wrapper with the body, base directory, and a sorted sample of ten resource paths.
+The native loader stays outside Code Mode. Existing tasks receive its declaration
+through a persisted provider update; Console serialization accepts those native
+updates while continuing to omit external tool schemas. After compaction, old
+bodies follow the provider's ordinary history retention; they are not all
+re-injected. Read a needed skill again when its instructions leave context.
+
+Pinned evidence, consulted in the local upstream checkouts:
+
+- Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`:
+  `codex-rs/ext/skills/src/host_roots.rs`, `loader/{mod,host_merge}.rs`,
+  `codex-rs/skills/src/{parser,render,catalog_delta,step_state}.rs`, and
+  `codex-rs/utils/string/src/truncate.rs`. Local host skills use a rendered catalog
+  and file reads. The skills.list authority branches are Cloud/Executor; they
+  are not gradual search over the host filesystem catalog. The inspected
+  relevance selector is a shadow experiment and does not filter that catalog.
+- OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`:
+  `packages/core/src/tool/plugin/skill.ts` defines the native id input and
+  `codemode: false`; `packages/core/src/skill.ts` defines the model wrapper.
+  [The checked-in output fixture](../test/fixtures/skills/opencode.json) was
+  captured by executing the unchanged pure toModelOutput function extracted
+  with `git show REV:packages/core/src/skill.ts` under Bun 1.4.4. It records the
+  revision, full source SHA-256, ASCII/Unicode inputs, and independent expected
+  bytes. Temporary capture tooling stayed outside this repository.
+
+Limits and tradeoffs: this is a selected Codex behavior port, not complete Codex
+or OpenCode skill-system parity. No remote/plugin catalogs, upstream configuration
+layer roots, permission UI, relevance search, or dependency installation are
+implemented. File reads reject documents larger than 2 MiB with an explicit
+file-tool fallback message instead of silently truncating a body. Resource walks
+are bounded, omit common generated directories, and do not port every upstream
+ignore pattern. A saturated metadata budget can defer changes until compaction;
+full files remain available to ordinary filesystem tools.
+
+Reproduce on macOS arm64, Dart 3.13.7:
+
+    ulimit -n 4096
+    dart test test/skills_test.dart test/context/skills_test.dart --concurrency=1 --reporter expanded
+    dart test --concurrency=1 --reporter expanded
+    dart analyze packages/agent packages/server packages/storage packages/opencode test/skills_test.dart test/context/skills_test.dart
+    git diff --check
+
+The integration fixture sends real requests through both provider serializers
+with 401 installed skills and a 2,000-token metadata allowance. It checks absent
+unselected bodies, full loading of an omitted skill, unchanged-turn deduplication,
+restart, fork/import before and after compaction, re-reading a compacted body,
+and native loader upgrades for old OpenCode tasks. It caught canonical path
+aliases being rejected and native provider additions being filtered from Console
+requests; both failures are fixed.
+
+Verification result: the full root run passed 342 cases and exposed an undersized
+legacy-compaction fixture in the new integration test. After adding real older
+conversation to that fixture, all 11 focused skill cases pass (343 distinct root
+cases verified across the full run and focused rerun). Package/test analysis
+reports no errors. Dart MCP hot reload succeeds and reports no runtime errors.
+Whitespace checks pass. No Dart formatter was run; other operating systems and
+live paid-provider inference were not exercised for this feature.
+
+## 2026-10-31 — OpenAI eager nested tools remain visible in saved tasks
+
+The task titled "add these mcps:" was opened in
+`/Users/meoyawn/.config/happen` and retained that directory in both its initial
+configuration and current cwd. Its saved `functions.exec` description described
+JavaScript execution but omitted the implemented shell and patch tools and the
+`ALL_TOOLS` discovery instructions. Native and nested tool search receive the
+deferred MCP/client catalog, so searching for a terminal or editor could return
+unrelated MCP tools or no matches. An MCP filesystem server's independent root
+restriction then became the apparent blocker.
+
+Follow the pinned Codex checkout at
+`/Users/meoyawn/Developer/github/codex`, revision
+`67f0994b532b8740f14b5b738af7b7b2a915b1d6`:
+
+- `codex-rs/core/src/tools/spec_plan.rs`,
+  `register_code_mode_executors`: separate eager nested definitions from
+  deferred search metadata.
+- `codex-rs/code-mode-protocol/src/description.rs`,
+  `build_exec_tool_description`: render eager declarations into the code mode
+  description, with ALL_TOOLS and ranked-search guidance.
+- `codex-rs/core/src/tools/handlers/tool_search.rs`: the handler cache filters
+  registry entries with `exposure.is_deferred()` before building its corpus.
+
+OpenAI now renders the implemented shell, patch, history, resource, and search
+declarations into `functions.exec`. The existing declaration renderer supplies
+the callable names and types. Keep web's separate eager definition and defer
+the external schemas as before. Describe only implemented JavaScript helpers
+and shell options; do not claim upstream V8, media, yield/wait, or PTY support.
+Getters resolve the current description after a Flutter hot reload.
+
+Existing tasks compare complete provider definitions, rather than names alone.
+Append a `tools.updated` event when a definition changes, deduplicate against
+the effective loaded version, and restore one current update after compaction.
+The saved initial instructions and top-level tool prefix remain unchanged.
+This uses the existing provider-update path and requires no task-data repair.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    git -C /Users/meoyawn/Developer/github/codex rev-parse HEAD
+    git -C /Users/meoyawn/Developer/github/codex show 67f0994b532b8740f14b5b738af7b7b2a915b1d6:codex-rs/code-mode-protocol/src/description.rs
+    ulimit -n 4096
+    dart test test/context test/tool_interfaces_test.dart test/provider_search_test.dart test/gpt_test.dart test/server_tools_test.dart --concurrency=1 --reporter expanded
+    dart test --concurrency=1 --reporter expanded
+    dart test test/context/discovery_test.dart test/context/skills_test.dart test/skills_test.dart --concurrency=1 --reporter expanded
+    dart analyze packages/openai/lib/src/tool_specs.dart packages/agent/lib/agent.dart test/context/discovery_test.dart
+    git diff --check
+
+The extended discovery regression first failed because the model request lacked
+`declare const tools: { exec_command(`. With the description fixed alone it
+failed again because a saved task received only tool_search, without the
+updated exec declaration. Both failures pass with the complete repair. The
+test also reads and patches a relative file through the real host tools, keeps
+external schemas deferred, and verifies update deduplication and compaction
+while preserving the frozen prefix.
+
+The regression also runs the reported query
+`filesystem read_file write_file exec_command terminal`. Its empty deferred
+result is preserved while the upfront shell and patch declarations remain
+callable. A temporary assertion against HEAD's original tool spec fails with
+`Missing eager declaration: declare const tools: { exec_command(` and passes
+against the repaired description. Additional focused runs pass 234
+provider/owner tests and 18 context/transport tests:
+
+    dart test test/provider_search_test.dart test/provider_instructions_test.dart test/tool_interfaces_test.dart test/context/discovery_test.dart --concurrency=1 --reporter expanded
+    dart test test/context test/tool_interfaces_test.dart test/gpt_test.dart --concurrency=1 --reporter expanded
+
+All 206 focused tests passed. The full sweep passed 341 tests and encountered
+two skills assertions while that feature was being edited concurrently. Both
+passed in an isolated snapshot with this fix removed; the final 12 discovery
+and skills tests also passed with the fix present. This is not a claim that a
+single final full-suite invocation ran against an otherwise frozen checkout.
+Changed-file analysis and whitespace checks passed. Whole-workspace analysis
+reported informational diagnostics outside these edited files.
+
+Official Dart MCP hot reload succeeded with no runtime errors. A read through
+the running app's OpenAI HostTools, using the affected task's cwd and the
+relative path `config.yaml`, exited zero and reported 220 bytes. The live
+provider description contained both shell and patch declarations. File contents
+and credentials were not printed. No Dart formatter was run.
+
+Temporary live hosts also verified `gpt-6.1-sol` at low effort over HTTP and
+WebSocket. With an empty MCP configuration, the prompt asked for patch-based
+file creation/editing and shell reads without supplying the callable tool
+names. Both transports executed apply_patch, exec_command, apply_patch,
+exec_command and independently produced `after\n`. HTTP completed in 9.4 seconds;
+WebSocket completed in 8.3 seconds on a fresh repeat. An earlier WebSocket run
+completed the file operations but failed during final inference; the cause was
+not established, so this is functional tool evidence rather than a claim of
+transport reliability. All hosts, task data, and scripts stayed outside the
+repository and were removed; credentials remained private references.
+
+Tradeoff: the small eager tool description is larger, while the complete
+external catalog remains deferred. Saved tasks receive the corrected description
+on their next turn. Host execution and request-level regressions establish
+availability and cwd behavior; they do not establish model-choice quality for
+every prompt. Complete upstream description bytes and runtime parity remain
+separate gaps in [`packages/openai/GAPS.md`](../packages/openai/GAPS.md).
