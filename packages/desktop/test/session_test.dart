@@ -224,6 +224,9 @@ void main() {
       expect(await desktop.send('hello'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Hello');
       expect(desktop.task!.running, isTrue);
+      final configuration = desktop.task!.events.values.where((event) => event['type'] == 'task.created').toList();
+      expect(configuration, hasLength(1), reason: 'A fresh task needs its context limit before history replay');
+      expect(configuration.single['data']['provider_settings']['context_limit'], 272000);
       final streamed = conversation(desktop.task!);
       expect(streamed.last.text, 'Hello');
       final cell = streamed.singleWhere((entry) => entry.tool != null).tool!;

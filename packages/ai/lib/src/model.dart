@@ -34,8 +34,10 @@ class ConversationItem {
     ToolCall call,
     String output, {
     bool isError = false,
+    List<ToolDefinition> tools = const [],
   }) => ConversationItem(
     role: 'tool',
+    tools: tools,
     content: [
       {
         'type': 'tool_result',
@@ -145,7 +147,7 @@ class ToolCall {
   final Json native;
   factory ToolCall.fromJson(Json json) {
     final format = json['format'] as String? ?? 'text';
-    if (!{'text', 'json'}.contains(format) || json['input'] is! String) {
+    if (!{'text', 'json', 'search'}.contains(format) || json['input'] is! String) {
       throw const FormatException('Invalid tool input');
     }
     return ToolCall(
@@ -308,6 +310,11 @@ class CompactionResult {
 abstract interface class ModelProvider {
   String get id;
   Json resolveSettings(Json selected, {String? model});
+  Future<String> webSearch(
+    ModelRequest request,
+    Json commands, {
+    required CancellationToken cancellation,
+  });
   Future<ModelReply> respond(
     ModelRequest request, {
     required CancellationToken cancellation,

@@ -6,6 +6,7 @@ import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'catalog.dart';
+import 'web_search.dart';
 import '../opencode.dart';
 
 typedef DeepSeekCredentials = Future<String> Function();
@@ -17,6 +18,8 @@ class DeepSeekProvider implements ModelProvider {
     required this.http,
     required DeepSeekCredentials this.credentials,
     Uri? endpoint,
+    this.searchAuth,
+    this.openCodeSearchEndpoint,
     this.transport = 'messages',
   }) : _console = null,
        endpoint = _endpoint(endpoint, transport) {
@@ -33,6 +36,8 @@ class DeepSeekProvider implements ModelProvider {
     required this.http,
     required OpenCodeAuthManager auth,
     Uri? endpoint,
+    this.searchAuth,
+    this.openCodeSearchEndpoint,
   }) : credentials = null,
        _console = auth,
        transport = 'chat',
@@ -45,10 +50,22 @@ class DeepSeekProvider implements ModelProvider {
   final DeepSeekCredentials? credentials;
   final OpenCodeAuthManager? _console;
   final Uri endpoint;
+  final OpenCodeAuthManager? searchAuth;
+  final Uri? openCodeSearchEndpoint;
   final String transport;
 
   @override
   String get id => 'deepseek';
+
+  @override
+  Future<String> webSearch(
+    ModelRequest request,
+    Json commands, {
+    required CancellationToken cancellation,
+  }) => openCodeWebSearch(http, searchAuth ?? _console, commands,
+    cancellation: cancellation,
+    endpoint: openCodeSearchEndpoint,
+  );
 
   String get defaultModel =>
       _console == null ? supportedDeepSeekModel : openCodeDeepSeekModel;
@@ -225,7 +242,7 @@ class DeepSeekProvider implements ModelProvider {
 
     for (final item in request.input) {
       if (item.kind == 'configuration') continue;
-      if (item.kind == 'tools') {
+      if (item.tools.isNotEmpty) {
         updates.addAll(
           item.tools.map(
             (tool) => {
@@ -234,8 +251,8 @@ class DeepSeekProvider implements ModelProvider {
             },
           ),
         );
-        continue;
       }
+      if (item.kind == 'tools') continue;
       if (item.kind != 'message') {
         throw const ModelFailure(
           'invalid_request',
@@ -522,7 +539,7 @@ class DeepSeekProvider implements ModelProvider {
       if (transport == 'messages') {
         request.headers.set('x-api-key', key);
         request.headers.set('anthropic-version', '2023-06-01');
-        if (modelRequest.input.any((item) => item.kind == 'tools')) {
+        if (modelRequest.input.any((item) => item.tools.isNotEmpty)) {
           request.headers.set(
             'anthropic-beta',
             'mid-conversation-tool-changes-2026-07-01',
@@ -1024,7 +1041,7 @@ class _Catalog {
     for (final tool in initial) {
       _add(tool);
     }
-    for (final item in input.where((item) => item.kind == 'tools')) {
+    for (final item in input) {
       for (final tool in item.tools) {
         if (!definitions.containsKey(key(tool))) deferred.add(key(tool));
         _add(tool);
@@ -1038,7 +1055,7 @@ class _Catalog {
   String wire(ToolDefinition tool) =>
       tool.namespace == null ? tool.name : '${tool.namespace}__${tool.name}';
   void _add(ToolDefinition tool) {
-    if (!{'json', 'text'}.contains(tool.format) ||
+    if (!{'json', 'text', 'search'}.contains(tool.format) ||
         !RegExp(r'^[a-zA-Z0-9_-]{1,64}$').hasMatch(wire(tool))) {
       throw ArgumentError('Unsupported DeepSeek tool definition');
     }

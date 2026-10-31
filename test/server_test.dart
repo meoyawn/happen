@@ -173,6 +173,26 @@ void main() {
       return completion.timeout(const Duration(seconds: 15));
     }
 
+    test('live task notifications include the frozen context limit and task identity', () async {
+      final events = <Json>[];
+      final subscription = client.events.stream.listen(events.add);
+      addTearDown(subscription.cancel);
+      final completed = await turn('task.start', {
+        'cwd': work.path, 'prompt': 'calculate',
+        'settings': {'context_limit': 100000},
+      });
+      expect(completed['type'], 'turn.completed', reason: completed.toString());
+      final id = completed['task_id'];
+      final created = events.singleWhere((event) => event['type'] == 'task.created');
+      expect(created['task_id'], id, reason: 'The desktop routes configuration by task identity');
+      expect(created['data']['provider_settings']['context_limit'], 100000);
+      expect(events.every((event) => event['task_id'] == id), isTrue);
+      expect(events.where((event) => event['type'] == 'model.completed'), isNotEmpty);
+      final history = await client.request('history.page', {'task_id': id}) as List;
+      expect(created['seq'], history.first['seq']);
+      expect(created['data'], history.first['data']);
+    });
+
     test('turns stay active after 24, 48 and 72 hours and still stop explicitly', () async {
       await client.close();
       await server.close();

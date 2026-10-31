@@ -71,6 +71,10 @@ void main() {
           }),
         );
       } else {
+        final messages = (body['messages'] as List).map(jsonObject).toList();
+        final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');
+        final discover = messages[lastUser]['content'] == 'discover';
+        final results = messages.skip(lastUser + 1).where((message) => message['role'] == 'tool').length;
         final hasResult = (body['messages'] as List).any(
           (m) => m['role'] == 'tool',
         );
@@ -78,7 +82,16 @@ void main() {
           'text',
           'event-stream',
         );
-        final delta = hasResult
+        final delta = discover && results < 2 ? {
+          'tool_calls': [{
+            'index': 0, 'id': 'discovery-$results', 'type': 'function',
+            'function': {
+              'name': results == 0 ? 'tool_search' : 'mcp__archive__probe',
+              'arguments': jsonEncode(results == 0
+                ? {'query': 'mcp__archive__probe', 'limit': 1} : {'action': 'inspect'}),
+            },
+          }],
+        } : hasResult
             ? {'content': 'Written'}
             : {
                 'tool_calls': [
@@ -98,7 +111,7 @@ void main() {
         request.response.write(
           'data: ${jsonEncode({
             'choices': [
-              {'delta': delta, 'finish_reason': hasResult ? 'stop' : 'tool_calls'},
+              {'delta': delta, 'finish_reason': delta.containsKey('tool_calls') ? 'tool_calls' : 'stop'},
             ],
           })}\n\ndata: [DONE]\n\n',
         );
@@ -129,6 +142,43 @@ void main() {
     expect(first['type'], 'turn.completed', reason: first.toString());
     expect(await File('${root.path}/verified.txt').readAsString(), '42\n');
     expect(requests.length, 2);
+    final previous = requests.last;
+    final continued = await turn('task.send', {
+      'task_id': first['task_id'], 'prompt': 'Check the result.',
+    });
+    expect(continued['type'], 'turn.completed', reason: continued.toString());
+    expect(requests.length, 3);
+    final messages = requests.last['messages'] as List;
+    expect(messages.take((previous['messages'] as List).length).toList(), previous['messages']);
+    expect(messages.length, (previous['messages'] as List).length + 2);
+    expect(messages.where((message) => message['role'] == 'system'), hasLength(1));
+    expect(messages.where((message) => message['role'] == 'tool'), hasLength(1));
+    expect(messages.where((message) => message['tool_calls'] != null), hasLength(1));
+    expect(requests.last['tools'], requests.first['tools']);
+    await File('${root.path}/config.yaml').writeAsString(jsonEncode({
+      'mcp_servers': {'archive': {
+        'command': Platform.resolvedExecutable,
+        'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
+        'env': {'MCP_EXTRA_TOOLS': '120'},
+        'legacy_fallback': false,
+      }},
+    }));
+    final beforeDiscovery = requests.length;
+    final discovered = await turn('task.send', {'task_id': first['task_id'], 'prompt': 'discover'});
+    expect(discovered['type'], 'turn.completed', reason: discovered.toString());
+    expect(requests.length, beforeDiscovery + 3);
+    expect(jsonEncode(requests[beforeDiscovery]), isNot(contains('unused_schema_')));
+    expect((requests[beforeDiscovery]['tools'] as List).where((tool) =>
+      (tool['function']['name'] as String).startsWith('mcp__'),
+    ), isEmpty);
+    final loaded = (requests.last['tools'] as List).where((tool) =>
+      (tool['function']['name'] as String).startsWith('mcp__'),
+    ).toList();
+    expect(loaded, hasLength(1));
+    expect(loaded.single['function']['name'], 'mcp__archive__probe');
+    final probe = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool');
+    expect(jsonDecode(jsonDecode(probe['content'] as String)['output']['content'][0]['text'])['pid'], isPositive);
+    final beforeDenial = requests.length;
     denied = true;
     final failure = turn('task.send', {
       'task_id': first['task_id'],
@@ -143,7 +193,7 @@ void main() {
     final failed = await failure;
     expect(failed['type'], 'turn.failed');
     expect(failed['data']['error'], contains('free_usage_limit'));
-    expect(requests.length, 3);
+    expect(requests.length, beforeDenial + 1);
     final history = await client.request('history.page', {
       'task_id': first['task_id'],
     });

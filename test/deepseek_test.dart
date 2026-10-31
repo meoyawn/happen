@@ -175,7 +175,13 @@ void main() {
     ]);
   });
 
-  test('Messages routes an added client tool and replays its correlated error result', () async {
+  for (final discovery in [false, true]) {
+  test('Messages routes a client tool from ${discovery ? 'search' : 'an update'} and replays its correlated error result', () async {
+    const search = ToolDefinition(
+      name: 'tool_search', description: 'Find tools', format: 'search',
+      parameters: {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']},
+    );
+    final initialTools = [_exec, if (discovery) search];
     const added = ToolDefinition(
       name: 'browser_title',
       namespace: 'client',
@@ -188,7 +194,7 @@ void main() {
         'required': ['tab_id'],
       },
     );
-    final input = [
+    var input = [
       ConversationItem.text('user', 'First'),
       ConversationItem.text('assistant', 'Ready'),
       ConversationItem(kind: 'tools', tools: const [added]),
@@ -198,6 +204,26 @@ void main() {
       ),
       ConversationItem.text('user', 'Next'),
     ];
+    if (discovery) {
+      harness.handler = (http, _) => _send(http.response, [
+        _start,
+        {'type': 'content_block_start', 'index': 0, 'content_block': {
+          'type': 'tool_use', 'id': 'search-call', 'name': 'tool_search',
+          'input': {'query': 'browser'},
+        }},
+        {'type': 'content_block_stop', 'index': 0},
+        {'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}},
+        {'type': 'message_stop'},
+      ]);
+      final first = ConversationItem.text('user', 'Find the browser tool');
+      final searched = await harness.provider.respond(request([first], tools: initialTools), cancellation: CancellationToken());
+      expect(searched.calls.single.format, 'search');
+      expect((harness.bodies.single['tools'] as List).map((tool) => tool['name']), ['functions__exec', 'tool_search']);
+      input = [
+        first, ...searched.output,
+        ConversationItem.toolResult(searched.calls.single, '{"tools":["client__browser_title"]}', tools: [added]),
+      ].map((item) => ConversationItem.fromJson(jsonObject(jsonDecode(jsonEncode(item.toJson()))))).toList();
+    }
     harness.handler = (http, _) => _send(http.response, [
       _start,
       {
@@ -223,7 +249,7 @@ void main() {
       {'type': 'message_stop'},
     ]);
     final reply = await harness.provider.respond(
-      request(input),
+      request(input, tools: initialTools),
       cancellation: CancellationToken(),
     );
     final restored = ModelReply.fromJson(
@@ -234,7 +260,7 @@ void main() {
     expect(call.name, 'browser_title');
     expect(call.format, 'json');
     expect(jsonDecode(call.input), {'tab_id': 7});
-    final body = harness.bodies.single;
+    final body = harness.bodies.last;
     final messages = (body['messages'] as List).map(jsonObject).toList();
     expect(messages.map((message) => message['role']), [
       'user',
@@ -248,7 +274,7 @@ void main() {
     });
     expect((body['tools'] as List).last['defer_loading'], true);
     expect(
-      harness.headers.single['anthropic-beta'],
+      harness.headers.last['anthropic-beta'],
       'mid-conversation-tool-changes-2026-07-01',
     );
     harness.handler = (http, _) =>
@@ -262,7 +288,7 @@ void main() {
           '{"error":"tab closed"}',
           isError: true,
         ),
-      ]),
+      ], tools: initialTools),
       cancellation: CancellationToken(),
     );
     final replay = (harness.bodies.last['messages'] as List)
@@ -283,6 +309,7 @@ void main() {
       ],
     });
   });
+  }
 
   test('chat transport preserves structured reasoning and tool arguments on replay', () async {
     final provider = harness.chatProvider;

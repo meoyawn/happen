@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-10-31T03:06:14Z",
+  "environment": {"os": "macOS", "architecture": "arm64", "dart": "3.13.7", "flutter": "3.47.8"},
+  "source": {
+    "repository": "https://github.com/openai/codex",
+    "revision": "2681f8cba2831ef72bca2c0672b2e49d5f690745",
+    "snapshot": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__web_search__literature_search_web_run_schema.snap",
+    "baseline": "commands_schema(false), without literature_search_query",
+    "sorted_compact_json_sha256": "de3be87e7abfe9b67ba757f27804d4206b51c2a8de9e9799fa7db9ef4abe3539"
+  },
+  "live": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "low",
+    "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+    "old_schema_http_status": 400,
+    "old_schema_with_strict_false_http_status": 400,
+    "error_type": "invalid_request_error",
+    "error_parameter": "tools",
+    "error_message": "Invalid Value: 'tools'. Function 'web.run' is reserved for use by this model and must match the configured schema.",
+    "baseline_schema_http_status": 200,
+    "research_turns": [
+      {"transport": "http", "completed": true, "search_calls": 2, "answer_characters": 618, "has_source_links": true},
+      {"transport": "websocket", "completed": true, "search_calls": 2, "answer_characters": 531, "has_source_links": true}
+    ]
+  },
+  "verification": {
+    "repository_tests_passed": 84,
+    "desktop_tests_passed": 45,
+    "analysis": "passed",
+    "whitespace": "passed",
+    "hot_reload": "succeeded",
+    "runtime_errors": 0
+  },
+  "saved_tasks": {
+    "inspected": 15,
+    "updated_configurations": 15,
+    "updated_initial_declarations": 1,
+    "replaced_active_contexts": 14,
+    "outdated_declarations_after_repair": 0,
+    "original_history_retained": true
+  }
+}

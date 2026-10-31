@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-10-31T03:22:49.985172Z",
+  "environment": "macOS arm64, Dart 3.13.7",
+  "command": "dart run tool/verify_mcp_tools.dart",
+  "model": "gpt-6.1-sol",
+  "reasoning": "low",
+  "results": [
+    {
+      "transport": "http",
+      "elapsed_ms": 19391,
+      "checks": {
+        "dart_mcp_ready": true,
+        "dart_tools_discoverable": true,
+        "search_executed": true,
+        "only_selected_schema_loaded": true,
+        "direct_call_executed": true,
+        "answer_matches_process": true,
+        "code_search_executed": true,
+        "code_discovery_did_not_load_native_tools": true,
+        "code_answer_matches_process": true
+      },
+      "direct": {
+        "model_requests": 3,
+        "input_tokens": 23173,
+        "cached_input_tokens": 22400,
+        "output_tokens": 57
+      },
+      "code_mode": {
+        "model_requests": 3,
+        "input_tokens": 23119,
+        "cached_input_tokens": 15104,
+        "output_tokens": 80
+      }
+    },
+    {
+      "transport": "websocket",
+      "elapsed_ms": 21629,
+      "checks": {
+        "dart_mcp_ready": true,
+        "dart_tools_discoverable": true,
+        "search_executed": true,
+        "only_selected_schema_loaded": true,
+        "direct_call_executed": true,
+        "answer_matches_process": true,
+        "code_search_executed": true,
+        "code_discovery_did_not_load_native_tools": true,
+        "code_answer_matches_process": true
+      },
+      "direct": {
+        "model_requests": 3,
+        "input_tokens": 23176,
+        "cached_input_tokens": 22400,
+        "output_tokens": 57
+      },
+      "code_mode": {
+        "model_requests": 3,
+        "input_tokens": 23132,
+        "cached_input_tokens": 15104,
+        "output_tokens": 85
+      }
+    }
+  ],
+  "limits": "Single functional runs; usage is summed across requests. This is not a controlled latency, cache-efficiency, or model-quality benchmark. DeepSeek validation used local fixtures."
+}

@@ -11,6 +11,22 @@ class GptProvider implements ModelProvider {
   @override
   String get id => 'gpt';
 
+  @override
+  Future<String> webSearch(
+    ModelRequest request,
+    Json commands, {
+    required CancellationToken cancellation,
+  }) {
+    _validate(request);
+    return client.search(
+      model: request.model,
+      sessionId: request.taskId,
+      commands: webSearchCommands(commands),
+      input: _searchInput(request.input),
+      cancellation: cancellation,
+    );
+  }
+
   // Pinned Codex model catalog; ultra requires delegation this runtime lacks.
   static const models = {
     'gpt-6.1-sol',
@@ -197,4 +213,27 @@ class GptProvider implements ModelProvider {
     cachedInputTokens:
         (usage['input_tokens_details']?['cached_tokens'] as num? ?? 0).toInt(),
   );
+}
+
+List<Json> _searchInput(List<ConversationItem> input) {
+  final visible = input.where((item) => item.kind == 'message' &&
+      {'user', 'assistant'}.contains(item.role) && item.text.isNotEmpty &&
+      !item.native.containsKey('harness')).toList();
+  final users = [for (var i = 0; i < visible.length; i++) if (visible[i].role == 'user') i];
+  if (users.isEmpty) return [];
+  final start = users.length > 1 ? users[users.length - 2] : users.last;
+  var assistantBudget = 4000;
+  final messages = <Json>[];
+  for (final item in visible.sublist(start, users.last + 1).reversed) {
+    var text = item.text;
+    if (item.role == 'assistant') {
+      if (assistantBudget == 0) continue;
+      if (text.length > assistantBudget) text = text.substring(text.length - assistantBudget);
+      assistantBudget -= text.length;
+    }
+    messages.add({'type': 'message', 'role': item.role, 'content': [
+      {'type': item.role == 'user' ? 'input_text' : 'output_text', 'text': text},
+    ]});
+  }
+  return messages.reversed.toList();
 }

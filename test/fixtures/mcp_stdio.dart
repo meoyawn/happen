@@ -54,7 +54,9 @@ void main() {
                 'result': {
                   'supportedVersions': ['2026-07-28'],
                   'serverInfo': {'name': 'fixture', 'version': '1'},
-                  'capabilities': {'tools': {}, 'events': {}},
+                  'capabilities': {'tools': {}, 'events': {}, 'resources': {}},
+                  if (Platform.environment['MCP_INSTRUCTIONS'] case final String instructions)
+                    'instructions': instructions,
                 },
               });
             case 'tools/list':
@@ -62,6 +64,15 @@ void main() {
                 'id': id,
                 'result': {
                   'tools': [
+                    for (var i = 0; i < (int.tryParse(Platform.environment['MCP_EXTRA_TOOLS'] ?? '') ?? 0); i++)
+                      {
+                        'name': 'unused_$i',
+                        'description': 'Unrelated archive operation $i',
+                        'inputSchema': {
+                          'type': 'object',
+                          'properties': {'unused_schema_$i': {'type': 'string'}},
+                        },
+                      },
                     {
                       'name': 'probe',
                       'description': Platform.environment['MCP_TOOL_DESCRIPTION'] ?? 'Probe process ownership',
@@ -69,9 +80,32 @@ void main() {
                         'type': 'object',
                         'properties': {
                           'action': {'type': 'string'},
+                          'bytes': {'type': 'integer'},
                         },
                       },
                     },
+                  ],
+                },
+              });
+            case 'resources/list':
+              if (Platform.environment['MCP_RESOURCES_WAIT'] == 'true') {
+                pending.add(id!);
+                return;
+              }
+              send({
+                'id': id,
+                'result': {
+                  'resources': [
+                    {'name': 'readme', 'title': 'Readme', 'uri': 'file:///readme'},
+                  ],
+                },
+              });
+            case 'resources/templates/list':
+              send({
+                'id': id,
+                'result': {
+                  'resourceTemplates': [
+                    {'name': 'document', 'uriTemplate': 'file:///docs/{id}'},
                   ],
                 },
               });
@@ -82,6 +116,31 @@ void main() {
               }
               if (action == 'wait') {
                 pending.add(id!);
+                return;
+              }
+              if (action == 'large' || action == 'large_error') {
+                final bytes = params['arguments']['bytes'] as int;
+                send({
+                  'id': id,
+                  'result': {
+                    'resultType': 'complete',
+                    'content': [
+                      {
+                        'type': 'text',
+                        'text': jsonEncode({
+                          'padding': 'BEGIN${'x' * bytes}END',
+                          'libraries': [
+                            {'uri': 'package:desktop/app.dart', 'id': 'app'},
+                            {'uri': 'dart:core', 'id': 'core'},
+                          ],
+                        }),
+                      },
+                    ],
+                    'structuredContent': {'bytes': bytes},
+                    'isError': action == 'large_error',
+                    '_meta': {'private': 'client-only-metadata'},
+                  },
+                });
                 return;
               }
               send({

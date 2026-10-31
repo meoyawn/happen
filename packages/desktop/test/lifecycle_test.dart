@@ -12,51 +12,54 @@ import 'package:server/server.dart';
 void main() {
   final binding = _LifecycleTestBinding();
   setUp(binding.exits.clear);
-    testWidgets('two distinct quit presses await shutdown', (tester) async {
-      final platform = defaultTargetPlatform;
-      final closed = Completer<void>();
-      var closes = 0;
-      final editor = TextEditingController(text: 'Keep this draft');
-      addTearDown(editor.dispose);
-      await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
-        onQuit: () { closes++; return closed.future; },
-        child: Scaffold(body: TextField(controller: editor, autofocus: true)),
-      )));
-      await tester.pump();
-      final focus = FocusManager.instance.primaryFocus;
-      final modifier = platform == TargetPlatform.macOS ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
-      await tester.sendKeyDownEvent(modifier);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
-      await tester.pump();
-      expect(find.textContaining('again to quit'), findsOneWidget);
-      expect(closes, 0);
-      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyQ);
-      await tester.pump();
-      expect(closes, 0);
-      expect(binding.exits, isEmpty);
-      expect(editor.text, 'Keep this draft');
-      expect(FocusManager.instance.primaryFocus, same(focus));
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
-      await tester.sendKeyUpEvent(modifier);
-      await tester.sendKeyDownEvent(modifier);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
-      await tester.pump();
-      expect(closes, 1);
-      expect(binding.exits, isEmpty);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
-      await tester.sendKeyUpEvent(modifier);
-      closed.complete();
-      await tester.pump();
-      expect(binding.exits, [AppExitType.required]);
-      expect(find.textContaining('again to quit'), findsNothing);
-      await tester.pumpWidget(const SizedBox.shrink());
-    }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
+  testWidgets('two distinct quit presses await shutdown', (tester) async {
+    final platform = defaultTargetPlatform;
+    final closed = Completer<void>();
+    var closes = 0;
+    final editor = TextEditingController(text: 'Keep this draft');
+    addTearDown(editor.dispose);
+    await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      onQuit: () { closes++; return closed.future; },
+      child: Scaffold(body: TextField(controller: editor, autofocus: true)),
+    )));
+    await tester.pump();
+    final focus = FocusManager.instance.primaryFocus;
+    final modifier = platform == TargetPlatform.macOS ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+    await tester.sendKeyDownEvent(modifier);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
+    await tester.pump();
+    expect(find.textContaining('again to quit'), findsOneWidget);
+    expect(closes, 0);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyQ);
+    await tester.pump();
+    expect(closes, 0);
+    expect(binding.exits, isEmpty);
+    expect(editor.text, 'Keep this draft');
+    expect(FocusManager.instance.primaryFocus, same(focus));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
+    await tester.sendKeyUpEvent(modifier);
+    await tester.sendKeyDownEvent(modifier);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
+    await tester.pump();
+    expect(closes, 1);
+    expect(binding.exits, isEmpty);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
+    await tester.sendKeyUpEvent(modifier);
+    closed.complete();
+    await tester.pumpAndSettle();
+    expect(binding.exits, [AppExitType.required]);
+    expect(find.textContaining('again to quit'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
 
   testWidgets('quit confirmation expires and cancels on Escape, other input, click, or blur', (tester) async {
-    var closes = 0;
+    var closes = 0, clicks = 0;
     await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
       onQuit: () async { closes++; },
-      child: const Scaffold(body: TextField(autofocus: true)),
+      child: Scaffold(body: Column(children: [
+        const TextField(autofocus: true),
+        TextButton(onPressed: () { clicks++; }, child: const Text('Keep working')),
+      ])),
     )));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
@@ -68,12 +71,18 @@ void main() {
       expect(find.textContaining('again to quit'), findsOneWidget);
     }
     Future<void> expectDismissed() async {
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.textContaining('again to quit'), findsNothing);
       expect(closes, 0);
     }
     await arm();
-    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(milliseconds: 900));
+    expect(find.textContaining('again to quit'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    final fade = tester.widget<FadeTransition>(find.ancestor(
+      of: find.textContaining('again to quit'), matching: find.byType(FadeTransition)).first);
+    expect(fade.opacity.value, allOf(greaterThan(0), lessThan(1)));
     await expectDismissed();
     await arm();
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -84,6 +93,10 @@ void main() {
     await arm();
     await tester.tapAt(const Offset(10, 10));
     await expectDismissed();
+    await arm();
+    await tester.tap(find.text('Keep working'));
+    await expectDismissed();
+    expect(clicks, 1);
     await arm();
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     await expectDismissed();

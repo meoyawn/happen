@@ -51,6 +51,7 @@ void main() {
             (item) => item['role'] == 'user',
           );
           final prompt = input[lastUser]['content'];
+          final searched = input.skip(lastUser + 1).any((item) => item['type'] == 'tool_search_output');
           final outputs = input
               .skip(lastUser + 1)
               .where(
@@ -68,6 +69,14 @@ void main() {
                     'content': [
                       {'type': 'output_text', 'text': outputs.last['output']},
                     ],
+                  },
+                ]
+              : prompt == 'direct' && !searched
+              ? <Json>[
+                  {
+                    'type': 'tool_search_call', 'execution': 'client',
+                    'arguments': {'query': 'client__browser_title', 'limit': 1},
+                    'call_id': 'call_${++call}',
                   },
                 ]
               : prompt == 'direct'
@@ -190,14 +199,11 @@ void main() {
         expect(answer, contains('first title'));
         expect(answer, contains('second title'));
         expect(answer, isNot(contains('forged')));
-        expect((requests.first['tools'] as List).map((v) => v['name']), [
-          'functions',
-        ]);
-        final declaration = (requests.first['input'] as List).singleWhere(
+        expect((requests.first['tools'] as List).any((tool) => tool['name'] == 'client'), isFalse);
+        final declarations = (requests.first['input'] as List).where(
           (v) => v['type'] == 'additional_tools',
         );
-        expect(declaration['tools'][0]['name'], 'client');
-        expect(declaration['tools'][0]['tools'][0]['name'], 'browser_title');
+        expect(declarations, isEmpty, reason: 'Code-mode calls do not load client schemas');
 
         // A direct model call uses the same bridge; no code-mode-only shortcut.
         final direct = owner.incoming.stream.firstWhere(
@@ -209,10 +215,10 @@ void main() {
         expect(pending['params']['arguments'], {'tab': 3});
         expect(
           (requests.last['input'] as List).any(
-            (v) => v['type'] == 'additional_tools',
+            (v) => v['type'] == 'tool_search_output' && (v['tools'] as List).isNotEmpty,
           ),
           isTrue,
-          reason: 'Client tool declarations must survive loading the next turn from history',
+          reason: 'Direct calls must first select the client tool schema',
         );
         await owner.close();
         final terminal = await disconnected;
@@ -223,8 +229,9 @@ void main() {
         );
         expect(
           jsonEncode(removal),
-          contains('All other client tools are unavailable'),
+          contains('Removed client tools: client.browser_title'),
         );
+        expect(jsonEncode(removal), contains('unavailable'));
 
         // Reattachment starts a new ownership lifetime with the same stable names.
         await observer.request('tools.register', {

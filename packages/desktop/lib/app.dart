@@ -10,9 +10,12 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'conversation.dart';
 import 'composer_dictation.dart';
 import 'composer_attachments.dart';
+import 'composer_text_controller.dart';
+import 'context_usage.dart';
 import 'dictation.dart';
 import 'dictation_controls.dart';
 import 'file_autocomplete.dart';
+import 'model_picker.dart';
 import 'session.dart';
 
 class DesktopView extends StatefulWidget {
@@ -546,10 +549,12 @@ class _Composer extends StatefulWidget {
 
 class _ComposerState extends State<_Composer> {
   late final String _draftKey = widget.session.draftKey;
-  late final _text = TextEditingController(
+  late TextEditingController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
+    files: widget.session.fileDrafts[_draftKey] ?? const [],
   );
   final _focus = FocusNode();
+  final _autocomplete = GlobalKey<ComposerAutocompleteState>();
   final _attachmentLifetime = CancellationToken();
   bool _receivingAttachments = false, _draggingAttachments = false;
   List<ComposerAttachment> get _attachments => widget.session.attachmentDrafts[_draftKey] ?? const [];
@@ -645,6 +650,25 @@ class _ComposerState extends State<_Composer> {
     } else {
       widget.session.drafts[_draftKey] = _text.text;
     }
+    final files = _text is ComposerTextController ? (_text as ComposerTextController).files : const <ComposerFileReference>[];
+    if (files.isEmpty) {
+      widget.session.fileDrafts.remove(_draftKey);
+    } else {
+      widget.session.fileDrafts[_draftKey] = files;
+    }
+  }
+
+  Future<void> _copy({bool cut = false}) async {
+    final before = _text.value, selection = _text.selection;
+    if (!selection.isValid || selection.isCollapsed) return;
+    final text = _text is ComposerTextController
+        ? (_text as ComposerTextController).serializeRange(selection.start, selection.end)
+        : selection.textInside(before.text);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (cut && mounted && _text.value == before && !widget.session.submitting) {
+      final editor = _focus.context;
+      if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(before, '', selection, SelectionChangedCause.keyboard));
+    }
   }
 
   void _addAttachments(List<ComposerAttachment> additions) {
@@ -717,19 +741,25 @@ class _ComposerState extends State<_Composer> {
 
   Future<void> _sendPrompt() async {
     if (_receivingAttachments) return;
-    final prompt = _text.text;
+    if (_autocomplete.currentState?.consumeCommand() == true) return;
+    final draft = _text.text;
+    final prompt = _text is ComposerTextController ? (_text as ComposerTextController).serializePrompt() : draft;
     final attachments = List<ComposerAttachment>.of(_attachments);
     try {
       final accepted = await widget.session.send(prompt, attachments: attachments);
       if (accepted) {
-        if (widget.session.drafts[_draftKey] == prompt) widget.session.drafts.remove(_draftKey);
+        _autocomplete.currentState?.dismiss();
+        if (widget.session.drafts[_draftKey] == draft) {
+          widget.session.drafts.remove(_draftKey);
+          widget.session.fileDrafts.remove(_draftKey);
+        }
         final ids = attachments.map((attachment) => attachment.id).toSet();
         widget.session.attachmentDrafts[_draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
         if (widget.session.attachmentDrafts[_draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(_draftKey);
         for (final attachment in attachments) {
           if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
         }
-        if (mounted && _text.text == prompt) _text.clear();
+        if (mounted && _text.text == draft) _text.clear();
         if (mounted) setState(() {});
       }
     } on CancelledException {
@@ -775,6 +805,14 @@ class _ComposerState extends State<_Composer> {
   @override
   Widget build(BuildContext context) {
     _bindVoice();
+    // Retained composers still own a plain controller after hot reload. Wait
+    // for any active dictation session before migrating its unchanged value.
+    if (_text is! ComposerTextController && _voiceText == null) {
+      final previous = _text;
+      previous.removeListener(_saveDraft);
+      _text = ComposerTextController.fromValue(previous.value)..addListener(_saveDraft);
+      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+    }
     final session = widget.session;
     final running = session.task?.running == true;
     final available =
@@ -817,14 +855,17 @@ class _ComposerState extends State<_Composer> {
                 if (available) unawaited(_submit());
               },
             },
-            child: Actions(actions: {PasteTextIntent: ComposerPasteAction(
+            child: Actions(actions: {CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
+              onInvoke: (intent) { unawaited(_copy(cut: intent.collapseSelection)); return null; }),
+              PasteTextIntent: ComposerPasteAction(
               enabled: session.connected && !session.submitting && !_receivingAttachments && !_dictating, paste: _paste)},
-            child: FileAutocomplete(
+            child: ComposerAutocomplete(
+              key: _autocomplete,
               controller: _text,
               focusNode: _focus,
               client: session.client,
               cwd: session.project!.path,
-              enabled: session.connected && !_dictating,
+              enabled: session.connected && !session.submitting && !_dictating && _text is ComposerTextController,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -869,83 +910,14 @@ class _ComposerState extends State<_Composer> {
                         controller: _text,
                         focusNode: _focus,
                         enabled: session.connected,
-                        contextMenuBuilder: (_, state) => composerContextMenu(state, _paste),
+                        contextMenuBuilder: (_, state) => composerContextMenu(state, _paste, copy: _copy),
                         autofocus: true,
                         minLines: 2,
                         maxLines: 8,
                         decoration: const InputDecoration(
-                          hintText: 'Describe a task or use @ to mention a file or folder…',
+                          hintText: 'Describe a task, @ a file or folder, or / for commands…',
+                          hintStyle: TextStyle(color: Colors.black38),
                           border: InputBorder.none,
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: DropdownButtonHideUnderline(
-                          child: Wrap(
-                            spacing: 16,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              Tooltip(
-                                message: session.task == null
-                                    ? 'Model'
-                                    : 'Model is fixed for this task',
-                                child: DropdownButton<String>(
-                                  value:
-                                      session.models.any(
-                                        (m) => m['id'] == session.modelId,
-                                      )
-                                      ? session.modelId
-                                      : null,
-                                  isDense: true,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black87,
-                                  ),
-                                  onChanged: available && session.task == null
-                                      ? (value) => session.chooseModel(value!)
-                                      : null,
-                                  items: [
-                                    for (final model in session.models)
-                                      DropdownMenuItem(
-                                        value: model['id'] as String,
-                                        child: Text(model['id'] as String),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              Tooltip(
-                                message:
-                                    session.task == null ||
-                                        session.task!.reasoningUpdates
-                                    ? 'Reasoning level for your next message'
-                                    : 'Reasoning is fixed for this task',
-                                child: DropdownButton<String>(
-                                  value: session.reasoning,
-                                  isDense: true,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black87,
-                                  ),
-                                  onChanged:
-                                      available &&
-                                          (session.task == null ||
-                                              session.task!.reasoningUpdates)
-                                      ? (value) => session.chooseReasoning(value!)
-                                      : null,
-                                  items: [
-                                    for (final level
-                                        in session.modelInfo?['reasoning_levels']
-                                                as List? ??
-                                            [])
-                                      DropdownMenuItem(
-                                        value: level as String,
-                                        child: Text('$level reasoning'),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
                         ),
                       ),
                       Row(
@@ -954,24 +926,11 @@ class _ComposerState extends State<_Composer> {
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          Expanded(
-                            child: Text(
-                              _ownsVoice && _voice.phase == DictationPhase.recording && _voice.liveTranscriptionHint != null
-                                  ? _voice.liveTranscriptionHint! : session.authenticated
-                                  ? 'Enter to send · Shift+Enter for a new line'
-                                  : 'Sign in to the selected provider to send',
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.black38,
-                              ),
-                            ),
-                          ),
-                          if (running)
-                            IconButton(
-                              tooltip: 'Stop task and clear pending messages',
-                              onPressed: available ? _stop : null,
-                              icon: const Icon(Icons.stop_rounded, size: 20),
-                            ),
+                          Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            if (session.task case final task?) ContextUsageIndicator(events: task.events.values),
+                            Flexible(child: ComposerModelPicker(session: session, enabled: available)),
+                          ])),
+                          const SizedBox(width: 8),
                           if (defaultTargetPlatform == TargetPlatform.macOS) ...[
                             DictationButton(
                               phase: _voicePhase,
@@ -985,25 +944,36 @@ class _ComposerState extends State<_Composer> {
                             ),
                             const SizedBox(width: 8),
                           ],
-                          IconButton.filled(
-                            tooltip: running
+                          ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
+                            final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty;
+                            final stopWorking = running && !hasContent && !_dictating;
+                            final dictationCanSend = _dictating && _voice.phase == DictationPhase.recording && !_finishingVoice;
+                            return IconButton.filled(
+                            tooltip: stopWorking ? 'Stop task and clear pending messages' : running
                                 ? (session.deliveryMode == 'steer'
                                       ? 'Steer task'
                                       : 'Queue message')
                                 : 'Send message',
-                            onPressed: available && session.authenticated &&
-                                (!_dictating || _voice.phase == DictationPhase.recording && !_finishingVoice)
+                            onPressed: stopWorking ? (session.connected ? _stop : null) : available && session.authenticated &&
+                                (dictationCanSend || !_dictating && hasContent)
                                 ? _submit
                                 : null,
                             icon: Icon(
-                              running && session.deliveryMode == 'queue'
+                              stopWorking ? Icons.stop_rounded : running && session.deliveryMode == 'queue'
                                   ? Icons.playlist_add
                                   : Icons.arrow_upward_rounded,
                               size: 20,
                             ),
-                          ),
+                          );
+                          }),
                         ],
                       ),
+                      if (_ownsVoice && _voice.phase == DictationPhase.recording && _voice.liveTranscriptionHint != null)
+                        Align(alignment: Alignment.centerLeft, child: Text(_voice.liveTranscriptionHint!,
+                          style: const TextStyle(fontSize: 11, color: Colors.black38))),
+                      if (!session.authenticated)
+                        const Align(alignment: Alignment.centerLeft, child: Text('Sign in to the selected provider to send',
+                          style: TextStyle(fontSize: 11, color: Colors.black38))),
                     ],
                   ),
                 ),

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:desktop/app.dart';
+import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/conversation.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
@@ -26,6 +28,7 @@ void main() {
       ]},
       {'id': 'opencode', 'name': 'OpenCode', 'auth': 'opencode', 'status': 'signed_out', 'models': []},
     ];
+    client.providers = session.providers;
     final task = DesktopTask('task', 'Example')
       ..loaded = true
       ..provider = 'gpt'
@@ -49,6 +52,312 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('context circle uses the latest response and retains cache hits across replay and live events', (tester) async {
+    final task = session.task!;
+    task.events.addAll({
+      3: {'seq': 3, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 39000, 'output_tokens': 1000, 'cached_input_tokens': 30000}}},
+      1: {'seq': 1, 'type': 'task.created', 'data': {'provider_settings': {'context_limit': 100000}}},
+      2: {'seq': 2, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 10000, 'output_tokens': 1000, 'cached_input_tokens': 0}}},
+    });
+    await open(tester);
+    final circle = find.bySemanticsLabel(RegExp(r'^Context usage:'));
+    final contextTooltip = find.byWidgetPredicate((widget) => widget is Tooltip && widget.richMessage?.toPlainText().startsWith('Context window:') == true);
+    expect(find.bySemanticsLabel('Context usage: 40%'), findsOneWidget);
+    expect(tester.getSize(contextTooltip), const Size.square(28));
+    final modelPicker = find.byTooltip('Model and reasoning effort');
+    expect(tester.getCenter(circle).dx, greaterThan(tester.getCenter(find.byType(TextField)).dx));
+    expect(tester.getCenter(circle).dx, lessThan(tester.getRect(modelPicker).left));
+    expect(tester.getRect(modelPicker).right, lessThan(tester.getCenter(find.byTooltip('Dictate')).dx));
+    expect(find.text('Enter to send · Shift+Enter for a new line'), findsNothing);
+    expect(find.text('40%'), findsNothing, reason: 'Usage text belongs in the tooltip');
+    await tester.enterText(find.byType(TextField), 'Keep my draft');
+    final editor = tester.widget<TextField>(find.byType(TextField));
+    final selection = editor.controller!.selection;
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    Future<void> hover() async {
+      final target = tester.getRect(contextTooltip);
+      await mouse.moveTo(Offset(target.left + 2, target.center.dy));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+    }
+    Future<void> leave() async {
+      await mouse.moveTo(Offset.zero);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+    }
+    await hover();
+    expect(find.textContaining('40% used (60% left)', findRichText: true), findsOneWidget);
+    expect(find.textContaining('40k / 100k tokens used', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Cache hits\nConversation: 61.2% (30000 / 49000 input tokens)\nLatest response: 76.9% (30000 / 39000 input tokens)', findRichText: true), findsOneWidget);
+    await leave();
+    client.events.add({'task_id': 'task', ...task.events[3]!});
+    client.events.add({'task_id': 'task', 'seq': 4, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 59000, 'output_tokens': 1000, 'cached_input_tokens': 50000}}});
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: 60%'), findsOneWidget);
+    await hover();
+    expect(find.textContaining('60% full', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Conversation: 74.1% (80000 / 108000 input tokens)', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Latest response: 84.7% (50000 / 59000 input tokens)', findRichText: true), findsOneWidget);
+    await leave();
+    client.events.add({'task_id': 'task', 'seq': 5, 'type': 'context.compacted', 'data': {'usage': {'input_tokens': 10000, 'output_tokens': 1000, 'cached_input_tokens': 0}}});
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: unavailable'), findsOneWidget, reason: 'Compaction request usage describes the old context');
+    await hover();
+    expect(find.textContaining('Usage unavailable', findRichText: true), findsOneWidget);
+    expect(find.textContaining('60k / 100k tokens used', findRichText: true), findsNothing);
+    expect(find.textContaining('Conversation: 67.8% (80000 / 118000 input tokens)', findRichText: true), findsOneWidget);
+    await leave();
+    client.events.add({'task_id': 'task', 'seq': 6, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 2000, 'output_tokens': 1000, 'cached_input_tokens': 0}}});
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: 3%'), findsOneWidget);
+    await hover();
+    expect(find.textContaining('Conversation: 66.7% (80000 / 120000 input tokens)', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Latest response: 0.0% (0 / 2000 input tokens)', findRichText: true), findsOneWidget);
+    await leave();
+    for (final (seq, input, output, percent) in [(7, 100000, 5000, 100), (8, 0, 0, 0)]) {
+      client.events.add({'task_id': 'task', 'seq': seq, 'type': 'model.completed', 'data': {'usage': {'input_tokens': input, 'output_tokens': output}}});
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Context usage: $percent%'), findsOneWidget);
+    }
+    expect(editor.controller!.text, 'Keep my draft');
+    expect(editor.controller!.selection, selection);
+    expect(editor.focusNode!.hasFocus, true);
+    expect(client.sent, isEmpty);
+    final fresh = DesktopTask('fresh', 'Fresh')..loaded = true..provider = 'gpt'..model = 'gpt-6.1-sol'..reasoning = 'low';
+    session.project!.tasks.add(fresh);
+    await tester.runAsync(() => session.select(session.project!, fresh));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: unavailable'), findsOneWidget, reason: 'Missing measurements must leave a discoverable control');
+    await hover();
+    expect(find.textContaining('Usage unavailable', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Cache hits', findRichText: true), findsNothing, reason: 'Missing data must not become a zero cache hit rate');
+    await leave();
+    await tester.runAsync(() => session.select(session.project!, task));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: 0%'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep my draft');
+    client.events.add({'task_id': 'task', 'seq': 9, 'type': 'model.completed', 'data': {'usage': {'input_tokens': -1, 'output_tokens': 1000}}});
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Context usage: unavailable'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await mouse.removePointer();
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('one composer action switches between sending, stopping and follow-ups', (tester) async {
+    await open(tester);
+    Future<void> frame() async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    IconButton action(String tooltip) => tester.widget<IconButton>(find.byWidgetPredicate((widget) => widget is IconButton && widget.tooltip == tooltip));
+    expect(action('Send message').onPressed, isNull);
+    await tester.enterText(find.byType(TextField), 'First message');
+    await tester.pumpAndSettle();
+    expect(action('Send message').onPressed, isNotNull);
+    await tester.tap(find.byTooltip('Send message'));
+    await frame();
+    expect(client.sent.single['prompt'], 'First message');
+    expect(find.byTooltip('Send message'), findsNothing);
+    expect(find.byTooltip('Steer task'), findsNothing);
+    expect(action('Stop task and clear pending messages').onPressed, isNotNull);
+    for (final (mode, label) in [('steer', 'Steer task'), ('queue', 'Queue message')]) {
+      session.deliveryMode = mode;
+      await tester.enterText(find.byType(TextField), 'Follow up $mode');
+      await frame();
+      expect(find.byTooltip('Stop task and clear pending messages'), findsNothing);
+      expect(action(label).onPressed, isNotNull);
+      await tester.tap(find.byTooltip(label));
+      await frame();
+      expect(client.sent.last['prompt'], 'Follow up $mode');
+      expect(client.sent.last['delivery'], mode);
+      expect(find.byTooltip(label), findsNothing);
+      expect(action('Stop task and clear pending messages').onPressed, isNotNull);
+    }
+    await tester.enterText(find.byType(TextField), '   ');
+    await frame();
+    session.providers.first['status'] = 'signed_out';
+    client.events.add({'task_id': 'task', 'type': 'text.delta', 'delta': ''});
+    await frame();
+    expect(action('Stop task and clear pending messages').onPressed, isNotNull, reason: 'Stopping must remain possible after sign-out');
+    await tester.tap(find.byTooltip('Stop task and clear pending messages'));
+    await tester.pump();
+    expect(client.cancelled, ['task']);
+    client.events.add({'task_id': 'task', 'type': 'turn.cancelled', 'data': {}});
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Stop task and clear pending messages'), findsNothing);
+    expect(action('Send message').onPressed, isNull);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, '   ');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('MCP submenu preserves the draft and file chips and never submits the command', (tester) async {
+    await open(tester);
+    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    await tester.enterText(find.byType(TextField), 'Keep /mcp tail ');
+    controller.insertFile(TextRange.collapsed(controller.text.length), '/project/lib/main.dart');
+    controller.selection = const TextSelection.collapsed(offset: 9);
+    final before = tester.getRect(find.byType(TextField));
+    await tester.pumpAndSettle();
+    expect(client.inventories, isEmpty, reason: 'The command suggestion alone does no discovery');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(client.inventories.single.verbose, false);
+    expect(find.text('Loading MCP status…'), findsOneWidget);
+    expect(controller.text, 'Keep  tail ${ComposerTextController.marker} ');
+    expect(controller.files.single.path, '/project/lib/main.dart');
+    expect(session.drafts['task'], controller.text);
+    expect(client.sent, isEmpty);
+    client.inventories.single.reply.complete({'servers': [
+      {'name': 'dart', 'enabled': true, 'state': 'ready', 'tool_count': 12, 'auth_status': 'unsupported'},
+      {'name': 'paused', 'enabled': false, 'state': 'disabled', 'tool_count': 0, 'auth_status': 'unsupported'},
+    ]});
+    await tester.pumpAndSettle();
+    expect(find.text('Enabled'), findsOneWidget);
+    expect(find.text('Disabled'), findsOneWidget);
+    expect(find.text('Auth unsupported'), findsNWidgets(2));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    await mouse.moveTo(tester.getCenter(find.text('dart')));
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await mouse.removePointer();
+    await tester.tap(find.text('dart'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus, true);
+    expect(client.sent, isEmpty);
+    expect(tester.getRect(find.byType(TextField)), before);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('dart'), findsNothing);
+    expect(controller.files.single.path, '/project/lib/main.dart');
+    await tester.enterText(find.byType(TextField), '/mcp');
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    client.inventories.last.reply.complete({'servers': [{'name': 'dart', 'enabled': true, 'state': 'ready', 'tool_count': 1, 'auth_status': 'unsupported'}]});
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'dar');
+    await tester.pumpAndSettle();
+    expect(find.text('dart'), findsOneWidget);
+    await tester.tap(find.byTooltip('Send message'));
+    await tester.pump();
+    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': {}});
+    await tester.pumpAndSettle();
+    expect(client.sent.single['prompt'], 'dar');
+    expect(find.text('dart'), findsNothing);
+    expect(controller.text, isEmpty);
+    await tester.enterText(find.byType(TextField), '@ma');
+    await tester.pump(const Duration(milliseconds: 210));
+    expect(client.searches.single.query, 'ma');
+    client.searches.single.reply.complete({'paths': ['lib/main.dart'], 'truncated': false});
+    await tester.pumpAndSettle();
+    expect(find.text('lib/main.dart'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('MCP verbose shows tool and resource details during an unauthenticated running task', (tester) async {
+    session.providers.first['status'] = 'signed_out';
+    await open(tester);
+    client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': {}});
+    Future<void> frame() async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    await tester.enterText(find.byType(TextField), '/mcp verbose');
+    final commandText = tester.widget<TextField>(find.byType(TextField)).controller!;
+    commandText.selection = TextSelection(baseOffset: 0, extentOffset: commandText.text.length);
+    await frame();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await frame();
+    expect(client.inventories.single.verbose, true);
+    client.inventories.single.reply.complete({'servers': [{
+      'name': 'dart', 'enabled': true, 'state': 'ready', 'tool_count': 2, 'auth_status': 'configured_headers',
+      'tools': ['analyze_files', 'hot_reload'],
+      'resources': [{'name': 'docs', 'title': 'Documentation', 'uri': 'docs://index'}],
+      'resource_templates': [], 'resource_templates_error': 'Unable to load resource templates',
+    }]});
+    await frame();
+    expect(find.text('Configured HTTP headers'), findsOneWidget);
+    expect(find.text('Connected · 2 tools'), findsOneWidget);
+    expect(find.text('Tools: analyze_files, hot_reload'), findsOneWidget);
+    expect(find.text('Resources: Documentation (docs://index)'), findsOneWidget);
+    expect(find.text('Resource templates: Unable to load resource templates'), findsOneWidget);
+    expect(client.sent, isEmpty);
+    expect(session.task!.running, true);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frame();
+    await tester.enterText(find.byType(TextField), '/mcp full');
+    await frame();
+    await tester.tap(find.byType(TextField));
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await frame();
+    expect(find.text('Usage: /mcp [verbose]'), findsOneWidget);
+    expect(client.inventories, hasLength(1));
+    expect(client.sent, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('MCP discovery retires late replies, refreshes config and cancels on navigation', (tester) async {
+    await open(tester);
+    Future<void> show() async {
+      await tester.enterText(find.byType(TextField), '/mcp');
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+    }
+    await show();
+    final obsolete = client.inventories.single;
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(obsolete.cancellation.isCancelled, true);
+    await show();
+    obsolete.reply.complete({'servers': [{'name': 'obsolete'}]});
+    client.inventories.last.reply.completeError(StateError('unavailable'));
+    await tester.pumpAndSettle();
+    expect(find.text('obsolete'), findsNothing);
+    expect(find.text('Unable to load MCP status. Retry'), findsOneWidget);
+    await tester.tap(find.text('Unable to load MCP status. Retry'));
+    await tester.pumpAndSettle();
+    client.inventories.last.reply.complete({'servers': []});
+    await tester.pumpAndSettle();
+    expect(find.text('No MCP servers configured'), findsOneWidget);
+    client.events.add({'type': 'mcp.config.reloaded', 'data': {}});
+    await tester.pumpAndSettle();
+    final refresh = client.inventories.last;
+    refresh.reply.complete({'servers': [{'name': 'external', 'enabled': false, 'state': 'disabled', 'tool_count': 0, 'auth_status': 'unsupported'}]});
+    await tester.pumpAndSettle();
+    expect(find.text('external'), findsOneWidget);
+    expect(find.text('Disabled'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '@ma');
+    await tester.pump(const Duration(milliseconds: 210));
+    expect(find.text('external'), findsNothing);
+    client.searches.single.reply.complete({'paths': ['lib/main.dart'], 'truncated': false});
+    await tester.pumpAndSettle();
+    expect(find.text('lib/main.dart'), findsOneWidget);
+    await show();
+    client.inventories.last.reply.complete({'servers': [{'name': 'external', 'enabled': false, 'state': 'disabled', 'tool_count': 0, 'auth_status': 'unsupported'}]});
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'ordinary message with no matching server');
+    await tester.pumpAndSettle();
+    expect(find.text('external'), findsNothing);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'ordinary message with no matching server');
+    await show();
+    final departing = client.inventories.last;
+    await tester.runAsync(() => session.select(session.project!));
+    await tester.pumpAndSettle();
+    expect(departing.cancellation.isCancelled, true);
+    departing.reply.complete({'servers': [{'name': 'departed'}]});
+    await tester.pumpAndSettle();
+    expect(find.text('departed'), findsNothing);
+    expect(client.sent, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('expanded tool details survive switching away from the task and back', (tester) async {
     session.task!.events.addAll({
@@ -191,19 +500,45 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('reasoning can change while GPT is running and stays fixed for other tasks', (tester) async {
+  testWidgets('one model and reasoning menu selects new-task defaults and preserves existing-task restrictions', (tester) async {
     (session.providers.first['models'] as List).first['reasoning_levels'] = ['low', 'high'];
+    (session.providers.first['models'] as List).add({'id': 'gpt-6-astra', 'default_reasoning': 'low', 'reasoning_levels': ['low', 'high']});
     session.task!.reasoningUpdates = true;
+    final existing = session.task!;
+    session.task = null;
+    await session.refreshProviders();
     await open(tester);
+    final menu = find.byTooltip('Model and reasoning effort');
+    Finder item(String label) => find.ancestor(of: find.text(label), matching: find.byType(PopupMenuItem<String>));
+    Future<void> frame() async { await tester.pump(); await tester.pump(const Duration(milliseconds: 300)); }
+    expect(menu, findsOneWidget);
+    expect(find.byType(DropdownButton<String>), findsNothing);
+    await tester.enterText(find.byType(TextField), 'Keep new draft');
+    await tester.tap(menu);
+    await tester.pumpAndSettle();
+    expect(find.text('MODEL'), findsOneWidget);
+    expect(find.text('REASONING EFFORT'), findsOneWidget);
+    await tester.tap(item('gpt-6-astra'));
+    await tester.pumpAndSettle();
+    expect(session.modelId, 'gpt-6-astra');
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep new draft');
+    await tester.tap(menu);
+    await tester.pumpAndSettle();
+    await tester.tap(item('High'));
+    await tester.pumpAndSettle();
+    expect(session.reasoning, 'high');
+    await tester.runAsync(() => session.select(session.project!, existing));
+    await tester.pumpAndSettle();
+    expect(session.modelId, 'gpt-6.1-sol');
     client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': {}});
-    await tester.pump();
-    await tester.tap(find.text('low reasoning'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('high reasoning'), findsOneWidget);
-    await tester.tap(find.text('high reasoning'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    await frame();
+    await tester.tap(menu);
+    await frame();
+    expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, false);
+    expect(find.text('Start a new task to change models.'), findsOneWidget);
+    expect(tester.widget<PopupMenuItem<String>>(item('High')).enabled, true);
+    await tester.tap(item('High'));
+    await frame();
     expect(session.reasoning, 'high');
     await tester.enterText(find.byType(TextField), 'Use more reasoning');
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -214,11 +549,12 @@ void main() {
     session.task!.reasoningUpdates = false;
     client.events.add({'task_id': 'task', 'type': 'model.completed', 'data': {}});
     await tester.pump();
-    final fixed = find.descendant(
-      of: find.byTooltip('Reasoning is fixed for this task'),
-      matching: find.byType(DropdownButton<String>),
-    );
-    expect(tester.widget<DropdownButton<String>>(fixed).onChanged, isNull);
+    await tester.tap(menu);
+    await frame();
+    expect(tester.widget<PopupMenuItem<String>>(item('Light')).enabled, false);
+    expect(find.text('Reasoning effort is fixed for this task.'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frame();
     session.chooseReasoning('low');
     expect(session.reasoning, 'high');
     await tester.pumpWidget(const SizedBox.shrink());
@@ -245,8 +581,12 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(client.sent, isEmpty);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Please @"notes/my file.md" ');
-    expect(session.drafts['checkout'], 'Please @"notes/my file.md" ');
+    final newDraft = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(newDraft.text, 'Please \uFFFC ');
+    expect(newDraft.serializePrompt(), 'Please [my file.md](notes/my file.md) ');
+    expect(find.text('my file.md'), findsOneWidget);
+    expect(session.drafts['checkout'], newDraft.text);
+    expect(session.fileDrafts['checkout']!.single.path, 'notes/my file.md');
 
     await tester.enterText(find.byType(TextField), 'Use @desktop');
     await tester.pump(const Duration(milliseconds: 200));
@@ -260,14 +600,16 @@ void main() {
     ), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Use @packages/desktop/ ');
-    expect(session.drafts['checkout'], 'Use @packages/desktop/ ');
+    expect(newDraft.text, 'Use \uFFFC ');
+    expect(newDraft.serializePrompt(), 'Use [desktop](packages/desktop/) ');
+    expect(find.text('desktop'), findsOneWidget);
+    expect(session.drafts['checkout'], newDraft.text);
     expect(client.sent, isEmpty);
 
     await tester.runAsync(() => session.select(session.project!, existing));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Inspect @mainZZ afterwards');
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller!;
+    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
     controller.selection = const TextSelection.collapsed(offset: 13);
     await tester.pump(const Duration(milliseconds: 200));
     expect(client.searches.last.query, 'main');
@@ -275,14 +617,33 @@ void main() {
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
     await tester.pump();
-    expect(controller.text, 'Inspect @lib/main.dart afterwards');
-    expect(controller.selection.baseOffset, 'Inspect @lib/main.dart '.length);
+    expect(controller.text, 'Inspect \uFFFC afterwards');
+    expect(controller.serializePrompt(), 'Inspect [main.dart](lib/main.dart) afterwards');
+    expect(controller.selection.baseOffset, 'Inspect \uFFFC '.length);
     expect(session.drafts[existing.id], controller.text);
     expect(client.sent, isEmpty);
+    await tester.runAsync(() => session.select(session.project!));
+    await tester.pumpAndSettle();
+    final restoredNew = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(restoredNew.serializePrompt(), 'Use [desktop](packages/desktop/) ');
+    expect(find.text('desktop'), findsOneWidget);
+    await tester.runAsync(() => session.select(session.project!, existing));
+    await tester.pumpAndSettle();
+    final restored = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(restored.serializePrompt(), 'Inspect [main.dart](lib/main.dart) afterwards');
+    client.rejectSend = true;
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(client.sent.single['task_id'], existing.id);
-    expect(client.sent.single['prompt'], 'Inspect @lib/main.dart afterwards');
+    expect(client.sent.single['prompt'], 'Inspect [main.dart](lib/main.dart) afterwards');
+    expect(restored.files.single.path, 'lib/main.dart');
+    expect(session.fileDrafts[existing.id]!.single.path, 'lib/main.dart');
+    client.rejectSend = false;
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(client.sent, hasLength(2));
+    expect(restored.text, isEmpty);
+    expect(session.fileDrafts[existing.id], isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('autocomplete never moves the composer, transcript viewport or reading position', (tester) async {
@@ -335,6 +696,54 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('File search unavailable. Retry'), findsNothing);
     expectStable();
+    expect(client.sent, isEmpty);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('file chips copy and cut as paths and keep identities through undo', (tester) async {
+    String? clipboard;
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') clipboard = (call.arguments as Map)['text'] as String;
+      if (call.method == 'Clipboard.getData') return {'text': clipboard};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'Compare @first');
+    await tester.pump(const Duration(milliseconds: 200));
+    client.searches.last.reply.complete({'paths': ['lib/first.dart'], 'truncated': false});
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump(const Duration(milliseconds: 600));
+    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    final original = controller.serializePrompt();
+    controller.selection = TextSelection(baseOffset: 0, extentOffset: controller.text.length);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(clipboard, original);
+    controller.selection = const TextSelection(baseOffset: 8, extentOffset: 9);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyX);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(clipboard, '[first.dart](lib/first.dart)');
+    expect(controller.files, isEmpty);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(controller.serializePrompt(), original);
+    expect(controller.files.single.path, 'lib/first.dart');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(controller.files, isEmpty);
+    expect(controller.serializePrompt(), 'Compare  ');
     expect(client.sent, isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
@@ -395,7 +804,9 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('notes/my file.md'));
     await tester.pump();
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, '@"notes/my file.md" ');
+    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
+    expect(controller.text, '\uFFFC ');
+    expect(controller.serializePrompt(), '[my file.md](notes/my file.md) ');
     expect(client.sent, isEmpty);
     await tester.enterText(find.byType(TextField), '@pending');
     await tester.pump(const Duration(milliseconds: 200));
@@ -518,7 +929,15 @@ class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   final sent = <Json>[];
   final restored = <String>[];
+  final cancelled = <String>[];
+  List<Json> providers = [];
   final searches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
+  final inventories = <({bool verbose, CancellationToken cancellation, Completer<Json> reply})>[];
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) {
+    final reply = Completer<Json>();
+    inventories.add((verbose: verbose, cancellation: cancellation, reply: reply));
+    return reply.future;
+  }
   bool rejectSend = false;
   @override Future<Json> searchFiles(String cwd, String query, {required CancellationToken cancellation}) {
     final reply = Completer<Json>();
@@ -526,6 +945,11 @@ class _Client implements AgentClient {
     return reply.future;
   }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'providers.list') return {'providers': providers, 'default_provider': 'gpt'};
+    if (method == 'task.cancel') {
+      cancelled.add(params['task_id'] as String);
+      return {};
+    }
     if (method == 'task.unarchive' || method == 'task.archive') {
       if (method == 'task.unarchive') restored.add(params['task_id'] as String);
       return {'task_id': params['task_id'], 'archived': method == 'task.archive'};

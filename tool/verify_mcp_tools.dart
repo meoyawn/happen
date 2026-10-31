@@ -6,7 +6,7 @@ import 'package:gpt/gpt.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
-/// Live append-only tool updates through both GPT transports. Credentials are
+/// Live deferred discovery through both GPT transports. Credentials are
 /// referenced privately; output contains checks and measurements only.
 Future<void> main(List<String> args) async {
   final root = await Directory.systemTemp.createTemp('happen-tools-live-');
@@ -57,7 +57,6 @@ Future<void> main(List<String> args) async {
           'model': report['model'],
           'reasoning': report['reasoning'],
           'settings': {'transport': transport},
-          'max_steps': 6,
           'prompt': 'Reply READY only. Do not use tools.',
         });
         final task = first['task_id'];
@@ -76,7 +75,8 @@ Future<void> main(List<String> args) async {
         }), flush: true);
         final continued = await turn('task.send', {
           'task_id': task,
-          'prompt': 'Call mcp__live_probe.probe directly with {"action":"inspect"}. '
+          'prompt': 'First call tool_search with query mcp__live_probe__probe and limit 1. '
+              'Then call mcp__live_probe.probe directly with {"action":"inspect"}. '
               'Do not use functions.exec or shell commands. Reply with the returned PID only.',
         });
         final history = (await client.request('history.page', {'task_id': task, 'limit': 500}) as List)
@@ -84,10 +84,16 @@ Future<void> main(List<String> args) async {
         final catalog = history.lastWhere((event) => event['type'] == 'mcp.updated')['data']['snapshot']['tools'] as List;
         final statuses = await client.request('mcp.status', {}) as List;
         final pid = statuses.singleWhere((server) => server['name'] == 'live_probe')['pid'];
+        final selected = [
+          for (final event in history)
+            if (event['data']['item'] is Map)
+              ...((event['data']['item']['tools'] as List?) ?? []),
+        ];
         final checks = <String, bool>{
           'dart_mcp_ready': statuses.any((server) => server['name'] == 'dart' && server['state'] == 'ready'),
-          'dart_tools_loaded': catalog.any((tool) => tool['namespace'] == 'mcp__dart'),
-          'declarations_persisted': history.any((event) => event['type'] == 'mcp.updated' && event['data']['item']['kind'] == 'tools'),
+          'dart_tools_discoverable': catalog.any((tool) => tool['namespace'] == 'mcp__dart'),
+          'search_executed': history.any((event) => event['type'] == 'tool.started' && event['data']['name'] == 'tool_search'),
+          'only_selected_schema_loaded': selected.length == 1 && selected.single['namespace'] == 'mcp__live_probe' && selected.single['name'] == 'probe',
           'direct_call_executed': history.any((event) => event['type'] == 'tool.started' && event['data']['namespace'] == 'mcp__live_probe' && event['data']['name'] == 'probe'),
           'answer_matches_process': (continued['data']['text'] as String).contains('$pid'),
         };
@@ -99,6 +105,22 @@ Future<void> main(List<String> args) async {
         if (checks.values.any((passed) => !passed)) {
           throw StateError('Live tool verification failed');
         }
+        final coded = await turn('task.start', {
+          'cwd': data.path, 'model': report['model'], 'reasoning': report['reasoning'],
+          'settings': {'transport': transport},
+          'prompt': 'Use functions.exec to call tools.tool_search({query:"mcp__live_probe__probe",limit:1}), '
+            'inspect the result, then call tools.mcp__live_probe__probe({action:"inspect"}) in code mode. '
+            'Reply with the process PID only.',
+        });
+        final codeHistory = (await client.request('history.page', {'task_id': coded['task_id'], 'limit': 500}) as List).map(jsonObject).toList();
+        checks.addAll({
+          'code_search_executed': codeHistory.any((event) => event['type'] == 'host_tool.started' && event['data']['name'] == 'tool_search'),
+          'code_discovery_did_not_load_native_tools': !codeHistory.any((event) => (event['data']['item']?['tools'] as List? ?? []).isNotEmpty),
+          'code_answer_matches_process': (coded['data']['text'] as String).contains('$pid'),
+        });
+        result['code_telemetry'] = coded['data']['telemetry'];
+        result['elapsed_ms'] = watch.elapsedMilliseconds;
+        if (checks.values.any((passed) => !passed)) throw StateError('Live code discovery verification failed');
       } finally {
         await client.close();
         await server.close();

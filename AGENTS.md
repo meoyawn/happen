@@ -12,3 +12,7 @@
 - Consult the pinned upstream source before changing a compatibility contract.
   Advertise only implemented capabilities.
 - Never print authentication tokens or include them in telemetry or history.
+- Do not save one-off operational code, migration scripts, probes, or data repairs
+  in the repository. Use Dart MCP or temporary tooling outside the repository for
+  ad hoc work, including one-time updates to existing tasks. Keep checked-in code
+  focused on lasting product behavior and reusable verification.

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:protocol/protocol.dart';
 
+import 'composer_text_controller.dart';
+
 /// Harness's live editor session. Audio/request lifetime stays outside
 /// this owner; manual edits consume arrived text instead of being overwritten.
 class ComposerDictationSession {
@@ -70,7 +72,10 @@ class ComposerDictationSession {
     final value = controller.value;
     final selection = value.selection.isValid ? value.selection : TextSelection.collapsed(offset: value.text.length);
     final range = _current ?? _DictatedRange(selection.start, selection.end,
-      value.text.substring(selection.start, selection.end));
+      value.text.substring(selection.start, selection.end),
+      controller is ComposerTextController ? (controller as ComposerTextController).files
+          .where((file) => file.offset >= selection.start && file.offset < selection.end)
+          .map((file) => file.shifted(-selection.start)).toList() : const []);
     final left = range.from == 0 ? '' : value.text.substring(range.from - 1, range.from);
     final right = range.to == value.text.length ? '' : value.text.substring(range.to, range.to + 1);
     final leading = text.isNotEmpty && left.isNotEmpty && !RegExp(r'[\s([{“‘]$', unicode: true).hasMatch(left) &&
@@ -121,6 +126,9 @@ class ComposerDictationSession {
       if (cancel && !_recovering) {
         for (final range in _recoverable.toList()..sort((a, b) => b.from.compareTo(a.from))) {
           replace(TextSelection(baseOffset: range.from, extentOffset: range.to), range.original);
+          if (controller is ComposerTextController && range.files?.isNotEmpty == true) {
+            (controller as ComposerTextController).restoreFiles(range.from, range.files!);
+          }
         }
       }
     } finally {
@@ -184,10 +192,11 @@ class ComposerDictationSession {
 }
 
 class _DictatedRange {
-  _DictatedRange(this.from, this.to, this.original);
+  _DictatedRange(this.from, this.to, this.original, this.files);
   int from;
   int to;
   final String original;
+  final List<ComposerFileReference>? files;
 }
 
 _EditorChange _difference(String before, String after) {

@@ -15,8 +15,11 @@ class McpManager {
   final String? publicUrl;
   final lifetime = CancellationToken();
   final _servers = <String, _Server>{};
+  Json _configured = {};
   final _subscriptions = <String, McpEventSubscription>{};
   Future<void> _reload = Future.value();
+  List<(String, Map<String, Json>, String?)> _catalogSources = [];
+  Json? _catalog;
 
   Future<void> configure(Json config, CancellationToken cancellation) {
     final next = _reload.then((_) => _configure(config, cancellation));
@@ -40,6 +43,7 @@ class McpManager {
         throw ArgumentError('MCP server needs exactly one command or URL');
       }
     }
+    _configured = Map.of(config);
     for (final entry in _servers.entries.toList()) {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
@@ -81,25 +85,98 @@ class McpManager {
       },
   ];
 
-  Future<Json> catalog(CancellationToken cancellation) async {
+  /// Client display data comes from the shared owner, never client-local config.
+  /// Keep credentials, launch arguments, schemas and private metadata out of it.
+  Future<Json> inventory(CancellationToken cancellation, {bool verbose = false, String? server}) async {
+    cancellation.throwIfCancelled();
+    final names = _configured.keys.where((name) => server == null || name == server).toList()..sort();
+    final rows = await Future.wait(names.map((name) async {
+      final config = jsonObject(_configured[name]);
+      final enabled = config['enabled'] != false;
+      final target = _servers[name];
+      final state = !enabled ? 'disabled' : target?.state ?? 'starting';
+      final tools = state == 'ready' ? target!.tools.values.toList() : <Json>[];
+      final headers = jsonObject(config['headers'] ?? {});
+      final headerEnv = jsonObject(config['header_env'] ?? {});
+      final row = <String, dynamic>{
+        'name': name,
+        'enabled': enabled,
+        'state': target?.authenticationRequired == true && enabled ? 'authentication_required' : state,
+        'auth_status': target?.authenticationRequired == true && enabled ? 'not_authenticated'
+            : headers.isNotEmpty || headerEnv.isNotEmpty ? 'configured_headers' : 'unsupported',
+        'tool_count': tools.length,
+        if (target?.error != null && enabled) 'error': target!.error,
+      };
+      if (!verbose) return row;
+      row['tools'] = tools.map((tool) => tool['name'] as String).toList()..sort();
+      row['resources'] = <Json>[];
+      row['resource_templates'] = <Json>[];
+      if (state == 'ready' && target!.connection?.discovery['capabilities']?['resources'] != null) {
+        await Future.wait([
+          ('resources/list', 'resources', 'uri'),
+          ('resources/templates/list', 'resource_templates', 'uriTemplate'),
+        ].map((catalog) async {
+          try {
+            final values = await target.list(catalog.$1,
+              catalog.$2 == 'resources' ? 'resources' : 'resourceTemplates', cancellation);
+            row[catalog.$2] = [for (final value in values) {
+              'name': value['name'],
+              if (value['title'] is String) 'title': value['title'],
+              catalog.$3: value[catalog.$3],
+            }];
+          } on CancelledException {
+            rethrow;
+          } catch (_) {
+            row['${catalog.$2}_error'] = 'Unable to load ${catalog.$2 == 'resources' ? 'resources' : 'resource templates'}';
+          }
+        }));
+      }
+      return row;
+    }));
+    cancellation.throwIfCancelled();
+    final result = <String, dynamic>{'servers': rows};
+    if (utf8.encode(jsonEncode(result)).length > maxFrameBytes) {
+      throw const McpFailure('MCP inventory exceeds the result limit; select a server');
+    }
+    return result;
+  }
+
+  Future<Json> catalog(CancellationToken cancellation, {String? knownRevision}) async {
     cancellation.throwIfCancelled();
     await Future.wait(_servers.values.map((s) => s.initial.future))
         .asCancellable(cancellation);
-    return {
-      'tools': [for (final server in _servers.values) ...server.catalog],
-      'instructions': [
-        for (final server in _servers.values)
-          if (server.state == 'ready' &&
-              server.connection?.discovery['instructions'] is String)
-            {
-              'server': server.name,
-              'text': clippedText(
-                server.connection!.discovery['instructions'] as String,
-                32768,
-              ),
-            },
-      ],
-    };
+    // Tool maps are replaced atomically on discovery, notifications and
+    // disconnect. Compare their identities before rebuilding/copying schemas.
+    final sources = [for (final server in _servers.values) (
+      server.name, server.tools,
+      server.state == 'ready' && server.connection?.discovery['instructions'] is String
+          ? server.connection!.discovery['instructions'] as String : null,
+    )];
+    if (_catalog == null || sources.length != _catalogSources.length ||
+        List.generate(sources.length, (i) => i).any((i) => sources[i] != _catalogSources[i])) {
+      _catalogSources = sources;
+      _catalog = {
+        'revision': newId(),
+        'tools': [for (final server in _servers.values) ...server.catalog],
+        'instructions': [
+          for (final server in _servers.values)
+            if (server.state == 'ready' &&
+                server.connection?.discovery['instructions'] is String)
+              {
+                'server': server.name,
+                'namespace': 'mcp__${_safeName(server.name)}',
+                'text': clippedText(
+                  server.connection!.discovery['instructions'] as String,
+                  32768,
+                ),
+              },
+        ],
+      };
+    }
+    if (knownRevision == _catalog!['revision']) {
+      return {'revision': knownRevision, 'unchanged': true};
+    }
+    return _catalog!;
   }
 
   Future<Json> callTool(
@@ -121,17 +198,8 @@ class McpManager {
           'MCP server requested client input; no interactive capabilities are enabled',
         );
       }
-      if (utf8.encode(jsonEncode(result)).length > maxToolOutputBytes) {
-        return {
-          'isError': true,
-          'content': [
-            {
-              'type': 'text',
-              'text': 'MCP result exceeded the 64 KiB tool-output limit. Request a smaller page or narrower result.',
-            },
-          ],
-        };
-      }
+      // Code Mode must receive the complete result before it filters or prints.
+      // The transport bounds messages; the agent bounds model-facing output.
       return result;
     }
     throw const McpFailure(
@@ -310,6 +378,7 @@ class _Server {
   McpConnection? connection;
   String state = 'starting';
   String? error;
+  bool authenticationRequired = false;
   Map<String, Json> tools = {};
   List<Json> get catalog => [
     for (final entry in tools.entries)
@@ -342,13 +411,15 @@ class _Server {
         await _refresh();
         state = 'ready';
         error = null;
+        authenticationRequired = false;
         if (!initial.isCompleted) initial.complete();
         unawaited(_listen(current));
         await current.closed.future.asCancellable(lifetime);
       } on CancelledException {
         if (lifetime.isCancelled) break;
-      } catch (_) {
-        error = 'MCP connection unavailable';
+      } catch (failure) {
+        authenticationRequired = failure is McpFailure && (failure.status == 401 || failure.status == 403);
+        error = authenticationRequired ? 'MCP server requires authentication' : 'MCP connection unavailable';
       } finally {
         await current.close();
         tools = {};

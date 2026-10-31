@@ -137,10 +137,16 @@ class ComposerPasteAction extends Action<PasteTextIntent> {
   @override void invoke(PasteTextIntent intent) { if (enabled) unawaited(paste(intent.cause)); }
 }
 
-Widget composerContextMenu(EditableTextState state, Future<void> Function(SelectionChangedCause) paste) =>
+Widget composerContextMenu(EditableTextState state, Future<void> Function(SelectionChangedCause) paste,
+    {Future<void> Function({bool cut})? copy}) =>
     AdaptiveTextSelectionToolbar.buttonItems(anchors: state.contextMenuAnchors, buttonItems: [
       for (final item in state.contextMenuButtonItems)
-        if (item.type != ContextMenuButtonType.paste) item,
+        if (copy != null && (item.type == ContextMenuButtonType.copy || item.type == ContextMenuButtonType.cut))
+          ContextMenuButtonItem(type: item.type, onPressed: () {
+            state.hideToolbar();
+            unawaited(copy(cut: item.type == ContextMenuButtonType.cut));
+          })
+        else if (item.type != ContextMenuButtonType.paste) item,
       ContextMenuButtonItem(type: ContextMenuButtonType.paste, onPressed: () {
         state.hideToolbar();
         unawaited(paste(SelectionChangedCause.toolbar));

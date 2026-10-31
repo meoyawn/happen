@@ -30,6 +30,15 @@ int cellOutputTokens(String source) {
   return directive['max_output_tokens'] as int? ?? 10000;
 }
 
+/// Applies the same presentation budget to direct tool output as printed cells.
+String truncateTextOutput(String text, {int maxTokens = 10000}) =>
+    renderCellOutput({
+      'head': [text],
+      'tail': <String>[],
+      'omittedBytes': 0,
+      'omittedItems': 0,
+    }, maxTokens).single;
+
 List<String> renderCellOutput(Map<String, dynamic> collected, int maxTokens) {
   final head = (collected['head'] as List).cast<String>();
   final tail = (collected['tail'] as List).cast<String>();

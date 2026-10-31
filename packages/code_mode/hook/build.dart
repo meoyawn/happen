@@ -37,7 +37,7 @@ Future<void> _windows(BuildInput input, BuildOutputBuilder output) async {
     throw UnsupportedError('The Windows QuickJS build currently supports x64');
   }
   // Upstream QuickJS uses GNU C and winpthreads on Windows; MSVC cannot build it.
-  final compiler = input.userDefines['mingw_cc'] as String? ?? r'C:\msys64\ucrt64\bin\gcc.exe';
+  final compiler = input.userDefines.path('mingw_cc')?.toFilePath() ?? r'C:\msys64\ucrt64\bin\gcc.exe';
   final target = await Process.run(compiler, ['-dumpmachine']);
   if (target.exitCode != 0 || !target.stdout.toString().trim().startsWith('x86_64-') ||
       !target.stdout.toString().contains('mingw')) {

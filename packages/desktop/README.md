@@ -2,6 +2,38 @@
 
 Happen desktop client
 
+The composer's right side groups the context ring, one model/reasoning menu,
+microphone and Send/Stop. Hover or click the ring for used/available tokens and
+prompt-cache hit rates for the latest response and the conversation. Missing
+measurements show **Usage unavailable**, including after compaction until a new
+response measures the replacement context. Existing chats need no migration.
+The model/reasoning menu keeps models fixed for existing tasks; supported reasoning
+changes apply to the next message.
+One action button sends messages, or stops a running task when the draft is empty.
+With a draft or attachments during a running task, it steers or queues the message
+according to Settings.
+
+Type `/mcp` and press Enter to view MCP server status in the composer popover.
+Use `/mcp verbose` for tool names, resources, and resource templates. Both use
+the same popover as `@` file search. Server rows are read-only; type to filter,
+press Escape to close, or start a new `@` mention to switch back to files.
+Commands preserve surrounding draft text and run without sending a message.
+
+On macOS and Windows, closing the window keeps Happen and its embedded server
+running. The tray menu has **Show** and **Quit**. Show restores and focuses the
+window; Quit shuts down the server and exits the process. The macOS Dock also
+reopens the hidden window.
+
+With the window focused, press **⌘Q** on macOS or **Ctrl+Q** on Windows to show
+a dark translucent quit hint, then press it again within one second to quit.
+The hint fades out over 200 ms. Holding the key does not confirm. Escape, another
+key, clicking, or switching away cancels the confirmation. Clicks continue to
+the window underneath. The tray's Quit action quits directly.
+
+The server stays in the desktop process on every platform. macOS/Linux use
+private UDS WebSockets; Windows uses an ephemeral authenticated loopback port.
+Native tray changes require a rebuild and relaunch.
+
 Paste images with Command+V or Paste in the composer, or drag images and files
 onto it. Preview or remove attachments before sending; image-only messages work.
 Failed sends keep the draft and attachments. A native rebuild installs the macOS
@@ -14,6 +46,22 @@ budget before sending. Smaller originals stay unchanged when they fit. Ordinary
 remote files upload in blocks of up to 24 MiB; local files remain path references.
 Cancellation preserves the draft. Saved conversations retain prepared image
 bytes. Remote server selection remains outside the current desktop UI.
+
+The Windows runner and QuickJS build path target x64. In addition to Flutter's
+Visual Studio tooling, the Windows QuickJS build uses
+[MSYS2 UCRT64 GCC](https://www.msys2.org/docs/environments/), defaulting to
+`C:\msys64\ucrt64\bin\gcc.exe`. A different installation can be selected in the
+workspace root `pubspec.yaml`:
+
+```yaml
+hooks:
+  user_defines:
+    code_mode:
+      mingw_cc: 'D:/msys64/ucrt64/bin/gcc.exe'
+```
+
+This compiler is only needed when building on Windows. macOS/Linux keep the
+existing native build path.
 
 On macOS, click the composer's microphone to dictate with the local ChatGPT
 account. The editor stays editable while the mic shows its recording waveform.

@@ -9,6 +9,9 @@ operating system, architecture, Dart version, model, effort, and API route.
 Run `dart analyze`, `dart test`, and `git diff --check`. Do not run `dart format`
 (see `AGENTS.md`); preserve existing Dart formatting. Run focused tests while developing, then the
 complete repository suite after integration.
+For the 100-task concurrency fixture on macOS, raise the test shell's open-file
+limit with `ulimit -n 4096` before running the suite; the default 256 can prevent
+its SQLite connections and provider streams from all opening.
 
 Use `git submodule update --init --recursive` and `dart pub get` first in a fresh
 checkout. See [api.md](api.md) for configuration and the public API.
@@ -29,6 +32,14 @@ checkout. See [api.md](api.md) for configuration and the public API.
   retained task owners. It uses local provider fixtures and temporary data.
 - Verify global MCP processes are shared across tasks and supervised; task
   cancellation must not terminate unrelated calls or the shared server.
+- Run `dart test test/mcp_inventory_test.dart test/mcp_test.dart test/config_reload_test.dart -r expanded`
+  for read-only desktop MCP inventory, disabled entries, resource pagination,
+  sanitized failures and request-scoped cancellation over real transports.
+  The desktop `view_test.dart` covers `/mcp` and `/mcp verbose` in the same
+  autocomplete popover as file search, including selected command text, hover,
+  draft/file-chip preservation, new-mention handoff, retry and navigation.
+  For the full suite's 100-task case, raise a constrained per-shell open-file
+  limit first, for example `ulimit -n 4096` in fish.
 - Run `dart test test/file_search_test.dart test/server_test.dart -r expanded`
   for server-side file/directory search, exact directory priority, Git exclusions,
   plain folders including empty directories, bounded results,
@@ -42,18 +53,40 @@ checkout. See [api.md](api.md) for configuration and the public API.
   disconnect cancellation. The geometry regression checks that the composer,
   conversation viewport and reading scroll position stay fixed while the popup
   loads, changes between 1/20/0 results, fails, and closes.
-- Run `dart test test/server_tools_test.dart` for append-only GPT declarations
-  after config edits during active and idle tasks, direct and code-mode calls,
-  invalid edits, removals, and catalog restoration after compaction and restart.
+- Run `dart test test/server_tools_test.dart` for selective native loading and
+  append-only updates to loaded GPT declarations after config edits during active
+  and idle tasks, direct and code-mode calls, invalid edits, removals, and loaded
+  subset restoration after compaction and restart.
+  It also verifies filtering complete multi-megabyte MCP results, separately
+  bounded cell/direct output, preserved error status, and private metadata.
   It also stops the server before editing config, restarts it, and resumes tasks
   after tool additions, changes, and removals. A task with no previous MCP tools
   is stopped during an active model response and resumed first after restart.
 - Run `dart test test/config_test.dart test/config_reload_test.dart test/mcp_test.dart`
   for YAML validation, legacy fallback, automatic reloads through real file saves,
   process replacement/removal, unchanged subscriptions, rapid edit/revert, and
-  URL connection changes without managing the remote server process.
+  URL connection changes without managing the remote server process. MCP checks
+  include large UTF-8 replies over HTTP JSON and SSE, conditional catalog reads,
+  and revision invalidation on reconnect and removal.
 - Verify compaction preserves full searchable history, and failed/cancelled
   compaction leaves the active context intact.
+- Run `dart test test/context test/deepseek_server_test.dart -r expanded` for
+  repository discovery and multi-turn context growth. Inspect actual provider
+  requests: unchanged turns preserve their prefix and add only new messages,
+  calls/results and intentional updates. Cover warm caches, cwd changes, cold
+  resumes, overrides, worktree markers, symlinks, UTF-8 budgets, one-time
+  replacement/removal messages, and repeated compaction. Nested host output and
+  unprinted cell values must remain available in history without entering model
+  input; empty instruction/tool baselines must not produce context notices.
+  The context regressions live together in `test/context/`. Discovery coverage
+  starts with 241 external tools, verifies that their schemas remain deferred,
+  searches immediately after an in-cell config edit, and checks code-mode/native
+  separation, deduplication, restart, and repeated compaction.
+- Run `dart test test/deepseek_test.dart test/deepseek_server_test.dart -r expanded`
+  for native Messages tool-search result ordering and selective Console catalogs.
+- Run `dart run tool/verify_mcp_tools.dart` for live GPT discovery and execution
+  over HTTP and WebSocket. It checks native selection and code-mode search using
+  supervised MCP processes; only sanitized checks and usage measurements print.
 - Compare live ChatGPT execution with installed Codex using the same model and
   effort, isolated workspaces, and no skills/plugins. Verify completed artifacts,
   rather than relying on the model's report of success.

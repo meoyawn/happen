@@ -153,20 +153,24 @@ YAML has been selected, deletion also does not reactivate an old JSON config.
 `mcp.config.reloaded` reports applied MCP changes or recovery from a config error.
 `mcp.reload` remains available to request an immediate validated reload.
 
-Existing tasks refresh their MCP tools before the next model request, including
-between steps of an active turn. GPT receives new or changed schemas as
-developer-role `additional_tools` input items; the original request-level tools
-stay fixed. Direct MCP calls use `mcp__SERVER.TOOL`, and code mode retains
-`tools.mcp__SERVER__TOOL`. Removed tools receive an availability notice and calls
-check the live registry. Updates persist in task history; compaction restores the
-current catalog. A catalog refresh reconciles the config immediately, without
-waiting for the file watcher's debounce. Invalid edits retain the live catalog.
+Existing tasks check catalog revisions before the next model request, including
+between steps of an active turn. New tools remain deferred; only namespace
+summaries and changes to already loaded native schemas enter context. GPT appends
+changed loaded schemas as developer-role `additional_tools` items; the original
+request-level tools stay fixed. Direct MCP calls use `mcp__SERVER.TOOL`, and code
+mode retains `tools.mcp__SERVER__TOOL`. Removed namespaces and loaded tools receive
+an availability notice, and calls check the live registry. Compaction restores
+only currently available tools that were already loaded. A catalog check
+reconciles config immediately, without waiting for the file watcher's debounce.
+Unchanged catalogs return a revision response without copying their schemas.
+Invalid edits retain the live catalog.
 
 Config edits made while the server is stopped also apply to existing tasks.
 Startup discovers tools from the current config; resuming compares that catalog
-with the task's persisted MCP snapshot before the first model request. Added and
-changed definitions are appended to the saved conversation, and removed tools
-remain unavailable. This also works when shutdown interrupted an active turn.
+with the task's persisted MCP snapshot before the first model request. New
+definitions stay discoverable, changed loaded definitions are appended, and
+removed tools remain unavailable. This also works when shutdown interrupted an
+active turn.
 
 `header_env` supplies the complete header value from the named environment
 variable; `headers` supplies literal HTTP header strings. Local MCP servers accept
@@ -193,6 +197,102 @@ ordered tool additions natively; Chat rebuilds its request catalog and retains a
 textual notice at each update's position. Model aliases for third-party services
 are not inferred. Credentials are environment
 references or private authentication files, never task settings.
+
+## Tool discovery
+
+MCP and client tools are deferred. In code mode,
+`await tools.tool_search({query, limit})` uses local BM25 to return matching
+callable names, typed JavaScript declarations, original JSON schemas, and relevant
+MCP server guidance. The default limit is 8 and the maximum is 32. Exact callable
+names take priority. Search output enters model context only when printed; it
+does not load native schemas. `ALL_TOOLS` supports exact lookup and filtering.
+
+The host registry is read when a cell starts and again when `tool_search` runs,
+so a search after an in-cell config edit sees the current tools. `ALL_TOOLS`
+remains the cell's starting snapshot. Use search to retrieve server guidance
+before calling an MCP tool found through that snapshot.
+
+Calling `tool_search` directly loads only matching native schemas. Repeated
+searches do not redeclare unchanged tools. GPT uses client-executed
+`tool_search_call`/`tool_search_output`; DeepSeek uses a JSON function and its
+existing ordered-addition or Chat catalog adapter. Both use the same selection
+policy. Loaded schemas survive restart and compaction; code-mode discovery
+output follows ordinary conversation compaction. Earlier tasks acquire the
+search tool through an append-only declaration, preserving their initial prefix.
+
+`store(key, value)` saves an explicit JSON snapshot for `load(key)` in later
+cells. Successful cells persist these values with the task; model output includes
+only what the cell prints. Stored values have no separate serialized-size cap.
+They still share the cell's default 32 MiB QuickJS memory budget and execution
+limits, so retaining large results increases the memory needed by later cells.
+
+## Web search
+
+Both labs expose the same Codex-style `web.run` tool and `tools.web__run` in
+code mode. Every model and provider uses the same pinned OpenAI parameter schema:
+`search_query`, `image_query`, `open`, `click`, `find`, `screenshot`, `finance`,
+`weather`, `sports`, `time`, and optional `response_length` (`short`, `medium`,
+or `long`). The schema, including field descriptions and required fields, lives
+in `packages/ai/lib/src/web_search_schema.dart`. Do not narrow it or introduce
+provider-specific tool aliases: OpenAI reserves `web.run` and rejects a changed
+schema before inference.
+
+GPT uses OpenAI-hosted search with the existing ChatGPT login. DeepSeek and the
+OpenCode model route use OpenCode Console's hosted HTTP search with the selected
+Console organization. This requires Hosted Web Search access in that workspace;
+the current public endpoint returned HTTP 404 during verification. Failed access
+is reported to the model so it can choose an available configured search tool.
+There is no embedded MCP client or automatic search-provider fallback.
+
+OpenCode search returns up to eight results. Domain/date constraints are added
+to its query and applied to its returned results; a recency filter excludes
+undated results. DeepSeek `open` and `find` fetch public text/HTML URLs directly,
+without Console credentials, and return zero-based numbered lines. Only URLs
+work for that provider; GPT can also use references returned by OpenAI search.
+GPT forwards the full command set to its hosted search service. Console's
+backend currently executes `search_query`, `open`, and `find`; other nonempty
+operations return an explicit `web_search_unsupported` tool error. This backend
+limit does not change the shared tool schema.
+
+`providers.deepseek.web_search.endpoint` and
+`providers.opencode.web_search.endpoint` can override the Console HTTP search
+endpoint at server startup. All MCP servers, including optional search MCPs,
+must be declared under `mcp_servers` in the global configuration. They use the
+ordinary MCP namespaces and discovery; no MCP server is built into either lab.
+
+## Repository instructions
+
+The server discovers `AGENTS.override.md`, then `AGENTS.md`, in each directory
+from the nearest `.git` marker to the task's working directory. A marker can be
+a file or directory. Without a marker, only the working directory is checked.
+It selects one file per directory, including an empty override, and combines
+nonempty contents in ancestor order. Instruction-file symlinks are allowed.
+Descendant files are read by the agent when needed, following its shared guidance.
+
+Repository contents share a 32 KiB UTF-8 byte budget, with visible truncation
+notices. Global instructions in the data directory retain their independent
+32 KiB budget. These are fixed limits; configurable fallback names and project
+trust/sandbox policies are not implemented.
+
+Repository snapshots stay cached across turns at the same working directory.
+Editing a file alone does not refresh a warm task. Changing `cwd`, restarting
+the server, or restoring an archived task loads the current chain. The server
+retains at most 256 lightweight snapshots in least-recently-used order; an evicted
+task also resumes cold. Idle agent isolates and database owners are still released.
+
+Changed instructions append one full replacement message in user context;
+removing all applicable instructions appends an explicit removal notice.
+Unchanged snapshots and an initially empty chain add no instruction messages.
+Compaction restores one current nonempty snapshot instead of retaining earlier
+versions or replacement notices. Original events remain in durable history.
+Empty MCP/client catalogs also add no initial or restored availability messages;
+actual removals still append their availability notice.
+Tool updates compare JSON objects independently of key order. Reordering the
+same catalog does not add declarations or notices. Unloaded schemas stay out of
+context; changed loaded definitions and removals remain explicit. Namespace
+notices have a 4 KiB UTF-8 cap, with at most 160 bytes of guidance per namespace.
+Full MCP guidance is returned by discovery. Compaction restores current namespace
+summaries and the loaded subset once.
 
 ## DeepSeek through OpenCode Console
 
@@ -417,8 +517,9 @@ with a string `id`, `method: "tools.call"`, and parameters `task_id`, `call_id`,
 The server sends `tools.cancel` with `call_id` when a pending call is cancelled.
 Disconnecting, changing a called definition, or unregistering with an empty
 catalog fails affected pending calls without retrying them. Their side effects
-may already have happened. Model declarations are appended between steps, and
-code mode exposes the same tools as `tools.client__NAME`.
+may already have happened. Native declarations are selected through `tool_search`
+and updated between steps once loaded. Code mode exposes the same tools as
+`tools.client__NAME` without loading their native schemas.
 
 ## MCP Events
 
@@ -429,10 +530,34 @@ implemented. Discovery and event delivery are distinct from model execution.
 | Method | Parameters |
 | --- | --- |
 | `mcp.status` / `mcp.reload` | No parameters. |
+| `mcp.inventory` | Optional `verbose` boolean (default false) and `server` name. Read-only server inventory, including disabled entries. |
+| `mcp.inventory.cancel` | Notification with the inventory call's `request_id`; cancels only that request. |
 | `mcp.request` | `server`, `method`, optional `arguments`; supports event discovery/polling, resources, and prompts. |
 | `mcp.events.subscribe` | `server`, `name`, optional `arguments`, `mode` (`push`, `poll`, `webhook`), `cursor`, `max_age_ms`, `ttl_ms`, `task_id`. |
 | `mcp.events.subscriptions` | Lists this connection's subscriptions. |
 | `mcp.events.unsubscribe` | `subscription_id`. |
+
+`mcp.inventory` returns `{servers: [...]}` sorted by name. Each row contains
+`name`, `enabled`, `state`, `auth_status`, `tool_count`, and an optional sanitized
+`error`. Configured HTTP headers are reported as `configured_headers`, without
+their values; this does not claim OAuth support or successful authentication.
+HTTP 401/403 is `not_authenticated`. Other connections report `unsupported`.
+With `verbose: true`, rows also contain sorted `tools` names, `resources`
+(`name`, optional `title`, `uri`), and `resource_templates` (`name`, optional
+`title`, `uriTemplate`). Resource discovery follows cursors and reports catalog
+failures in `resources_error` / `resource_templates_error` while keeping other
+servers' results. Credentials, launch arguments and private metadata are excluded.
+
+Inventory reconciles the server's global config on demand; invalid edits retain
+the last accepted configuration and add a sanitized `config_error`. It reuses
+shared MCP connections. Calls have a 30-second server deadline and the usual
+2 MiB result bound; select a server for oversized inventories. `AgentClient`'s
+`mcpInventory` accepts a cancellation token and sends the cancellation notification
+when its owner closes. Disconnect also cancels outstanding inventory requests.
+
+The desktop's `/mcp` and `/mcp verbose` commands open this inventory in the same
+autocomplete popover as file search. They run locally, preserve surrounding
+draft text and file references, and do not submit a model turn or write history.
 
 Subscription creation waits for activation. `mcp.event` notifications carry
 `subscription_id`, `server`, and the draft `notification` method and parameters.

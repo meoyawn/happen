@@ -1,4 +1,5 @@
 import 'package:protocol/protocol.dart';
+import 'package:ai/ai.dart';
 
 import 'tool_specs.dart';
 
@@ -14,7 +15,7 @@ Json initialConfiguration(Json input, String cwd, bool telemetry) {
     'catalog_revision': input['catalog_revision'],
     'base_instructions': input['base_instructions'],
     'instructions': '${input['base_instructions']}\n\n$agentInstructions',
-    'tools': [codeDefinition.toJson()],
+    'tools': [codeDefinition.toJson(), webSearchDefinition.toJson(), toolSearchDefinition.toJson()],
     'host_catalog': hostCatalog,
     'telemetry': input['telemetry'] ?? telemetry,
     'global_directory': input['global_directory'],

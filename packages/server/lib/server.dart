@@ -260,6 +260,10 @@ class AgentServer {
             }
             return;
           }
+          if (request['method'] == 'mcp.inventory.cancel') {
+            client.mcpInventories[request['params']?['request_id']]?.cancel();
+            return;
+          }
           if (id == null) throw const FormatException('Request ID is required');
           if (client.inFlight >= 32) {
             throw StateError('Too many outstanding requests');
@@ -384,6 +388,17 @@ class AgentServer {
   }
 
   Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt) async {
+    if (method == 'mcp.inventory') {
+      final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
+      client.mcpInventories[requestId] = deadline;
+      try {
+        return await callIsolate(network.port, method, {...params, 'owner': client.id},
+          cancellation: deadline.merge(client.cancellation));
+      } finally {
+        client.mcpInventories.remove(requestId);
+        deadline.cancel();
+      }
+    }
     if (method.startsWith('mcp.')) {
       if (!{
         'mcp.status',
@@ -644,7 +659,10 @@ class AgentServer {
       _lifetime.throwIfCancelled();
       writer = await startStore(directory, task.id, create: false, legacyDecoder: gptItemFromNative);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
-      if (archived) _clientTools.archive(task.id);
+      if (archived) {
+        _clientTools.archive(task.id);
+        await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
+      }
       for (final client in _clients.toList()) {
         client.event({'task_id': task.id, ...event});
       }
@@ -961,7 +979,7 @@ class AgentServer {
 
   void _broadcast(String taskId, Json event) {
     for (final client in _clients.toList()) {
-      if (client.subscriptions.contains(taskId)) client.event(event);
+      if (client.subscriptions.contains(taskId)) client.event({...event, 'task_id': taskId});
     }
   }
 
@@ -1031,6 +1049,7 @@ class _Client {
   late final AttachmentUploads attachments;
   final cancellation = CancellationToken();
   CancellationToken? fileSearch;
+  final mcpInventories = <Object, CancellationToken>{};
   Object? fileSearchId;
   final subscriptions = <String>{};
   final _events = Queue<({String frame, int bytes})>();
@@ -1200,6 +1219,10 @@ class AgentClient {
       jsonObject(await _request('files.search', {'cwd': cwd, 'query': query},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
+  Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
+      jsonObject(await _request('mcp.inventory', {'verbose': verbose, 'server': ?server},
+        cancellation: cancellation, timeout: const Duration(seconds: 35)));
+
   Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
       jsonObject(await _request('auth.desktop', {'refresh': refresh}, cancellation: cancellation,
         timeout: const Duration(seconds: 30)));
@@ -1219,6 +1242,9 @@ class AgentClient {
       _pending.remove(id);
       if (method == 'files.search' && socket.readyState == WebSocket.open) {
         socket.add(jsonEncode({'method': 'files.cancel', 'params': {'request_id': id}}));
+      }
+      if (method == 'mcp.inventory' && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({'method': 'mcp.inventory.cancel', 'params': {'request_id': id}}));
       }
     });
     _pending[id] = result;

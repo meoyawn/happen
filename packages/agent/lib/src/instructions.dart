@@ -5,29 +5,16 @@ import 'dart:io';
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
-/// Codex's ancestor-chain discovery. Descendant checks are agent guidance.
+import 'discovery.dart';
+import 'tool_specs.dart' show toolSearchDefinition;
+
+/// Global instructions have an independent budget; the server owns repository discovery.
 Future<Json> loadAgentsMd(
-  String cwd,
+  Json repository,
   String globalDirectory,
   CancellationToken cancellation,
 ) async {
   cancellation.throwIfCancelled();
-  final current = Directory(await Directory(cwd).resolveSymbolicLinks());
-  final chain = <Directory>[];
-  var cursor = current;
-  var foundRoot = false;
-  while (true) {
-    cancellation.throwIfCancelled();
-    chain.add(cursor);
-    if (await FileSystemEntity.type('${cursor.path}/.git') !=
-        FileSystemEntityType.notFound) {
-      foundRoot = true;
-      break;
-    }
-    if (cursor.parent.path == cursor.path) break;
-    cursor = cursor.parent;
-  }
-  final project = foundRoot ? chain.reversed : [current];
   final files = <Json>[];
   final seen = <String>{};
   var truncated = false;
@@ -80,26 +67,29 @@ Future<Json> loadAgentsMd(
   }
 
   await load([Directory(globalDirectory)]);
-  await load(project);
+  files.addAll((repository['files'] as List).map(jsonObject));
+  truncated |= repository['truncated'] == true;
   cancellation.throwIfCancelled();
-  return {'cwd': current.path, 'files': files, 'truncated': truncated};
+  return {'cwd': repository['cwd'], 'files': files, 'truncated': truncated};
 }
 
 ConversationItem instructionMessage(Json snapshot, {bool replacement = false}) {
   final files = (snapshot['files'] as List).map(jsonObject);
+  final directory = files.isEmpty ? '' : ' for ${snapshot['cwd']}';
   final text = StringBuffer(
-    '# AGENTS.md instructions for ${snapshot['cwd']}\n\n',
+    '# AGENTS.md instructions$directory\n\n',
   );
-  if (replacement) {
+  text.writeln('<INSTRUCTIONS>');
+  if (files.isEmpty) {
+    text.writeln(
+      'The previously provided AGENTS.md instructions no longer apply.',
+    );
+  } else if (replacement) {
     text.writeln(
       'These AGENTS.md instructions replace all previously provided AGENTS.md instructions.',
     );
   }
-  if (files.isEmpty) {
-    text.writeln(
-      'No automatically loaded AGENTS.md instructions currently apply.',
-    );
-  } else {
+  if (files.isNotEmpty) {
     for (final file in files) {
       text.writeln(
         '\nInstructions from ${file['path']} (scope: ${file['scope']}):\n${file['text']}',
@@ -116,6 +106,7 @@ ConversationItem instructionMessage(Json snapshot, {bool replacement = false}) {
       '[Instruction budget reached. Check applicable files for omitted instructions.]',
     );
   }
+  text.writeln('</INSTRUCTIONS>');
   return ConversationItem(
     role: 'user',
     content: [
@@ -150,9 +141,23 @@ List<ConversationItem> restoreContext(
   bool reasoningUpdates, {
   Json? mcpSnapshot,
   Json? clientSnapshot,
+  List<ToolDefinition> initialTools = const [],
 }) {
+  final known = {
+    for (final tool in initialTools) toolKey(tool): tool,
+    ...loadedTools(previous),
+  };
+  // A retained search exchange still needs its matching result, but selected
+  // schemas are restored once from the current catalog below.
+  ConversationItem withoutSearchTools(ConversationItem item) => item.content.any((part) =>
+    part['type'] == 'tool_result' && part['format'] == 'search',
+  ) ? ConversationItem(
+    id: item.id, kind: item.kind, role: item.role, content: item.content,
+    settings: item.settings, native: item.native,
+  ) : item;
   final result = compacted
       .where((item) => !isHarnessContext(item) && item.kind != 'configuration')
+      .map(withoutSearchTools)
       .toList();
   final keptIds = result.map((item) => item.id).toSet();
   final retained = previous.where(
@@ -165,17 +170,22 @@ List<ConversationItem> restoreContext(
   );
   final initial = [
     ...retained,
-    instructionMessage(snapshot),
+    if (!initialTools.any((tool) => toolKey(tool) == toolKey(toolSearchDefinition)))
+      ConversationItem(kind: 'tools', tools: [toolSearchDefinition],
+        native: {'harness': {'context': 'discovery'}},
+      ),
+    if ((snapshot['files'] as List).isNotEmpty) instructionMessage(snapshot),
     environmentMessage(cwd),
-    if (mcpSnapshot != null) ...[
+    if (mcpSnapshot != null &&
+        ((mcpSnapshot['tools'] as List? ?? []).isNotEmpty ||
+            (mcpSnapshot['instructions'] as List? ?? []).isNotEmpty)) ...[
       if ((mcpSnapshot['tools'] as List? ?? []).isNotEmpty)
-        mcpToolDefinitions(mcpSnapshot),
-      mcpContext(mcpSnapshot),
+        ..._restoreTools(mcpToolDefinitions(mcpSnapshot), known),
+      ?catalogContext(mcpSnapshot, null, known.keys.toSet(), mcp: true),
     ],
-    if (clientSnapshot != null) ...[
-      if ((clientSnapshot['tools'] as List).isNotEmpty)
-        clientToolDefinitions(clientSnapshot),
-      clientToolsContext(clientSnapshot),
+    if (clientSnapshot != null && (clientSnapshot['tools'] as List).isNotEmpty) ...[
+      ..._restoreTools(clientToolDefinitions(clientSnapshot), known),
+      ?catalogContext(clientSnapshot, null, known.keys.toSet(), mcp: false),
     ],
   ];
   var insertion = result.lastIndexWhere(
@@ -209,6 +219,11 @@ List<ConversationItem> restoreContext(
   return result;
 }
 
+List<ConversationItem> _restoreTools(ConversationItem item, Map<String, ToolDefinition> known) {
+  final selected = item.tools.where((tool) => known.containsKey(toolKey(tool))).toList();
+  return [if (selected.isNotEmpty) ConversationItem(kind: 'tools', tools: selected, native: item.native)];
+}
+
 ConversationItem clientToolDefinitions(Json snapshot) => ConversationItem(
   kind: 'tools',
   tools: (snapshot['tools'] as List)
@@ -219,62 +234,25 @@ ConversationItem clientToolDefinitions(Json snapshot) => ConversationItem(
   },
 );
 
-ConversationItem clientToolsContext(Json snapshot) => ConversationItem(
-  role: 'developer',
-  content: [
-    {
-      'type': 'text',
-      'text':
-          'Client tools currently available: '
-          '${(snapshot['tools'] as List).map((tool) => 'client.${tool['name']}').join(', ')}. '
-          'This replaces earlier client tool availability notices. All other client tools are unavailable. '
-          'In code mode call tools.client__NAME; ALL_TOOLS includes parameters and descriptions. '
-          'Calls run in the connected client. A disconnect or cancellation may leave their outcome unknown; inspect state before repeating an action.',
-    },
-  ],
-  native: {
-    'harness': {'context': 'client_tools'},
-  },
-);
+// Codex's WorldStateHash sorts JSON objects before comparing tool definitions.
+String contextFingerprint(Object? value) {
+  Object? ordered(Object? value) {
+    if (value is Map) {
+      final keys = value.keys.cast<String>().toList()..sort();
+      return {for (final key in keys) key: ordered(value[key])};
+    }
+    if (value is List) return value.map(ordered).toList();
+    return value;
+  }
+  return jsonEncode(ordered(value));
+}
 
 ConversationItem mcpToolDefinitions(Json snapshot) => ConversationItem(
   kind: 'tools',
   tools: (snapshot['tools'] as List)
-      .map((raw) => ToolDefinition.fromJson({
-        ...jsonObject(raw),
-        'name': raw['tool_name'],
-      }))
+      .map((raw) => catalogDefinition(jsonObject(raw), mcp: snapshot))
       .toList(),
   native: {
     'harness': {'context': 'mcp'},
   },
 );
-
-ConversationItem mcpContext(Json snapshot) {
-  final tools = (snapshot['tools'] as List? ?? []).map(jsonObject);
-  final text = StringBuffer(
-    'Current configured MCP host tools (this replaces earlier MCP availability notices):\n',
-  );
-  text.writeln(tools.map((tool) => tool['name']).join(', '));
-  text.writeln(
-    'New or changed tools are declared in the appended tool definitions. '
-    'In code mode use the host names above; ALL_TOOLS includes their descriptions and parameters. '
-    'Only the tools in this notice are currently available; removed tools are unavailable.',
-  );
-  for (final server in (snapshot['instructions'] as List? ?? []).map(
-    jsonObject,
-  )) {
-    text.writeln(
-      'Usage guidance supplied by MCP server ${server['server']}:\n${server['text']}',
-    );
-  }
-  return ConversationItem(
-    role: 'developer',
-    content: [
-      {'type': 'text', 'text': clippedText(text.toString())},
-    ],
-    native: {
-      'harness': {'context': 'mcp'},
-    },
-  );
-}

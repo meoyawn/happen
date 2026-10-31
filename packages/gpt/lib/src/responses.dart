@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:ai/ai.dart' show ModelFailure, decodeSse;
+import 'package:ai/ai.dart' show ModelFailure, decodeSse, postWebSearch;
 import 'package:protocol/protocol.dart';
 
 typedef Credentials = Future<Json> Function({bool refresh});
@@ -32,6 +32,44 @@ class ResponsesClient {
   final Uri endpoint;
   final HttpClient _http;
   final bool _ownsHttp;
+
+  Future<String> search({
+    required String model,
+    required String sessionId,
+    required Json commands,
+    required List<Json> input,
+    required CancellationToken cancellation,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      cancellation.throwIfCancelled();
+      final auth = await credentials(refresh: attempt != 0).asCancellable(cancellation);
+      cancellation.throwIfCancelled();
+      final response = await postWebSearch(_http, endpoint.resolve('alpha/search'), {
+        'id': sessionId,
+        'model': model,
+        if (input.isNotEmpty) 'input': input,
+        'commands': commands,
+        'settings': {'external_web_access': true, 'allowed_callers': ['direct']},
+        'max_output_tokens': 10000,
+      }, cancellation: cancellation, headers: {
+        HttpHeaders.authorizationHeader: 'Bearer ${requiredString(auth, 'access_token')}',
+        'chatgpt-account-id': requiredString(auth, 'account_id'),
+        'originator': 'agent',
+        'session-id': sessionId,
+        'x-client-request-id': newId(),
+      });
+      if (response.status == 401 && attempt == 0) continue;
+      if (response.status != 200) {
+        throw ModelFailure('web_search_http', 'OpenAI search failed (HTTP ${response.status})');
+      }
+      final output = response.body['output'];
+      if (output is! String) {
+        throw const ModelFailure('web_search_response', 'OpenAI search returned an invalid response');
+      }
+      return clippedText(output);
+    }
+    throw const ModelFailure('web_search_auth', 'OpenAI search authentication failed');
+  }
 
   Future<ResponsesReply> respond({
     required String model,

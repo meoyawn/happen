@@ -9,6 +9,24 @@ final codeDefinition = ToolDefinition(
   grammar: codeTool['tools']![0]['format']['definition'] as String,
 );
 
+const toolSearchDefinition = ToolDefinition(
+  name: 'tool_search',
+  format: 'search',
+  description: 'Search deferred MCP and client tools by name or capability using BM25. '
+    'Direct calls load matching tools for the next model request. In code mode, '
+    'await tools.tool_search({query, limit}) returns typed declarations without loading native tools. '
+    'Use tool_search for tool discovery, not list_mcp_resources or list_mcp_resource_templates.',
+  parameters: {
+    'type': 'object',
+    'properties': {
+      'query': {'type': 'string', 'description': 'Tool name, namespace, or capability to search for.'},
+      'limit': {'type': 'integer', 'minimum': 1, 'maximum': 32, 'description': 'Maximum matches; defaults to 8.'},
+    },
+    'required': ['query'],
+    'additionalProperties': false,
+  },
+);
+
 // Codex 0.164 wire names and grammar; see docs/decisions.md.
 const codeTool = <String, dynamic>{
   'type': 'namespace',
@@ -37,6 +55,7 @@ SOURCE: /[\s\S]+/
 };
 
 const hostCatalog = <Json>[
+  webSearchHost,
   {
     'name': 'exec_command',
     'description': 'Run a shell command. Arguments: cmd (required), workdir, shell, login (default true), yield_time_ms (default 10000, 250..30000), max_output_tokens (default 10000), tty (currently false only). Returns output, wall_time_seconds, exit_code or session_id. A running process survives the cell; poll it with write_stdin.',
@@ -80,6 +99,14 @@ Independent host calls may run together with Promise.all.
 Each cell has a fresh JavaScript context. store(key, jsonValue) and load(key) preserve explicit values.
 ALL_TOOLS lists available host names and descriptions. No Node, imports, filesystem, or network globals.
 Additional host tools, including history and configured MCP servers, appear in ALL_TOOLS.
+External tool schemas are deferred. Search with await tools.tool_search({query, limit?})
+inside code mode to retrieve matching names, typed declarations, and original JSON schemas.
+This does not change the native tool list. ALL_TOOLS also supports exact lookup and filtering.
+Before using an MCP tool found in ALL_TOOLS, use tool_search to retrieve its server usage guidance.
+Use the direct tool_search tool only when you need to load tools for direct model calls.
+$webSearchInstructions
+MCP host calls return result envelopes; check isError before parsing text content.
+Cells receive complete MCP results within transport and runtime limits; printed output is budgeted separately.
 Use the history tools to retrieve durable messages and tool results omitted from the current
 context. Read bounded pages or search, filter in JavaScript, and print only relevant excerpts.
 Conclude with a concise description of the result and verification.

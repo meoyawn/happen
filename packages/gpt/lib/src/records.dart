@@ -20,6 +20,32 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
         kind: 'tools',
         tools: gptToolsFromNative((wire['tools'] as List).map(jsonObject)),
       );
+    case 'tool_search_call':
+      if (wire['execution'] != 'client') {
+        throw const ModelFailure('unsupported_item', 'Only client-executed tool search is supported');
+      }
+      return ConversationItem(
+        id: id,
+        role: 'assistant',
+        content: [ToolCall(
+          id: requiredString(wire, 'call_id'),
+          name: 'tool_search',
+          input: jsonEncode(jsonObject(wire['arguments'])),
+          format: 'search',
+          native: {'gpt': {...state..remove('call_id')..remove('arguments')}},
+        ).toJson()],
+      );
+    case 'tool_search_output':
+      return ConversationItem(
+        id: id,
+        role: 'tool',
+        tools: gptToolsFromNative((wire['tools'] as List).map(jsonObject)),
+        content: [{
+          'type': 'tool_result', 'call_id': requiredString(wire, 'call_id'),
+          'name': 'tool_search', 'format': 'search', 'output': '{}',
+          'native': {'gpt': {...state..remove('call_id')..remove('tools')}},
+        }],
+      );
     case 'compaction':
       return ConversationItem(
         id: id,
@@ -223,6 +249,13 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
         textParts.add({'type': 'input_text', 'text': attachedFileText(part)});
       case 'tool_call':
         final call = ToolCall.fromJson(part);
+        if (call.format == 'search') {
+          output.add({
+            ...meta, 'type': 'tool_search_call', 'execution': 'client',
+            'call_id': call.id, 'arguments': jsonDecode(call.input),
+          });
+          continue;
+        }
         output.add({
           ...meta,
           'type': call.format == 'text' ? 'custom_tool_call' : 'function_call',
@@ -235,6 +268,17 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
             'arguments': call.input,
         });
       case 'tool_result':
+        if (part['format'] == 'search') {
+          output.add({
+            ...meta, 'type': 'tool_search_output', 'execution': 'client',
+            'status': 'completed', 'call_id': part['call_id'],
+            'tools': gptTools(item.tools, deferLoading: true),
+          });
+          if (part['is_error'] == true) {
+            output.add({'role': 'developer', 'content': 'Tool search failed: ${part['output']}'});
+          }
+          continue;
+        }
         output.add({
           ...meta,
           'type': part['format'] == 'text'
@@ -262,10 +306,17 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
   return output;
 }).toList();
 
-List<Json> gptTools(Iterable<ToolDefinition> tools) {
+List<Json> gptTools(Iterable<ToolDefinition> tools, {bool deferLoading = false}) {
   final result = <Json>[];
   final namespaces = <String, List<Json>>{};
   for (final tool in tools) {
+    if (tool.format == 'search') {
+      result.add({
+        'type': 'tool_search', 'execution': 'client',
+        'description': tool.description, 'parameters': tool.parameters,
+      });
+      continue;
+    }
     final spec = <String, dynamic>{
       'type': tool.format == 'text' ? 'custom' : 'function',
       'name': tool.name,
@@ -276,6 +327,8 @@ List<Json> gptTools(Iterable<ToolDefinition> tools) {
             : {'type': 'grammar', 'syntax': 'lark', 'definition': tool.grammar}
       else
         'parameters': tool.parameters,
+      if (tool.format != 'text') 'strict': false,
+      if (deferLoading) 'defer_loading': true,
     };
     if (tool.namespace == null) {
       result.add(spec);
@@ -306,10 +359,10 @@ List<ToolDefinition> gptToolsFromNative(
   }
   return [
     ToolDefinition(
-      name: requiredString(tool, 'name'),
+      name: tool['type'] == 'tool_search' ? 'tool_search' : requiredString(tool, 'name'),
       description: tool['description'] as String? ?? '',
       namespace: namespace,
-      format: tool['type'] == 'custom' ? 'text' : 'json',
+      format: tool['type'] == 'tool_search' ? 'search' : tool['type'] == 'custom' ? 'text' : 'json',
       parameters: jsonObject(tool['parameters'] ?? {}),
       grammar: tool['format'] is Map
           ? tool['format']['definition'] as String?

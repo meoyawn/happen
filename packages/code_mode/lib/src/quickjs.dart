@@ -172,9 +172,7 @@ var __cell = (() => {
   function store(key, value) {
     const encoded = JSON.stringify(value);
     if (encoded === undefined) throw new Error("store requires a JSON value");
-    if (encoded.length > 262144) throw new Error("Stored value too large");
     api.values[String(key)] = JSON.parse(encoded);
-    if (JSON.stringify(api.values).length > 1048576) throw new Error("Cell store limit exceeded");
   }
   function load(key) { return api.values[String(key)]; }
   const tools = new Proxy({}, {

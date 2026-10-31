@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:desktop/app.dart';
 import 'package:desktop/composer_dictation.dart';
+import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/dictation.dart';
 import 'package:desktop/dictation_controls.dart';
 import 'package:desktop/session.dart';
@@ -133,6 +134,23 @@ void main() {
       });
     });
   }
+
+  test('cancelled dictation restores a selected file chip and its path', () {
+    final controller = ComposerTextController(text: 'Use @file afterwards');
+    addTearDown(controller.dispose);
+    controller.insertFile(const TextRange(start: 4, end: 9), 'lib/main.dart');
+    controller.selection = const TextSelection(baseOffset: 4, extentOffset: 5);
+    final insertion = ComposerDictationSession(controller, (range, text) {
+      controller.value = TextEditingValue(text: controller.text.replaceRange(range.start, range.end, text),
+        selection: TextSelection.collapsed(offset: range.start + text.length));
+    });
+    insertion.update('live words');
+    expect(controller.files, isEmpty);
+    insertion.dispose(cancel: true);
+    expect(controller.serializePrompt(), 'Use [main.dart](lib/main.dart) afterwards');
+    expect(controller.files.single.path, 'lib/main.dart');
+    expect(client.sent, isEmpty);
+  });
 
   testWidgets('live text appears while recording, cancels cleanly and finalizes once on Enter', (tester) async {
     session.dictationMode = 'live';

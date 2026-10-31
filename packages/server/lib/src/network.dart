@@ -10,6 +10,8 @@ import 'package:deepseek/deepseek.dart';
 import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
 
+import 'agents_md.dart';
+
 Future<IsolateOwner> startNetwork(
   String directory, {
   String? endpoint,
@@ -41,6 +43,7 @@ void _networkMain(List<Object?> args) async {
   final providerOptions = jsonObject(global['providers'] ?? {});
   final gptOptions = jsonObject(providerOptions['gpt'] ?? {});
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
+  final deepseekSearch = jsonObject(deepseekOptions['web_search'] ?? {});
   final http = HttpClient()..connectionTimeout = const Duration(seconds: 30);
   final auth = AuthManager(directory, http: http);
   final consoleAuth = OpenCodeAuthManager(directory, http: http);
@@ -64,9 +67,13 @@ void _networkMain(List<Object?> args) async {
           http: http,
           auth: consoleAuth,
           endpoint: deepseekEndpoint,
+          searchAuth: consoleAuth,
+          openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
         )
       : DeepSeekProvider(
           http: http,
+          searchAuth: consoleAuth,
+          openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
           credentials: () async {
             final variable =
                 deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY';
@@ -83,15 +90,19 @@ void _networkMain(List<Object?> args) async {
         );
   final openCodeOptions = jsonObject(providerOptions['opencode'] ??
       (backend == 'opencode' ? deepseekOptions : <String, dynamic>{}));
+  final openCodeSearch = jsonObject(openCodeOptions['web_search'] ?? {});
   final opencode = DeepSeekProvider.opencode(
     http: http,
     auth: consoleAuth,
+    searchAuth: consoleAuth,
+    openCodeSearchEndpoint: openCodeSearch['endpoint'] == null ? null : Uri.parse(openCodeSearch['endpoint'] as String),
     endpoint: openCodeOptions['endpoint'] == null
         ? null : Uri.parse(openCodeOptions['endpoint'] as String),
   );
   final providers = <String, ModelProvider>{'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
+  final repositoryInstructions = RepositoryInstructions();
   String? loginId, loginOwner;
   CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
@@ -233,6 +244,19 @@ void _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
+      if (request['method'] == 'agents.repository') {
+        if (id == null) throw ArgumentError('Repository instructions require a task');
+        reply?.send({'result': await repositoryInstructions.load(
+          id, requiredString(params, 'cwd'), cancellation,
+        )});
+        return;
+      }
+      if (request['method'] == 'agents.forget') {
+        if (id == null) throw ArgumentError('Repository instructions require a task');
+        repositoryInstructions.forget(id);
+        reply?.send({'result': null});
+        return;
+      }
       if (request['method'] == 'auth.desktop') {
         if (loginCancellation != null) throw StateError('Finish signing in before starting dictation');
         try {
@@ -314,6 +338,22 @@ void _networkMain(List<Object?> args) async {
         switch (request['method']) {
           case 'mcp.status':
             result = mcp.status();
+          case 'mcp.inventory':
+            if (params['verbose'] != null && params['verbose'] is! bool ||
+                params['server'] != null && params['server'] is! String) {
+              throw const FormatException('Expected verbose boolean and optional server name');
+            }
+            try {
+              await reload(cancellation);
+            } on CancelledException {
+              rethrow;
+            } catch (_) {
+              // Keep the last accepted configuration and its live connections.
+            }
+            result = {
+              ...await mcp.inventory(cancellation, verbose: params['verbose'] == true, server: params['server'] as String?),
+              'config_error': ?configError,
+            };
           case 'mcp.catalog':
             // A model step can follow a config edit before the watcher fires.
             // Read and serialize reconciliation here as well as on file events.
@@ -324,7 +364,7 @@ void _networkMain(List<Object?> args) async {
             } catch (_) {
               // reload already sent a sanitized diagnostic; use the live catalog.
             }
-            result = await mcp.catalog(cancellation);
+            result = await mcp.catalog(cancellation, knownRevision: params['revision'] as String?);
           case 'mcp.call':
             result = await mcp.callTool(
               requiredString(params, 'name'),
@@ -526,7 +566,7 @@ void _networkMain(List<Object?> args) async {
         reply?.send({'result': settings});
         return;
       }
-      if (!{'respond', 'compact'}.contains(request['method'])) {
+      if (!{'respond', 'compact', 'web.search'}.contains(request['method'])) {
         throw StateError('Unknown network operation');
       }
       final lab = requiredString(params, 'provider');
@@ -535,8 +575,10 @@ void _networkMain(List<Object?> args) async {
       if (id == null) throw ArgumentError('Model request requires a task');
       final input = ModelRequest.fromJson(params);
       void onEvent(Json event) => reply?.send({'event': event});
-      final Json result;
-      if (request['method'] == 'compact') {
+      final Object? result;
+      if (request['method'] == 'web.search') {
+        result = await provider.webSearch(input, webSearchCommands(params['commands']), cancellation: cancellation);
+      } else if (request['method'] == 'compact') {
         result = (await provider.compact(
           input,
           cancellation: cancellation,

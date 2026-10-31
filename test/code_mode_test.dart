@@ -39,6 +39,51 @@ void main() {
       },
     );
 
+    test('large JSON values survive store and load across fresh cells', () async {
+      const mode = CodeMode();
+      final isolate = {
+        'id': 'isolates/fixture',
+        'padding': 'BEGIN${'x' * (3 * 1024 * 1024)}END',
+        'libraries': [
+          {'id': 'app', 'uri': 'package:desktop/app.dart'},
+        ],
+      };
+      final result = await mode.execute(
+        '''
+        const results = await Promise.allSettled([tools.shell({}), tools.isolate({})]);
+        text(results[0].value.output);
+        const response = results[1].value;
+        const value = JSON.parse(response.content.find(c => c.text).text);
+        store("mainIsolate", value);
+        value.id = "changed after storing";
+        text(load("mainIsolate").id);
+        ''',
+        cancellation: CancellationToken(),
+        tool: (name, _) async => name == 'shell' ? {'output': 'shell complete'} : {
+          'content': [{'type': 'text', 'text': jsonEncode(isolate)}],
+        },
+      );
+      expect(result['output'], ['shell complete', 'isolates/fixture']);
+      final next = await mode.execute(
+        '''
+        const value = load("mainIsolate");
+        text({
+          id: value.id,
+          complete: value.padding === "BEGIN" + "x".repeat(3 * 1024 * 1024) + "END",
+          libraries: value.libraries,
+        });
+        ''',
+        values: jsonObject(result['values']),
+        cancellation: CancellationToken(),
+        tool: (_, _) async => throw StateError('unexpected host call'),
+      );
+      expect(jsonDecode((next['output'] as List).single as String), {
+        'id': 'isolates/fixture',
+        'complete': true,
+        'libraries': [{'id': 'app', 'uri': 'package:desktop/app.dart'}],
+      });
+    });
+
     test(
       'large batched output is truncated without aborting the cell',
       () async {

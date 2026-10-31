@@ -78,9 +78,9 @@ bool FlutterWindow::OnCreate() {
   tray_icon_.uCallbackMessage = kTrayMessage;
   tray_icon_.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
   wcscpy_s(tray_icon_.szTip, L"Happen");
-  AddTrayIcon();
-
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
+    // The Dart quit handler is installed by the first frame.
+    AddTrayIcon();
     this->Show();
   });
 

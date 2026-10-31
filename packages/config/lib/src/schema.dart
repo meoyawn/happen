@@ -3,6 +3,13 @@ const _stringMap = {
   'type': 'object',
   'additionalProperties': {'type': 'string'},
 };
+const _webSearch = {
+  'type': 'object',
+  'additionalProperties': false,
+  'properties': {
+    'endpoint': {'type': 'string', 'format': 'uri', 'pattern': r'^https?://'},
+  },
+};
 
 /// The same embedded schema validates startup and reloads, including in AOT.
 /// Provider-specific settings and model limits remain owned by each provider.
@@ -36,6 +43,7 @@ const globalConfigSchema = <String, Object?>{
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
             'api_key_env': _nonemptyString,
+            'web_search': _webSearch,
             'backend': {
               'enum': ['native', 'opencode'],
             },
@@ -51,6 +59,7 @@ const globalConfigSchema = <String, Object?>{
           'properties': {
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
+            'web_search': _webSearch,
             'settings': {'type': 'object'},
           },
         },

@@ -189,6 +189,15 @@ void main() {
         .writeAsString('Repository instruction: use cedar.');
     final compacted = await turn('task.compact', {'task_id': id});
     expect(compacted['type'], 'turn.completed', reason: compacted.toString());
+    final checkpoint = (await client.request('history.page', {
+      'task_id': id, 'limit': 500,
+    }) as List).singleWhere((event) => event['type'] == 'context.compacted');
+    final restored = (checkpoint['data']['input'] as List).where((item) =>
+      item['native']?['harness']?['context'] == 'agents_md',
+    ).toList();
+    expect(restored, hasLength(1));
+    expect(jsonEncode(restored.single), contains('use maple'));
+    expect(jsonEncode(restored.single), isNot(contains('use cedar')));
     await client.close();
     await server.close();
     server = await AgentServer.startEmbedded(
@@ -207,7 +216,15 @@ void main() {
     expect(jsonEncode(continuation['input']), isNot(contains('receipt-867')));
     expect(jsonEncode(continuation['input']), contains('opaque-checkpoint'));
     expect(jsonEncode(continuation['input']), contains('use cedar'));
-    expect(jsonEncode(continuation['input']), isNot(contains('use maple')));
+    final instructionItems = (continuation['input'] as List).where((item) =>
+      item['role'] == 'user' && item['content'] is String &&
+      (item['content'] as String).startsWith('# AGENTS.md instructions'),
+    ).toList();
+    expect(instructionItems, hasLength(2));
+    expect(instructionItems.first['content'], contains('use maple'));
+    expect(instructionItems.last['content'], contains('use cedar'));
+    expect(instructionItems.last['content'], isNot(contains('use maple')));
+    expect(instructionItems.last['content'], contains('replace all previously provided AGENTS.md instructions'));
     expect(jsonEncode(continuation['input']), contains('retain the newline'));
     expect(continuation['reasoning']['effort'], 'low');
     expect(
@@ -223,6 +240,17 @@ void main() {
     );
     final record = recalledItem(recalled);
     expect(record['content'], contains('receipt-867'));
+    await turn('task.compact', {'task_id': id});
+    final latestCheckpoint = (await client.request('history.page', {
+      'task_id': id, 'limit': 500,
+    }) as List).lastWhere((event) => event['type'] == 'context.compacted');
+    final latestInstructions = (latestCheckpoint['data']['input'] as List).where((item) =>
+      item['native']?['harness']?['context'] == 'agents_md',
+    ).toList();
+    expect(latestInstructions, hasLength(1));
+    expect(jsonEncode(latestInstructions.single), contains('use cedar'));
+    expect(jsonEncode(latestInstructions.single), isNot(contains('use maple')));
+    expect(jsonEncode(latestInstructions.single), isNot(contains('replace all previously')));
     final fork = jsonObject(
       await client.request('task.fork', {
         'task_id': id,

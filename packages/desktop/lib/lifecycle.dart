@@ -55,7 +55,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
         if (_confirmation != null) {
           unawaited(_exit());
         } else {
-          setState(() => _confirmation = Timer(const Duration(seconds: 3), _dismissConfirmation));
+          setState(() => _confirmation = Timer(const Duration(seconds: 1), _dismissConfirmation));
         }
       }
       return KeyEventResult.handled;
@@ -101,35 +101,44 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
   }
 
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      widget.child,
-      if (_confirmation != null)
-        BlockSemantics(child: GestureDetector(
-          onTap: _dismissConfirmation,
-          child: ColoredBox(
-            color: const Color(0x55000000),
-            child: Center(child: Semantics(
-              liveRegion: true,
-              child: Material(
-                elevation: 8,
-                borderRadius: BorderRadius.circular(16),
+  Widget build(BuildContext context) => Listener(
+    behavior: HitTestBehavior.translucent,
+    onPointerDown: (_) => _dismissConfirmation(),
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        IgnorePointer(child: Center(child: AnimatedSwitcher(
+          duration: Duration.zero,
+          reverseDuration: const Duration(milliseconds: 200),
+          child: _confirmation == null ? null : Semantics(
+            liveRegion: true,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xbf333333),
+                  borderRadius: BorderRadius.circular(20),
+                ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Text('Press ${defaultTargetPlatform == TargetPlatform.macOS ? '⌘Q' : 'Ctrl+Q'} again to quit',
-                      style: Theme.of(context).textTheme.titleLarge),
-                    const SizedBox(height: 8),
-                    const Text('Quitting stops running tasks.'),
-                    const SizedBox(height: 16),
-                    const Text('Escape to cancel', style: TextStyle(color: Colors.black54)),
-                  ]),
+                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
+                  child: Text('Press ${defaultTargetPlatform == TargetPlatform.macOS ? '⌘Q' : 'Ctrl+Q'} again to quit',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      inherit: false,
+                      fontFamily: Theme.of(context).textTheme.titleLarge?.fontFamily,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      height: 1.25,
+                      shadows: const [Shadow(color: Color(0x99000000), offset: Offset(0, 1), blurRadius: 1)],
+                    )),
                 ),
               ),
-            )),
+            ),
           ),
-        )),
-    ],
+        ))),
+      ],
+    ),
   );
 }

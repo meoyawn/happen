@@ -76,6 +76,7 @@ class ClientToolBridge {
   }
 
   Json snapshot(String task) => {
+    'revision': _registrations[task]?.revision ?? 'empty',
     'tools': [...?_registrations[task]?.tools.values],
   };
 
@@ -170,7 +171,9 @@ class ClientToolBridge {
       if (_closed) throw StateError('Client tool bridge is closed');
       final task = requiredString(params, 'task_id');
       if (request['method'] == 'catalog') {
-        reply?.send({'result': snapshot(task)});
+        final revision = _registrations[task]?.revision ?? 'empty';
+        reply?.send({'result': params['revision'] == revision
+          ? {'revision': revision, 'unchanged': true} : snapshot(task)});
         return;
       }
       if (request['method'] != 'call') {
@@ -254,6 +257,7 @@ class ClientToolBridge {
 class _Registration {
   _Registration(this.owner, this.tools, this.send);
   final String owner;
+  final String revision = newId();
   final Map<String, Json> tools;
   final void Function(Json) send;
 }

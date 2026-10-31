@@ -9,6 +9,68 @@ import 'package:server/server.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('MCP HTTP JSON and SSE preserve results above model output budgets', () async {
+    final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final http = HttpClient();
+    final manager = McpManager(http: http, onEvent: (_, _) {});
+    final lifetime = CancellationToken();
+    addTearDown(() async {
+      lifetime.cancel();
+      await manager.close();
+      http.close(force: true);
+      await upstream.close(force: true);
+    });
+    final large = 'é' * (2 * 1024 * 1024);
+    upstream.listen((request) async {
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      final method = body['method'];
+      final result = switch (method) {
+        'server/discover' => {
+          'supportedVersions': ['2026-07-28'],
+          'capabilities': {'tools': {}},
+        },
+        'tools/list' => {
+          'tools': [
+            {
+              'name': 'large',
+              'inputSchema': {
+                'type': 'object',
+                'properties': {'mode': {'type': 'string'}},
+              },
+            },
+          ],
+        },
+        'tools/call' => {
+          'content': [{'type': 'text', 'text': large}],
+          'structuredContent': {'complete': true},
+          'isError': false,
+        },
+        _ => <String, dynamic>{},
+      };
+      final response = jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result});
+      if (body['params']['arguments']?['mode'] == 'sse') {
+        request.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
+        request.response.write('data: $response\n\n');
+      } else {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(response);
+      }
+      await request.response.close();
+    });
+    await manager.configure({
+      'http': {
+        'url': 'http://127.0.0.1:${upstream.port}/mcp',
+        'legacy_fallback': false,
+      },
+    }, lifetime);
+    for (final mode in ['json', 'sse']) {
+      final result = await manager.callTool('mcp__http__large', {'mode': mode}, lifetime);
+      expect(result['isError'], false);
+      expect(result['content'][0]['text'] == large, isTrue, reason: mode);
+      expect(result['structuredContent'], {'complete': true});
+    }
+  });
+
   test('global stdio MCP shares a process, isolates cancellation, and supervises crashes', () async {
     final http = HttpClient();
     final events = StreamController<Json>.broadcast();
@@ -32,10 +94,10 @@ void main() {
     }, lifetime);
     final initialPid = manager.status().single['pid'];
     expect(initialPid, isA<int>());
-    expect(
-      (await manager.catalog(lifetime))['tools'][0]['name'],
-      'mcp__local__probe',
-    );
+    final catalog = await manager.catalog(lifetime);
+    expect(catalog['tools'][0]['name'], 'mcp__local__probe');
+    expect(await manager.catalog(lifetime, knownRevision: catalog['revision'] as String),
+      {'revision': catalog['revision'], 'unchanged': true});
     Future<Json> probe() async => jsonObject(
       jsonDecode(
         (await manager.callTool('mcp__local__probe', {
@@ -87,6 +149,13 @@ void main() {
     }
     expect((await probe())['pid'], isNot(initialPid));
     expect((await probe())['waiting'], 0);
+    final reconnected = await manager.catalog(lifetime, knownRevision: catalog['revision'] as String);
+    expect(reconnected['revision'], isNot(catalog['revision']));
+    expect(reconnected['tools'][0]['name'], 'mcp__local__probe');
+    await manager.configure({}, lifetime);
+    final removed = await manager.catalog(lifetime, knownRevision: reconnected['revision'] as String);
+    expect(removed['tools'], isEmpty);
+    expect(removed['revision'], isNot(reconnected['revision']));
   });
 
   test('MCP HTTP events route push streams, resume cursors, poll, and authenticate webhooks', () async {

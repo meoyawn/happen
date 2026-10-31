@@ -6,6 +6,8 @@ import 'package:ai/ai.dart' show decodeSse;
 import 'package:protocol/protocol.dart';
 
 const mcpProtocolVersion = '2026-07-28';
+// Independent of model output budgets, matching Codex's Code Mode frame limit.
+const _maxMessageBytes = 64 * 1024 * 1024;
 const _versionKey = 'io.modelcontextprotocol/protocolVersion';
 const _subscriptionKey = 'io.modelcontextprotocol/subscriptionId';
 
@@ -58,7 +60,7 @@ class McpConnection {
       cancellation.throwIfCancelled();
       _process = process;
       _stderr = process.stderr.listen((_) {});
-      _stdout = boundedLines(process.stdout, maxBytes: maxFrameBytes).listen(
+      _stdout = boundedLines(process.stdout, maxBytes: _maxMessageBytes).listen(
         (line) {
           try {
             _receive(jsonObject(jsonDecode(line)));
@@ -187,8 +189,8 @@ class McpConnection {
           },
       },
     };
-    if (utf8.encode(jsonEncode(body)).length > maxFrameBytes) {
-      throw const McpFailure('MCP request too large');
+    if (utf8.encode(jsonEncode(body)).length > _maxMessageBytes) {
+      throw const McpFailure('MCP request exceeds the 64 MiB transport limit');
     }
     try {
       if (_process != null) {
@@ -360,8 +362,8 @@ class McpConnection {
             onCancel: () => unawaited(input.cancel()),
           )) {
             bytes.addAll(input.current);
-            if (bytes.length > maxFrameBytes) {
-              throw const McpFailure('MCP response too large');
+            if (bytes.length > _maxMessageBytes) {
+              throw const McpFailure('MCP response exceeds the 64 MiB transport limit');
             }
           }
         } finally {
@@ -391,7 +393,7 @@ class McpConnection {
       final input = ownStream(response, token);
       closeBody = input.close;
       messages = StreamIterator(
-        decodeSse(input.stream, maxEventBytes: maxFrameBytes),
+        decodeSse(input.stream, maxEventBytes: _maxMessageBytes),
       );
       while (await messages.moveNext().asCancellable(
         token,

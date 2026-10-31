@@ -10,6 +10,7 @@ import 'package:server/server.dart';
 import 'project_identity.dart';
 import 'dictation.dart';
 import 'composer_attachments.dart';
+import 'composer_text_controller.dart';
 
 class Project {
   Project(this.checkoutKey, this.id, this.path, [List<DesktopTask>? tasks])
@@ -55,6 +56,7 @@ class DesktopSession extends ChangeNotifier {
   final IsolateOwner database;
   final projects = <Project>[];
   final drafts = <String, String>{};
+  late final fileDrafts = <String, List<ComposerFileReference>>{};
   final String attachmentDirectory;
   final attachmentDrafts = <String, List<ComposerAttachment>>{};
   CancellationToken? _submission;

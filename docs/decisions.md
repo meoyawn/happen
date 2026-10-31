@@ -2177,3 +2177,1001 @@ launcher tests pass. No Dart formatter or additional native build was needed.
 The existing limits on direct launches, other checkouts and crash/power-loss
 atomicity still apply. Rollback is verified through fault injection rather than
 a real disk or signing-service failure.
+
+## 2026-10-31 — Composer attachments and large images across machines
+
+User requirements: image paste and image/file drag-and-drop following Harness,
+image inputs through both desktop and server, Codex's source limits and model
+resize policy, and large images across machines. The final remote requirement
+is explicit: the desktop must prepare a 100 MiB image to fit the transport limit.
+Earlier proposals to use small chunks for remote images are superseded.
+
+The macOS clipboard bridge captures original image representations and file
+URLs, distinguishes an image copy from rich text containing an incidental image,
+and stages image files outside the bundle. HEIC/HEIF clipboard data is converted
+to PNG because the shared Dart decoder does not support that format. Ordinary
+text paste still passes through Flutter's editing action. `desktop_drop` consumes
+promised/provider files before the native drop lifetime ends; transient files
+are copied to owned storage. The composer displays removable previews, supports
+image-only messages, retains drafts on failure/cancellation, and releases owned
+image copies only after admission or removal. Thumbnail decoding is bounded;
+the native clipboard and file copying preserve the original pixels.
+
+`ConversationItem` now admits typed image and file parts. Server preparation runs
+in a cancellable isolate before admission. Local images arrive as absolute
+server paths; remote images arrive as inline PNG/JPEG/GIF/WebP bytes. Sources
+are bounded to 1 GiB. Default high detail uses a 2,048-pixel edge and 2,500
+32-pixel patches; original detail uses a 6,000-pixel edge and 10,000 patches.
+The dimension calculation is ported from Codex. Resizing retains the source
+PNG/JPEG/WebP format, uses JPEG quality 85, preserves transparency, and converts
+other supported formats/GIF frames to PNG. The Dart image encoder/interpolator
+is not byte-identical to Rust's implementation; EXIF orientation is baked into
+resized output. This is shared code used by server and desktop as needed.
+
+Cross-machine desktop submission uses Codex's 32 MiB encoded image budget inside
+the 64 MiB WebSocket limit. It snapshots small originals unchanged when they fit
+the combined budget. Otherwise it prepares the largest sources first, using
+the same image policy in a cancellable worker isolate. Originals stay available
+for retry. A group that still exceeds the budget returns an error without
+sending or clearing the draft. Codex's pinned remote composer instead rejects
+oversized originals before snapshotting; automatic preparation is the requested
+extension. It is deliberately not another quality ladder or a smaller limit.
+The app's existing remote `AgentClient` path implements this; remote server
+selection/SSH management still need a desktop UI.
+
+Ordinary remote files use connection-owned staged uploads: begin, append with
+exact offsets, finish, and cancel. Blocks carry up to 24 MiB of source bytes
+(32 MiB base64), derived from that same budget; the client coalesces filesystem
+reads instead of sending one RPC per small disk read. Upload IDs cannot be
+consumed by another connection. Partial uploads are removed on cancellation or
+disconnect, and acknowledged retries start a new upload from the retained file.
+Accepted files move to unique durable server paths. The API also supports
+explicit image uploads for non-desktop clients; accepted images are deleted
+after their prepared bytes are handed to the task. Local ordinary files remain
+path references. Folder paths work on a shared filesystem; remote folders must
+be represented as individual files.
+
+Prepared image bytes live in canonical conversation records, so restart, fork
+and export/import preserve images without relying on a client cache. Ordinary
+file paths are references and require their server files to remain available.
+GPT receives Responses `input_image`; native DeepSeek receives Messages base64
+image blocks; its Chat/OpenCode adapter receives `image_url` parts. File parts
+become quoted path context. GPT checkpoint decoding preserves image detail.
+Image token estimates use Codex's image heuristic instead of counting base64
+as text; the initial integration test exposed premature compaction without this.
+Search indexing records image names/types rather than their base64 payloads.
+
+Client frames, notification backlog bytes, and active context are bounded to
+64 MiB. History pagination uses a SQLite cursor and byte budget as well as its
+row limit, leaving large records whole. Desktop pagination continues until an
+empty page. Text remains bounded to 512 KiB, with 32 pending messages and a
+separate serialized pending-input budget. Provider calls, tool output and
+unrelated protocol limits retain their existing owners.
+
+Sources inspected:
+
+- Codex `a795f961be68383738e56ac396742b3e8451696a`,
+  `codex-rs/utils/image/src/lib.rs` (source guard, dimension math and formats),
+  `codex-rs/protocol/src/local_media.rs` (portable image snapshots),
+  `codex-rs/tui/src/chatwidget/image_submission.rs` (32 MiB remote input budget),
+  `codex-rs/app-server-transport/src/transport/websocket.rs` (64 MiB messages),
+  and `codex-rs/core/src/context_manager/history.rs` (image token estimates).
+  Reproduce with `git show REVISION:PATH` in
+  `/Users/meoyawn/Developer/github/codex`.
+- OpenCode `fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`,
+  `packages/ai/src/protocols/open-responses.ts`, `openai-chat.ts`, and
+  `packages/core/src/session/runner/to-llm-message.ts`; DeepSeek harness
+  `ce7073d51254c26cd63b22a60835b8f948deb447`,
+  `packages/llm/llm-deepseek/src/serialize.ts`.
+- Harness's `client/lib/services/composer_clipboard.dart`,
+  `conversation_image_preparation.dart`, `client/lib/ui/chat_view.dart`, and
+  `client/macos/Runner/ClipboardBridge.swift`; its checkout at final inspection
+  was `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`.
+- Resolved `desktop_drop` 0.9.2 native transport/drop lifetime APIs and `image`
+  4.12.0 codecs. Exact package versions and checksums are in `pubspec.lock`.
+
+Verification on macOS 26.4 arm64, Dart 3.13.7 and Flutter 3.47.8:
+
+    dart test --reporter expanded
+    flutter test --no-pub --reporter expanded # from packages/desktop
+    dart analyze
+    python3 packages/desktop/tool/run_flutter.py
+    git diff --check
+
+The full suites pass 72 server/runtime tests and 35 desktop tests. A real
+uncompressed 64 MiB-plus BMP crossed TCP in three acknowledged blocks, with
+source files deleted before admission, and reached the provider fixture as a
+1,600-square PNG. The independent desktop test starts with a 100 MiB BMP and a
+small PNG; a TCP proxy inspects the actual task request and proves that the
+desktop prepared the large image before transport while preserving the small
+image's bytes. It checks cancellation, retained originals, and a source above
+1 GiB being rejected before sending. The source-limit boundary itself is tested
+without allocating a 1 GiB image. Server tests verify original-detail dimensions,
+upload ownership/offsets, disconnect cleanup, and image history through restart,
+fork and import. DeepSeek tests inspect both independent wire formats.
+
+The widget paste test first exposed an invalid clipboard fixture and the drop
+test exposed a real thumbnail overflow; corrected fixtures and the thumbnail
+layout repair pass. Tests now verify native drop event delivery, staging before
+source release, failed-send retention, retry cleanup and plain-text paste. The
+actual macOS app builds and hot reloads without runtime errors. A live clipboard
+smoke check through `readComposerClipboard` and the native method channel staged
+one 70-byte PNG; a rich-text-plus-image fixture returned its text and no image.
+The original pasteboard was restored after the controlled check.
+
+These are local TCP/provider fixtures and a macOS native clipboard check, not
+live-provider vision answers, a physical two-machine test, or a full 1 GiB
+decode/transfer benchmark. Desktop Windows/Linux native paste parity is not
+claimed. Large-image memory use still depends on decoded dimensions and codecs;
+the image package's pixel guard remains in force. No Dart formatter was run.
+
+## 2026-10-31 — Desktop background lifetime and explicit quit
+
+User requirement: closing the desktop window must preserve the embedded server;
+macOS and Windows have exactly two tray actions, Show and Quit. A focused
+window's Command+Q first shows an overlay and requires a second press to quit.
+The user confirmed in-process UDS on macOS/Linux, allowed the efficient Windows
+transport choice, and requested code changes without further compilation.
+
+Keep the Flutter engine, session, database owner and AgentServer in their
+existing process. macOS intercepts window close and orders the retained window
+out; a fullscreen window first leaves fullscreen. Dock reopening and Show
+restore/focus the same window, including when minimized. A native template H
+status item owns Show and Quit. Quit uses FlutterAppDelegate's existing native
+termination request, which awaits the Dart application exit listener.
+
+The Windows runner intercepts WM_CLOSE before Flutter's lifecycle handler,
+hides the retained window, and owns a Shell_NotifyIcon menu. If the notification
+area is unavailable, close minimizes instead of leaving an inaccessible hidden
+window. TaskbarCreated reinstalls the icon after Explorer restarts. Show restores
+and focuses the existing window. Quit calls the application's lifecycle channel;
+Dart awaits the session/database/server cleanup before requesting required native
+exit. Runner destruction removes the icon and releases the engine. The icon is
+created after the first frame, once Dart has installed its quit handler.
+
+DesktopLifecycle handles Command+Q on macOS and Control+Q on Windows before
+focused editor shortcuts. A second distinct key-down within three seconds
+confirms; key repeat cannot confirm. Escape, other input, a click, focus loss,
+or timeout clears the overlay. It does not replace the editor's focus or draft.
+Tray/native menu Quit bypasses this keyboard guard. Hiding never cancels the
+application lifetime token; explicit quit and disposal close the existing owners.
+Cleanup is coalesced, and the server is closed even when session cleanup throws.
+
+macOS/Linux retain their private temporary UDS directory and socket permissions.
+Windows startEmbedded binds 127.0.0.1 on port zero with a fresh in-memory bearer
+secret; the desktop passes it directly to AgentClient.connect. The existing
+WebSocket protocol and browser-Origin rejection stay in place. No named pipes,
+second server process, listener discovery, or persisted credentials are added.
+The desktop also accepts USERPROFILE when HOME is absent. Tokens are never
+included in addresses, output, telemetry, or durable history.
+
+The Windows runner and code-mode hook currently target x64. The pinned QuickJS
+source requires GNU C and winpthreads rather than MSVC. Its Windows build hook
+uses MSYS2 UCRT64 GCC, default C:\msys64\ucrt64\bin\gcc.exe, with an optional
+workspace hooks.user_defines.code_mode.mingw_cc compiler path. It requests static
+GCC/winpthreads linkage and explicitly exports the eight existing bridge symbols.
+The upstream submodule and C ABI remain unchanged. macOS/Linux keep CBuilder.
+This requires an additional Windows development compiler, with no additional
+server process. Windows ARM64 and native UI execution remain unverified.
+
+Sources inspected on macOS arm64, Flutter 3.47.8, Dart 3.13.7:
+
+- Harness client at 6b595ec8a160d7d0c0b5dae0a7352793944fe1d5:
+  macos/Runner/AppDelegate.swift, MainFlutterWindow.swift, StatusMenu.swift,
+  lib/services/status_menu.dart, and docs/tray-reference.md. Its retained engine,
+  native status item, fullscreen-close sequencing and Dock reopening are the
+  reference. Happen intentionally uses only the requested two menu actions.
+- Flutter 737ba8f885dc774b53b442759999a312c9461e4e:
+  engine/src/flutter/shell/platform/darwin/macos/framework/Source/FlutterAppDelegate.mm,
+  FlutterEngine.mm and FlutterViewController.mm; the Windows platform_handler.cc
+  and windows_lifecycle_manager.cc; and the SDK's Windows runner templates.
+  Required Windows application exit posts WM_QUIT, avoiding the close-to-hide
+  WM_CLOSE path. macOS key equivalents reach Flutter before native menu fallback.
+- QuickJS 3d5e064e9dd67c70f7962836505a7fa067bf0a4e: Makefile's CONFIG_WIN32,
+  __USE_MINGW_ANSI_STDIO and pthread linkage; bridge.c and lib/src/bindings.dart.
+- [Microsoft notification-area lifecycle](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar)
+  and [MSYS2 compiler environments](https://www.msys2.org/docs/environments/).
+
+Verification before stopping compilation at the user's request:
+
+    cd packages/desktop
+    flutter build macos --debug --no-pub
+    flutter test --no-pub test/lifecycle_test.dart --reporter expanded
+
+The macOS debug build and four lifecycle checks passed. The checks cover both
+platform keyboard combinations, a focused editor/draft surviving the overlay,
+key repeat, waiting for cleanup before process exit, dismissal and disposal,
+and a real embedded UDS server answering while hidden before tray Quit closes
+its client and removes its socket. The test binding substitutes only the final
+process exit, since Flutter's normal test binding rejects required exit.
+Scoped Dart analysis also passed. No formatter was run.
+
+Native menu interaction, Dock/fullscreen close/reopen and Windows runtime
+behavior were not exercised. No full Windows app build was run; further builds
+were skipped as requested. Native changes require a rebuild/relaunch to take
+effect. The user's existing desktop process was not restarted. The temporary
+MinGW installation and its three newly installed dependencies were removed at
+the user's request. These checks do not establish a complete Windows platform
+port or crash/power-loss behavior.
+
+## 2026-10-31 — Inline file chips in the desktop composer
+
+User requirement: autocomplete must consume the `@` query and insert file chips
+following `/Users/meoyawn/Developer/harness/client`. This supersedes the earlier
+ordinary `@path` insertion decision. Keep the existing server search and wire
+protocol. Enter, Tab and pointer selection insert an atomic inline reference,
+showing the basename with a file/folder icon and retaining the original relative
+path (including a directory's trailing slash). Sending serializes each chip at
+its position as `[basename](path)`, with Harness's Markdown escaping and no `@`.
+Selection reuses following whitespace or adds a space.
+
+The editor owns one UTF-16 object-replacement position per chip and separate,
+immutable offset/path metadata. The session retains these snapshots alongside
+its existing per-task/project drafts. Edits move or remove metadata with the
+corresponding position; duplicate adjacent markers retain their distinct paths.
+Copy/cut exports Markdown paths instead of internal markers. Desktop Flutter
+undo entries retain metadata through weak editing-value snapshots; dictation
+rollback explicitly restores the references in its original selection. Retained
+plain controllers migrate on reload without changing their editing value or
+focus, after any existing dictation session releases ownership.
+
+Source evidence: Harness `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`,
+`client/lib/ui/completion_text_controller.dart` (`insertCompletion`,
+`serializePrompt`, `buildTextSpan`), `client/lib/services/completion_catalog.dart`
+(`CompletionEntry.serializedText`), and `client/lib/ui/inline_reference_appearance.dart`.
+Reproduce with `git show REVISION:PATH` in the Harness checkout. Its retained
+`client/docs/autocomplete-reference.md` describes the atomic leaf, 16 px icon,
+3 px gap, medium accent label, and absence of pill background/border/padding;
+the existing REA evidence is `ev_4c001694c1148856a4c8bb9cd83e60896e7189fa56f15bf3d2c9765b7f24cf81`.
+Happen uses its existing Material file/folder glyphs and bounded label layout.
+Flutter 3.47.8's `EditableText` passes desktop `UndoHistory<TextEditingValue>`
+entries back unchanged; inspected through the Dart package-source tools.
+
+Verification environment: macOS arm64, Dart 3.13.7, Flutter 3.47.8. Commands from
+`packages/desktop`:
+
+    flutter analyze --no-pub lib test
+    flutter test --no-pub --reporter expanded
+    git diff --check
+
+Focused checks cover new/existing drafts, keyboard and pointer completion,
+surrounding text, spaces and Markdown punctuation in paths, folders, navigation,
+submission, duplicate-marker deletion, clipboard output, undo/redo, and cancelled
+dictation. The initial cut/undo and dictation-cancel regressions restored a raw
+marker without its path; both paths now preserve reference metadata. All 40
+desktop tests and scoped analysis pass. The final escaping and rejected-send
+checks pass all 14 controller/view tests. Whitespace checks are clean; no
+formatter was run. Official MCP hot reload succeeded in the existing macOS app,
+with no fresh runtime errors. Read-only inspector properties confirm that its
+mounted TextField uses `ComposerTextController` and remains enabled. The active
+draft was empty; no sample content was entered and no task was submitted.
+
+Tradeoffs: draft chips remain session-local, matching the existing text-draft
+lifetime. Clipboard fallback is portable Markdown; rich chip rehydration through
+Harness's private native clipboard format is not implemented. Server files are
+path references and are not uploaded or read by autocomplete.
+
+## 2026-10-31 — Transient desktop quit hint
+
+User requirement: the desktop quit confirmation should resemble Chrome's brief
+dark overlay and fade away automatically. Replace the dimmed window and Material
+card with a centered translucent charcoal strip, rounded corners, and one bold
+white shortcut message. Show it immediately for one second, then fade it out over
+200 ms. The second distinct shortcut press confirms during that first second;
+key repeat still cannot quit. This replaces the earlier three-second window.
+
+Keep the editor's focus and draft. The hint ignores pointers, while a parent
+Listener dismisses it on pointer down and lets the underlying control receive
+the click. Keep the live accessibility announcement and the rest of the window's
+semantics available. Escape, other input, blur, and hidden-window dismissal retain
+their existing behavior, as do tray Quit and awaited resource cleanup.
+
+Reference: Chromium `445cb045e270111ab38ba7beb2964c4ac4efce72`,
+[`chrome/browser/ui/cocoa/confirm_quit_panel_controller.mm`](https://github.com/chromium/chromium/blob/445cb045e270111ab38ba7beb2964c4ac4efce72/chrome/browser/ui/cocoa/confirm_quit_panel_controller.mm).
+Its frame uses 75% gray-0.2 fill, bold 24-point white text, and 20-point corners
+on macOS 26. `dismissPanel` waits one second; `animateFadeOut` lasts 0.2 seconds.
+Retrieve that pinned raw file with `curl -fsSL` to reproduce the source inspection.
+Happen keeps its existing double-press interaction rather than adding hold-to-quit.
+
+Verification on macOS arm64, Flutter 3.47.8, Dart 3.13.7:
+
+    cd packages/desktop
+    flutter test --no-pub test/lifecycle_test.dart --reporter expanded
+    flutter test --no-pub --reporter expanded
+
+All four lifecycle checks and all 40 desktop tests pass. The dismissal regression
+observes the hint before expiry and partway through the fade, then confirms its
+removal; a real button beneath it receives the dismissing click. Existing checks
+cover both keyboard combinations, retained focus/draft, repeat suppression, and
+awaited shutdown. From the repository root, `dart analyze packages/desktop` and
+`git diff --check` pass. MCP hot reload succeeds with no fresh runtime errors.
+No formatter was run. The shorter confirmation interval is deliberate; native
+Windows appearance and screen-reader announcements were not exercised.
+
+## 2026-10-31 — Codex-style MCP result and output boundaries
+
+User decision: follow Codex when large MCP results are consumed through Code
+Mode. Remove the manager's 64 KiB replacement error: JavaScript receives the
+complete MCP envelope so it can parse and filter data before printing. Preserve
+`content`, `structuredContent`, and `isError`; exclude client-private top-level
+`_meta` before exposing results to the agent or recording nested host output.
+An ordinary MCP error remains an envelope that the cell must check before
+parsing its text. The shared agent guidance now makes that check explicit.
+
+Keep output presentation separate. Cells retain their existing 10,000 approximate
+token default, pragma override, UTF-8 head/tail truncation, and bounded output
+collector. Direct MCP calls use the same text formatter at the model-history
+boundary with a 10,000-token budget. Their success/error flag is independent of
+truncated text; small results retain the existing JSON wrapper. Both providers
+use this shared agent path. Full nested MCP data remains in durable host history,
+outside the printed cell response.
+
+Use a separate 64 MiB ceiling for each MCP stdio message, HTTP JSON body, or SSE
+event, aligned with Codex's Code Mode host-frame ceiling. Exceeding that bound
+fails the transport instead of fabricating a tool-content error. General protocol
+and MCP catalog bounds are unchanged. This selects Codex's separation of raw
+results and model presentation, not its complete MCP or Code Mode implementation.
+
+Source evidence: the user-selected local Codex checkout at
+`67f0994b532b8740f14b5b738af7b7b2a915b1d6`. Inspected
+`codex-rs/core/src/tools/context.rs` (`McpToolOutput::code_mode_result` and
+`response_payload`), `codex-rs/tools/src/tool_output.rs` (MCP serialization without
+private metadata), and `codex-rs/code-mode-protocol/src/host/codec.rs` (64 MiB
+frame bound). The raw-result/history separation in `context.rs` is also present
+at the previously pinned `a795f961be68383738e56ac396742b3e8451696a`. Reproduce
+source reads with `git show REVISION:PATH` in that checkout.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    dart test test/server_tools_test.dart test/mcp_test.dart test/code_mode_test.dart -r expanded
+    dart test -r expanded
+    dart analyze
+    git diff --check
+
+The new server regression failed before the repair because the cell could not
+retrieve or filter its oversized result and saved no values. It now parses a
+3 MiB reply from a real supervised subprocess, selects a library at the end of
+the payload, and persists completion. Other assertions cover bounded printing,
+bounded direct successes and errors, structured data, and private metadata.
+The HTTP fixture preserves 4 MiB of UTF-8 text through both JSON and SSE. The
+full repository suite passes all 74 tests and analysis reports no issues.
+
+Official MCP hot reload succeeded in the existing desktop session with no
+runtime errors. The original live `getIsolate` call then returned 299,180 text
+characters containing 2,256 libraries, and in-cell filtering selected
+`package:desktop/app.dart`. No authentication URIs are retained in this record.
+
+Tradeoffs and remaining limits: retaining complete replies increases copying and
+history size. QuickJS's existing 32 MiB memory, CPU, timeout, and store limits
+still apply; accepting a transport message does not guarantee that a cell can
+process it. The 64 MiB boundary was not load-tested, and this evidence does not
+establish cross-platform capacity or all of Codex's model-specific output policy.
+
+## 2026-10-31 — Shared composer popover and MCP inventory
+
+User requirement: follow `/Users/meoyawn/Developer/harness/client` for `/mcp`,
+also implement `/mcp verbose`, and use the existing file-search popover for all
+composer autocomplete. `ComposerAutocomplete` in `file_autocomplete.dart` now
+owns one overlay, anchor, scroll controller, selection index, and keyboard path
+for file mentions, slash suggestions, and MCP status. `McpStatusMenu` supplies
+only content inside that surface. Neither command creates a task, invokes the
+model, writes history, changes config, or calls an MCP tool. Commands also work
+before provider sign-in and while a task is working.
+
+Selecting a command removes only its query and opens a transient filter scope;
+surrounding text, suffixes, file-reference identities and focus survive. Server
+rows are read-only Enabled/Disabled and authentication information. Verbose adds
+connection state, tool names, resources and resource templates. Escape, blur,
+navigation, a new mention/command, or accepted submission retires the scope.
+IME composition is left alone. A selected whole-command paste is recognized
+when submitted instead of becoming a prompt. The surface keeps the file menu's
+320-pixel height cap and does not move the composer or transcript.
+
+The network owner exposes `mcp.inventory`, with optional `verbose` and `server`
+parameters. The manager retains accepted configured entries separately from
+active connections so disabled servers appear without being launched. Status
+and tool names come from the shared runtime. A fresh inventory uses the existing
+serialized config reconciliation; invalid edits retain the last accepted config
+and return its sanitized diagnostic. Resource catalogs follow existing bounded
+pagination. Individual resource/template failures preserve other catalog data.
+The existing `mcp.status` response remains unchanged.
+
+Inventory includes display fields only, excluding credentials, command arguments,
+endpoint URLs, tool schemas and private metadata. `configured_headers` describes
+configuration presence, not successful authentication; HTTP 401/403 reports
+`not_authenticated`. Other connections report unsupported interactive auth.
+OAuth login is not advertised. Results retain the 2 MiB protocol bound and can
+be filtered to a server. Each request has a 30-second server deadline; the client
+uses 35 seconds. Closing/superseding a popover sends `mcp.inventory.cancel` with
+its request ID, releasing its outstanding MCP requests without stopping shared
+processes or unrelated WebSocket work.
+
+Source evidence, inspected using `git show REVISION:PATH` and `rg`:
+
+- Harness client `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`:
+  `lib/ui/chat_view.dart`, `lib/ui/mcp_status_menu.dart`,
+  `lib/services/mcp_status_catalog.dart`, and `docs/mcp-status-reference.md`.
+  The reference opens a composer submenu with disabled informational rows and
+  preserves the draft; its host/thread config cache is not copied because
+  Happen currently has one shared global MCP owner.
+- Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`:
+  `codex-rs/tui/src/chatwidget/slash_dispatch.rs`,
+  `codex-rs/tui/src/history_cell/mcp.rs`, and
+  `codex-rs/app-server-protocol/src/protocol/v2/mcp.rs` establish compact status,
+  verbose tool/resource/template inventory, and server-owned discovery. This
+  does not add Codex's OAuth or per-thread MCP configuration features.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    dart test test/mcp_inventory_test.dart test/mcp_test.dart test/config_reload_test.dart -r expanded
+    flutter test --no-pub packages/desktop/test/view_test.dart -r expanded
+    flutter test --no-pub packages/desktop/test -r expanded
+    ulimit -n 4096; dart test -r expanded
+    dart analyze
+    git diff --check
+
+The nine focused server tests pass. New inventory checks use actual UDS, HTTP,
+and stdio transports to verify disabled entries, pagination, sanitized partial
+failures, preserved process identity, invalid config, overlapping requests, and
+underlying request cancellation. The full desktop suite passes 43 tests; the
+full repository suite passes 84 tests with the per-shell descriptor limit above.
+The initial concurrent full run exhausted its open-file limit during the
+existing 100-task streaming case and config reload cases. Raising that limit
+for the test process resolved all three failures. Analysis reports no issues.
+
+The live development app initially returned `Unknown MCP operation`: hot reload
+did not re-enter the suspended network owner's request handler. A hot restart
+loaded the new operation; temporary VM tooling preserved drafts, inline file
+references, and the selected project/task. A syntax error in the concurrently
+edited DeepSeek page parser initially blocked that restart; its if-case guard
+was corrected without changing parsing behavior. Live compact and verbose
+discovery then returned the configured servers. No credentials or VM authentication URIs are
+retained here.
+
+A live hover also exposed Flutter's nested-tooltip layout assertion beneath a
+`CompositedTransformFollower`. The composer regression reproduced it before
+the repair and passes afterward. Informational server rows no longer create a
+second tooltip overlay. Final hot reload and runtime-error inspection succeed.
+These are local functional checks, not cross-platform or long-running-load
+measurements. Adding new handlers to an already suspended network entrypoint
+still requires restarting that development owner.
+
+## 2026-10-31 — Server-owned repository instructions and multi-turn context
+
+User requirement: implement repository AGENTS.md handling in packages/server
+like the inspected Codex checkout, and test context pollution across turns beyond
+instruction messages. Move repository discovery to the shared server network
+owner. Its per-task snapshot survives the short-lived agent and SQLite owners.
+Reuse it while cwd is unchanged; a cwd change discards the previous selection
+before discovery. Server restart, archive/restore and a new task/fork/import
+start with fresh discovery. File edits alone do not invalidate a warm snapshot.
+
+Keep at most 256 lightweight snapshots in LRU order, independently of resident
+task owners; eviction makes the next use a cold resume. This bounded cache is a
+Happen lifetime adaptation, not Codex's persistent runtime allocation policy.
+Happen has one local filesystem context and no project trust/sandbox selections.
+The fixed supported filenames are AGENTS.override.md and AGENTS.md; no additional
+configuration knobs or fallback filenames are advertised by this change.
+
+Discovery follows the nearest .git file/directory down to cwd, or cwd alone when
+there is no marker. Choose one file per directory; an empty project override
+suppresses the regular file. Follow instruction-file symlinks, preserve the
+selected cwd's path spelling, and decode UTF-8 lossily within one 32 KiB project
+byte budget. Keep the existing independent global bound and nested-file agent
+guidance. Reads are asynchronous and bounded; cancellation closes the file
+stream and prevents subsequent discovery stages. Global instruction loading
+retains its existing per-turn behavior; this change selects repository caching.
+
+Persist the combined snapshot with its context updates as before. Append a
+user-role INSTRUCTIONS message only for an applicable nonempty snapshot or an
+actual removal. Use Codex's explicit replacement/removal notices. An unchanged
+snapshot or an initially empty chain adds nothing. Compaction restores one
+current nonempty snapshot; earlier snapshots and notices remain only in durable
+history after installation. Restore the initial environment once and update it
+only on cwd changes. Do not replace the frozen model instructions/tool prefix.
+
+The broader context audit found an empty MCP availability notice on a fresh task
+and unconditional empty MCP/client notices after compaction. Omit these empty
+baselines; keep meaningful additions, changes and removal notices. Empty MCP
+snapshots can remain local until there is a model-visible update, avoiding an
+otherwise unnecessary durable event. Shared history projection already excludes
+turn status, nested host-tool records and cell store values; it appends each model
+call/result once. The new regression verifies these boundaries through actual
+provider requests instead of asserting the context builder's private helpers.
+
+The user explicitly selected Codex's context-saving behavior for the broader
+audit too. Match WorldStateHash's sorted-JSON-object comparison for tool schemas;
+catalog ordering alone must not append another declaration. Match its per-member
+tool deltas: availability messages include only added/changed tools and explicit
+removed names, and MCP server guidance is sent only when it changes. Rebuild one
+full current baseline after compaction. Do not repeat every unchanged tool name
+or usage paragraph on each catalog edit. Existing direct/code-mode result budgets
+and durable nested-output separation already follow the selected Codex boundary.
+Deferred tool search and Responses Lite are not implemented by these changes.
+
+Pinned source evidence: Codex
+`67f0994b532b8740f14b5b738af7b7b2a915b1d6`, inspected with
+`git show REVISION:PATH` in /Users/meoyawn/Developer/github/codex:
+
+- codex-rs/core/src/agents_md.rs: ancestor selection, filename precedence,
+  worktree markers, empty files, lossy UTF-8 and shared project byte budget.
+- codex-rs/core/src/agents_md_manager.rs: cached repository selection and separate
+  host-instruction refresh. Happen does not implement its trust/environment API.
+- codex-rs/core/src/context/world_state/agents_md.rs and
+  codex-rs/core/src/context/user_instructions.rs: deduplicated user context,
+  INSTRUCTIONS markers, full replacement and explicit removal.
+- codex-rs/core/src/context/world_state/mod.rs: WorldStateHash sorts all JSON
+  objects; top_level_tools.rs emits changed members and named removals.
+  tools.rs skips initially empty namespace summaries and emits deltas;
+  apps_instructions.rs and plugins_instructions.rs omit unavailable guidance.
+- codex-rs/core/src/compact.rs: rebuild current world state for a replacement
+  window before the last retained real user message/summary. The deferred tools'
+  separate 4 KiB namespace-summary cap is not applied to Happen's direct schemas.
+
+Verification environment: macOS arm64, Dart 3.13.7. Commands:
+
+    dart test test/agents_md_test.dart test/context_test.dart test/compaction_test.dart test/deepseek_server_test.dart -r expanded
+    dart test test/server_tools_test.dart test/client_tools_test.dart -r expanded
+    ulimit -n 4096
+    dart test -r expanded
+    dart analyze
+    git diff --check
+
+Before the cache change, the warm-turn regression appended newly edited files on
+its next turn. Before empty-notice suppression, the full-context regression
+expected environment plus user input and received an extra empty MCP message.
+Extended checks cover five real code-mode turns, unchanged
+prefixes/tools/instructions, one-time effort changes, nested unprinted receipts,
+restart and repeated compaction. The full repository suite passes all 84 tests.
+Whole-repository analysis and whitespace checks pass. The final focused run
+passes all eleven context/instruction/tool tests after analyzer cleanup. Official
+Dart MCP hot reload succeeds in the existing native Happen app, with no fresh
+runtime errors. No formatter was run.
+The catalog-order regression also failed before canonical comparison: an unchanged
+catalog added a declaration and notice (32 items instead of 30). It now verifies
+that changing one tool does not repeat its unchanged sibling's name or guidance.
+The focused eleven-test run passes, including explicit MCP/client removal names
+and both Console provider identities. The 100-task fixture initially exhausted
+the shell's 256-file soft limit; with a process-local 4,096-file limit, the same
+fixture passes in about one second. No global machine limits were changed.
+
+These are local provider/transport fixtures, not model-quality, cache-hit,
+cross-platform, network-filesystem-latency or long-duration capacity measurements.
+Automatically loading descendants still relies on the agent following guidance.
+
+## 2026-10-31 — Shared web tool with lab-owned search backends
+
+User decision: preserve the Codex-style tool interface, use OpenAI-hosted search
+for GPT, and use OpenCode Console hosted search for DeepSeek to avoid an auxiliary
+model request. Cost, rather than search-quality comparisons, is the selection
+criterion. This also applies to DeepSeek reached through the OpenCode model route.
+MCP servers must come exclusively from global configuration; neither lab embeds
+an MCP server, MCP transport, or automatic MCP fallback.
+
+Expose `web.run` directly and `tools.web__run` inside `functions.exec`. Implement
+the shared subset `search_query` (`q`, optional `recency`/`domains`), `open`
+(`ref_id`, optional `lineno`), `find` (`ref_id`, `pattern`), and `response_length`.
+Reject unknown operations and accept one to four operations per invocation.
+Keep the existing code-mode and durable conversation contracts. Tool results
+append normally, including after restart and compaction; new tasks declare the
+web namespace alongside `functions`.
+
+GPT sends the selected model, task ID, commands and bounded visible conversation
+tail to the provider-relative `alpha/search` HTTP endpoint. It reuses ChatGPT
+credentials and refreshes once after HTTP 401. The tail follows Codex's two-user
+message selection, excludes contextual notices and current assistant commentary,
+and approximates its 1,000-token assistant bound with 4,000 characters. Search
+output is preserved as tool text with its source URLs and references.
+
+DeepSeek sends `{query, providerID: "opencode"}` to Console's `/api/websearch`
+with the existing access token and selected organization. OpenCode's response
+contains up to eight source records. Domain/date constraints become query hints
+and are also applied to the returned sources; recency excludes undated sources.
+This can yield fewer results than the upstream search returned. `open` and `find`
+use ordinary unauthenticated HTTP GET for source URLs, convert HTML to readable
+text with links, and return zero-based numbered lines. They do not execute page
+JavaScript or implement PDF/image operations. GPT can additionally use opaque
+references returned by its search service.
+
+All I/O stays in the shared network owner and HTTP pool. Each web request has a
+60-second deadline and caller-owned cancellation which aborts its request and
+releases its input subscription. Responses are bounded to 2 MiB before parsing;
+model-facing output is bounded to 64 KiB. Authenticated POST redirects are
+rejected; page GETs carry no provider credentials. Errors do not echo remote
+error bodies, headers, or authentication tokens. Optional
+`providers.deepseek.web_search.endpoint` and
+`providers.opencode.web_search.endpoint` override only Console's HTTP endpoint.
+
+Pinned sources inspected on macOS arm64:
+
+- Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`:
+  `codex-rs/codex-api/src/search.rs`, `endpoint/search.rs`, and
+  `ext/web-search/src/{schema,history,tool}.rs` define the command names,
+  provider-relative endpoint, visible context selection and plain tool output.
+- OpenCode `173f6c6dce7db669679625f6af93651ae66f16be`:
+  `packages/core/src/plugin/provider/opencode.ts`,
+  `packages/schema/src/websearch.ts`, and
+  `services/www/src/docs/content/console/websearch.mdx` define Console's request,
+  authentication, response and documented $0.01 successful-search charge.
+- DeepSeek Harness `ce7073d51254c26cd63b22a60835b8f948deb447`:
+  `packages/web/web-search-exa`, `web-search-perplexity`,
+  `web-search-deepseek`, and `web-deepseek-api` contain its alternatives. The
+  native Search/Fetch API avoids a model turn; Messages search uses one. This
+  inspection does not establish a lower cost than the user's selected backend.
+
+Reproduce source inspection with `git show REVISION:PATH` in the corresponding
+local checkout. Current OpenAI guidance was also checked at
+https://learn.chatgpt.com/docs/web-search and
+https://developers.openai.com/api/docs/guides/tools-web-search.
+
+Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze
+    git diff --check
+
+The current workspace passes all 84 tests and analysis/whitespace checks. The
+new owner-boundary cases execute direct and code-mode searches through real
+agent/network/storage owners, check domain/date filtering and HTML retrieval,
+resume after restart, reject undeclared operations, abort incomplete responses,
+bound oversized replies, sanitize provider failures and reuse the HTTP pool.
+The first full run exposed an existing client-tool test's fixed tool inventory;
+its assertion now checks the actual contract that client tools are appended
+rather than inserted in the initial catalog. The 100-task case exceeded this
+shell's default 256-file limit; it passes with the process-local limit above.
+
+Live OpenAI search, open and find calls succeeded using the existing login.
+The authenticated public Console configuration endpoint returned HTTP 200 but
+advertised no hosted-search configuration; `/api/websearch` returned HTTP 404.
+Therefore Console search is verified with protocol fixtures, not claimed to be
+available for this account. Unavailable access remains an explicit tool error;
+no paid integration was enabled and no search MCP is left in global config.
+
+Fourteen existing idle tasks received one append-only tool declaration through
+Dart MCP. Their saved initial configurations were checked unchanged. This was a
+one-time operational update, with no migration branch or probe script added to
+the repository. The requested AGENTS.md rule keeps such work outside the repo.
+The native app accepted hot reload. No Dart formatter was run.
+
+## 2026-10-31 — Composer context usage and one send/stop action
+
+User requirement: borrow the Harness client's context circle, include cache hits
+in its tooltip, remove the Enter/Shift+Enter footer hint, and use one button for
+Send and Stop. Follow-up requirements: combine model and reasoning into one
+picker, move it and the circle to the right, and make the circle discoverable in
+existing chats. The user prefers archiving old chats over adding migration glue.
+Keep sign-in and live-dictation status visible when they provide information
+about the current operation.
+
+Use a 16px ring with a 2px stroke, a clockwise progress arc from twelve o'clock,
+70% foreground progress and a 16% foreground track for measured usage. Give the
+graphic a 28px hover/tap target with a help cursor. Animate changes over 120 ms
+with ease-out unless reduced motion is enabled. Show no percentage beside it;
+expose the percentage through image semantics and a centered tooltip above the
+ring. The tooltip reports used/window tokens, remaining percentage below 50%, and
+cache-hit percentages plus cached/total input counts for the latest response and
+the conversation. Keep the control visible when usage is missing, with a 32%
+foreground empty track and an explicit unavailable label. Unknown usage must
+never be presented as measured zero. Available cache counts remain readable even
+if the current context usage or limit is unavailable.
+
+Derive this projection from the desktop's existing durable, sequence-keyed
+events. Sort the relevant events by sequence so paged history and live events
+produce the same result; their existing map identity prevents double counting a
+subscription event that also appears in a history page. Read the denominator
+from the task's frozen `provider_settings.context_limit`, including configuration
+migration events. The numerator is the latest `model.completed` input plus output
+tokens, clamped to the limit. Conversation spending is never the ring numerator.
+Omit invalid or unavailable counts, and distinguish measured zero from unknown.
+
+Cache totals include valid usage reports from ordinary responses and compaction
+requests. Only input tokens are in the cache-rate denominator. A compaction
+request measures the old context; the durable event does not expose the resulting
+`context_usage` metadata. Show unavailable usage after successful compaction until
+a new model response measures the replacement. This avoids guessing its size or
+showing the discarded context as current usage. No provider, protocol, storage or
+server changes are needed. Reading the existing events during build also handles
+tasks that were already mounted before hot reload, without new retained state.
+
+Group circle, combined picker, microphone and primary action on the right, with
+the existing dictation Cancel control at the leading edge. The picker shows the
+selected model and effort together and opens one menu with Model and Reasoning
+Effort sections and selection checkmarks. Existing tasks keep their model locked;
+supported effort changes remain available while running. Disabled entries explain
+the fixed-task rules. New tasks can choose both from the same menu. Collapse the
+picker to an icon at narrow widths. Keep task settings with `DesktopSession`;
+this changes presentation without introducing another settings owner.
+
+Follow Harness's content-sensitive action: a running task with an empty draft
+shows Stop; text or attachments switch the same control to Steer/Queue according
+to the saved delivery mode. Idle tasks show Send, disabled without content.
+Recording dictation can still finalize and send from that control. Stop remains
+available while connected even after sign-out. Observe the text controller only
+for this small action slot so typing updates its action without rebuilding the
+whole composer. Existing draft, attachment, focus, and cancellation owners remain.
+
+Source evidence inspected on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+- Harness checkout `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`, current
+  `client/lib/ui/composer_controls.dart` lines 177–291 (SHA-256
+  `dcdbc3fba42590028aab3b8c2fc040d60ebec8283890b0358a9635b8e990e40f`),
+  and `client/docs/context-window-reference.md`: ring, accessibility, tooltip,
+  cache counts and the requested visibility adaptation.
+- Current Harness `client/lib/ui/chat_view.dart` lines 3054–3082 (SHA-256
+  `9c7dd95795da0645e70a4817665d1e4c9eb5483cf996404bd8f79efd95630a12`):
+  content-sensitive Send/Stop and follow-up delivery ownership. These hashes
+  identify the inspected working files, including uncommitted Harness changes.
+- The same Harness file's `_modelMenu` and composer footer establish the combined
+  menu sections, selected-state checkmarks, fixed-task guidance and right-side
+  placement. Happen retains its own provider catalog and task-setting rules.
+- Happen `packages/ai/lib/src/model.dart` (`ModelUsage`),
+  `packages/agent/lib/agent.dart` (`compactContext` and `model.completed`), and
+  desktop history/subscription merging establish the existing usage contract.
+- Read-only Dart MCP inspection found two loaded existing chats with 32 and 22
+  completed responses, normalized cache counts and frozen 272,000-token limits.
+  A third task had seven events, no configuration event and no model response.
+  The former require no conversion; the latter has no usage to display. Keep
+  missing data explicit instead of adding migration or compatibility branches.
+  Follow-up inspection found both existing chats ended in `context.compacted`,
+  after their last `model.completed`. The initial hide-after-compaction behavior
+  explains their missing circle despite intact historical token/cache reports.
+  No task data was changed, archived or rewritten during this investigation.
+
+Reproduce from `packages/desktop`, without running a Dart formatter:
+
+    flutter analyze --no-pub lib/app.dart lib/context_usage.dart lib/model_picker.dart test/view_test.dart
+    flutter test --no-pub test/view_test.dart test/dictation_test.dart --reporter expanded
+
+Scoped analysis passes, along with all 27 composer and dictation tests. The
+context regression originally failed on the missing 40% indicator and reproduced
+the 16px-only hover target on this follow-up. It checks the actual hovered
+tooltip from outside the painted edge, right-side placement, chronological
+history, live updates, duplicate sequences, compaction, zero/full/invalid counts,
+explicit unavailable states, retained cache hits, task switching and preserved
+draft/focus. The combined-picker regression failed on its missing trigger before
+the change, then exercised new-task model/effort choices, preserved draft text,
+running GPT effort changes and fixed-task restrictions. The action regression
+exercises Send, Stop, Steer, Queue, whitespace and stopping after sign-out. The
+existing dictation regression protects its live fallback status while the
+requested keyboard hint stays removed.
+
+Official Dart MCP hot reload succeeded. Read-only inspection of the mounted view
+found the 16px painted ring inside its 28px target, followed by one combined
+picker, microphone and primary action at the right. The selected existing chat
+showed unavailable current usage after compaction while retaining its 95.7%
+conversation and 99.9% latest-response cache rates in the tooltip projection.
+Draft length, selection and focus were unchanged. Zero error widgets and fresh
+runtime errors were reported. Widget tests exercised hovered tooltips and menus
+without opening an overlay or submitting input in the live app. Other operating
+systems and production AOT rendering performance remain unmeasured.
+
+## 2026-10-31 — One OpenAI web schema for every provider
+
+User requirement: retain one tool interface for every model and provider. Keep
+`web.run` and `tools.web__run`; do not introduce provider-specific aliases or
+parameter schemas. This supersedes the earlier narrowed three-operation schema.
+Authentication, HTTP routes and native API encoding remain lab-owned.
+
+The desktop's HTTP 400 was reproduced with a minimal `gpt-6.1-sol`, low-effort
+request. OpenAI returned `invalid_request_error`, parameter `tools`, identifying
+`web.run` as reserved and requiring its configured schema. This happens even
+when the prompt does not use tools. Adding `strict: false` to the former schema
+does not resolve it. The pinned complete baseline schema returns HTTP 200.
+
+Copy the serialized baseline schema into the shared `ai` package without
+compacting descriptions, adding constraints or removing operations. Use Codex's
+`commands_schema(false)` baseline, excluding its optional literature extension,
+uniformly across models. GPT serializes JSON functions with `strict: false`, as
+upstream does. Shared validation reads this same schema for types, required
+fields, enums and unsigned numbers. The former four-operation/36,500-day limits
+and nonempty-string additions no longer apply.
+
+GPT forwards all baseline operations to OpenAI search. Console retains its
+implemented search/open/find backend and explicitly rejects unavailable
+operations with `web_search_unsupported`. The shared instructions explain this
+possibility. A common interface does not establish identical hosted-service
+capabilities; no automatic backend fallback was added.
+
+Pinned evidence: Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`,
+`codex-rs/codex-api/src/search.rs`, `ext/web-search/src/{schema,tool}.rs`,
+`tools/src/responses_api.rs`, and
+`core/tests/suite/snapshots/all__suite__scenarios__web_search__literature_search_web_run_schema.snap`.
+Reproduce with `git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+Removing only `literature_search_query` from the snapshot and hashing sorted,
+compact JSON yields SHA-256
+`de3be87e7abfe9b67ba757f27804d4206b51c2a8de9e9799fa7db9ef4abe3539`.
+The server regression rejects any other schema at the real request boundary for
+both GPT and Console, reproducing the original failed turn before the fix.
+
+Verification: macOS arm64, Dart 3.13.7, Flutter 3.47.8. Commands:
+
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart test test/web_search_test.dart --reporter expanded
+    dart analyze
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    git diff --check
+
+All 84 repository tests and all 45 desktop tests pass. Analysis and whitespace
+checks pass. Temporary provider probes using the desktop credential owner
+completed the Ray Peat research question over HTTP/SSE and WebSocket; each
+executed two web calls and returned a final answer with source links. Dart MCP
+hot reload succeeded and no runtime errors were found. Sanitized measurements
+are in [web schema evidence](evidence/web-tool-schema.json).
+
+Fifteen saved idle tasks retained the old schema: one initial declaration and
+fourteen appended declarations, across GPT and DeepSeek. A one-time Dart MCP
+operation used the running server's writer ownership to append corrected
+configuration records. For fourteen active contexts with old declarations, it
+appended a replacement context containing the same conversation and corrected
+tool declarations. Original history was retained; no model summary or in-place
+history rewrite was used. This intentionally creates a cache boundary for the
+invalid schema. Reinspection found zero outdated active declarations. No
+operational script or special migration branch was added to the repository.
+
+Live acceptance is verified for `gpt-6.1-sol`; other hosted model/account
+availability and specialized Console operations remain unverified.
+
+## 2026-10-31 — Code-mode storage accepts large JSON results
+
+The reported `getIsolate` cell parsed a complete MCP response but failed when
+`store("mainIsolate", value)` hit a hardcoded 262,144-character JSON limit.
+An independent 1,048,576-character limit on the whole store would reject larger
+values after assignment. These checks belong to `packages/code_mode`, not the
+agent's persistence or model-output boundary.
+
+Remove both serialized-size checks. Preserve JSON validation and snapshotting,
+fresh cell contexts, and the existing QuickJS memory, CPU and wall-time limits.
+The agent continues to commit explicit values with task metadata and history,
+while sending only printed output to the model. No agent interface, storage
+format, configuration knob or saved-task migration is needed.
+
+Pinned source evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
+`codex-rs/code-mode-runtime/src/runtime/callbacks.rs` (`store_callback` and
+`load_callback`) converts values to JSON without per-value or aggregate size
+checks; `session_runtime/mod.rs` carries explicit values between cells and
+commits writes at completion. `code-mode-protocol/src/description.rs` advertises
+serializable values without these extra limits. Reproduce source reads with
+`git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+
+Verification on macOS arm64, Dart 3.13.7:
+
+    dart test test/code_mode_test.dart --plain-name 'large JSON values survive store and load across fresh cells' --reporter expanded
+    dart test test/code_mode_test.dart test/server_tools_test.dart test/context/bloat_test.dart --reporter expanded
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze
+    git diff --check
+
+The regression first failed with `Stored value too large`, then with
+`Cell store limit exceeded` after removing only the per-value check. It passes
+after both checks are removed: parallel host replies include a JSON result over
+3 MiB, the stored snapshot survives mutation of the original, and a fresh cell
+loads and verifies its full contents while printing only a selected summary.
+All 12 focused tests and all 88 repository tests pass. Scoped analysis of
+`packages/code_mode` and `test/code_mode_test.dart` reports no issues; full
+analysis reports only an informational `use_null_aware_elements` lint in the
+unrelated `test/context/discovery_test.dart:21`. Whitespace checks pass.
+No Dart formatter was run.
+
+Official Dart MCP hot reload succeeded with no runtime errors. A fresh live
+`getIsolate` response contained 298,125 text characters and 2,284 libraries.
+An ad hoc VM evaluation passed that response through the reloaded `CodeMode`,
+stored the complete parsed object, then loaded it in a second fresh cell and
+selected `package:desktop/app.dart`. Only the summary was inspected; no saved
+task was changed and no operational probe was added to the repository.
+
+Tradeoff: larger saved state costs memory, copying and durable history space;
+the complete store is still loaded into each fresh cell. Removing these two
+caps does not promise unlimited storage or that every accepted MCP transport
+message fits the default 32 MiB runtime. The regression establishes this tested
+3 MiB case, not maximum capacity or parity with Codex's V8 memory management.
+
+## 2026-10-31 — Deferred tool discovery and conditional catalog refresh
+
+User decision: implement the recommended deferred discovery design, keep each
+change in its owning layer, and group the important context-bloat regressions
+under `test/context/`. The user also asked whether refreshing tools is necessary
+when code mode can discover them later.
+
+Keep catalog change checks, but separate them from schema loading. A model-step
+boundary checks revisions so newly available namespaces and changes/removals of
+already loaded native tools remain visible. Code-mode cells read the current host
+registry when they start; `tools.tool_search` reads it again when invoked. This
+also supports a config write followed by discovery inside the same cell.
+`ALL_TOOLS` is the cell's starting snapshot. It is not rewritten underneath
+running JavaScript; search is the way to observe a later change.
+
+The MCP owner caches catalog snapshots against server tool-map generations and
+usage guidance. Unchanged reads return only the revision and an unchanged flag;
+reconnection, removal, tool-list replacement, and guidance changes invalidate
+the snapshot. Client registrations have their own revisions. The network owner
+still performs bounded config reconciliation on MCP catalog reads. Keeping that
+read closes the existing race where a tool edits config before the watcher's
+200 ms debounce fires. This saves schema rebuilding/copying and avoids context
+pollution; it does not claim to eliminate filesystem checks or polling.
+
+New tasks keep `functions.exec`, `web.run`, and `tool_search` eager. MCP and client
+schemas remain in the host registry. Automatic notices describe namespaces and
+tool counts, with at most 160 UTF-8 bytes of server guidance per namespace and a
+4 KiB cap per notice. Full guidance is returned by discovery; changing guidance
+past the abbreviated prefix still invalidates earlier guidance explicitly.
+Unchanged schemas and changes to unused schemas produce no declarations.
+
+Both discovery paths use the agent's local BM25 selection, with Unicode words,
+camel-case splitting, deterministic ties, and exact callable-name priority.
+The default limit is 8; Happen caps it at 32. This uses the Codex query/limit
+contract, not its English stemmer or an identical ranking implementation.
+Code-mode search returns names, TypeScript declarations, original JSON schemas,
+and applicable server instructions. Only printed results enter model context.
+The declarations are rendered in `packages/code_mode`; original schemas remain
+available because TypeScript cannot represent every JSON Schema constraint.
+
+Direct search loads only selected native definitions. The shared AI record uses
+the `search` tool format with JSON arguments and attaches selected definitions to
+its correlated result. `packages/gpt` maps these to client-executed
+`tool_search_call`/`tool_search_output` and marks returned functions deferred.
+`packages/deepseek` exposes a JSON search function, supplies selected schemas to
+its catalog, and places native Messages tool references after the search result;
+the Console/Chat route uses its existing request-level catalog. Provider wire
+details stay in their lab packages. Connections, config reconciliation, client
+ownership, and actual calls stay in the server/MCP owners.
+
+Repeated native searches do not repeat unchanged schemas. Already loaded schemas
+receive append-only updates; removal notices name loaded tools and live routing
+rejects stale calls. Compaction restores current namespace summaries and only
+the still-available loaded subset. A retained search exchange keeps its result
+but its definitions are restored once in the baseline. Code-mode discovery text
+follows ordinary history compaction. Older saved tasks gain one ordered search
+declaration without rewriting their initial instructions or tools; historical
+eager declarations still count as loaded. This supersedes the earlier policy of
+eagerly appending and restoring the entire external catalog.
+
+Pinned source evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
+inspected in `/Users/meoyawn/Developer/github/codex` with `git show REVISION:PATH`:
+
+- `codex-rs/core/src/tools/handlers/tool_search.rs` and `tool_search_spec.rs`:
+  local BM25, query/limit arguments, code-mode versus direct search behavior.
+- `codex-rs/protocol/src/models.rs`: client execution, call IDs, arguments,
+  selected tools and deferred-loading fields in the native search wire records.
+- `codex-rs/core/src/context/world_state/tools.rs` and
+  `top_level_tools.rs`: bounded deferred namespace context and loaded-tool deltas.
+- [OpenAI tool-search documentation](https://developers.openai.com/api/docs/guides/tools-tool-search):
+  client-executed loading and preserving the earlier prompt prefix.
+
+Verification on macOS arm64, Dart 3.13.7, in the working tree based on
+`9470b12e3d40b8b86e42b60f1f9400ed9748a648`:
+
+    dart test test/context test/server_tools_test.dart test/client_tools_test.dart test/mcp_test.dart -r expanded
+    dart test test/deepseek_test.dart test/deepseek_server_test.dart -r expanded
+    ulimit -n 4096
+    dart test -r expanded
+    dart analyze
+    git diff --check
+    dart run tool/verify_mcp_tools.dart
+
+The new context regression first failed because 241 external schemas entered the
+initial request. It now verifies bounded initial context, fresh discovery after
+an in-cell config/guidance change, code-mode execution without native loading,
+single-tool native loading, repeated-search deduplication, offline changes,
+restart, repeated compaction, and resuming a saved pre-discovery configuration.
+The relocated bloat, instruction, and compaction tests retain their prefix,
+deduplication, recall, cancellation, and transfer checks. Existing MCP/client
+lifecycle tests now perform discovery before direct calls. DeepSeek checks cover
+native Messages selection/result ordering and both Console provider identities.
+
+The full suite passes 88 tests in the concurrent checkout. Analysis and whitespace checks pass; no Dart
+formatter was run. Live `gpt-6.1-sol` at low effort passed both native and code-mode
+discovery over HTTP and WebSocket, using real supervised Dart MCP and probe
+processes. [Sanitized evidence](evidence/deferred-tools-live.json) records checks,
+elapsed time and usage. Only the selected probe became a native declaration;
+code-mode lookup executed it without loading native schemas.
+
+Limits: these live runs establish GPT wire acceptance and functional execution,
+not a model-quality or cache-efficiency comparison. DeepSeek evidence for this
+change is local protocol/server fixtures. Search still costs a discovery step
+for unfamiliar tools; BM25 does not provide semantic synonym matching. Full
+catalog metadata remains in host memory, and a count-limited search result may
+still contain large individual schemas. No user tasks were migrated or edited.

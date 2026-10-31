@@ -6,4 +6,5 @@ environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
   ai: any
+  html: ^0.15.7
   protocol: any
