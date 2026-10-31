@@ -47,6 +47,12 @@ void main() {
         'text',
         'event-stream',
       );
+      if (compact) {
+        request.response.write('data: {"type":"response.output_text.delta","delta":"Internal compaction text"}\n\n');
+        request.response.write('data: {"type":"response.reasoning_summary_text.delta","delta":"Internal compaction reasoning"}\n\n');
+      } else {
+        request.response.write('data: {"type":"response.output_text.delta","delta":"Visible reply"}\n\n');
+      }
       if (compact && compactMode == 'wait') {
         waiting.add(request.response);
         request.response.write('data: {"type":"response.created"}\n\n');
@@ -131,7 +137,10 @@ void main() {
       endpoint: endpoint,
     );
     var client = await AgentClient.connect(server.uri);
+    final live = <Json>[];
+    var subscription = client.events.stream.listen(live.add);
     addTearDown(() async {
+      await subscription.cancel();
       await client.close();
       await server.close();
       for (final response in waiting) {
@@ -164,18 +173,36 @@ void main() {
       'prompt': 'next',
       'reasoning': 'high',
     });
+    expect(live.any((event) => event['type'] == 'text.delta' && event['delta'] == 'Visible reply'), isTrue);
     compactMode = 'fail';
+    live.clear();
     expect(
       (await turn('task.compact', {'task_id': id}))['type'],
       'turn.failed',
     );
+    expect(live.where((event) => event['type'] == 'compaction.started').single['data']['reason'], 'manual');
+    expect(live.any((event) => event['type'] == 'context.compacted'), isFalse);
+    expect(live.any((event) => event['type'] == 'text.delta'), isFalse);
+    expect(live.any((event) => event['type'] == 'reasoning.delta'), isFalse);
+    expect(live.where((event) => event['type'] == 'model.retrying'), isNotEmpty);
     await turn('task.send', {'task_id': id, 'prompt': 'next'});
     expect(jsonEncode(requests.last['input']), contains('receipt-867'));
     compactMode = 'wait';
     compactStarted = Completer<void>();
     final cancelled = turn('task.compact', {'task_id': id});
     await compactStarted.future.timeout(const Duration(seconds: 5));
-    await client.request('task.cancel', {'task_id': id});
+    // A second client discovers the in-flight compaction through durable history.
+    final observer = await AgentClient.connect(server.uri);
+    try {
+      expect(jsonObject(await observer.request('task.subscribe', {'task_id': id}))['running'], isTrue);
+      final history = await observer.request('history.page', {'task_id': id, 'limit': 500}) as List;
+      expect(history.last['type'], 'compaction.started');
+      final stopped = observer.events.stream.firstWhere((event) => event['type'] == 'turn.cancelled');
+      await client.request('task.cancel', {'task_id': id});
+      expect((await stopped.timeout(const Duration(seconds: 5)))['task_id'], id);
+    } finally {
+      await observer.close();
+    }
     expect((await cancelled)['type'], 'turn.cancelled');
     expect(
       (await client.request('history.page', {
@@ -187,17 +214,25 @@ void main() {
     compactMode = 'success';
     await File('${root.path}/repo/AGENTS.md')
         .writeAsString('Repository instruction: use cedar.');
+    live.clear();
     final compacted = await turn('task.compact', {'task_id': id});
     expect(compacted['type'], 'turn.completed', reason: compacted.toString());
     final checkpoint = (await client.request('history.page', {
       'task_id': id, 'limit': 500,
     }) as List).singleWhere((event) => event['type'] == 'context.compacted');
+    final lifecycle = live.where((event) => {'compaction.started', 'context.compacted', 'turn.completed'}.contains(event['type'])).toList();
+    expect(lifecycle.map((event) => event['type']), ['compaction.started', 'context.compacted', 'turn.completed']);
+    expect(lifecycle[1]['id'], checkpoint['id']);
+    expect(lifecycle[1]['created_at'], checkpoint['created_at']);
+    expect(live.any((event) => event['type'] == 'text.delta'), isFalse);
+    expect(live.any((event) => event['type'] == 'reasoning.delta'), isFalse);
     final restored = (checkpoint['data']['input'] as List).where((item) =>
       item['native']?['harness']?['context'] == 'agents_md',
     ).toList();
     expect(restored, hasLength(1));
     expect(jsonEncode(restored.single), contains('use maple'));
     expect(jsonEncode(restored.single), isNot(contains('use cedar')));
+    await subscription.cancel();
     await client.close();
     await server.close();
     server = await AgentServer.startEmbedded(
@@ -206,6 +241,7 @@ void main() {
       endpoint: endpoint,
     );
     client = await AgentClient.connect(server.uri);
+    subscription = client.events.stream.listen(live.add);
     final requestIndex = requests.length;
     final recalled = await turn('task.send', {
       'task_id': id,
@@ -279,6 +315,7 @@ void main() {
       'prompt': 'next',
     });
     expect(recovered['type'], 'turn.completed', reason: recovered.toString());
+    expect(live.where((event) => event['type'] == 'compaction.started').last['data']['reason'], 'overflow');
     final before = requests
         .where((v) => v['input'].last['type'] == 'compaction_trigger')
         .length;

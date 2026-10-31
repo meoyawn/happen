@@ -75,6 +75,16 @@ void _databaseMain(List<Object?> args) async {
               'INSERT INTO projects(checkout_key, identity, path) VALUES (?, ?, ?)',
               [params['checkout_key'], params['identity'], params['path']],
             );
+          case 'project.remove':
+            db.execute('BEGIN IMMEDIATE');
+            try {
+              db.execute('DELETE FROM tasks WHERE checkout_key IS ?', [params['checkout_key']]);
+              db.execute('DELETE FROM projects WHERE checkout_key IS ?', [params['checkout_key']]);
+              db.execute('COMMIT');
+            } catch (_) {
+              db.execute('ROLLBACK');
+              rethrow;
+            }
           case 'settings.set':
             db.execute(
               'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',

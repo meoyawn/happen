@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:gpt/gpt.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 

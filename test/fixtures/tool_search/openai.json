@@ -1,0 +1,3127 @@
+{
+  "upstream": {
+    "repository": "https://github.com/openai/codex",
+    "revision": "67f0994b532b8740f14b5b738af7b7b2a915b1d6",
+    "source_sha256": {
+      "codex-rs/core/src/tools/handlers/tool_search.rs": "b559fbee86f47031491e4f9ffd6c8d651065b40e9e49ee4e84075438419be72c",
+      "codex-rs/core/src/tools/handlers/mcp.rs": "d2685131da1da1402fd7a2282d06a7ab13cbc8087a2c96719b044305983ac1f9",
+      "codex-rs/tools/src/tool_search.rs": "1a1619b8facc35845d1a8409cb09403b76c5b5f2a7766f376c6f3d4955b9ee9d",
+      "codex-rs/code-mode-protocol/src/json_schema_types.rs": "659eb7f9dc4247cbc322056c1bcc9850173f590d4409bcbb8512db5d993a650c",
+      "codex-rs/Cargo.lock": "d8e759f9b0417d2edc5edaa5d8efb1d6b78f16b5023d03bafa0a72d61af9540e"
+    }
+  },
+  "algorithm": {
+    "bm25": "2.3.2",
+    "deunicode": "1.6.2",
+    "rust-stemmers": "1.2.0",
+    "stop-words": "0.9.0 nltk",
+    "unicode-segmentation": "1.12.0"
+  },
+  "catalogs": [
+    [
+      {
+        "name": "mcp__calendar__create_event",
+        "namespace": "mcp__calendar",
+        "tool_name": "create_event",
+        "server_name": "calendar",
+        "original_name": "create_event",
+        "description": "Create events",
+        "parameters": {
+          "properties": {
+            "attendees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "starts_at": {
+              "type": "string"
+            }
+          }
+        },
+        "namespace_description": "Schedule meetings and appointments"
+      },
+      {
+        "name": "mcp__calendar__list_events",
+        "namespace": "mcp__calendar",
+        "tool_name": "list_events",
+        "server_name": "calendar",
+        "original_name": "list_events",
+        "description": "Find upcoming events",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__drive__find_documents",
+        "namespace": "mcp__drive",
+        "tool_name": "find_documents",
+        "server_name": "drive",
+        "original_name": "find_documents",
+        "description": "Search documents in shared folders",
+        "parameters": {
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "folder_id": {
+              "type": "string"
+            }
+          }
+        },
+        "title": "File finder",
+        "namespace_description": "Documents, spreadsheets, and presentations"
+      },
+      {
+        "name": "mcp__drive__upload_file",
+        "namespace": "mcp__drive",
+        "tool_name": "upload_file",
+        "server_name": "drive",
+        "original_name": "upload_file",
+        "description": "Upload a document to cloud storage",
+        "parameters": {
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "unindexed schema description needle"
+            },
+            "metadata": {
+              "properties": {
+                "deep_key": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "mcp__unicode__cafe_notes",
+        "namespace": "mcp__unicode",
+        "tool_name": "cafe_notes",
+        "server_name": "unicode",
+        "original_name": "cafe_notes",
+        "description": "Café résumé Straße Москва 東京 🦄",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__punctuation__list_files",
+        "namespace": "mcp__punctuation",
+        "tool_name": "list_files",
+        "server_name": "punctuation",
+        "original_name": "list_files",
+        "description": "Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__stopwords__upon",
+        "namespace": "mcp__stopwords",
+        "tool_name": "upon",
+        "server_name": "stopwords",
+        "original_name": "upon",
+        "description": "this is the a and to after upon",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__stems__lookup",
+        "namespace": "mcp__stems",
+        "tool_name": "lookup",
+        "server_name": "stems",
+        "original_name": "lookup",
+        "description": "Connections connecting meetings generously communism arsenic skies dying",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__titles__rename",
+        "namespace": "mcp__titles",
+        "tool_name": "rename",
+        "server_name": "titles",
+        "original_name": "rename",
+        "description": "Do a thing",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        },
+        "title": "Customer billing invoices"
+      },
+      {
+        "name": "mcp__connector__probe",
+        "namespace": "mcp__connector",
+        "tool_name": "probe",
+        "server_name": "connector",
+        "original_name": "probe",
+        "description": "Inspect process",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        },
+        "connector_name": "Cloud Orchard",
+        "plugin_display_names": [
+          "Safety Observatory"
+        ]
+      },
+      {
+        "name": "client__custom_action",
+        "namespace": "client",
+        "tool_name": "custom_action",
+        "description": "Perform configured user action",
+        "parameters": {
+          "type": "object",
+          "description": "Local automations",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "deep_key": {
+                  "type": "string",
+                  "description": "Recursive needle field"
+                }
+              }
+            },
+            "options": {
+              "anyOf": [
+                {
+                  "description": "Variant branch selection"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "mcp__one__target",
+        "namespace": "mcp__one",
+        "tool_name": "target",
+        "server_name": "one",
+        "original_name": "target",
+        "description": "Search one thing",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp__two__loud",
+        "namespace": "mcp__two",
+        "tool_name": "loud",
+        "server_name": "two",
+        "original_name": "loud",
+        "description": "mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target target tool registry",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ],
+    [
+      {
+        "name": "mcp__calendar__create_event",
+        "namespace": "mcp__calendar",
+        "tool_name": "create_event",
+        "server_name": "calendar",
+        "original_name": "create_event",
+        "description": "Create events",
+        "parameters": {
+          "properties": {
+            "attendees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "starts_at": {
+              "type": "string"
+            }
+          }
+        },
+        "namespace_description": "Schedule meetings and appointments"
+      },
+      {
+        "name": "mcp__calendar__list_events",
+        "namespace": "mcp__calendar",
+        "tool_name": "list_events",
+        "server_name": "calendar",
+        "original_name": "list_events",
+        "description": "Find upcoming events",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ],
+    []
+  ],
+  "search": [
+    {
+      "catalog": 0,
+      "query": "calendar meeting",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 0,
+          "score": 3.126573085784912
+        },
+        {
+          "index": 1,
+          "score": 1.8380584716796875
+        },
+        {
+          "index": 7,
+          "score": 1.506967306137085
+        }
+      ],
+      "names": [
+        "mcp__calendar__create_event",
+        "mcp__calendar__list_events",
+        "mcp__stems__lookup"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "documents",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 2,
+          "score": 1.951069951057434
+        },
+        {
+          "index": 3,
+          "score": 1.6239789724349976
+        }
+      ],
+      "names": [
+        "mcp__drive__find_documents",
+        "mcp__drive__upload_file"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "connections",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 7,
+          "score": 2.7810161113739014
+        }
+      ],
+      "names": [
+        "mcp__stems__lookup"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "cafe resume",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 4,
+          "score": 4.144753456115723
+        }
+      ],
+      "names": [
+        "mcp__unicode__cafe_notes"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "Москва",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 4,
+          "score": 2.0723767280578613
+        }
+      ],
+      "names": [
+        "mcp__unicode__cafe_notes"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "東京",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 4,
+          "score": 4.144753456115723
+        }
+      ],
+      "names": [
+        "mcp__unicode__cafe_notes"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "unicorn",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 4,
+          "score": 2.0723767280578613
+        }
+      ],
+      "names": [
+        "mcp__unicode__cafe_notes"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "foo_bar",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 5,
+          "score": 2.239790201187134
+        }
+      ],
+      "names": [
+        "mcp__punctuation__list_files"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "camel case",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 0,
+      "query": "list_files",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 5,
+          "score": 3.0072450637817383
+        }
+      ],
+      "names": [
+        "mcp__punctuation__list_files"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "upon",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 6,
+          "score": 3.6967849731445312
+        }
+      ],
+      "names": [
+        "mcp__stopwords__upon"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "can't",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 0,
+      "query": "the and to",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 0,
+      "query": "!!!",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 0,
+      "query": "deep_key",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 10,
+          "score": 1.4686262607574463
+        }
+      ],
+      "names": [
+        "client__custom_action"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "needle",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 10,
+          "score": 1.4686262607574463
+        }
+      ],
+      "names": [
+        "client__custom_action"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "unindexed",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 0,
+      "query": "invoices",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 8,
+          "score": 2.3340671062469482
+        }
+      ],
+      "names": [
+        "mcp__titles__rename"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "orchard observatory",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 9,
+          "score": 4.305667400360107
+        }
+      ],
+      "names": [
+        "mcp__connector__probe"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "custom action",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 10,
+          "score": 3.3313117027282715
+        },
+        {
+          "index": 8,
+          "score": 1.7606914043426514
+        }
+      ],
+      "names": [
+        "client__custom_action",
+        "mcp__titles__rename"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "Variant branch",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 10,
+          "score": 2.9372525215148926
+        }
+      ],
+      "names": [
+        "client__custom_action"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "documents documents",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 2,
+          "score": 3.902139902114868
+        },
+        {
+          "index": 3,
+          "score": 3.247957944869995
+        }
+      ],
+      "names": [
+        "mcp__drive__find_documents",
+        "mcp__drive__upload_file"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "mcp__calendar__create_event",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [
+        {
+          "index": 0,
+          "score": 2.0723767280578613
+        }
+      ],
+      "names": [
+        "mcp__calendar__create_event"
+      ]
+    },
+    {
+      "catalog": 0,
+      "query": "tools.mcp__calendar__create_event",
+      "limit": 8,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events",
+        "mcp__drive__find_documents find_documents find_documents drive File finder Search documents in shared folders Documents, spreadsheets, and presentations folder_id query",
+        "mcp__drive__upload_file upload_file upload_file drive Upload a document to cloud storage metadata path",
+        "mcp__unicode__cafe_notes cafe_notes cafe_notes unicode Café résumé Straße Москва 東京 🦄",
+        "mcp__punctuation__list_files list_files list_files punctuation Keep foo_bar camelCase tools.drive.lookup_records identifiers",
+        "mcp__stopwords__upon upon upon stopwords this is the a and to after upon",
+        "mcp__stems__lookup lookup lookup stems Connections connecting meetings generously communism arsenic skies dying",
+        "mcp__titles__rename rename rename titles Customer billing invoices Do a thing",
+        "mcp__connector__probe probe probe connector Inspect process Cloud Orchard Safety Observatory",
+        "client Tools in the client namespace. custom_action custom action Perform configured user action Local automations options Variant branch selection payload deep_key Recursive needle field"
+      ],
+      "matches": [],
+      "names": []
+    },
+    {
+      "catalog": 1,
+      "query": "mcp__one__target",
+      "limit": 1,
+      "documents": [
+        "mcp__one__target target target one Search one thing",
+        "mcp__two__loud loud loud two mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target mcp__one__target target tool registry"
+      ],
+      "matches": [
+        {
+          "index": 1,
+          "score": 0.3535184860229492
+        },
+        {
+          "index": 0,
+          "score": 0.22475852072238922
+        }
+      ],
+      "names": [
+        "mcp__two__loud"
+      ]
+    },
+    {
+      "catalog": 2,
+      "query": "calendar",
+      "limit": 1,
+      "documents": [
+        "mcp__calendar__create_event create_event create_event calendar Create events Schedule meetings and appointments attendees starts_at",
+        "mcp__calendar__list_events list_events list_events calendar Find upcoming events"
+      ],
+      "matches": [
+        {
+          "index": 1,
+          "score": 0.200553759932518
+        },
+        {
+          "index": 0,
+          "score": 0.16712811589241028
+        }
+      ],
+      "names": [
+        "mcp__calendar__list_events"
+      ]
+    },
+    {
+      "catalog": 3,
+      "query": "documents",
+      "documents": [],
+      "matches": [],
+      "names": []
+    }
+  ],
+  "tokens": [
+    {
+      "input": [
+        "foo_bar camelCase tools.mcp__drive.list_files",
+        "Café naïve résumé Straße Москва 東京 中文 🦄",
+        "this is the a and to after upon",
+        "abc:def 123,456 foo.bar can't 1:2 foo_1 3;4 _ __",
+        "Generously communism arsenic sky skies dying lying news inning proceeds"
+      ],
+      "expected": [
+        [
+          "foo_bar",
+          "camelcas",
+          "tools.mcp__drive.list_fil"
+        ],
+        [
+          "cafe",
+          "naiv",
+          "resum",
+          "strass",
+          "moskva",
+          "dong",
+          "jing",
+          "zhong",
+          "wen",
+          "unicorn"
+        ],
+        [
+          "upon"
+        ],
+        [
+          "abc:def",
+          "123,456",
+          "foo.bar",
+          "can't",
+          "1",
+          "2",
+          "foo_1",
+          "3;4"
+        ],
+        [
+          "generous",
+          "communism",
+          "arsenic",
+          "sky",
+          "sky",
+          "die",
+          "lie",
+          "news",
+          "inning",
+          "proceed"
+        ]
+      ]
+    }
+  ],
+  "bm25": [
+    {
+      "documents": [
+        "booking meeting notes generously",
+        "find search calendar foo_bar clauses drive generously create box meeting render box render create meeting render render planning render notes",
+        "find calendar documents notes box clauses foo_bar search render generously query render",
+        "generously meeting clauses clauses notes query query planning files box render box create meeting render render planning files render query box search documents foo_bar",
+        "create drive generously box documents generously create files box drive meeting",
+        "box meeting foo_bar create generously documents calendar generously clauses booking files calendar drive foo_bar",
+        "query notes find create clauses booking render",
+        "calendar meeting find",
+        "booking clauses",
+        "calendar render",
+        "find generously notes search foo_bar meeting calendar clauses notes calendar documents drive query booking documents calendar planning generously query render query create foo_bar box",
+        "booking foo_bar create calendar generously clauses box generously box documents create documents find clauses foo_bar"
+      ],
+      "query": "foo_bar clauses foo_bar",
+      "expected": [
+        {
+          "index": 11,
+          "score": 2.2940070629119873
+        },
+        {
+          "index": 5,
+          "score": 2.1865081787109375
+        },
+        {
+          "index": 2,
+          "score": 1.7795259952545166
+        },
+        {
+          "index": 10,
+          "score": 1.7539697885513306
+        },
+        {
+          "index": 3,
+          "score": 1.4070279598236084
+        },
+        {
+          "index": 1,
+          "score": 1.390676736831665
+        },
+        {
+          "index": 8,
+          "score": 0.6417638659477234
+        },
+        {
+          "index": 6,
+          "score": 0.5058609843254089
+        }
+      ]
+    },
+    {
+      "documents": [
+        "calendar notes booking drive box clauses render clauses search planning find drive drive generously query find planning",
+        "query notes meeting notes box booking booking calendar query booking calendar foo_bar planning files meeting foo_bar query search generously planning calendar drive create render files render foo_bar box calendar clauses notes meeting foo_bar render",
+        "calendar foo_bar booking documents create foo_bar calendar planning meeting box search drive booking find meeting render booking query search files",
+        "query notes documents render find notes drive documents meeting search booking drive planning calendar foo_bar find clauses notes meeting box create query query planning box foo_bar",
+        "search box find planning foo_bar render files generously booking meeting clauses notes planning booking booking render clauses foo_bar notes documents search foo_bar foo_bar planning box booking",
+        "booking box query find render planning foo_bar meeting clauses generously files notes planning calendar drive create search box box meeting query render foo_bar box clauses documents query foo_bar",
+        "files search generously meeting create render documents box render planning search booking meeting search files",
+        "render render booking generously generously search query files search generously notes drive planning find files planning search clauses booking calendar box create foo_bar query box",
+        "planning create planning clauses drive documents query render clauses find drive create query calendar box clauses foo_bar notes find planning calendar calendar",
+        "files search foo_bar box notes foo_bar query documents find documents documents clauses documents drive box render box search drive create notes box booking calendar clauses",
+        "box booking booking foo_bar generously create search meeting documents meeting box create planning notes query",
+        "render documents booking find search foo_bar meeting meeting generously search generously drive meeting generously"
+      ],
+      "query": "documents create render",
+      "expected": [
+        {
+          "index": 9,
+          "score": 0.9349517226219177
+        },
+        {
+          "index": 6,
+          "score": 0.9093826413154602
+        },
+        {
+          "index": 8,
+          "score": 0.8709208965301514
+        },
+        {
+          "index": 10,
+          "score": 0.8366888761520386
+        },
+        {
+          "index": 3,
+          "score": 0.819881796836853
+        },
+        {
+          "index": 2,
+          "score": 0.7822794318199158
+        },
+        {
+          "index": 5,
+          "score": 0.7244919538497925
+        },
+        {
+          "index": 11,
+          "score": 0.5142666101455688
+        },
+        {
+          "index": 7,
+          "score": 0.46147680282592773
+        },
+        {
+          "index": 4,
+          "score": 0.45437532663345337
+        },
+        {
+          "index": 1,
+          "score": 0.4310094714164734
+        },
+        {
+          "index": 0,
+          "score": 0.13570113480091095
+        }
+      ]
+    },
+    {
+      "documents": [
+        "files query documents meeting query foo_bar drive clauses query files drive booking documents box find render planning booking render documents meeting clauses booking notes booking create query foo_bar calendar documents create drive files",
+        "drive notes documents render booking notes search find planning find documents find find drive documents meeting generously booking notes create planning generously notes box create documents generously drive meeting clauses meeting",
+        "box create files drive booking box foo_bar box meeting foo_bar notes meeting planning create planning drive notes render box notes meeting planning query find foo_bar search calendar planning clauses documents generously",
+        "calendar render find box files notes box booking search render generously box foo_bar create notes box notes booking booking search calendar search meeting drive create render query box render notes",
+        "create notes clauses notes search documents notes",
+        "meeting generously generously files box find generously clauses search",
+        "foo_bar foo_bar calendar files search search files drive drive",
+        "foo_bar box calendar generously generously create drive calendar search booking drive files search clauses clauses render planning",
+        "clauses notes documents generously create box booking render foo_bar calendar documents create drive query clauses calendar planning find query",
+        "query render planning notes notes create create clauses meeting drive drive files planning query create documents booking meeting drive box generously foo_bar files notes render create files generously booking generously calendar clauses calendar files",
+        "generously booking box query find files search notes generously query drive planning find booking box generously find files create create search drive",
+        "drive foo_bar box search search booking foo_bar notes drive meeting planning clauses meeting box meeting search search files generously booking clauses foo_bar"
+      ],
+      "query": "calendar query meeting",
+      "expected": [
+        {
+          "index": 0,
+          "score": 2.1993038654327393
+        },
+        {
+          "index": 9,
+          "score": 2.137753963470459
+        },
+        {
+          "index": 2,
+          "score": 1.8596595525741577
+        },
+        {
+          "index": 8,
+          "score": 1.7775646448135376
+        },
+        {
+          "index": 3,
+          "score": 1.768344759941101
+        },
+        {
+          "index": 10,
+          "score": 0.9530773758888245
+        },
+        {
+          "index": 11,
+          "score": 0.8643586039543152
+        },
+        {
+          "index": 7,
+          "score": 0.8079588413238525
+        },
+        {
+          "index": 1,
+          "score": 0.7946938276290894
+        },
+        {
+          "index": 5,
+          "score": 0.7254016399383545
+        },
+        {
+          "index": 6,
+          "score": 0.7254016399383545
+        }
+      ]
+    },
+    {
+      "documents": [
+        "find meeting meeting clauses box booking planning foo_bar find calendar calendar foo_bar search find calendar notes documents query drive files foo_bar notes query calendar box find calendar files query foo_bar booking meeting drive",
+        "meeting clauses drive generously render box clauses calendar documents create calendar foo_bar clauses query create booking files drive planning planning generously notes calendar",
+        "foo_bar documents render calendar find generously render meeting render booking drive booking search search calendar meeting box find foo_bar calendar box box meeting",
+        "notes notes query calendar clauses search generously clauses drive",
+        "notes drive notes documents calendar foo_bar clauses drive files find planning planning planning find search query clauses generously drive calendar documents create clauses files files foo_bar find query meeting",
+        "render find create notes find render meeting booking foo_bar find clauses foo_bar meeting planning planning box booking query create planning clauses query query render files notes search render notes planning",
+        "meeting render files meeting drive generously render foo_bar foo_bar meeting calendar planning",
+        "calendar create documents documents meeting query render generously",
+        "drive meeting render planning booking calendar calendar box query calendar documents box render clauses create drive files search drive notes documents create files query planning find box files find create clauses search find generously",
+        "search planning meeting find search create calendar generously query foo_bar foo_bar query drive search box",
+        "generously",
+        "render clauses search drive planning drive query find drive"
+      ],
+      "query": "calendar meeting booking",
+      "expected": [
+        {
+          "index": 2,
+          "score": 2.0546536445617676
+        },
+        {
+          "index": 0,
+          "score": 1.9024206399917603
+        },
+        {
+          "index": 1,
+          "score": 1.5470154285430908
+        },
+        {
+          "index": 5,
+          "score": 1.3833673000335693
+        },
+        {
+          "index": 8,
+          "score": 1.303321123123169
+        },
+        {
+          "index": 6,
+          "score": 0.9027724266052246
+        },
+        {
+          "index": 7,
+          "score": 0.8203606009483337
+        },
+        {
+          "index": 9,
+          "score": 0.6842937469482422
+        },
+        {
+          "index": 4,
+          "score": 0.6313513517379761
+        },
+        {
+          "index": 3,
+          "score": 0.39885053038597107
+        }
+      ]
+    },
+    {
+      "documents": [
+        "files box notes",
+        "notes generously create planning clauses booking notes box booking generously box generously find calendar render search planning notes files planning search calendar documents generously notes search drive drive generously drive",
+        "notes render calendar notes booking generously box render clauses clauses drive documents clauses",
+        "documents query query documents notes booking files calendar clauses box planning meeting foo_bar",
+        "booking drive clauses booking generously render documents create notes documents files create files booking render files generously search documents booking",
+        "foo_bar search foo_bar calendar clauses planning box files render box booking create",
+        "foo_bar meeting planning generously search find files render booking",
+        "search clauses foo_bar booking clauses notes find foo_bar foo_bar planning documents calendar",
+        "meeting files query find files documents search",
+        "notes notes query render meeting clauses drive query planning",
+        "planning foo_bar create search calendar generously meeting documents",
+        "notes create generously files clauses clauses documents files box create"
+      ],
+      "query": "meeting documents meeting",
+      "expected": [
+        {
+          "index": 8,
+          "score": 2.5963292121887207
+        },
+        {
+          "index": 10,
+          "score": 2.494807481765747
+        },
+        {
+          "index": 3,
+          "score": 2.2466840744018555
+        },
+        {
+          "index": 6,
+          "score": 1.9254121780395508
+        },
+        {
+          "index": 9,
+          "score": 1.9254121780395508
+        },
+        {
+          "index": 4,
+          "score": 0.5867261290550232
+        },
+        {
+          "index": 11,
+          "score": 0.458268940448761
+        },
+        {
+          "index": 7,
+          "score": 0.42727768421173096
+        },
+        {
+          "index": 2,
+          "score": 0.4133025109767914
+        },
+        {
+          "index": 1,
+          "score": 0.2656140625476837
+        }
+      ]
+    },
+    {
+      "documents": [
+        "documents files box files documents booking calendar render render planning booking create box planning drive notes search generously query clauses planning clauses render box render notes booking",
+        "notes box query foo_bar search generously calendar files render files documents clauses query generously render render files create box find find find calendar drive meeting render calendar generously search documents",
+        "query render calendar documents planning search find query find box find query calendar foo_bar search foo_bar box planning clauses",
+        "foo_bar notes generously planning create",
+        "calendar meeting clauses foo_bar query box render render drive drive",
+        "create booking calendar files clauses create box",
+        "calendar find calendar files render render booking foo_bar foo_bar foo_bar",
+        "calendar search notes drive planning create files booking files calendar generously find create drive generously notes notes search find documents booking foo_bar drive files clauses clauses meeting",
+        "search meeting calendar search clauses documents meeting files clauses documents foo_bar generously",
+        "clauses box notes files find render",
+        "clauses planning drive booking files drive search drive notes planning drive box notes search meeting foo_bar planning search documents documents notes drive box documents calendar render calendar booking",
+        "calendar planning box search find booking calendar meeting planning render planning box calendar create calendar notes create search search"
+      ],
+      "query": "render find render",
+      "expected": [
+        {
+          "index": 1,
+          "score": 2.192997932434082
+        },
+        {
+          "index": 6,
+          "score": 2.1453022956848145
+        },
+        {
+          "index": 9,
+          "score": 2.090153932571411
+        },
+        {
+          "index": 2,
+          "score": 1.8612403869628906
+        },
+        {
+          "index": 11,
+          "score": 1.4593334197998047
+        },
+        {
+          "index": 4,
+          "score": 1.3165395259857178
+        },
+        {
+          "index": 0,
+          "score": 1.2987052202224731
+        },
+        {
+          "index": 7,
+          "score": 0.8115613460540771
+        },
+        {
+          "index": 10,
+          "score": 0.664824366569519
+        }
+      ]
+    },
+    {
+      "documents": [
+        "booking clauses search drive search drive search clauses render foo_bar render generously planning calendar render calendar render search",
+        "foo_bar find foo_bar generously clauses booking clauses booking clauses find box booking drive notes documents search clauses search box booking meeting create",
+        "planning planning query foo_bar",
+        "generously meeting drive create calendar foo_bar box meeting notes find query render clauses query create create",
+        "create find notes calendar files notes create files calendar foo_bar query",
+        "booking search create",
+        "files create notes clauses foo_bar foo_bar clauses drive notes planning find drive generously calendar search generously foo_bar",
+        "query planning query calendar documents create drive clauses search planning planning box foo_bar files documents clauses query create box calendar query calendar query find generously documents drive files notes files notes render documents documents",
+        "create calendar meeting calendar foo_bar meeting notes calendar foo_bar booking notes box booking create",
+        "documents query foo_bar planning generously documents calendar create query query render meeting planning drive create find query",
+        "find",
+        "clauses drive"
+      ],
+      "query": "documents search generously",
+      "expected": [
+        {
+          "index": 7,
+          "score": 2.8436496257781982
+        },
+        {
+          "index": 1,
+          "score": 2.576319456100464
+        },
+        {
+          "index": 9,
+          "score": 2.292449951171875
+        },
+        {
+          "index": 0,
+          "score": 1.9751743078231812
+        },
+        {
+          "index": 6,
+          "score": 1.6537482738494873
+        },
+        {
+          "index": 5,
+          "score": 1.25846266746521
+        },
+        {
+          "index": 3,
+          "score": 0.6389008164405823
+        }
+      ]
+    },
+    {
+      "documents": [
+        "documents render calendar documents query search foo_bar notes find box create files find documents query render planning generously booking booking render notes documents",
+        "generously foo_bar booking planning planning create find render generously calendar box files drive render search create calendar create find calendar generously clauses foo_bar generously meeting find foo_bar generously find meeting find",
+        "search find search search documents find search foo_bar documents meeting notes calendar find foo_bar meeting notes search",
+        "clauses foo_bar planning planning booking planning notes files generously meeting query generously render planning find render box find foo_bar create clauses meeting find find documents search",
+        "calendar booking search clauses documents generously search search clauses booking box box documents query create search documents box box drive generously documents render planning calendar planning files",
+        "render search documents planning planning render meeting planning render foo_bar notes meeting",
+        "render files search files documents search find notes foo_bar files clauses drive booking foo_bar foo_bar generously generously calendar files clauses booking foo_bar notes search drive documents planning notes clauses calendar box generously render render",
+        "generously notes search foo_bar planning documents booking calendar find booking foo_bar search meeting planning foo_bar generously drive search notes files meeting query search foo_bar meeting",
+        "render planning drive find drive booking box notes files search search generously query find foo_bar foo_bar planning foo_bar",
+        "clauses clauses documents clauses booking notes files foo_bar drive calendar meeting box meeting query query booking planning foo_bar generously foo_bar clauses query meeting create drive drive drive query query planning",
+        "planning query render files notes render search search calendar planning meeting generously notes meeting generously calendar planning notes generously documents notes booking search foo_bar booking calendar find",
+        "box render foo_bar"
+      ],
+      "query": "notes clauses box",
+      "expected": [
+        {
+          "index": 9,
+          "score": 2.032991886138916
+        },
+        {
+          "index": 6,
+          "score": 2.0212888717651367
+        },
+        {
+          "index": 3,
+          "score": 1.834852695465088
+        },
+        {
+          "index": 4,
+          "score": 1.8202471733093262
+        },
+        {
+          "index": 1,
+          "score": 1.1190687417984009
+        },
+        {
+          "index": 0,
+          "score": 0.8529320359230042
+        },
+        {
+          "index": 8,
+          "score": 0.8075143098831177
+        },
+        {
+          "index": 11,
+          "score": 0.6588816046714783
+        },
+        {
+          "index": 10,
+          "score": 0.5141801238059998
+        },
+        {
+          "index": 2,
+          "score": 0.4642828106880188
+        },
+        {
+          "index": 7,
+          "score": 0.4196074306964874
+        },
+        {
+          "index": 5,
+          "score": 0.3888188600540161
+        }
+      ]
+    },
+    {
+      "documents": [
+        "find files clauses find foo_bar planning files meeting foo_bar box calendar generously find documents box drive query notes meeting",
+        "booking planning booking drive box search calendar planning clauses drive box generously notes drive files render box create booking create create query documents documents calendar files notes drive create clauses generously",
+        "find notes booking files clauses calendar",
+        "drive query meeting generously documents foo_bar generously query render booking create meeting find query documents files files documents find",
+        "render create booking documents box calendar notes meeting find box calendar foo_bar clauses foo_bar drive find render notes generously create",
+        "meeting create notes box generously meeting clauses find box",
+        "meeting booking generously render generously query notes generously notes meeting create clauses create meeting calendar planning generously render search notes",
+        "create find query query query create drive find render drive booking foo_bar drive create search create planning create find clauses booking box find find calendar calendar documents find planning query drive calendar",
+        "search calendar documents calendar clauses find notes drive calendar create generously planning notes documents drive foo_bar drive find query create meeting calendar foo_bar",
+        "box query planning files find notes create foo_bar documents meeting files booking drive clauses foo_bar planning notes files files foo_bar render",
+        "documents create drive create query booking query meeting clauses drive calendar calendar files drive documents clauses create find",
+        "documents meeting documents files drive box box generously foo_bar files foo_bar create drive drive booking meeting files meeting meeting drive foo_bar meeting documents calendar planning documents documents find create find"
+      ],
+      "query": "generously query render",
+      "expected": [
+        {
+          "index": 6,
+          "score": 2.11543869972229
+        },
+        {
+          "index": 3,
+          "score": 1.9939825534820557
+        },
+        {
+          "index": 1,
+          "score": 1.4403642416000366
+        },
+        {
+          "index": 4,
+          "score": 1.3923685550689697
+        },
+        {
+          "index": 7,
+          "score": 1.2228426933288574
+        },
+        {
+          "index": 9,
+          "score": 1.1107017993927002
+        },
+        {
+          "index": 0,
+          "score": 0.8787577152252197
+        },
+        {
+          "index": 8,
+          "score": 0.8122504949569702
+        },
+        {
+          "index": 10,
+          "score": 0.606214165687561
+        },
+        {
+          "index": 5,
+          "score": 0.5524696707725525
+        },
+        {
+          "index": 11,
+          "score": 0.35862666368484497
+        }
+      ]
+    },
+    {
+      "documents": [
+        "meeting render",
+        "foo_bar query search query files drive box planning create generously search create files booking generously create planning planning find search files planning foo_bar foo_bar search",
+        "booking drive foo_bar files booking render foo_bar planning box files find clauses search calendar create files notes box box planning notes create generously meeting booking generously search meeting meeting",
+        "box box search documents generously booking files calendar render",
+        "notes files planning planning booking booking clauses calendar",
+        "query box search documents planning render search meeting generously generously query files clauses drive create calendar documents documents foo_bar planning",
+        "generously create search drive clauses notes planning meeting create planning notes meeting drive files calendar generously find calendar drive foo_bar drive booking calendar",
+        "box calendar files booking box query search meeting query find drive calendar",
+        "find planning clauses generously search generously meeting box find notes clauses meeting search generously booking planning booking calendar clauses box foo_bar notes meeting",
+        "documents render files find",
+        "search find search calendar box box render box notes planning notes calendar meeting create booking clauses",
+        "drive documents generously notes box"
+      ],
+      "query": "create files generously",
+      "expected": [
+        {
+          "index": 1,
+          "score": 2.385762929916382
+        },
+        {
+          "index": 2,
+          "score": 2.0730879306793213
+        },
+        {
+          "index": 6,
+          "score": 2.0166664123535156
+        },
+        {
+          "index": 5,
+          "score": 1.8048110008239746
+        },
+        {
+          "index": 3,
+          "score": 1.157953143119812
+        },
+        {
+          "index": 10,
+          "score": 0.8293573260307312
+        },
+        {
+          "index": 8,
+          "score": 0.7705424427986145
+        },
+        {
+          "index": 11,
+          "score": 0.7531044483184814
+        },
+        {
+          "index": 9,
+          "score": 0.6048337817192078
+        },
+        {
+          "index": 4,
+          "score": 0.5219377279281616
+        },
+        {
+          "index": 7,
+          "score": 0.45902565121650696
+        }
+      ]
+    },
+    {
+      "documents": [
+        "clauses documents box meeting booking notes query planning files search find search",
+        "foo_bar box foo_bar clauses documents box generously query planning find find calendar render find generously files calendar clauses foo_bar clauses meeting search booking drive generously",
+        "find meeting render documents find booking query render",
+        "clauses notes render notes render files render booking generously planning render booking booking notes planning foo_bar documents planning create drive box generously drive render documents foo_bar query clauses",
+        "create",
+        "create calendar foo_bar documents find calendar find meeting foo_bar generously drive notes box render search foo_bar search documents files create files search files calendar query files documents drive meeting box files generously search clauses",
+        "search render find create search create create files foo_bar query drive documents generously render files create meeting planning foo_bar documents generously generously search",
+        "generously calendar search box foo_bar meeting meeting drive box files search documents create render render search find documents booking notes create drive notes generously query planning",
+        "drive find create meeting",
+        "clauses render find search",
+        "create search meeting generously query render query foo_bar drive search generously generously search meeting planning query booking notes render generously meeting notes calendar notes render booking create search generously search foo_bar",
+        "box find box find clauses planning"
+      ],
+      "query": "files documents planning",
+      "expected": [
+        {
+          "index": 0,
+          "score": 2.031911849975586
+        },
+        {
+          "index": 6,
+          "score": 2.0280773639678955
+        },
+        {
+          "index": 3,
+          "score": 1.9393699169158936
+        },
+        {
+          "index": 5,
+          "score": 1.7805471420288086
+        },
+        {
+          "index": 7,
+          "score": 1.67256498336792
+        },
+        {
+          "index": 1,
+          "score": 1.496274471282959
+        },
+        {
+          "index": 11,
+          "score": 0.7466114163398743
+        },
+        {
+          "index": 2,
+          "score": 0.7004027962684631
+        },
+        {
+          "index": 10,
+          "score": 0.4091740846633911
+        }
+      ]
+    },
+    {
+      "documents": [
+        "create clauses clauses calendar find booking create notes generously search search documents",
+        "find search generously find files box query box search notes create search find",
+        "clauses meeting documents documents planning render files files documents documents planning generously render generously search render documents documents box booking box clauses notes clauses meeting",
+        "notes render search drive find generously render files meeting drive documents generously drive box create documents files",
+        "search render find booking planning documents",
+        "search calendar notes foo_bar find query foo_bar documents",
+        "drive foo_bar booking find notes documents meeting render planning files planning planning booking foo_bar box search query calendar render files create box notes box search files calendar foo_bar generously files documents",
+        "meeting clauses render planning generously find render foo_bar calendar drive meeting foo_bar booking documents render files box foo_bar booking notes meeting meeting planning files booking find generously query",
+        "calendar foo_bar booking search find clauses documents documents booking",
+        "generously clauses search render generously create calendar box notes render find box booking meeting calendar query find foo_bar query calendar booking query box generously planning render find",
+        "booking query render drive",
+        "render drive"
+      ],
+      "query": "find find booking",
+      "expected": [
+        {
+          "index": 8,
+          "score": 1.412125587463379
+        },
+        {
+          "index": 4,
+          "score": 1.397810935974121
+        },
+        {
+          "index": 9,
+          "score": 1.3236618041992188
+        },
+        {
+          "index": 7,
+          "score": 1.2619397640228271
+        },
+        {
+          "index": 0,
+          "score": 1.1504648923873901
+        },
+        {
+          "index": 1,
+          "score": 1.0169109106063843
+        },
+        {
+          "index": 6,
+          "score": 0.8911962509155273
+        },
+        {
+          "index": 5,
+          "score": 0.777637779712677
+        },
+        {
+          "index": 10,
+          "score": 0.6080173254013062
+        },
+        {
+          "index": 3,
+          "score": 0.5977558493614197
+        },
+        {
+          "index": 2,
+          "score": 0.3358137607574463
+        }
+      ]
+    },
+    {
+      "documents": [
+        "query clauses drive generously create search calendar generously drive create create notes find create files generously",
+        "generously",
+        "box foo_bar foo_bar find notes",
+        "generously calendar query drive find create find query notes notes notes planning query notes query calendar drive create search foo_bar files notes documents documents meeting booking create clauses",
+        "foo_bar notes booking documents render clauses documents",
+        "meeting booking box booking drive files render generously drive generously meeting generously drive create create foo_bar render calendar render box box search documents",
+        "files render generously render notes documents search foo_bar calendar generously planning foo_bar booking generously generously find planning create query documents documents create planning planning",
+        "notes booking box files calendar",
+        "notes meeting booking booking booking notes generously clauses calendar notes box files planning render box meeting files planning drive clauses booking files find planning calendar search files clauses files",
+        "query documents drive notes search generously search find drive generously calendar drive notes notes notes calendar find documents",
+        "planning meeting search notes find clauses clauses documents calendar box render find clauses planning find booking find files",
+        "query create planning search query generously clauses clauses meeting calendar search planning files planning create calendar booking foo_bar create"
+      ],
+      "query": "documents meeting search",
+      "expected": [
+        {
+          "index": 5,
+          "score": 2.0059163570404053
+        },
+        {
+          "index": 10,
+          "score": 1.886272668838501
+        },
+        {
+          "index": 3,
+          "score": 1.7748867273330688
+        },
+        {
+          "index": 9,
+          "score": 1.4874376058578491
+        },
+        {
+          "index": 11,
+          "score": 1.3566557168960571
+        },
+        {
+          "index": 6,
+          "score": 1.3389707803726196
+        },
+        {
+          "index": 8,
+          "score": 1.2846544981002808
+        },
+        {
+          "index": 4,
+          "score": 1.1330522298812866
+        },
+        {
+          "index": 0,
+          "score": 0.42578575015068054
+        }
+      ]
+    },
+    {
+      "documents": [
+        "planning query drive drive notes render foo_bar clauses foo_bar calendar foo_bar query create create find calendar render generously documents meeting render booking create search generously calendar meeting notes files documents files foo_bar",
+        "render clauses search",
+        "query generously",
+        "planning foo_bar notes meeting documents notes render drive files find drive foo_bar create create create render documents drive booking create clauses generously clauses find find booking generously calendar search find generously find generously booking",
+        "find documents calendar files box query drive meeting create box",
+        "documents render meeting planning meeting notes documents query create",
+        "search search box box",
+        "notes generously calendar foo_bar",
+        "create clauses documents render find",
+        "documents notes create meeting box query",
+        "files query files generously find planning find calendar query drive find generously query query files documents",
+        "foo_bar documents meeting documents generously booking documents files generously booking drive notes foo_bar box search search query"
+      ],
+      "query": "calendar booking notes",
+      "expected": [
+        {
+          "index": 3,
+          "score": 2.582594633102417
+        },
+        {
+          "index": 0,
+          "score": 2.407576322555542
+        },
+        {
+          "index": 11,
+          "score": 2.195028781890869
+        },
+        {
+          "index": 7,
+          "score": 2.1302285194396973
+        },
+        {
+          "index": 4,
+          "score": 0.9184104204177856
+        },
+        {
+          "index": 9,
+          "score": 0.8682405352592468
+        },
+        {
+          "index": 5,
+          "score": 0.7684143781661987
+        },
+        {
+          "index": 10,
+          "score": 0.751893937587738
+        }
+      ]
+    },
+    {
+      "documents": [
+        "meeting calendar planning documents foo_bar search documents calendar calendar booking query generously query box notes drive calendar render query drive documents notes drive notes notes box generously planning meeting files box create notes",
+        "foo_bar files query notes query files drive documents planning booking planning box files box drive files clauses notes foo_bar query generously notes find foo_bar",
+        "documents generously planning find planning search query clauses query files booking clauses create create query booking documents box",
+        "documents files box booking calendar generously drive create calendar query foo_bar planning render drive",
+        "documents documents meeting find foo_bar files",
+        "drive calendar drive foo_bar search create drive meeting",
+        "planning query find clauses clauses clauses meeting search planning generously foo_bar calendar search clauses files booking files generously render booking query booking drive files",
+        "planning create",
+        "clauses find find foo_bar planning drive create query",
+        "documents foo_bar booking search calendar search create find generously calendar planning planning find box clauses drive render foo_bar render render notes calendar box search documents drive query notes",
+        "generously booking generously calendar drive calendar planning query files meeting find booking find search find booking search meeting booking query",
+        "calendar query clauses generously files documents search notes files create drive clauses booking calendar query planning find foo_bar create"
+      ],
+      "query": "booking documents calendar",
+      "expected": [
+        {
+          "index": 3,
+          "score": 1.8466002941131592
+        },
+        {
+          "index": 0,
+          "score": 1.82651686668396
+        },
+        {
+          "index": 9,
+          "score": 1.7349259853363037
+        },
+        {
+          "index": 11,
+          "score": 1.662252426147461
+        },
+        {
+          "index": 10,
+          "score": 1.418273687362671
+        },
+        {
+          "index": 2,
+          "score": 1.318711280822754
+        },
+        {
+          "index": 6,
+          "score": 1.0842870473861694
+        },
+        {
+          "index": 4,
+          "score": 0.9245721697807312
+        },
+        {
+          "index": 1,
+          "score": 0.8343790769577026
+        },
+        {
+          "index": 5,
+          "score": 0.7021069526672363
+        }
+      ]
+    },
+    {
+      "documents": [
+        "search planning notes generously planning box meeting query create files planning clauses create query foo_bar drive box drive query planning query calendar render notes create drive",
+        "search clauses",
+        "meeting clauses meeting find query render notes documents calendar documents documents create find search booking query query create render create find query planning foo_bar calendar meeting calendar find search meeting",
+        "search drive find query meeting generously documents files box create files planning foo_bar query meeting documents meeting create booking calendar foo_bar meeting files box create documents booking query box clauses foo_bar calendar",
+        "calendar foo_bar meeting notes booking files booking render foo_bar documents render foo_bar files query drive files generously query calendar notes documents foo_bar notes generously",
+        "documents box query meeting",
+        "search drive foo_bar find render find booking box render foo_bar find meeting render render planning box find",
+        "render documents generously box foo_bar query drive notes clauses calendar search booking foo_bar planning",
+        "notes booking",
+        "box",
+        "generously meeting box find find query calendar files clauses documents box drive",
+        "box foo_bar notes planning find foo_bar meeting render booking generously query booking generously documents notes drive find documents notes"
+      ],
+      "query": "search calendar booking",
+      "expected": [
+        {
+          "index": 2,
+          "score": 2.0455989837646484
+        },
+        {
+          "index": 7,
+          "score": 2.003523111343384
+        },
+        {
+          "index": 3,
+          "score": 1.7842152118682861
+        },
+        {
+          "index": 4,
+          "score": 1.4718708992004395
+        },
+        {
+          "index": 6,
+          "score": 1.1874489784240723
+        },
+        {
+          "index": 0,
+          "score": 1.0760016441345215
+        },
+        {
+          "index": 1,
+          "score": 1.0753798484802246
+        },
+        {
+          "index": 8,
+          "score": 0.8533666729927063
+        },
+        {
+          "index": 10,
+          "score": 0.7593497633934021
+        },
+        {
+          "index": 11,
+          "score": 0.7073907256126404
+        }
+      ]
+    },
+    {
+      "documents": [
+        "box meeting create search files generously booking foo_bar find search planning meeting foo_bar create notes documents planning planning planning meeting create render notes search planning generously query",
+        "notes generously box render planning meeting planning planning generously documents calendar foo_bar notes notes documents box search render documents render find calendar create meeting calendar drive generously meeting foo_bar clauses find drive",
+        "find create booking foo_bar files query box query booking create box foo_bar query box create query find booking query render documents documents foo_bar clauses drive booking",
+        "find planning files generously files clauses query meeting documents foo_bar drive box drive find clauses create generously find notes box generously clauses meeting find booking find booking search notes clauses meeting booking",
+        "clauses documents calendar planning booking clauses box search query box files search clauses create render create render",
+        "clauses documents foo_bar notes calendar find documents meeting box notes notes booking create search foo_bar",
+        "clauses search meeting box booking drive foo_bar search find foo_bar clauses notes query create query clauses find search",
+        "box render files create notes documents box meeting notes generously render search generously box files generously clauses foo_bar drive drive find generously notes planning find booking clauses render find query",
+        "foo_bar calendar planning box",
+        "find find drive planning drive query search documents create calendar generously calendar planning clauses clauses box search query",
+        "booking foo_bar query search notes documents query booking foo_bar clauses",
+        "generously render foo_bar clauses files box meeting box clauses generously booking drive booking planning notes calendar clauses"
+      ],
+      "query": "query find booking",
+      "expected": [
+        {
+          "index": 2,
+          "score": 1.7760422229766846
+        },
+        {
+          "index": 6,
+          "score": 1.540055274963379
+        },
+        {
+          "index": 3,
+          "score": 1.4826374053955078
+        },
+        {
+          "index": 7,
+          "score": 1.2282031774520874
+        },
+        {
+          "index": 9,
+          "score": 1.2099279165267944
+        },
+        {
+          "index": 10,
+          "score": 1.1864004135131836
+        },
+        {
+          "index": 0,
+          "score": 1.029841423034668
+        },
+        {
+          "index": 5,
+          "score": 0.8295937776565552
+        },
+        {
+          "index": 4,
+          "score": 0.7939974069595337
+        },
+        {
+          "index": 1,
+          "score": 0.5046012997627258
+        },
+        {
+          "index": 11,
+          "score": 0.45303305983543396
+        }
+      ]
+    },
+    {
+      "documents": [
+        "drive create create find foo_bar documents drive booking generously planning query render notes create clauses search",
+        "calendar foo_bar",
+        "meeting calendar find documents documents notes find notes files create meeting clauses render drive files drive find booking box generously",
+        "documents calendar find render meeting box documents calendar files booking generously files booking search calendar",
+        "create query notes meeting foo_bar drive booking booking render documents meeting",
+        "find",
+        "notes create render find find query documents drive meeting render drive create box files generously create query planning drive query search notes drive find",
+        "calendar foo_bar calendar calendar notes documents notes drive create drive search render clauses meeting",
+        "drive calendar calendar notes clauses search render query render drive find generously calendar documents documents generously planning notes notes search meeting box calendar clauses drive",
+        "planning calendar planning notes documents calendar documents files find create query find calendar notes calendar documents drive",
+        "files booking search planning calendar drive generously generously create search planning query search booking box documents clauses planning calendar create notes render query drive clauses generously clauses box",
+        "find files notes box meeting search planning render create box generously query box search find meeting booking files box foo_bar calendar render foo_bar files documents query search"
+      ],
+      "query": "render search box",
+      "expected": [
+        {
+          "index": 11,
+          "score": 2.1895737648010254
+        },
+        {
+          "index": 10,
+          "score": 1.7998862266540527
+        },
+        {
+          "index": 3,
+          "score": 1.6232571601867676
+        },
+        {
+          "index": 8,
+          "score": 1.6166203022003174
+        },
+        {
+          "index": 6,
+          "score": 1.437339425086975
+        },
+        {
+          "index": 2,
+          "score": 0.9306598901748657
+        },
+        {
+          "index": 7,
+          "score": 0.9241967797279358
+        },
+        {
+          "index": 0,
+          "score": 0.8780723810195923
+        },
+        {
+          "index": 4,
+          "score": 0.36433297395706177
+        }
+      ]
+    },
+    {
+      "documents": [
+        "meeting foo_bar search files search documents booking search find drive render box box foo_bar box files clauses search clauses",
+        "planning meeting query foo_bar planning create query query files search query query drive drive files foo_bar find planning render render foo_bar calendar planning",
+        "calendar documents booking documents",
+        "notes files generously search query notes find planning calendar meeting box box render generously find render files generously booking planning documents box render booking documents booking query box box files search",
+        "drive generously search box box booking generously search query find query clauses booking find query find find meeting foo_bar create drive search box calendar",
+        "query search calendar foo_bar generously render calendar render query search calendar create calendar planning meeting files notes",
+        "meeting booking drive documents render documents notes box meeting booking drive documents render notes booking box query render foo_bar render box query",
+        "render files render foo_bar create find find box foo_bar foo_bar create calendar planning notes booking box clauses foo_bar booking drive box create query calendar find documents files",
+        "files notes generously booking documents search query search render generously booking clauses create query query documents find documents clauses generously notes find foo_bar box find notes find documents",
+        "box planning generously meeting meeting documents generously query render render query booking render planning booking generously meeting",
+        "create planning generously find drive calendar query booking generously documents calendar search notes planning box find documents render find clauses create foo_bar render planning",
+        "foo_bar create files booking box create clauses create calendar render"
+      ],
+      "query": "box drive booking",
+      "expected": [
+        {
+          "index": 6,
+          "score": 1.7495763301849365
+        },
+        {
+          "index": 4,
+          "score": 1.6651127338409424
+        },
+        {
+          "index": 0,
+          "score": 1.4354420900344849
+        },
+        {
+          "index": 7,
+          "score": 1.3447136878967285
+        },
+        {
+          "index": 10,
+          "score": 1.1407064199447632
+        },
+        {
+          "index": 1,
+          "score": 0.9214719533920288
+        },
+        {
+          "index": 3,
+          "score": 0.8204008340835571
+        },
+        {
+          "index": 11,
+          "score": 0.6669887900352478
+        },
+        {
+          "index": 9,
+          "score": 0.6456869840621948
+        },
+        {
+          "index": 8,
+          "score": 0.5390912294387817
+        },
+        {
+          "index": 2,
+          "score": 0.3184196352958679
+        }
+      ]
+    },
+    {
+      "documents": [
+        "create meeting documents find notes query files foo_bar generously planning box box find render query find find create find planning",
+        "files files render planning meeting drive calendar calendar booking foo_bar files calendar box box generously",
+        "render drive calendar booking box render generously clauses find search generously planning render foo_bar documents clauses calendar clauses render drive notes search calendar box booking create box render documents planning box calendar booking",
+        "search create generously find files query notes foo_bar",
+        "find notes meeting",
+        "calendar render notes clauses render booking drive query clauses",
+        "notes render clauses foo_bar render clauses box create files planning generously calendar foo_bar notes foo_bar drive drive notes notes files calendar drive clauses files box drive box meeting notes",
+        "calendar meeting find drive documents box render render generously find generously generously clauses",
+        "find documents calendar calendar query calendar clauses calendar documents files",
+        "search search clauses foo_bar notes query notes planning foo_bar find create calendar notes foo_bar clauses drive drive foo_bar meeting meeting foo_bar booking clauses box documents search foo_bar generously documents meeting box notes render",
+        "generously booking foo_bar foo_bar",
+        "search calendar generously foo_bar clauses booking generously documents foo_bar clauses find query booking calendar meeting notes query"
+      ],
+      "query": "files find booking",
+      "expected": [
+        {
+          "index": 1,
+          "score": 2.0872092247009277
+        },
+        {
+          "index": 3,
+          "score": 1.6198289394378662
+        },
+        {
+          "index": 8,
+          "score": 1.522693157196045
+        },
+        {
+          "index": 0,
+          "score": 1.5128810405731201
+        },
+        {
+          "index": 11,
+          "score": 1.355566382408142
+        },
+        {
+          "index": 2,
+          "score": 1.1884962320327759
+        },
+        {
+          "index": 6,
+          "score": 1.1552358865737915
+        },
+        {
+          "index": 10,
+          "score": 1.001473307609558
+        },
+        {
+          "index": 5,
+          "score": 0.8466950058937073
+        },
+        {
+          "index": 9,
+          "score": 0.784054160118103
+        },
+        {
+          "index": 4,
+          "score": 0.6371755003929138
+        },
+        {
+          "index": 7,
+          "score": 0.6182753443717957
+        }
+      ]
+    },
+    {
+      "documents": [
+        "clauses generously find files clauses files create drive meeting documents meeting planning drive booking files search clauses find generously files drive files meeting foo_bar documents clauses box files box render",
+        "calendar documents find box search calendar create planning meeting search",
+        "notes files search booking search",
+        "files meeting notes create meeting drive search meeting calendar meeting booking box clauses foo_bar documents booking booking foo_bar calendar clauses find drive search query",
+        "documents notes search booking calendar planning clauses meeting box booking files box find query notes documents box planning documents query drive calendar foo_bar calendar planning meeting foo_bar search booking query search files files foo_bar",
+        "clauses generously calendar render files calendar drive meeting drive clauses notes documents box query search",
+        "booking calendar planning render clauses generously documents box files drive search create find box clauses documents files query search planning notes create create documents booking",
+        "find",
+        "files notes search find calendar meeting box booking documents foo_bar generously generously calendar meeting documents find clauses files drive find meeting create foo_bar generously files calendar",
+        "drive foo_bar find find notes create documents clauses create files",
+        "planning meeting create files foo_bar booking query clauses calendar drive query planning query files drive documents box booking calendar files drive box planning documents query foo_bar find clauses render find notes drive create",
+        "notes foo_bar files render foo_bar booking clauses meeting create clauses box generously generously booking drive"
+      ],
+      "query": "generously create calendar",
+      "expected": [
+        {
+          "index": 8,
+          "score": 2.423182964324951
+        },
+        {
+          "index": 6,
+          "score": 1.8742620944976807
+        },
+        {
+          "index": 5,
+          "score": 1.7451812028884888
+        },
+        {
+          "index": 11,
+          "score": 1.7221418619155884
+        },
+        {
+          "index": 1,
+          "score": 1.3995658159255981
+        },
+        {
+          "index": 0,
+          "score": 1.3606772422790527
+        },
+        {
+          "index": 10,
+          "score": 1.110410213470459
+        },
+        {
+          "index": 3,
+          "score": 1.0877819061279297
+        },
+        {
+          "index": 4,
+          "score": 0.7392905950546265
+        },
+        {
+          "index": 9,
+          "score": 0.674008309841156
+        }
+      ]
+    },
+    {
+      "documents": [
+        "planning render booking documents planning files find search query render documents files meeting search clauses foo_bar clauses render box foo_bar drive clauses calendar box create meeting",
+        "notes box query",
+        "search search find search",
+        "meeting clauses planning calendar render calendar find planning drive files foo_bar search box foo_bar booking box foo_bar clauses planning planning files find planning booking clauses render meeting",
+        "documents files documents notes drive clauses meeting foo_bar drive planning find drive clauses search render planning meeting calendar generously box create notes documents query foo_bar query",
+        "search notes drive query create foo_bar search planning files query create render render foo_bar foo_bar planning foo_bar meeting render documents box documents box foo_bar find planning files foo_bar drive query booking planning box create",
+        "search find notes search find foo_bar meeting create box generously foo_bar render",
+        "files generously documents calendar calendar files generously generously clauses generously documents documents planning box search generously meeting box search documents foo_bar clauses planning foo_bar",
+        "meeting notes drive files box box query find query meeting meeting create foo_bar files",
+        "files planning generously clauses generously search create clauses query drive clauses planning render generously query planning documents create documents notes search query calendar booking foo_bar",
+        "find drive documents render files search render drive booking foo_bar foo_bar clauses render query query create search calendar planning search create planning notes create clauses files meeting meeting planning",
+        "calendar drive"
+      ],
+      "query": "clauses foo_bar query",
+      "expected": [
+        {
+          "index": 9,
+          "score": 2.1021103858947754
+        },
+        {
+          "index": 4,
+          "score": 1.933715581893921
+        },
+        {
+          "index": 0,
+          "score": 1.8726471662521362
+        },
+        {
+          "index": 10,
+          "score": 1.858502745628357
+        },
+        {
+          "index": 3,
+          "score": 1.4476094245910645
+        },
+        {
+          "index": 7,
+          "score": 1.2851946353912354
+        },
+        {
+          "index": 5,
+          "score": 1.2595984935760498
+        },
+        {
+          "index": 8,
+          "score": 1.1656012535095215
+        },
+        {
+          "index": 1,
+          "score": 0.8383907079696655
+        },
+        {
+          "index": 6,
+          "score": 0.4802911877632141
+        }
+      ]
+    },
+    {
+      "documents": [
+        "clauses notes files calendar files planning meeting render box planning generously render notes notes clauses foo_bar generously clauses clauses drive search foo_bar meeting drive planning planning",
+        "planning query calendar booking drive find render planning query find foo_bar foo_bar",
+        "documents files files generously find foo_bar clauses booking create search drive create create find clauses clauses meeting booking generously find generously calendar find box files query box query booking generously planning calendar query",
+        "meeting",
+        "render meeting documents foo_bar create files drive find box create foo_bar clauses query clauses booking search find calendar",
+        "meeting box calendar files documents render documents calendar clauses create drive planning planning box find render notes drive calendar render find search generously booking meeting calendar documents booking create search meeting create booking",
+        "foo_bar planning",
+        "create",
+        "query create calendar search render generously meeting clauses box drive planning booking notes drive query render documents query planning foo_bar search create",
+        "documents foo_bar drive booking query foo_bar documents query notes foo_bar find search generously meeting find foo_bar files search generously create documents generously clauses booking planning search meeting clauses foo_bar create drive render",
+        "find create planning booking find generously planning query search planning meeting box query create planning calendar render render query meeting clauses create render meeting drive search search planning documents notes calendar create booking",
+        "search files calendar find box documents find foo_bar create files files notes meeting foo_bar foo_bar foo_bar clauses calendar search clauses create foo_bar"
+      ],
+      "query": "render notes calendar",
+      "expected": [
+        {
+          "index": 0,
+          "score": 2.084930419921875
+        },
+        {
+          "index": 5,
+          "score": 1.9379255771636963
+        },
+        {
+          "index": 8,
+          "score": 1.7952454090118408
+        },
+        {
+          "index": 10,
+          "score": 1.7849453687667847
+        },
+        {
+          "index": 11,
+          "score": 1.224454402923584
+        },
+        {
+          "index": 1,
+          "score": 1.1584430932998657
+        },
+        {
+          "index": 4,
+          "score": 1.0082788467407227
+        },
+        {
+          "index": 9,
+          "score": 0.9871464967727661
+        },
+        {
+          "index": 2,
+          "score": 0.4898308217525482
+        }
+      ]
+    },
+    {
+      "documents": [
+        "find render foo_bar meeting planning documents calendar drive documents foo_bar files box drive calendar notes",
+        "foo_bar notes box find",
+        "foo_bar create",
+        "generously render search booking planning documents find notes render",
+        "create query foo_bar generously generously foo_bar create planning generously files clauses",
+        "planning box files find calendar search render generously booking generously foo_bar documents drive find create calendar notes box",
+        "create render generously files planning search render meeting documents notes find files planning foo_bar foo_bar calendar box create render clauses find box query box search booking create find generously documents drive documents meeting drive",
+        "notes generously find drive query create generously render foo_bar query documents find planning search booking files search generously notes booking foo_bar render booking",
+        "find meeting documents files find query files booking query drive drive query planning foo_bar foo_bar generously notes generously notes search documents files create clauses clauses files notes generously notes search search render meeting",
+        "create booking booking",
+        "planning foo_bar clauses documents query create generously foo_bar drive create generously calendar find create query files calendar drive create query planning foo_bar search search planning foo_bar render drive meeting drive drive planning render",
+        "create booking calendar search render meeting generously planning search calendar clauses meeting planning notes find planning search files find generously"
+      ],
+      "query": "meeting create planning",
+      "expected": [
+        {
+          "index": 11,
+          "score": 1.8972588777542114
+        },
+        {
+          "index": 6,
+          "score": 1.6690646409988403
+        },
+        {
+          "index": 10,
+          "score": 1.5370044708251953
+        },
+        {
+          "index": 8,
+          "score": 1.3913891315460205
+        },
+        {
+          "index": 0,
+          "score": 1.2354968786239624
+        },
+        {
+          "index": 4,
+          "score": 0.8464215993881226
+        },
+        {
+          "index": 5,
+          "score": 0.613840639591217
+        },
+        {
+          "index": 7,
+          "score": 0.549464225769043
+        },
+        {
+          "index": 2,
+          "score": 0.49100857973098755
+        },
+        {
+          "index": 9,
+          "score": 0.47326719760894775
+        },
+        {
+          "index": 3,
+          "score": 0.3889457583427429
+        }
+      ]
+    },
+    {
+      "documents": [
+        "create files create meeting find calendar find files foo_bar create create notes files planning booking find query documents generously meeting meeting notes",
+        "generously files calendar planning generously drive foo_bar clauses generously create planning query foo_bar clauses create create search find planning foo_bar query box notes clauses foo_bar clauses documents foo_bar",
+        "query notes search clauses notes planning query documents foo_bar generously generously notes drive search create files planning query drive calendar",
+        "meeting meeting notes clauses meeting foo_bar meeting search render foo_bar create files",
+        "notes create search render foo_bar query box meeting booking calendar calendar notes generously box",
+        "render calendar box meeting query booking booking planning foo_bar booking files meeting query clauses notes render files query search search create query render files create render",
+        "meeting drive box box search meeting create find render query notes files planning files render notes clauses clauses render clauses documents find box planning clauses foo_bar foo_bar render clauses planning meeting",
+        "box files find search documents planning query notes create render find box clauses create query planning drive find query render foo_bar box booking documents box foo_bar drive create",
+        "search calendar search foo_bar clauses documents calendar search render notes notes clauses meeting notes foo_bar clauses notes render query query calendar planning",
+        "create find booking generously",
+        "documents meeting create calendar documents foo_bar booking query query query query drive render clauses find search",
+        "render query generously planning booking files find foo_bar foo_bar meeting booking planning clauses notes generously clauses"
+      ],
+      "query": "files notes generously",
+      "expected": [
+        {
+          "index": 2,
+          "score": 1.7114301919937134
+        },
+        {
+          "index": 11,
+          "score": 1.7031910419464111
+        },
+        {
+          "index": 0,
+          "score": 1.603011131286621
+        },
+        {
+          "index": 1,
+          "score": 1.5496275424957275
+        },
+        {
+          "index": 4,
+          "score": 1.1094757318496704
+        },
+        {
+          "index": 9,
+          "score": 1.0298298597335815
+        },
+        {
+          "index": 5,
+          "score": 0.8165097832679749
+        },
+        {
+          "index": 3,
+          "score": 0.7624367475509644
+        },
+        {
+          "index": 6,
+          "score": 0.7590749263763428
+        },
+        {
+          "index": 7,
+          "score": 0.5475467443466187
+        },
+        {
+          "index": 8,
+          "score": 0.35500603914260864
+        }
+      ]
+    },
+    {
+      "documents": [
+        "calendar documents clauses booking documents calendar query",
+        "box box clauses foo_bar documents create generously planning meeting drive files meeting meeting notes documents drive create",
+        "box drive search create render calendar drive notes booking",
+        "search notes meeting search search foo_bar documents find create files clauses",
+        "foo_bar render find query render notes find search planning drive create",
+        "render booking box booking documents documents render generously generously render generously planning notes clauses calendar generously calendar search",
+        "render booking box search clauses files booking create generously meeting clauses generously drive meeting foo_bar booking search box notes meeting calendar notes calendar generously",
+        "files files drive calendar render create notes files find calendar find documents render clauses planning booking planning create drive search find query files",
+        "clauses find planning render query drive meeting meeting calendar planning",
+        "generously render query clauses clauses clauses booking documents planning meeting render calendar notes booking generously clauses booking drive notes render render foo_bar render generously foo_bar planning booking search",
+        "booking files find render files create calendar calendar calendar clauses render create files booking clauses booking planning clauses meeting calendar render find drive meeting documents generously query files render box planning files generously",
+        "find search box render box notes create drive booking planning generously files documents search notes files generously render drive notes create render files planning drive generously planning meeting query calendar calendar documents generously render"
+      ],
+      "query": "planning meeting generously",
+      "expected": [
+        {
+          "index": 1,
+          "score": 2.0444118976593018
+        },
+        {
+          "index": 11,
+          "score": 2.009570360183716
+        },
+        {
+          "index": 9,
+          "score": 1.9558026790618896
+        },
+        {
+          "index": 10,
+          "score": 1.8896853923797607
+        },
+        {
+          "index": 6,
+          "score": 1.8430092334747314
+        },
+        {
+          "index": 5,
+          "score": 1.6131473779678345
+        },
+        {
+          "index": 8,
+          "score": 1.5430538654327393
+        },
+        {
+          "index": 3,
+          "score": 0.6619813442230225
+        },
+        {
+          "index": 7,
+          "score": 0.5492026805877686
+        },
+        {
+          "index": 4,
+          "score": 0.5113474130630493
+        }
+      ]
+    },
+    {
+      "documents": [
+        "files booking notes clauses files create create generously planning planning meeting search booking search create planning calendar planning clauses find drive query calendar create foo_bar booking meeting query",
+        "create drive calendar calendar calendar calendar notes",
+        "box drive render notes clauses",
+        "generously find files create booking clauses calendar drive generously query notes files query find box meeting drive find booking search meeting meeting booking box notes booking generously files foo_bar",
+        "search query box search notes search files foo_bar booking clauses box drive search find",
+        "foo_bar files clauses",
+        "files render drive",
+        "box booking booking create foo_bar generously box files foo_bar booking files calendar files drive generously clauses box clauses render documents meeting find calendar",
+        "planning search planning search calendar box booking render foo_bar foo_bar find planning documents box foo_bar documents create render render find planning files clauses generously generously files find create files",
+        "calendar files query files planning foo_bar search drive planning files create foo_bar render drive find planning calendar meeting planning meeting clauses planning find generously generously meeting generously foo_bar foo_bar notes find notes foo_bar",
+        "notes meeting render generously find drive planning search meeting drive drive calendar search drive search box find find drive foo_bar render foo_bar meeting search drive files box render documents",
+        "calendar box create box find calendar generously meeting planning find planning calendar render search query booking find box"
+      ],
+      "query": "planning calendar meeting",
+      "expected": [
+        {
+          "index": 9,
+          "score": 2.777844190597534
+        },
+        {
+          "index": 0,
+          "score": 2.676480770111084
+        },
+        {
+          "index": 11,
+          "score": 2.5608999729156494
+        },
+        {
+          "index": 10,
+          "score": 2.0102875232696533
+        },
+        {
+          "index": 8,
+          "score": 1.6680463552474976
+        },
+        {
+          "index": 3,
+          "score": 1.313818097114563
+        },
+        {
+          "index": 7,
+          "score": 1.1750962734222412
+        },
+        {
+          "index": 1,
+          "score": 0.8054516911506653
+        }
+      ]
+    },
+    {
+      "documents": [
+        "search calendar render files documents box drive find clauses clauses search notes query files notes box drive notes",
+        "search foo_bar files generously query meeting files foo_bar documents render planning meeting files booking drive meeting planning",
+        "generously box search calendar documents query notes documents files booking generously search create",
+        "planning documents search render",
+        "calendar meeting create",
+        "documents render planning render generously clauses notes meeting booking box box planning generously drive meeting planning create foo_bar meeting render calendar planning booking create files render query render",
+        "notes notes drive generously notes clauses documents query booking create search render clauses",
+        "files box documents files clauses notes planning documents meeting",
+        "meeting box planning create files notes meeting box clauses render query render create calendar planning planning documents foo_bar meeting box box search files drive find calendar meeting clauses documents",
+        "generously calendar create generously search search render find documents clauses",
+        "query",
+        "render box render planning planning find box foo_bar drive generously calendar create box find foo_bar meeting"
+      ],
+      "query": "documents documents drive",
+      "expected": [
+        {
+          "index": 0,
+          "score": 1.4199297428131104
+        },
+        {
+          "index": 6,
+          "score": 1.3374543190002441
+        },
+        {
+          "index": 1,
+          "score": 1.190399169921875
+        },
+        {
+          "index": 8,
+          "score": 1.120049238204956
+        },
+        {
+          "index": 7,
+          "score": 0.9505669474601746
+        },
+        {
+          "index": 5,
+          "score": 0.9140272736549377
+        },
+        {
+          "index": 3,
+          "score": 0.8799803256988525
+        },
+        {
+          "index": 2,
+          "score": 0.8701587319374084
+        },
+        {
+          "index": 9,
+          "score": 0.7002679705619812
+        },
+        {
+          "index": 11,
+          "score": 0.6425352692604065
+        }
+      ]
+    },
+    {
+      "documents": [
+        "query documents generously meeting meeting meeting clauses calendar drive clauses create calendar meeting search box find generously meeting create search meeting query generously generously documents find planning notes clauses",
+        "drive box drive drive search box render query files clauses",
+        "box planning notes search files calendar booking booking drive drive booking meeting query meeting render booking query query search booking foo_bar search clauses booking find create create generously foo_bar meeting documents planning foo_bar calendar",
+        "search generously drive render calendar calendar documents calendar box drive planning create drive box calendar drive render calendar create query drive",
+        "find drive search render drive calendar calendar search documents meeting meeting booking drive meeting notes notes create find notes notes create meeting documents render box planning query documents notes booking",
+        "search",
+        "generously generously notes booking documents foo_bar search clauses planning",
+        "query documents meeting calendar find documents foo_bar documents drive calendar box create drive",
+        "box calendar search box foo_bar query notes files query render box calendar meeting files create notes find render query calendar create box clauses documents planning find create notes drive foo_bar booking render query find",
+        "notes query create meeting generously search render clauses planning clauses find create box generously drive notes generously find documents box",
+        "clauses find clauses meeting documents notes meeting generously booking render foo_bar",
+        "render documents create notes find meeting notes find documents booking find meeting booking planning notes files"
+      ],
+      "query": "calendar calendar notes",
+      "expected": [
+        {
+          "index": 8,
+          "score": 2.4343159198760986
+        },
+        {
+          "index": 3,
+          "score": 2.4225378036499023
+        },
+        {
+          "index": 4,
+          "score": 2.3346235752105713
+        },
+        {
+          "index": 7,
+          "score": 2.0919530391693115
+        },
+        {
+          "index": 0,
+          "score": 2.009984254837036
+        },
+        {
+          "index": 2,
+          "score": 1.8809739351272583
+        },
+        {
+          "index": 11,
+          "score": 0.6910552382469177
+        },
+        {
+          "index": 9,
+          "score": 0.5756926536560059
+        },
+        {
+          "index": 6,
+          "score": 0.541467010974884
+        },
+        {
+          "index": 10,
+          "score": 0.5132982134819031
+        }
+      ]
+    },
+    {
+      "documents": [
+        "generously booking clauses booking booking clauses files drive files foo_bar files render documents documents clauses clauses",
+        "search search generously booking clauses documents search search meeting booking box foo_bar booking booking notes documents documents create render box meeting meeting planning planning create",
+        "files create drive documents query meeting documents meeting calendar documents find render find drive booking search create search calendar clauses drive create clauses foo_bar foo_bar foo_bar notes box create notes find box drive clauses",
+        "create documents booking box documents clauses query notes documents documents find notes files files find create",
+        "generously render search search search calendar drive",
+        "documents box foo_bar foo_bar render foo_bar",
+        "find calendar search",
+        "documents meeting planning drive booking planning files query planning search calendar documents box planning generously files drive notes meeting generously planning notes box planning files search",
+        "clauses files box box notes render query notes files render documents notes search foo_bar generously query find find files create box clauses generously planning",
+        "foo_bar",
+        "find clauses clauses query find create planning generously planning documents clauses generously meeting generously clauses generously box calendar files planning",
+        "generously foo_bar drive create calendar planning meeting query query render foo_bar search booking foo_bar box query calendar files create create create drive foo_bar booking calendar box files render find box query box files"
+      ],
+      "query": "clauses clauses booking",
+      "expected": [
+        {
+          "index": 0,
+          "score": 3.4938411712646484
+        },
+        {
+          "index": 2,
+          "score": 2.3168559074401855
+        },
+        {
+          "index": 10,
+          "score": 2.2915263175964355
+        },
+        {
+          "index": 1,
+          "score": 2.2754948139190674
+        },
+        {
+          "index": 3,
+          "score": 2.15897274017334
+        },
+        {
+          "index": 8,
+          "score": 1.7287249565124512
+        },
+        {
+          "index": 11,
+          "score": 0.7645454406738281
+        },
+        {
+          "index": 7,
+          "score": 0.5796413421630859
+        }
+      ]
+    }
+  ],
+  "schemas": [
+    {
+      "schema": {},
+      "expected": "unknown"
+    },
+    {
+      "schema": {
+        "type": "object"
+      },
+      "expected": "{ [key: string]: unknown; }"
+    },
+    {
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "expected": "Array<string>"
+    },
+    {
+      "schema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Record key"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "expected": "{\n  count?: number;\n  // Record key\n  id: string;\n}"
+    },
+    {
+      "schema": {
+        "properties": {
+          "tags": {
+            "type": "array",
+            "description": "People to notify",
+            "items": {
+              "type": "string",
+              "format": "email",
+              "description": "Email address"
+            }
+          }
+        }
+      },
+      "expected": "{\n  // People to notify\n  tags?: Array<string>;\n}"
+    },
+    {
+      "schema": {
+        "properties": {
+          "records": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "expected": "{ records?: { [key: string]: number; }; }"
+    },
+    {
+      "schema": {
+        "properties": {
+          "z": {
+            "type": "string",
+            "description": "First\nSecond */\n\nLast"
+          },
+          "a-b": {
+            "enum": [
+              "a",
+              "b"
+            ],
+            "default": "a"
+          }
+        }
+      },
+      "expected": "{\n  \"a-b\"?: \"a\" | \"b\";\n  // First\n  // Second */\n  // Last\n  z?: string;\n}"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "Q": {
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File location"
+              }
+            }
+          }
+        },
+        "$ref": "#/$defs/Q"
+      },
+      "expected": "{\n  // File location\n  path?: string;\n}"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "Q": {
+            "type": "object",
+            "properties": {
+              "next": {
+                "$ref": "#/$defs/Q"
+              }
+            }
+          }
+        },
+        "$ref": "#/$defs/Q"
+      },
+      "expected": "{ next?: { next?: unknown; }; }"
+    },
+    {
+      "schema": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string",
+            "enum": [
+              "NaN",
+              "Infinity",
+              "-Infinity"
+            ]
+          }
+        ]
+      },
+      "expected": "number | \"NaN\" | \"Infinity\" | \"-Infinity\""
+    },
+    {
+      "schema": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "expected": "string | null"
+    },
+    {
+      "schema": {
+        "allOf": [
+          {
+            "properties": {
+              "x": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "properties": {
+              "y": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "expected": "{ x?: string; } & { y?: number; }"
+    },
+    {
+      "schema": {
+        "type": [
+          "null",
+          "string"
+        ]
+      },
+      "expected": "null | string"
+    },
+    {
+      "schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "expected": "{ [key: string]: unknown; }"
+    },
+    {
+      "schema": {
+        "not": {
+          "type": "null"
+        }
+      },
+      "expected": "unknown"
+    },
+    {
+      "schema": {
+        "properties": {
+          "x": false
+        }
+      },
+      "expected": "{ x?: never; }"
+    },
+    {
+      "schema": {
+        "properties": {
+          "x": {
+            "description": "",
+            "minLength": 0
+          }
+        }
+      },
+      "expected": "{ x?: unknown; }"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "a/b": {
+            "type": "string"
+          }
+        },
+        "$ref": "#/$defs/a~1b"
+      },
+      "expected": "string"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "Q": {
+            "type": "string"
+          }
+        },
+        "$ref": "#%2F$defs%2FQ"
+      },
+      "expected": "string"
+    },
+    {
+      "schema": {
+        "$ref": "#/missing"
+      },
+      "expected": "unknown"
+    },
+    {
+      "schema": true,
+      "expected": "unknown"
+    },
+    {
+      "schema": false,
+      "expected": "never"
+    },
+    {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "expected": "{}"
+    },
+    {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "z": {
+            "description": "foo\n bar",
+            "type": "string"
+          },
+          "a": {
+            "type": "integer"
+          }
+        }
+      },
+      "expected": "{\n  a?: number;\n  // foo\n  // bar\n  z?: string;\n}"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "T": {
+            "type": "object",
+            "properties": {
+              "child": {
+                "$ref": "#/$defs/T"
+              }
+            }
+          }
+        },
+        "$ref": "#/$defs/T"
+      },
+      "expected": "{ child?: { child?: unknown; }; }"
+    },
+    {
+      "schema": {
+        "$defs": {
+          "x": {
+            "type": "string"
+          }
+        },
+        "$ref": "#/$defs/x",
+        "type": "null"
+      },
+      "expected": "(string) & (null)"
+    },
+    {
+      "schema": {
+        "const": {
+          "z": 1,
+          "a": "b"
+        }
+      },
+      "expected": "{\"a\":\"b\",\"z\":1}"
+    },
+    {
+      "schema": {
+        "items": false
+      },
+      "expected": "Array<never>"
+    },
+    {
+      "schema": {
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      },
+      "expected": "[string, boolean]"
+    },
+    {
+      "schema": {
+        "enum": [
+          "xxxxxxxx"
+        ]
+      },
+      "budget": 100,
+      "expected": "\"xxxxxxxx\""
+    },
+    {
+      "schema": {
+        "enum": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "budget": 100,
+      "expected": "unknown"
+    },
+    {
+      "schema": {
+        "enum": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "budget": 100,
+      "expected": "unknown"
+    }
+  ]
+}

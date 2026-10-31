@@ -7,7 +7,7 @@ import 'dart:typed_data';
 
 import 'package:agent/agent.dart';
 import 'package:ai/ai.dart';
-import 'package:gpt/gpt.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:storage/storage.dart';
 import 'package:telemetry/telemetry.dart';

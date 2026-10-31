@@ -30,6 +30,8 @@ class _DesktopViewState extends State<DesktopView> {
   static const _desktop = MethodChannel('happen/desktop');
   DesktopSession get session => widget.session;
   bool _picking = false, _settingsOpen = false;
+  double? _dragSidebarWidth;
+  bool _sidebarHovered = false;
 
   @override
   void initState() {
@@ -71,7 +73,7 @@ class _DesktopViewState extends State<DesktopView> {
                       child: Row(children: [
                         const Icon(Icons.check_circle, color: Color(0xff296748)),
                         const SizedBox(width: 12),
-                        Expanded(child: Text('Signed in to ${session.loginProvider == 'gpt' ? 'ChatGPT' : 'OpenCode'}. Your account is connected.')),
+                        Expanded(child: Text('Signed in to ${session.loginProvider == 'openai' ? 'ChatGPT' : 'OpenCode'}. Your account is connected.')),
                       ]),
                     ),
                     const SizedBox(height: 20),
@@ -266,14 +268,87 @@ class _DesktopViewState extends State<DesktopView> {
     }
   });
 
+  Future<void> _removeProject(Project project) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${project.name}?'),
+        content: const Text('Remove this project and its tasks from Happen. Running tasks will be stopped. The folder and saved task history will be kept.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove project')),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) await session.removeProject(project);
+  }
+
+  void _selectAdjacentTask(int offset) {
+    final tasks = [
+      for (final project in session.projects)
+        for (final task in project.tasks)
+          if (!task.archived) (project, task),
+    ];
+    if (tasks.isEmpty) return;
+    final current = tasks.indexWhere((entry) => entry.$2 == session.task);
+    final next = current < 0 ? (offset > 0 ? 0 : tasks.length - 1) : current + offset;
+    if (next < 0 || next >= tasks.length) return;
+    final (project, task) = tasks[next];
+    unawaited(_run(() => session.select(project, task)));
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: session,
-    builder: (context, _) => Scaffold(
-      body: Row(
+    builder: (context, _) => CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true): () => _selectAdjacentTask(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true): () => _selectAdjacentTask(1),
+      },
+      child: Scaffold(
+        body: LayoutBuilder(builder: _workspace),
+      ),
+    ),
+  );
+
+  Widget _workspace(BuildContext context, BoxConstraints constraints) {
+    final maxSidebarWidth = (constraints.maxWidth - 488).clamp(200.0, 480.0).toDouble();
+    final sidebarWidth = (_dragSidebarWidth ?? session.sidebarWidth).clamp(200.0, maxSidebarWidth).toDouble();
+    return Row(
         children: [
-          _sidebar(context),
-          const VerticalDivider(width: 1),
+          _sidebar(context, sidebarWidth),
+          Semantics(
+            label: 'Resize sidebar',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.resizeColumn,
+              onEnter: (_) => setState(() => _sidebarHovered = true),
+              onExit: (_) => setState(() => _sidebarHovered = false),
+              child: GestureDetector(
+                key: const ValueKey('sidebar-resizer'),
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: (_) => setState(() => _dragSidebarWidth = sidebarWidth),
+                onHorizontalDragUpdate: (details) {
+                  final delta = Directionality.of(context) == TextDirection.rtl ? -details.delta.dx : details.delta.dx;
+                  setState(() => _dragSidebarWidth = ((_dragSidebarWidth ?? sidebarWidth) + delta).clamp(200.0, maxSidebarWidth).toDouble());
+                },
+                onHorizontalDragEnd: (_) {
+                  final width = _dragSidebarWidth ?? sidebarWidth;
+                  unawaited(_run(() => session.chooseSidebarWidth(width)));
+                  setState(() => _dragSidebarWidth = null);
+                },
+                onHorizontalDragCancel: () => setState(() => _dragSidebarWidth = null),
+                child: SizedBox(
+                  width: 8,
+                  height: double.infinity,
+                  child: VerticalDivider(
+                    width: 8,
+                    thickness: _sidebarHovered || _dragSidebarWidth != null ? 2 : 1,
+                    color: _sidebarHovered || _dragSidebarWidth != null ? Theme.of(context).colorScheme.primary : null,
+                  ),
+                ),
+              ),
+            ),
+          ),
           Expanded(
             child: Column(
               children: [
@@ -300,7 +375,24 @@ class _DesktopViewState extends State<DesktopView> {
                       ),
                     ),
                   ),
-                if (session.task?.archived == true)
+                if (session.project?.removing == true)
+                  const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
+                else if (session.project?.available == false)
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Project folder is unavailable', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      SelectableText(session.project!.path, style: const TextStyle(color: Colors.black54)),
+                      const SizedBox(height: 8),
+                      Wrap(spacing: 8, children: [
+                        TextButton(onPressed: () => _run(() => _removeProject(session.project!)), child: const Text('Remove project')),
+                        if (session.task?.running == true)
+                          TextButton(onPressed: session.connected ? () => _run(session.stop) : null, child: const Text('Stop task')),
+                      ]),
+                    ]),
+                  )
+                else if (session.task?.archived == true)
                   Padding(
                     padding: const EdgeInsets.all(20),
                     child: FilledButton.icon(
@@ -315,12 +407,12 @@ class _DesktopViewState extends State<DesktopView> {
             ),
           ),
         ],
-      ),
-    ),
-  );
+      );
+  }
 
-  Widget _sidebar(BuildContext context) => SizedBox(
-    width: 248,
+  Widget _sidebar(BuildContext context, double width) => SizedBox(
+    key: const ValueKey('sidebar'),
+    width: width,
     child: Material(
       color: const Color(0xfff2f3ef),
       child: Column(
@@ -367,12 +459,14 @@ class _DesktopViewState extends State<DesktopView> {
               children: [
                 for (final project in session.projects) ...[
                   ListTile(
+                    key: ValueKey('project:${project.checkoutKey}'),
+                    enabled: project.available && !project.removing,
                     dense: true,
                     contentPadding: const EdgeInsets.only(left: 12),
                     leading: const Icon(Icons.folder_outlined, size: 19),
                     minLeadingWidth: 20,
                     title: Tooltip(
-                      message: project.path,
+                      message: project.available ? project.path : '${project.path}\nFolder unavailable',
                       child: Text(
                         project.name,
                         maxLines: 1,
@@ -380,12 +474,24 @@ class _DesktopViewState extends State<DesktopView> {
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
+                    subtitle: !project.available ? const Text('Folder unavailable', style: TextStyle(fontSize: 11)) : null,
                     onTap: () => _run(() => session.select(project)),
-                    trailing: IconButton(
-                      tooltip: 'New task in ${project.name}',
-                      icon: const Icon(Icons.add, size: 18),
-                      onPressed: () => _run(() => session.select(project)),
-                    ),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                      IconButton(
+                        tooltip: 'New task in ${project.name}',
+                        icon: const Icon(Icons.add, size: 18),
+                        onPressed: project.available && !project.removing ? () => _run(() => session.select(project)) : null,
+                      ),
+                      PopupMenuButton<String>(
+                        tooltip: 'Project actions',
+                        enabled: !project.removing && !session.submitting && !project.tasks.any((task) => task.archiving),
+                        icon: const Icon(Icons.more_horiz, size: 18),
+                        onSelected: (_) => _run(() => _removeProject(project)),
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'remove', child: Text('Remove project')),
+                        ],
+                      ),
+                    ]),
                   ),
                   for (final task in project.tasks.where((task) => !task.archived))
                     _taskTile(project, task),
@@ -434,13 +540,14 @@ class _DesktopViewState extends State<DesktopView> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       selected: session.task == task,
       selectedTileColor: const Color(0xffe2e7df),
-      title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+        style: project.available ? null : const TextStyle(color: Colors.black38)),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         if (task.running || task.archiving)
           const SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.5)),
         PopupMenuButton<String>(
           tooltip: 'Task actions',
-          enabled: session.connected && !task.archiving,
+          enabled: session.connected && !task.archiving && !project.removing,
           icon: const Icon(Icons.more_horiz, size: 18),
           onSelected: (value) => _run(() => _archiveTask(task, value == 'archive')),
           itemBuilder: (_) => [
@@ -453,10 +560,11 @@ class _DesktopViewState extends State<DesktopView> {
   );
 
   Future<void> _archiveTask(DesktopTask task, bool archived) async {
+    final project = session.projects.where((project) => project.tasks.contains(task)).firstOrNull;
+    if (project == null || project.removing) return;
     await session.setArchived(task, archived);
     if (!mounted) return;
     if (!archived) {
-      final project = session.projects.firstWhere((project) => project.tasks.contains(task));
       await session.select(project, task);
     } else {
       ScaffoldMessenger.of(context)..clearSnackBars()..showSnackBar(SnackBar(
@@ -482,7 +590,7 @@ class _DesktopViewState extends State<DesktopView> {
         ),
         if (session.project != null)
           TextButton.icon(
-            onPressed: () => _run(() => session.select(session.project!)),
+            onPressed: session.project!.available && !session.project!.removing ? () => _run(() => session.select(session.project!)) : null,
             icon: const Icon(Icons.edit_square, size: 16),
             label: const Text('New task'),
           ),

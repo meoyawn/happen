@@ -5,6 +5,8 @@ resolution: workspace
 environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
+  openai: any
+  opencode: any
   protocol: any
   ai: any
   storage: any

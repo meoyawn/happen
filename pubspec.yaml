@@ -7,20 +7,21 @@ workspace:
   - packages/protocol
   - packages/telemetry
   - packages/ai
-  - packages/gpt
-  - packages/deepseek
+  - packages/openai
+  - packages/opencode
   - packages/config
   - packages/mcp
   - packages/storage
   - packages/code_mode
+  - packages/tool_runtime
   - packages/agent
   - packages/server
   - packages/desktop
 dependencies:
   args: ^2.7.0
   ai: any
-  gpt: any
-  deepseek: any
+  openai: any
+  opencode: any
   config: any
   mcp: any
   protocol: any

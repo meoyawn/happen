@@ -87,6 +87,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       ]));
     }
     final entries = conversation(task);
+    final compacting = entries.any((entry) => entry.compaction?.status == 'running');
     final indices = {for (var i = 0; i < entries.length; i++) entries[i].id: i};
     final starts = task.events.values.where((event) => event['type'] == 'turn.started').toList()
       ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
@@ -109,7 +110,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                   key: PageStorageKey('transcript:${task.id}'),
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(32, 28, 32, 28),
-                  itemCount: entries.length + (task.running ? 1 : 0),
+                  itemCount: entries.length + (task.running && !compacting ? 1 : 0),
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
                     if (index == entries.length) return _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus);
@@ -119,6 +120,10 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                       padding: EdgeInsets.only(bottom: entry.tool != null ? 6 : entry.role == 'Status' ? 28 : 22),
                       child: switch (entry.role) {
                         'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),
+                        'Compaction' => _CompactionRow(
+                          entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
+                          onExpand: () => _following = false,
+                        ),
                         'Reasoning' => ExpansionTile(
                           key: PageStorageKey('reasoning:${entry.id}'),
                           tilePadding: EdgeInsets.zero,
@@ -231,20 +236,61 @@ String _duration(DateTime start, DateTime end) {
 }
 
 class _TurnStatus extends StatelessWidget {
-  const _TurnStatus({required this.entry});
+  const _TurnStatus({required this.entry, this.icon});
   final ChatEntry entry;
+  final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
     final elapsed = entry.startedAt != null && entry.timestamp != null
         ? _duration(entry.startedAt!, entry.timestamp!) : null;
     return Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
-      Icon(entry.text == 'Completed' ? Icons.check_rounded : Icons.info_outline_rounded,
+      Icon(icon ?? (entry.text == 'Completed' ? Icons.check_rounded : Icons.info_outline_rounded),
         size: 14, color: conversationMuted),
       Text('${entry.text}${elapsed == null ? '' : ' in $elapsed'}',
         style: const TextStyle(fontSize: 12, color: conversationMuted)),
       if (entry.timestamp case final at?) _Timestamp(at: at),
     ]);
+  }
+}
+
+class _CompactionRow extends StatelessWidget {
+  const _CompactionRow({required this.entry, required this.directory, required this.onExpand, this.retryStatus});
+  final ChatEntry entry;
+  final String directory;
+  final VoidCallback onExpand;
+  final String? retryStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final compaction = entry.compaction!;
+    if (compaction.status == 'running') {
+      return _TurnClock(startedAt: compaction.startedAt,
+        status: 'Compacting context${retryStatus == null ? '' : ' · $retryStatus'}');
+    }
+    final label = switch (compaction.status) {
+      'done' => 'Context compacted',
+      'failed' => 'Compaction failed',
+      'stopped' => 'Compaction stopped',
+      _ => 'Compaction interrupted',
+    };
+    final status = _TurnStatus(
+      entry: ChatEntry(entry.id, 'Status', label, timestamp: compaction.endedAt, startedAt: compaction.startedAt),
+      icon: Icons.compress_rounded,
+    );
+    if (compaction.summary.trim().isEmpty) {
+      return Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: status);
+    }
+    return ExpansionTile(
+      key: PageStorageKey('compaction:${entry.id}'),
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(left: 24, top: 8, bottom: 12),
+      dense: true,
+      shape: const Border(), collapsedShape: const Border(),
+      title: status,
+      onExpansionChanged: (_) => onExpand(),
+      children: [ConversationMarkdown(text: compaction.summary, directory: directory)],
+    );
   }
 }
 
@@ -280,8 +326,8 @@ class _TurnClockState extends State<_TurnClock> {
     child: Row(children: [
       const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
       const SizedBox(width: 10),
-      Text('${widget.status ?? 'Working'}${widget.startedAt == null ? '…' : ' · ${_duration(widget.startedAt!, DateTime.now())}'}',
-        style: const TextStyle(fontSize: 12, color: conversationMuted)),
+      Flexible(child: Text('${widget.status ?? 'Working'}${widget.startedAt == null ? '…' : ' · ${_duration(widget.startedAt!, DateTime.now())}'}',
+        style: const TextStyle(fontSize: 12, color: conversationMuted))),
     ]),
   );
 }

@@ -75,7 +75,7 @@ void main() {
               ? <Json>[
                   {
                     'type': 'tool_search_call', 'execution': 'client',
-                    'arguments': {'query': 'client__browser_title', 'limit': 1},
+                    'arguments': {'query': 'browser_title', 'limit': 1},
                     'call_id': 'call_${++call}',
                   },
                 ]
@@ -229,9 +229,10 @@ void main() {
         );
         expect(
           jsonEncode(removal),
-          contains('Removed client tools: client.browser_title'),
+          contains('Removed deferred tool namespaces:'),
         );
-        expect(jsonEncode(removal), contains('unavailable'));
+        expect(removal['content'], contains('- client: Tools in the client namespace.'));
+        expect(removal['content'], contains('No deferred tool namespaces remain.'));
 
         // Reattachment starts a new ownership lifetime with the same stable names.
         await observer.request('tools.register', {

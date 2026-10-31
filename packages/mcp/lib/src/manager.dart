@@ -165,10 +165,7 @@ class McpManager {
               {
                 'server': server.name,
                 'namespace': 'mcp__${_safeName(server.name)}',
-                'text': clippedText(
-                  server.connection!.discovery['instructions'] as String,
-                  32768,
-                ),
+                'text': server.connection!.discovery['instructions'] as String,
               },
         ],
       };
@@ -386,12 +383,12 @@ class _Server {
         'name': entry.key,
         'namespace': 'mcp__${_safeName(name)}',
         'tool_name': _safeName(entry.value['name'] as String),
-        'description': clippedText(
-          entry.value['description'] as String? ??
-              entry.value['name'] as String,
-          8192,
-        ),
+        'original_name': entry.value['name'],
+        'server_name': name,
+        if (entry.value['title'] is String) 'title': entry.value['title'],
+        'description': entry.value['description'] as String? ?? '',
         'parameters': entry.value['inputSchema'],
+        if (entry.value['outputSchema'] != null) 'output_schema': entry.value['outputSchema'],
       },
   ];
 

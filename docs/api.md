@@ -17,7 +17,7 @@ that login. `login` and `login --device` create an independently owned login.
 The default data directory is `~/.local/share/agent-server`. Set `AGENT_DATA_DIR`
 or pass the global `--data-dir PATH` option to select another directory. It holds
 authentication references, `AGENTS.md`, and task databases. Global configuration
-defaults to `~/.happen/config.yaml`, independently of the data directory.
+defaults to `~/.config/happen/config.yaml`, independently of the data directory.
 
 For a remote server, run the loopback listener on the remote machine and forward
 its port with SSH:
@@ -106,7 +106,10 @@ and SSH forwarding management remain future client work.
 
 ## Global configuration
 
-Create `~/.happen/config.yaml` with local commands, remote URLs, or both:
+If you used the previous `~/.happen/config.yaml` default, move that file to the
+new location and restart the server.
+
+Create `~/.config/happen/config.yaml` with local commands, remote URLs, or both:
 
 ```yaml
 mcp_servers:
@@ -119,21 +122,21 @@ mcp_servers:
       Authorization: MCP_AUTHORIZATION
 
 # Optional provider defaults.
-default_provider: gpt
+default_provider: openai
 providers:
-  gpt:
+  openai:
     model: gpt-6.1-sol
     settings: {reasoning: low, transport: http}
-  deepseek:
-    model: deepseek-flash
-    api_key_env: DEEPSEEK_API_KEY
-    transport: messages
+  opencode:
+    model: deepseek-v4.1-flash-free
+    settings: {reasoning: low}
 ```
 
 Use the global `--config PATH` option to select another YAML file, for example
 `dart run bin/agent.dart --config /path/config.yaml serve`. Embedded applications
 can pass `configPath` to `AgentServer.start` or `startEmbedded`; their default is
-also `~/.happen/config.yaml`. A missing file at startup means empty configuration.
+also `~/.config/happen/config.yaml`. A missing file at startup means empty
+configuration.
 For compatibility, a missing YAML file falls back to the data directory's
 `config.json`, validated against the same schema. Files are never merged, and an
 invalid YAML file never falls back to JSON. Credentials and task data stay in
@@ -157,12 +160,14 @@ YAML has been selected, deletion also does not reactivate an old JSON config.
 
 Existing tasks check catalog revisions before the next model request, including
 between steps of an active turn. New tools remain deferred; only namespace
-summaries and changes to already loaded native schemas enter context. GPT appends
+summaries and changes to already loaded native schemas enter context. OpenAI appends
 changed loaded schemas as developer-role `additional_tools` items; the original
-request-level tools stay fixed. Direct MCP calls use `mcp__SERVER.TOOL`, and code
-mode retains `tools.mcp__SERVER__TOOL`. Removed namespaces and loaded tools receive
-an availability notice, and calls check the live registry. Compaction restores
-only currently available tools that were already loaded. A catalog check
+request-level tools stay fixed. OpenAI MCP calls use `mcp__SERVER.TOOL`, and code
+mode uses `tools.mcp__SERVER__TOOL`. OpenCode calls MCP tools inside `execute`
+through `tools.SERVER.TOOL`, preserving bracket notation for hyphens. Its native
+catalog stays fixed; external schemas remain inside Code Mode. Namespace removals
+append availability notices, and calls check the live registry. OpenAI compaction
+restores only currently available native tools that were already loaded. A catalog check
 reconciles config immediately, without waiting for the file watcher's debounce.
 Unchanged catalogs return a revision response without copying their schemas.
 Invalid edits retain the live catalog.
@@ -202,27 +207,42 @@ references or private authentication files, never task settings.
 
 ## Tool discovery
 
-MCP and client tools are deferred. In code mode,
-`await tools.tool_search({query, limit})` uses local BM25 to return matching
-callable names, typed JavaScript declarations, original JSON schemas, and relevant
-MCP server guidance. The default limit is 8 and the maximum is 32. Exact callable
-names take priority. Search output enters model context only when printed; it
-does not load native schemas. `ALL_TOOLS` supports exact lookup and filtering.
+Tool interfaces and instructions belong to `packages/openai` and
+`packages/opencode`. The agent supplies shared execution services; the providers
+own discovery, declarations, catalog updates, and result formatting. Both reuse
+the process runner, patch engine, and JavaScript engine. OpenAI search is entirely
+Dart and has no native build hook.
+
+OpenAI follows Codex: `await tools.tool_search({query, limit})` uses English BM25
+over deferred metadata and returns `{tools: [{name, description}]}`. Descriptions
+include TypeScript declarations and MCP guidance. The default limit is 8; there
+is no additional maximum or exact-name boost. Normalization, NLTK stop words,
+stemming, token hashes, and float32 scores follow the pinned upstream runtime.
+Equal-score ordering is unspecified upstream; Dart uses registration order.
+Search output enters model context when printed and does not load native schemas.
+`ALL_TOOLS` supports exact lookup and filtering.
 
 The host registry is read when a cell starts and again when `tool_search` runs,
 so a search after an in-cell config edit sees the current tools. `ALL_TOOLS`
 remains the cell's starting snapshot. Use search to retrieve server guidance
 before calling an MCP tool found through that snapshot.
 
-Calling `tool_search` directly loads only matching native schemas. Repeated
-searches do not redeclare unchanged tools. GPT uses client-executed
-`tool_search_call`/`tool_search_output`; DeepSeek uses a JSON function and its
-existing ordered-addition or Chat catalog adapter. Both use the same selection
-policy. Loaded schemas survive restart and compaction; code-mode discovery
-output follows ordinary conversation compaction. Earlier tasks acquire the
-search tool through an append-only declaration, preserving their initial prefix.
+Calling OpenAI's `tool_search` directly returns matching native schemas in every
+client-executed `tool_search_output`, including repeated searches. Loaded schemas
+survive restart and compaction. Earlier OpenAI tasks acquire discovery through an
+ordered declaration while retaining their frozen prefix.
 
-`store(key, value)` saves an explicit JSON snapshot for `load(key)` in later
+OpenCode follows its own runtime: inside `execute({code})`, call
+`await search({query, namespace, limit, offset})`. Query and namespace are optional;
+the default page size is 10. Results contain `items` with exact callable `path`,
+`description`, and `signature`, plus `remaining` and `next`. Matching scores exact
+paths, path words, substrings, descriptions, and parameter metadata. It supports
+plural forms and sorts ties by path. This is a catalog snapshot for that execution.
+It does not load native schemas. The catalog shares a 2,000-token estimate across
+namespaces and always includes pinned entries. MCP server instructions render
+separately. File/shell/web tools are ordinary native calls outside `execute`.
+
+In OpenAI code mode, `store(key, value)` saves an explicit JSON snapshot for `load(key)` in later
 cells. Successful cells persist these values with the task; model output includes
 only what the cell prints. Stored values have no separate serialized-size cap.
 They still share the cell's default 32 MiB QuickJS memory budget and execution
@@ -230,14 +250,15 @@ limits, so retaining large results increases the memory needed by later cells.
 
 ## Web search
 
-Both labs expose the same Codex-style `web.run` tool and `tools.web__run` in
-code mode. Every model and provider uses the same pinned OpenAI parameter schema:
+OpenAI exposes Codex-style `web.run` and `tools.web__run` in code mode, using
+the pinned OpenAI parameter schema:
 `search_query`, `image_query`, `open`, `click`, `find`, `screenshot`, `finance`,
 `weather`, `sports`, `time`, and optional `response_length` (`short`, `medium`,
 or `long`). The schema, including field descriptions and required fields, lives
-in `packages/ai/lib/src/web_search_schema.dart`. Do not narrow it or introduce
-provider-specific tool aliases: OpenAI reserves `web.run` and rejects a changed
-schema before inference.
+in `packages/openai/lib/src/web_search_schema.dart`. OpenAI reserves `web.run`
+and rejects a changed schema before inference. OpenCode exposes its upstream
+`websearch({query, num, ...})` and `webfetch({url, format, timeout})` tools, plus
+`fetch` inside `execute`.
 
 GPT uses OpenAI-hosted search with the existing ChatGPT login. DeepSeek and the
 OpenCode model route use OpenCode Console's hosted HTTP search with the selected
@@ -246,15 +267,19 @@ the current public endpoint returned HTTP 404 during verification. Failed access
 is reported to the model so it can choose an available configured search tool.
 There is no embedded MCP client or automatic search-provider fallback.
 
-OpenCode search returns up to eight results. Domain/date constraints are added
-to its query and applied to its returned results; a recency filter excludes
-undated results. DeepSeek `open` and `find` fetch public text/HTML URLs directly,
-without Console credentials, and return zero-based numbered lines. Only URLs
-work for that provider; GPT can also use references returned by OpenAI search.
-GPT forwards the full command set to its hosted search service. Console's
-backend currently executes `search_query`, `open`, and `find`; other nonempty
-operations return an explicit `web_search_unsupported` tool error. This backend
-limit does not change the shared tool schema.
+OpenCode search uses the requested result count (default 8). Its page tools fetch
+public text/HTML directly without Console credentials. OpenAI can also use opaque
+references returned by its hosted reader and forwards its full command set to
+that service. Neither provider advertises the other's web interface.
+
+When OpenAI's reader reports that a requested source URL is inaccessible,
+`open` and `find` try a direct HTTP GET for text/HTML. Recovered results identify
+the source URL and direct retrieval, with zero-based lines and absolute links.
+Use that URL for follow-up reads; these lines belong to the directly retrieved
+page. Requests carry no provider credentials and retain the existing cancellation,
+60-second request deadline, 2 MiB response limit, and 64 KiB tool output limit.
+Successful hosted results are preserved. If direct retrieval also fails, the
+original hosted error remains visible.
 
 `providers.deepseek.web_search.endpoint` and
 `providers.opencode.web_search.endpoint` can override the Console HTTP search
@@ -271,8 +296,7 @@ It selects one file per directory, including an empty override, and combines
 nonempty contents in ancestor order. Instruction-file symlinks are allowed.
 Descendant files are read by the agent when needed, following its shared guidance.
 
-Repository contents share a 32 KiB UTF-8 byte budget, with visible truncation
-notices. Global instructions in the data directory retain their independent
+Repository contents share a 32 KiB UTF-8 byte budget. Global instructions in the data directory retain their independent
 32 KiB budget. These are fixed limits; configurable fallback names and project
 trust/sandbox policies are not implemented.
 
@@ -282,8 +306,11 @@ the server, or restoring an archived task loads the current chain. The server
 retains at most 256 lightweight snapshots in least-recently-used order; an evicted
 task also resumes cold. Idle agent isolates and database owners are still released.
 
-Changed instructions append one full replacement message in user context;
-removing all applicable instructions appends an explicit removal notice.
+OpenAI renders Codex's user-role AGENTS.md wrapper and full replacement/removal
+messages. OpenCode renders its developer-role `Instructions from: PATH` blocks
+and upstream added/changed/removed messages, selecting a unified diff when it is
+shorter than a full replacement. System instructions are copied verbatim from
+each pinned upstream; there is no shared Happen instruction overlay.
 Unchanged snapshots and an initially empty chain add no instruction messages.
 Compaction restores one current nonempty snapshot instead of retaining earlier
 versions or replacement notices. Original events remain in durable history.
@@ -292,9 +319,10 @@ actual removals still append their availability notice.
 Tool updates compare JSON objects independently of key order. Reordering the
 same catalog does not add declarations or notices. Unloaded schemas stay out of
 context; changed loaded definitions and removals remain explicit. Namespace
-notices have a 4 KiB UTF-8 cap, with at most 160 bytes of guidance per namespace.
-Full MCP guidance is returned by discovery. Compaction restores current namespace
-summaries and the loaded subset once.
+notices follow each provider's own budget. Codex namespace notices have a 4 KiB
+UTF-8 cap and use the first description line, capped at 250 Unicode characters.
+Full MCP guidance remains available through discovery. Compaction restores current
+provider instructions, namespace summaries, and OpenAI's loaded subset once.
 
 ## DeepSeek through OpenCode Console
 
@@ -310,7 +338,7 @@ and refreshes its own tokens. It does not require the OpenCode executable or use
 the CLI's refresh token.
 
 Select an OpenCode model in the desktop composer, or use `--provider opencode` with the CLI.
-Optional defaults in `~/.happen/config.yaml`:
+Optional defaults in `~/.config/happen/config.yaml`:
 
 ```yaml
 providers:
@@ -357,6 +385,21 @@ again. Ephemeral `model.retrying` notifications contain `task_id`, `turn_id`,
 discards abandoned partial response text, and retains terminal failures in the
 conversation, including failures without a durable sequence number.
 
+Manual, threshold, and overflow compaction emit a durable `compaction.started`
+event with `data.reason` (`manual`, `threshold`, or `overflow`). Successful
+installation emits `context.compacted`, including the visible `data.summary`
+(empty for native GPT checkpoints) and usage. The replacement `data.input`
+contains provider replay state and must not be rendered as conversation text.
+Internal compaction text/reasoning deltas are excluded from the reply stream;
+`model.retrying` still reports retries. Failure or cancellation ends the turn
+with `turn.failed` or `turn.cancelled` without installing a checkpoint.
+
+Subscriptions deliver these events live. A client joining during compaction
+subscribes and pages durable history to find the active start. The desktop
+renders one timed compaction row, retains its completion in history, and offers
+an expandable summary when available. Interrupted starts in idle history are
+shown as interrupted rather than left spinning.
+
 | Method | Parameters and behavior |
 | --- | --- |
 | `ping` | Returns the server version. |
@@ -377,10 +420,10 @@ conversation, including failures without a durable sequence number.
 | `history.import` | `path` on the server, optional `operation_id` for idempotent retries. Validates the bundle before publishing a task. |
 | `tools.register` | `task_id`, `tools`. Replaces the caller's client tool catalog. |
 | `telemetry` | Returns bounded counters and timing buckets. |
-| `providers.list` | Returns ChatGPT (`gpt`) and OpenCode (`opencode`) models, reasoning options, and credential status without credential values. |
+| `providers.list` | Returns ChatGPT (`openai`) and OpenCode (`opencode`) models, reasoning options, and credential status without credential values. |
 | `auth.login` | `provider`, `login_id`. Starts browser/device authorization; `auth.login` events supply its URL and optional device code. |
 | `auth.cancel` | `login_id`. Cancels this connection's active authorization. |
-| `auth.logout` | `provider` (`gpt` or `opencode`). Cancels credential operations and removes Happen's login. |
+| `auth.logout` | `provider` (`openai` or `opencode`; legacy `gpt` accepted). Cancels credential operations and removes Happen's login. |
 | `auth.desktop` | Local Unix sockets only. Optional `refresh` boolean; returns `access_token` and `account_id` for the desktop's direct OpenAI requests. Never returns a refresh token. TCP listeners reject it. |
 | `maintenance.run` | Runs the same coalesced maintenance sweep used at startup and every 24 hours. |
 
@@ -520,9 +563,10 @@ with a string `id`, `method: "tools.call"`, and parameters `task_id`, `call_id`,
 The server sends `tools.cancel` with `call_id` when a pending call is cancelled.
 Disconnecting, changing a called definition, or unregistering with an empty
 catalog fails affected pending calls without retrying them. Their side effects
-may already have happened. Native declarations are selected through `tool_search`
-and updated between steps once loaded. Code mode exposes the same tools as
-`tools.client__NAME` without loading their native schemas.
+may already have happened. OpenAI selects native declarations through `tool_search`
+and updates them between steps once loaded; its code mode uses `tools.client__NAME`.
+OpenCode exposes `tools.client.NAME` through `execute` and `search`, keeping their
+schemas out of the native catalog.
 
 ## MCP Events
 

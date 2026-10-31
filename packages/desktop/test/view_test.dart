@@ -23,7 +23,7 @@ void main() {
     client = _Client();
     session = DesktopSession(client, _Database());
     session.providers = [
-      {'id': 'gpt', 'name': 'ChatGPT', 'auth': 'chatgpt', 'status': 'signed_in', 'default_model': 'gpt-6.1-sol', 'models': [
+      {'id': 'openai', 'name': 'ChatGPT', 'auth': 'chatgpt', 'status': 'signed_in', 'default_model': 'gpt-6.1-sol', 'models': [
         {'id': 'gpt-6.1-sol', 'default_reasoning': 'low', 'reasoning_levels': ['low'], 'reasoning_updates': true},
       ]},
       {'id': 'opencode', 'name': 'OpenCode', 'auth': 'opencode', 'status': 'signed_out', 'models': []},
@@ -31,7 +31,7 @@ void main() {
     client.providers = session.providers;
     final task = DesktopTask('task', 'Example')
       ..loaded = true
-      ..provider = 'gpt'
+      ..provider = 'openai'
       ..model = 'gpt-6.1-sol'
       ..reasoning = 'low';
     session.projects.add(Project('checkout', '/project', '/project', [task]));
@@ -52,6 +52,180 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('missing projects are greyed out with readable history and an active removal menu', (tester) async {
+    final project = session.project!..available = false;
+    await open(tester);
+    final row = find.byKey(const ValueKey('project:checkout'));
+    expect(tester.widget<ListTile>(row).enabled, false);
+    expect(find.descendant(of: row, matching: find.text('Folder unavailable')), findsOneWidget);
+    expect(tester.widget<IconButton>(find.byWidgetPredicate((widget) => widget is IconButton && widget.tooltip == 'New task in project')).onPressed, isNull);
+    expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'New task')).onPressed, isNull);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(ConversationTranscript), findsOneWidget);
+    expect(find.text('Project folder is unavailable'), findsOneWidget);
+    expect(find.text('Check again'), findsNothing);
+    expect(tester.widget<PopupMenuButton<String>>(find.byWidgetPredicate((widget) => widget is PopupMenuButton<String> && widget.tooltip == 'Project actions')).enabled, true);
+    await tester.tap(find.byTooltip('Project actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Remove project'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(session.projects.single, same(project));
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('project removal confirms, persists, and returns the last project to the empty workspace', (tester) async {
+    late IsolateOwner database;
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-remove-');
+      database = await openDesktopDatabase(directory!.path);
+      await callIsolate(database.port, 'project.add', {'checkout_key': 'checkout', 'identity': '/project', 'path': '/project'});
+      await callIsolate(database.port, 'task.add', {'id': 'task', 'checkout_key': 'checkout', 'title': 'Example'});
+      final previous = session;
+      await previous.close();
+      client = _Client();
+      session = DesktopSession(client, database)
+        ..providers = previous.providers
+        ..projects.addAll(previous.projects)
+        ..project = previous.project
+        ..task = previous.task;
+    });
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'Draft to discard');
+    Future<void> confirmRemoval() async {
+      await tester.tap(find.byTooltip('Project actions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Remove project'));
+      await tester.pumpAndSettle();
+    }
+    await confirmRemoval();
+    expect(find.textContaining('The folder and saved task history will be kept.'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(session.projects, hasLength(1));
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Draft to discard');
+    await confirmRemoval();
+    await tester.tap(find.widgetWithText(FilledButton, 'Remove project'));
+    await tester.pumpAndSettle();
+    for (var attempt = 0; session.projects.isNotEmpty && session.error == null && attempt < 100; attempt++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    expect(session.error, isNull);
+    expect(session.project, isNull);
+    expect(session.task, isNull);
+    expect(session.drafts, isEmpty);
+    expect(find.byKey(const ValueKey('project:checkout')), findsNothing);
+    expect(find.text('Start with a project'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    await tester.runAsync(() async {
+      final saved = jsonObject(await callIsolate(database.port, 'load', {}));
+      expect(saved['projects'], isEmpty);
+      expect(saved['tasks'], isEmpty);
+    });
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('Option arrows follow sidebar tasks across projects while editing', (tester) async {
+    final firstProject = session.project!, first = session.task!;
+    final second = DesktopTask('second', 'Second task')..loaded = true;
+    firstProject.tasks.addAll([
+      DesktopTask('archived', 'Archived task')..archived = true,
+      second,
+    ]);
+    final third = DesktopTask('third', 'Third task')..loaded = true;
+    final fourth = DesktopTask('fourth', 'Fourth task')..loaded = true;
+    final nextProject = Project('next', '/next', '/next', [third, fourth]);
+    session.projects.addAll([
+      Project('empty', '/empty', '/empty'),
+      Project('archived-only', '/archived-only', '/archived-only', [
+        DesktopTask('hidden', 'Hidden task')..archived = true,
+      ]),
+      nextProject,
+    ]);
+    session.drafts[third.id] = 'Third task draft';
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'First task draft\nAnother line');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(session.task, same(first));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(session.task, same(second));
+    expect(session.project, same(firstProject));
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(session.task, same(third));
+    expect(session.project, same(nextProject));
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Third task draft');
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(session.task, same(fourth));
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(session.task, same(fourth));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowDown);
+    for (final task in [third, second, first, first]) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(session.task, same(task));
+    }
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    final editor = tester.widget<TextField>(find.byType(TextField));
+    expect(session.project, same(firstProject));
+    expect(editor.controller!.text, 'First task draft\nAnother line');
+    expect(editor.focusNode!.hasFocus, true);
+    expect(client.sent, isEmpty);
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('Option arrows handle new drafts and an empty sidebar', (tester) async {
+    final project = session.project!, first = session.task!;
+    final last = DesktopTask('last', 'Last task')..loaded = true;
+    session.projects.add(Project('next', '/next', '/next', [last]));
+    session.task = null;
+    await open(tester);
+    await tester.enterText(find.byType(TextField), 'New task draft');
+    Future<void> navigate(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altRight);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altRight);
+      await tester.pumpAndSettle();
+    }
+    await navigate(LogicalKeyboardKey.arrowDown);
+    expect(session.task, same(first));
+    await tester.runAsync(() => session.select(project));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'New task draft');
+    await navigate(LogicalKeyboardKey.arrowUp);
+    expect(session.task, same(last));
+    await tester.tap(find.byTooltip('App settings'));
+    await tester.pumpAndSettle();
+    await navigate(LogicalKeyboardKey.arrowUp);
+    expect(session.task, same(last));
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => session.select(project));
+    project.tasks.clear();
+    session.projects.removeLast();
+    await tester.pumpAndSettle();
+    await navigate(LogicalKeyboardKey.arrowUp);
+    await navigate(LogicalKeyboardKey.arrowDown);
+    expect(session.task, isNull);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'New task draft');
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('context circle uses the latest response and retains cache hits across replay and live events', (tester) async {
     final task = session.task!;
@@ -125,7 +299,7 @@ void main() {
     expect(editor.controller!.selection, selection);
     expect(editor.focusNode!.hasFocus, true);
     expect(client.sent, isEmpty);
-    final fresh = DesktopTask('fresh', 'Fresh')..loaded = true..provider = 'gpt'..model = 'gpt-6.1-sol'..reasoning = 'low';
+    final fresh = DesktopTask('fresh', 'Fresh')..loaded = true..provider = 'openai'..model = 'gpt-6.1-sol'..reasoning = 'low';
     session.project!.tasks.add(fresh);
     await tester.runAsync(() => session.select(session.project!, fresh));
     await tester.pumpAndSettle();
@@ -514,7 +688,7 @@ void main() {
     final existing = session.task!;
     session.task = null;
     await session.refreshProviders();
-    expect(session.providers.map((p) => p['id']), ['gpt', 'opencode']);
+    expect(session.providers.map((p) => p['id']), ['openai', 'opencode']);
     expect(session.models.map((m) => m['id']), isNot(contains('deepseek-flash')));
     await open(tester);
     final menu = find.byTooltip('Model and reasoning effort');
@@ -551,7 +725,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(item('gpt-6-astra'));
     await tester.pumpAndSettle();
-    expect(session.providerId, 'gpt');
+    expect(session.providerId, 'openai');
     expect(session.modelId, 'gpt-6-astra');
     expect(session.reasoning, 'low');
     expect(session.authenticated, true);
@@ -985,7 +1159,7 @@ class _Client implements AgentClient {
     return reply.future;
   }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'providers.list') return {'providers': providers, 'default_provider': 'gpt'};
+    if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};
     if (method == 'task.cancel') {
       cancelled.add(params['task_id'] as String);
       return {};

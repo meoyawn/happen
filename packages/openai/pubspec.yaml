@@ -1,0 +1,14 @@
+name: openai
+publish_to: none
+version: 0.1.0
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+dependencies:
+  stemmer: 3.2.0
+  code_mode: any
+  tool_runtime: any
+  ai: any
+  crypto: ^3.0.6
+  html: ^0.15.7
+  protocol: any

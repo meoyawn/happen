@@ -4,7 +4,6 @@ import 'src/quickjs.dart';
 
 export 'src/quickjs.dart' show HostTool;
 export 'src/output.dart' show truncateTextOutput;
-export 'src/declarations.dart' show describeHostTool;
 
 /// Independent JavaScript cells with explicit persisted state and async host tools.
 class CodeMode {
@@ -21,6 +20,7 @@ class CodeMode {
     Json values = const {},
     List<Json> catalog = const [],
     Duration timeout = const Duration(seconds: 60),
+    bool awaitPending = true,
   }) async {
     final engine = QuickJs(memoryLimit: memoryLimit);
     try {
@@ -32,6 +32,7 @@ class CodeMode {
         catalog: catalog,
         timeout: timeout,
         cpuBudgetMs: cpuBudgetMs,
+        awaitPending: awaitPending,
       );
     } finally {
       engine.close();

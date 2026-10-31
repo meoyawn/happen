@@ -2,6 +2,16 @@
 
 Happen desktop client
 
+Drag the sidebar's right edge to resize it. The chosen width is saved between
+launches and adjusts to keep room for the conversation in a smaller window.
+
+Use a project's **… → Remove project** menu to remove it and its task entries
+from Happen. Confirming stops running tasks and clears drafts; the project folder
+and saved task history are kept. Missing folders are greyed out when Happen
+launches, with new tasks and messages disabled while existing conversations remain
+readable. Availability is checked at launch, without polling or a refresh button.
+Open a restored folder again to make its existing project available.
+
 The composer's right side groups the context ring, one model/reasoning menu,
 microphone and Send/Stop. Hover or click the ring for used/available tokens and
 prompt-cache hit rates for the latest response and the conversation. Missing
@@ -96,11 +106,13 @@ including while Flutter is still building. Concurrent launcher calls share a
 local lock. If several instances already exist, it reports their PIDs and exits
 without starting another. Use this launcher for development launches.
 
-New sessions run in the background and return their PID, log, and input pipe.
-For a session started by the launcher, hot reload with
-`printf r > .local/run/flutter-input`; use `R` for hot restart and `q` to quit.
-An existing session started elsewhere keeps its original terminal/VM controls.
-Logs, locks, and supervisor metadata stay in the checkout's ignored `.local/run/`;
+`dev` is a persistent, interactive Moon server task. New sessions run Flutter in
+the foreground with live output: press `r` to hot reload, `R` to hot restart,
+or `q` to quit. Ctrl+C stops the session. The command stays open until Flutter
+exits and returns its exit status.
+Reusing an existing session waits for it to exit and keeps its original
+terminal/VM controls. `moon run dev -- --status` only inspects and exits.
+Locks and supervisor metadata stay in the checkout's ignored `.local/run/`;
 they are never added to the app bundle.
 
 ```sh

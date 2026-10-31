@@ -4,8 +4,8 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:config/config.dart';
-import 'package:deepseek/deepseek.dart';
-import 'package:gpt/gpt.dart';
+import 'package:opencode/opencode.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
@@ -15,13 +15,13 @@ ArgParser parser() {
     ..addOption('data-dir', defaultsTo: defaultDataDirectory())
     ..addOption(
       'config',
-      help: 'Global YAML config (default: ~/.happen/config.yaml)',
+      help: 'Global YAML config (default: ~/.config/happen/config.yaml)',
     );
   parser.addCommand('config-schema', ArgParser());
   parser.addCommand(
     'login',
     ArgParser()
-      ..addOption('provider', allowed: ['gpt', 'opencode'], defaultsTo: 'gpt')
+      ..addOption('provider', allowed: ['openai', 'gpt', 'opencode'], defaultsTo: 'openai')
       ..addFlag('device', negatable: false)
       ..addFlag('from-codex', negatable: false)
       ..addOption('codex-auth'),
@@ -42,7 +42,7 @@ ArgParser parser() {
       ..addOption('url')
       ..addOption('token')
       ..addOption('cwd', defaultsTo: Directory.current.path)
-      ..addOption('provider', allowed: ['gpt', 'deepseek', 'opencode'])
+      ..addOption('provider', allowed: ['openai', 'gpt', 'deepseek', 'opencode'])
       ..addOption('model')
       ..addOption('reasoning')
       ..addOption('resume')

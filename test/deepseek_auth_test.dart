@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
-import 'package:deepseek/deepseek.dart';
+import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 
@@ -81,7 +81,7 @@ void main() {
 
   test('Console inference uses the owned organization login and only the free route', () async {
     await login();
-    final provider = DeepSeekProvider.opencode(
+    final provider = OpenCodeProvider(
       http: http,
       auth: auth,
       endpoint: endpoint.resolve('/inference/openai/v1'),
@@ -106,10 +106,7 @@ void main() {
       model: openCodeDeepSeekModel,
       instructions: 'Follow instructions.',
       input: [ConversationItem.text('user', 'Ready?')],
-      tools: const [ToolDefinition(
-        name: 'exec', namespace: 'functions', format: 'text',
-        description: 'Execute JavaScript.',
-      )],
+      tools: const OpenCodeToolInterface().definitions.where((tool) => tool.name == 'execute').toList(),
       settings: settings,
       effectiveReasoning: 'low',
     );
@@ -123,10 +120,9 @@ void main() {
       expect(http.headers.value('User-Agent'), 'opencode/latest/2.2.5/cli');
       expect(body['model'], 'deepseek-v4.1-flash-free');
       expect(body['max_tokens'], 32000);
-      expect(body['tools'].single['function']['name'], 'read');
-      expect(body['tools'].single['function']['parameters']['required'], ['input']);
-      expect(body['messages'].first['content'], contains('<env>'));
-      expect(body['messages'].first['content'], contains('It executes JavaScript'));
+      expect(body['tools'].single['function']['name'], 'execute');
+      expect(body['tools'].single['function']['parameters']['required'], ['code']);
+      expect(body['messages'].first['content'], request.instructions);
       http.response.headers.contentType = ContentType('text', 'event-stream');
       http.response.write(
         'data: ${jsonEncode({

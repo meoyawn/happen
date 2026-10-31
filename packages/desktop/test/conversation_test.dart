@@ -88,6 +88,97 @@ print(message);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('compaction replaces working progress and retains one timed summary row on replay', (tester) async {
+    final started = DateTime.now().subtract(const Duration(seconds: 45));
+    final task = DesktopTask('compact', 'Compaction')
+      ..running = true
+      ..streamingText = 'Internal compaction text'
+      ..events.addAll({
+        1: {'seq': 1, 'type': 'turn.started', 'created_at': started.subtract(const Duration(minutes: 2)).toIso8601String(), 'data': {}},
+        2: {'id': 'compaction', 'seq': 2, 'type': 'compaction.started', 'created_at': started.toIso8601String(), 'data': {'reason': 'threshold'}},
+      });
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.textContaining('Compacting context ·'), findsOneWidget);
+    expect(find.textContaining('Working'), findsNothing);
+    expect(find.text('Internal compaction text', findRichText: true), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    task.retryStatus = 'Reconnecting… 1/5';
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump();
+    expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    task
+      ..streamingText = ''
+      ..retryStatus = null
+      ..events[3] = {'seq': 3, 'type': 'context.compacted', 'created_at': started.add(const Duration(seconds: 42)).toIso8601String(), 'data': {
+        'summary': 'Keep the **release plan**.',
+        'input': [{'kind': 'compaction', 'native': {'encrypted_content': 'private-provider-state'}}],
+      }};
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Context compacted in 42s'), findsOneWidget);
+    expect(find.textContaining('Working ·'), findsOneWidget);
+    expect(find.textContaining('Compacting context'), findsNothing);
+    expect(find.text('Keep the release plan.', findRichText: true), findsNothing);
+    await tester.tap(find.text('Context compacted in 42s'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Keep the release plan.', findRichText: true), findsOneWidget);
+    expect(find.textContaining('private-provider-state'), findsNothing);
+    expect(conversation(task).where((entry) => entry.compaction != null).single.id, 'compaction');
+    task
+      ..running = false
+      ..events[4] = {'seq': 4, 'type': 'turn.completed', 'data': {}};
+    final replayed = DesktopTask(task.id, task.title)
+      ..events.addEntries(task.events.entries.toList().reversed);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await open(tester, replayed);
+    await tester.pumpAndSettle();
+    expect(find.text('Context compacted in 42s'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('failed, stopped, and interrupted compactions settle without claiming success', (tester) async {
+    for (final (terminal, label) in [
+      ('turn.failed', 'Compaction failed'),
+      ('turn.cancelled', 'Compaction stopped'),
+      ('turn.completed', 'Compaction interrupted'),
+    ]) {
+      final task = DesktopTask(terminal, 'Compaction')..events.addAll({
+        2: {'seq': 2, 'type': 'compaction.started', 'data': {}},
+        3: {'seq': 3, 'type': terminal, 'data': {'error': 'Provider failed'}},
+        4: {'seq': 4, 'type': 'turn.started', 'data': {}},
+        5: {'seq': 5, 'type': 'compaction.started', 'data': {}},
+        6: {'seq': 6, 'type': 'context.compacted', 'data': {}},
+      });
+      await open(tester, task);
+      await tester.pumpAndSettle();
+      expect(find.text(label), findsOneWidget);
+      expect(find.text('Context compacted'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+    final incomplete = DesktopTask('incomplete', 'Compaction')..events[1] = {
+      'seq': 1, 'type': 'compaction.started', 'data': {},
+    };
+    await open(tester, incomplete);
+    await tester.pumpAndSettle();
+    expect(find.text('Compaction interrupted'), findsOneWidget);
+    final legacy = DesktopTask('legacy', 'Compaction')..events[1] = {
+      'seq': 1, 'type': 'context.compacted', 'data': {'summary': ''},
+    };
+    await tester.pumpWidget(const SizedBox.shrink());
+    await open(tester, legacy);
+    await tester.pumpAndSettle();
+    expect(find.text('Context compacted'), findsOneWidget);
+    expect(find.textContaining(' in '), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('images decode from inline data and relative files, open a preview, and fail gracefully', (tester) async {
     late Directory directory;
     await tester.runAsync(() async {

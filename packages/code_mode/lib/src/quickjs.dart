@@ -56,6 +56,7 @@ class QuickJs {
     List<Json> catalog = const [],
     Duration timeout = const Duration(seconds: 60),
     int cpuBudgetMs = 1000,
+    bool awaitPending = true,
   }) async {
     if (_running) throw StateError('Only one cell may run in a context');
     if (source.length > 256 * 1024) {
@@ -104,7 +105,7 @@ class QuickJs {
           );
           unawaited(pending[id]!.whenComplete(() => pending.remove(id)));
         }
-        if (state['done'] == true && pending.isEmpty && replies.isEmpty) {
+        if (state['done'] == true && (!awaitPending || pending.isEmpty && replies.isEmpty)) {
           if (state['error'] != null) {
             throw StateError(state['error'] as String);
           }

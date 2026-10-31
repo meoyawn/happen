@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:gpt/gpt.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 

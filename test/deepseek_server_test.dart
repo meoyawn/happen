@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ai/ai.dart';
+import 'package:opencode/src/instructions.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -91,9 +94,10 @@ void main() {
           'tool_calls': [{
             'index': 0, 'id': 'discovery-$results', 'type': 'function',
             'function': {
-              'name': results == 0 ? 'tool_search' : 'mcp__archive__probe',
-              'arguments': jsonEncode(results == 0
-                ? {'query': 'mcp__archive__probe', 'limit': 1} : {'action': 'inspect'}),
+              'name': 'execute',
+              'arguments': jsonEncode({'code': results == 0
+                ? 'return await search({query: "probe", namespace: "archive", limit: 1});'
+                : 'return await tools.archive.probe({action: "inspect"});'}),
             },
           }],
         } : hasResult
@@ -105,9 +109,9 @@ void main() {
                     'id': 'call-1',
                     'type': 'function',
                     'function': {
-                      'name': 'read',
+                      'name': 'patch',
                       'arguments': jsonEncode({
-                        'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: verified.txt\\n+42\\n*** End Patch"));',
+                        'patchText': '*** Begin Patch\n*** Add File: verified.txt\n+42\n*** End Patch',
                       }),
                     },
                   },
@@ -156,11 +160,16 @@ void main() {
     final messages = requests.last['messages'] as List;
     expect(messages.take((previous['messages'] as List).length).toList(), previous['messages']);
     expect(messages.length, (previous['messages'] as List).length + 2);
-    expect(messages.where((message) => message['role'] == 'system'), hasLength(1));
+    final systems = messages.where((message) => message['role'] == 'system').toList();
+    expect(systems, hasLength(3));
+    expect(systems.first['content'], openCodeInstructions);
+    expect(systems[1]['content'], contains('Here is some useful information about the environment you are running in:'));
+    expect(systems[2]['content'], startsWith('# Code Mode\n'));
     expect(messages.where((message) => message['role'] == 'tool'), hasLength(1));
     expect(messages.where((message) => message['tool_calls'] != null), hasLength(1));
     expect(requests.last['tools'], requests.first['tools']);
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({
+      ...jsonObject(jsonDecode(await File('${root.path}/config.json').readAsString())),
       'mcp_servers': {'archive': {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
@@ -172,17 +181,57 @@ void main() {
     final discovered = await turn('task.send', {'task_id': first['task_id'], 'prompt': 'discover'});
     expect(discovered['type'], 'turn.completed', reason: discovered.toString());
     expect(requests.length, beforeDiscovery + 3);
-    expect(jsonEncode(requests[beforeDiscovery]), isNot(contains('unused_schema_')));
+    expect(jsonEncode(requests[beforeDiscovery]['tools']), isNot(contains('unused_schema_')));
+    expect(jsonEncode(requests[beforeDiscovery]['messages']), contains('The catalog is partial.'));
     expect((requests[beforeDiscovery]['tools'] as List).where((tool) =>
       (tool['function']['name'] as String).startsWith('mcp__'),
     ), isEmpty);
     final loaded = (requests.last['tools'] as List).where((tool) =>
       (tool['function']['name'] as String).startsWith('mcp__'),
     ).toList();
-    expect(loaded, hasLength(1));
-    expect(loaded.single['function']['name'], 'mcp__archive__probe');
+    expect(loaded, isEmpty, reason: 'OpenCode tools stay in Code Mode instead of loading native schemas');
     final probe = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool');
-    expect(jsonDecode(jsonDecode(probe['content'] as String)['output']['content'][0]['text'])['pid'], isPositive);
+    expect(jsonDecode(probe['content'] as String)['pid'], isPositive);
+    String? legacyId;
+    if (providerId == 'opencode') {
+      final history = await client.request('history.page', {'task_id': first['task_id'], 'limit': 500}) as List;
+      final legacyConfig = jsonObject(history.firstWhere((event) => event['type'] == 'task.created')['data'])
+        ..remove('tool_interface');
+      legacyConfig['instructions'] = 'Obsolete shared Codex instructions.';
+      legacyConfig['tools'] = [const ToolDefinition(name: 'exec', namespace: 'functions', format: 'text', description: 'Earlier shared tool').toJson()];
+      legacyId = newId();
+      final store = TaskStore(root.path, legacyId);
+      final call = ToolCall(id: 'legacy-call', name: 'exec', namespace: 'functions', format: 'text',
+        input: 'text("Earlier work")', native: {'wire_name': 'functions__exec'});
+      try {
+        store.append('task.created', legacyConfig, metadata: {'config': legacyConfig, 'status': 'idle'});
+        store.append('input.committed', {'item': ConversationItem.text('user', 'Earlier question').toJson()});
+        store.append('model.completed', ModelReply([ConversationItem(role: 'assistant', content: [call.toJson()])], const ModelUsage()).toJson());
+        store.append('tool.completed', {'item': ConversationItem.toolResult(call, 'Earlier work').toJson()});
+        store.append('model.completed', ModelReply([ConversationItem.text('assistant', 'Earlier answer')], const ModelUsage()).toJson());
+      } finally { store.close(); }
+      await client.close();
+      await server.close();
+      server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml');
+      client = await AgentClient.connect(server.uri);
+      for (var pass = 0; pass < 2; pass++) {
+        if (pass > 0) {
+          final compacted = await turn('task.compact', {'task_id': legacyId});
+          expect(compacted['type'], 'turn.completed', reason: compacted.toString());
+        }
+        final resumed = await turn('task.send', {'task_id': legacyId, 'prompt': 'discover'});
+        expect(resumed['type'], 'turn.completed', reason: resumed.toString());
+        final body = requests.last;
+        expect((body['messages'] as List).first['content'], startsWith(openCodeInstructions));
+        expect((body['tools'] as List).map((tool) => tool['function']['name']), contains('execute'));
+        expect((body['tools'] as List).map((tool) => tool['function']['name']), isNot(contains('functions__exec')));
+        expect(jsonEncode(body['tools']), isNot(contains('unused_schema_')));
+        expect(jsonEncode(body['messages']), contains('The catalog is partial.'));
+        expect(jsonEncode(body), isNot(contains('Obsolete shared Codex instructions.')));
+        final result = (body['messages'] as List).lastWhere((message) => message['role'] == 'tool');
+        expect(jsonDecode(result['content'] as String)['pid'], isPositive);
+      }
+    }
     final beforeDenial = requests.length;
     denied = true;
     final failure = turn('task.send', {
@@ -199,7 +248,7 @@ void main() {
     expect(failed['type'], 'turn.failed');
     expect(failed['data']['error'], contains('free_usage_limit'));
     expect(requests.length, beforeDenial + 1);
-    expect(sessions, everyElement(first['task_id']));
+    expect(sessions.where((session) => session != legacyId), everyElement(first['task_id']));
     final history = await client.request('history.page', {
       'task_id': first['task_id'],
     });

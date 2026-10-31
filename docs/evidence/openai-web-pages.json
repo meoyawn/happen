@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-10-31",
+  "environment": {"os": "macOS", "architecture": "arm64", "dart": "3.13.7"},
+  "model": "gpt-6.1-sol",
+  "endpoint": "https://chatgpt.com/backend-api/codex/alpha/search",
+  "source_url": "https://adelnz.com/writing/tool-search/",
+  "before": {
+    "hosted_http_status": 200,
+    "hosted_output": "Internal Error (): URL https://adelnz.com/writing/tool-search/ is not accessible via this tool.",
+    "reproduced_with": ["external_web_access=true", "external_web_access=indexed", "default settings", "originator=codex_cli_rs", "open after search"],
+    "direct_http_status": 200,
+    "direct_content_type": "text/html",
+    "direct_characters": 26709,
+    "control": "OpenAI search returned results; hosted open of https://dart.dev/docs returned page text."
+  },
+  "after": {
+    "reader": "ResponsesClient.search with direct HTTP recovery",
+    "open": {"recovered": true, "internal_error": false, "characters": 12425, "total_lines": 210},
+    "find": {"pattern": "search", "recovered": true, "internal_error": false, "characters": 9889, "total_lines": 210}
+  }
+}

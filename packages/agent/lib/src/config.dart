@@ -1,10 +1,10 @@
 import 'package:protocol/protocol.dart';
-import 'package:ai/ai.dart';
 
-import 'tool_specs.dart';
+import 'providers.dart';
 
 Json initialConfiguration(Json input, String cwd, bool telemetry) {
   final settings = jsonObject(input['provider_settings']);
+  final interface = toolInterface(input['provider'] as String);
   return {
     'cwd': cwd,
     'provider': input['provider'],
@@ -14,9 +14,10 @@ Json initialConfiguration(Json input, String cwd, bool telemetry) {
     'reasoning_updates': input['reasoning_updates'] == true,
     'catalog_revision': input['catalog_revision'],
     'base_instructions': input['base_instructions'],
-    'instructions': '${input['base_instructions']}\n\n$agentInstructions',
-    'tools': [codeDefinition.toJson(), webSearchDefinition.toJson(), toolSearchDefinition.toJson()],
-    'host_catalog': hostCatalog,
+    'instructions': interface.baseInstructions(input['model'] as String, input['base_instructions'] as String),
+    'tool_interface': interface.id,
+    'tools': interface.definitions.map((tool) => tool.toJson()).toList(),
+    'host_catalog': interface.hostCatalog,
     'telemetry': input['telemetry'] ?? telemetry,
     'global_directory': input['global_directory'],
   };

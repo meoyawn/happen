@@ -137,6 +137,21 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Reconnecting…'), findsNothing);
     expect(find.text('Recovered answer', findRichText: true), findsOneWidget);
+    await emit('compaction.started', {'reason': 'overflow'});
+    expect(session.task!.streamingText, isEmpty);
+    expect(find.textContaining('Compacting context'), findsOneWidget);
+    expect(find.textContaining('Working'), findsNothing);
+    // Older servers can still send compaction deltas. Keep them out of prose.
+    session.client.events.add({'task_id': task.id, 'type': 'text.delta', 'delta': 'Internal summary'});
+    session.client.events.add({'task_id': task.id, 'type': 'model.retrying', 'attempt': 1, 'max_retries': 5});
+    await tester.pump();
+    expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsOneWidget);
+    expect(find.text('Internal summary', findRichText: true), findsNothing);
+    await emit('context.compacted', {'summary': ''});
+    expect(session.task!.streamingText, isEmpty);
+    expect(session.task!.retryStatus, isNull);
+    expect(find.text('Context compacted'), findsOneWidget);
+    expect(find.textContaining('Working'), findsOneWidget);
     await emit('turn.completed', {});
     await tester.pumpAndSettle();
 

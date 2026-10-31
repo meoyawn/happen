@@ -1,0 +1,565 @@
+{
+  "upstream": {
+    "revision": "e8238bae9b807b72ecfc75afd3a9fe2e6b07b944",
+    "source_sha256": {
+      "packages/core/src/instruction-discovery.ts": "b0c0da74fb26a050251f240a1299b7feeaf05205994e6fea553e283613538123",
+      "packages/core/src/mcp/instructions.ts": "d90bdffb55bed24fd33d9a369bf5194666ad9ee2ca26a8b3c65673e7a86cee16",
+      "packages/core/src/session/runner/prompt/system.txt": "ab9749036fe5a6b96c74c302900f67a9b249589b4fc4b8a8d18f3c6879dc506d"
+    }
+  },
+  "cases": [
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "global\n"
+        },
+        {
+          "path": "/repo/1/AGENTS.md",
+          "content": "project\n"
+        }
+      ],
+      "expected": "Instructions from: /repo/0/AGENTS.md\nglobal\n\n\nInstructions from: /repo/1/AGENTS.md\nproject\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "new"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "old"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\nnew"
+    },
+    {
+      "current": [],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "old"
+        }
+      ],
+      "expected": "Previously loaded instructions no longer apply."
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "keep"
+        },
+        {
+          "path": "/repo/1/AGENTS.md",
+          "content": "added"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "remove"
+        }
+      ],
+      "expected": "New instructions apply from:\nInstructions from: /repo/1/AGENTS.md\nadded\n\nThe instructions changed:\nInstructions from: /repo/0/AGENTS.md\nkeep"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "café 🦀\r\nnext\r\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "cafe\r\nnext\r\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\ncafé 🦀\r\nnext\r\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Updated rule.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -1,4 +1,4 @@\n-Rule 0: preserve this instruction exactly.\n+Updated rule.\n Rule 1: preserve this instruction exactly.\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Updated rule.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -1,4 +1,4 @@\n-Rule 0: preserve this instruction exactly.\n+Updated rule.\n Rule 1: preserve this instruction exactly.\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nUpdated rule.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -1,5 +1,5 @@\n Rule 0: preserve this instruction exactly.\n-Rule 1: preserve this instruction exactly.\n+Updated rule.\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n Rule 4: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nUpdated rule.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -1,5 +1,5 @@\n Rule 0: preserve this instruction exactly.\n-Rule 1: preserve this instruction exactly.\n+Updated rule.\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n Rule 4: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nUpdated rule.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -3,7 +3,7 @@\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n Rule 4: preserve this instruction exactly.\n-Rule 5: preserve this instruction exactly.\n+Updated rule.\n Rule 6: preserve this instruction exactly.\n Rule 7: preserve this instruction exactly.\n Rule 8: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nUpdated rule.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -3,7 +3,7 @@\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n Rule 4: preserve this instruction exactly.\n-Rule 5: preserve this instruction exactly.\n+Updated rule.\n Rule 6: preserve this instruction exactly.\n Rule 7: preserve this instruction exactly.\n Rule 8: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nUpdated rule.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -15,7 +15,7 @@\n Rule 14: preserve this instruction exactly.\n Rule 15: preserve this instruction exactly.\n Rule 16: preserve this instruction exactly.\n-Rule 17: preserve this instruction exactly.\n+Updated rule.\n Rule 18: preserve this instruction exactly.\n Rule 19: preserve this instruction exactly.\n Rule 20: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nUpdated rule.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -15,7 +15,7 @@\n Rule 14: preserve this instruction exactly.\n Rule 15: preserve this instruction exactly.\n Rule 16: preserve this instruction exactly.\n-Rule 17: preserve this instruction exactly.\n+Updated rule.\n Rule 18: preserve this instruction exactly.\n Rule 19: preserve this instruction exactly.\n Rule 20: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nUpdated rule.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -32,4 +32,4 @@\n Rule 31: preserve this instruction exactly.\n Rule 32: preserve this instruction exactly.\n Rule 33: preserve this instruction exactly.\n-Rule 34: preserve this instruction exactly.\n+Updated rule.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nUpdated rule."
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly."
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -32,4 +32,4 @@\n Rule 31: preserve this instruction exactly.\n Rule 32: preserve this instruction exactly.\n Rule 33: preserve this instruction exactly.\n-Rule 34: preserve this instruction exactly.\n\\ No newline at end of file\n+Updated rule.\n\\ No newline at end of file\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\nb\na\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\na\nb\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\na\nb\na\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\na\nb\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\nb\na\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\nb\na\nb\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "new\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": ""
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\nnew\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\nb"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\nb\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\na\nb"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\nb\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\r\nb\r\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\na\nb\n"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nNew rule.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -15,6 +15,7 @@\n Rule 14: preserve this instruction exactly.\n Rule 15: preserve this instruction exactly.\n Rule 16: preserve this instruction exactly.\n+New rule.\n Rule 17: preserve this instruction exactly.\n Rule 18: preserve this instruction exactly.\n Rule 19: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -15,7 +15,6 @@\n Rule 14: preserve this instruction exactly.\n Rule 15: preserve this instruction exactly.\n Rule 16: preserve this instruction exactly.\n-Rule 17: preserve this instruction exactly.\n Rule 18: preserve this instruction exactly.\n Rule 19: preserve this instruction exactly.\n Rule 20: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nFirst change.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nLast change.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule 0: preserve this instruction exactly.\nRule 1: preserve this instruction exactly.\nRule 2: preserve this instruction exactly.\nRule 3: preserve this instruction exactly.\nRule 4: preserve this instruction exactly.\nRule 5: preserve this instruction exactly.\nRule 6: preserve this instruction exactly.\nRule 7: preserve this instruction exactly.\nRule 8: preserve this instruction exactly.\nRule 9: preserve this instruction exactly.\nRule 10: preserve this instruction exactly.\nRule 11: preserve this instruction exactly.\nRule 12: preserve this instruction exactly.\nRule 13: preserve this instruction exactly.\nRule 14: preserve this instruction exactly.\nRule 15: preserve this instruction exactly.\nRule 16: preserve this instruction exactly.\nRule 17: preserve this instruction exactly.\nRule 18: preserve this instruction exactly.\nRule 19: preserve this instruction exactly.\nRule 20: preserve this instruction exactly.\nRule 21: preserve this instruction exactly.\nRule 22: preserve this instruction exactly.\nRule 23: preserve this instruction exactly.\nRule 24: preserve this instruction exactly.\nRule 25: preserve this instruction exactly.\nRule 26: preserve this instruction exactly.\nRule 27: preserve this instruction exactly.\nRule 28: preserve this instruction exactly.\nRule 29: preserve this instruction exactly.\nRule 30: preserve this instruction exactly.\nRule 31: preserve this instruction exactly.\nRule 32: preserve this instruction exactly.\nRule 33: preserve this instruction exactly.\nRule 34: preserve this instruction exactly.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -1,5 +1,5 @@\n Rule 0: preserve this instruction exactly.\n-Rule 1: preserve this instruction exactly.\n+First change.\n Rule 2: preserve this instruction exactly.\n Rule 3: preserve this instruction exactly.\n Rule 4: preserve this instruction exactly.\n@@ -28,7 +28,7 @@\n Rule 27: preserve this instruction exactly.\n Rule 28: preserve this instruction exactly.\n Rule 29: preserve this instruction exactly.\n-Rule 30: preserve this instruction exactly.\n+Last change.\n Rule 31: preserve this instruction exactly.\n Rule 32: preserve this instruction exactly.\n Rule 33: preserve this instruction exactly.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nc\nb\nc\na\nc\na\na\nb\nNew\nRule long enough to favor a diff over replacing the whole instruction.\na\na\na\nc\na\nc\na\nc\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nb\nc\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nc\nb\nc\na\nc\na\na\nb\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\na\na\nc\na\nc\na\nc\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nb\nc\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -7,7 +7,7 @@\n a\n a\n b\n-b\n+New\n Rule long enough to favor a diff over replacing the whole instruction.\n a\n a\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\nc\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\nNew\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\nb\nc\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\nc\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\nb\nc\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -13,9 +13,9 @@\n Rule long enough to favor a diff over replacing the whole instruction.\n Rule long enough to favor a diff over replacing the whole instruction.\n c\n+New\n a\n a\n-a\n b\n Rule long enough to favor a diff over replacing the whole instruction.\n Rule long enough to favor a diff over replacing the whole instruction.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nb\nb\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nNew\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\nb\nb\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nb\nb\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nc\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\nb\nb\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -8,7 +8,7 @@\n b\n Rule long enough to favor a diff over replacing the whole instruction.\n b\n-c\n+New\n Rule long enough to favor a diff over replacing the whole instruction.\n c\n a\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\nNew\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\na\na\nc\nc\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\na\na\nc\nc\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -5,7 +5,7 @@\n Rule long enough to favor a diff over replacing the whole instruction.\n Rule long enough to favor a diff over replacing the whole instruction.\n b\n-a\n+New\n b\n Rule long enough to favor a diff over replacing the whole instruction.\n b\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nb\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\nc\nc\nc\na\nb\nb\nNew\nRule long enough to favor a diff over replacing the whole instruction.\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nb\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\nc\nc\nc\na\nb\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -21,5 +21,5 @@\n a\n b\n b\n+New\n Rule long enough to favor a diff over replacing the whole instruction.\n-Rule long enough to favor a diff over replacing the whole instruction.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\nb\nc\na\na\nb\nb\nNew\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\nc\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "b\nb\nc\na\na\nb\nb\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\nc\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nb\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -5,8 +5,8 @@\n a\n b\n b\n+New\n a\n-a\n Rule long enough to favor a diff over replacing the whole instruction.\n b\n Rule long enough to favor a diff over replacing the whole instruction.\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\na\nc\nc\nc\nb\na\na\nNew\nc\nb\nb\nc\nb\nb\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nc\nRule long enough to favor a diff over replacing the whole instruction.\nb\nc\na\nb\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\na\nc\nc\nc\nb\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nc\nb\nb\nc\nb\nb\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\nc\nRule long enough to favor a diff over replacing the whole instruction.\nb\nc\na\nb\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -6,7 +6,7 @@\n b\n a\n a\n-Rule long enough to favor a diff over replacing the whole instruction.\n+New\n c\n b\n b\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule long enough to favor a diff over replacing the whole instruction.\nb\nb\na\nb\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\na\nb\nNew\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\nRule long enough to favor a diff over replacing the whole instruction.\na\nb\nc\na\na\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "Rule long enough to favor a diff over replacing the whole instruction.\nb\nb\na\nb\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\na\nb\nc\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\na\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\na\nRule long enough to favor a diff over replacing the whole instruction.\na\nb\nc\na\na\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -8,7 +8,7 @@\n Rule long enough to favor a diff over replacing the whole instruction.\n a\n b\n-c\n+New\n Rule long enough to favor a diff over replacing the whole instruction.\n a\n c\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\nNew\na\na\nb\nb\nc\nc\nc\nc\na\na\na\na\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "a\na\na\nb\nRule long enough to favor a diff over replacing the whole instruction.\na\nc\nb\nRule long enough to favor a diff over replacing the whole instruction.\nRule long enough to favor a diff over replacing the whole instruction.\nc\nc\na\na\na\nb\nb\nc\nc\nc\nc\na\na\na\na\n"
+        }
+      ],
+      "expected": "The instructions from /repo/0/AGENTS.md changed. Here's the diff:\n```diff\n@@ -10,9 +10,9 @@\n Rule long enough to favor a diff over replacing the whole instruction.\n c\n c\n+New\n a\n a\n-a\n b\n b\n c\n```"
+    },
+    {
+      "current": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nNew\nb\na\nc\nc\na\nb\nb\nc\nc\na\nc\nc\nc\nc\nc\nc\nc\nRule long enough to favor a diff over replacing the whole instruction.\nc\nb\n"
+        }
+      ],
+      "previous": [
+        {
+          "path": "/repo/0/AGENTS.md",
+          "content": "c\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nRule long enough to favor a diff over replacing the whole instruction.\nb\na\nc\nc\na\nb\nb\nc\nc\na\nc\nc\nc\nc\nc\nc\nc\nRule long enough to favor a diff over replacing the whole instruction.\nc\nb\n"
+        }
+      ],
+      "expected": "The instructions changed:\nInstructions from: /repo/0/AGENTS.md\nc\nRule long enough to favor a diff over replacing the whole instruction.\na\na\nNew\nb\na\nc\nc\na\nb\nb\nc\nc\na\nc\nc\nc\nc\nc\nc\nc\nRule long enough to favor a diff over replacing the whole instruction.\nc\nb\n"
+    },
+    {
+      "kind": "mcp",
+      "current": [
+        {
+          "server": "archive-v2",
+          "instructions": "Use the exact key.\nKeep full records."
+        }
+      ],
+      "expected": "<mcp_instructions>\n  <server name=\"archive-v2\">\n    Use tools from this server through `execute` under `tools[\"archive-v2\"]`.\n    Use the exact key.\n    Keep full records.\n  </server>\n</mcp_instructions>"
+    },
+    {
+      "kind": "mcp",
+      "current": [
+        {
+          "server": "archive",
+          "instructions": "Updated"
+        }
+      ],
+      "previous": [
+        {
+          "server": "archive",
+          "instructions": "Old"
+        }
+      ],
+      "expected": "The following MCP server instructions have changed. Each entry replaces the previously listed server with the same name:\n  <server name=\"archive\">\n    Use tools from this server through `execute` under `tools[\"archive\"]`.\n    Updated\n  </server>"
+    },
+    {
+      "kind": "mcp",
+      "current": [
+        {
+          "server": "new",
+          "instructions": "New"
+        },
+        {
+          "server": "keep",
+          "instructions": "Same"
+        }
+      ],
+      "previous": [
+        {
+          "server": "old",
+          "instructions": "Old"
+        },
+        {
+          "server": "keep",
+          "instructions": "Same"
+        }
+      ],
+      "expected": "New MCP server instructions are available in addition to those previously listed:\n  <server name=\"new\">\n    Use tools from this server through `execute` under `tools[\"new\"]`.\n    New\n  </server>\nInstructions for the following MCP servers are no longer available: old."
+    },
+    {
+      "kind": "mcp",
+      "current": [],
+      "previous": [
+        {
+          "server": "old",
+          "instructions": "Old"
+        }
+      ],
+      "expected": "MCP server instructions are no longer available."
+    }
+  ]
+}

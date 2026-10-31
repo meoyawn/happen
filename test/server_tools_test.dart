@@ -334,8 +334,8 @@ void main() {
     expect(removed['data']['text'], contains('unavailable'));
     expect(declarations(requests.last), updates);
     final availability = (requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer');
-    expect(availability['content'], contains('Removed MCP tools: mcp__dart__probe'));
-    expect(availability['content'], contains('unavailable'));
+    expect(availability['content'], contains('Removed deferred tool namespaces:\n- mcp__dart:'));
+    expect(availability['content'], contains('No deferred tool namespaces remain.'));
     expect(await client.request('mcp.status', {}), isEmpty);
 
     final bare = await turn('task.start', {'cwd': root.path, 'prompt': 'seed'});
@@ -419,8 +419,8 @@ void main() {
         expect(continued['data']['text'], contains('unavailable'));
         expect(await client.request('mcp.status', {}), isEmpty);
         final notice = (request['input'] as List).lastWhere((item) => item['role'] == 'developer');
-        expect(notice['content'], contains('Removed MCP tools: mcp__dart__probe'));
-        expect(notice['content'], contains('unavailable'));
+        expect(notice['content'], contains('Removed deferred tool namespaces:\n- mcp__dart:'));
+        expect(notice['content'], contains('No deferred tool namespaces remain.'));
       } else {
         expect(spec(additions.last, expectedNamespace: namespace)['description'], description);
         final status = await client.request('mcp.status', {}) as List;

@@ -7,7 +7,6 @@ from pathlib import Path
 import plistlib
 import shlex
 import shutil
-import stat
 import subprocess
 import time
 
@@ -97,36 +96,36 @@ def main():
                     managed = json.load(source)
                 if managed.get('pid') in supervisors:
                     value.update(managed)
-            print(json.dumps(value))
-            return 0
-        flutter = shutil.which('flutter')
-        if flutter is None:
-            raise RuntimeError('Flutter is not on PATH')
-        fifo = RUN / 'flutter-input'
-        if not fifo.exists():
-            os.mkfifo(fifo, 0o600)
-        if not stat.S_ISFIFO(fifo.lstat().st_mode):
-            raise RuntimeError('Flutter input path must be a FIFO')
-        input_fd = os.open(fifo, os.O_RDWR)
-        log_path = RUN / f'flutter-{time.time_ns()}.log'
-        log_fd = os.open(log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            child = subprocess.Popen([flutter, 'run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'],
-                cwd=ROOT, stdin=input_fd, stdout=log_fd, stderr=subprocess.STDOUT,
-                start_new_session=True)
-        finally:
-            os.close(input_fd)
-            os.close(log_fd)
-        value = {'pid': child.pid, 'mode': mode, 'cwd': str(ROOT), 'log': str(log_path), 'input': str(fifo)}
-        pending = RUN / 'supervisor.json.tmp'
-        fd = os.open(pending, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, 'w') as output:
-            json.dump(value, output)
-        os.replace(pending, RUN / 'supervisor.json')
-        print(json.dumps(value))
-        return 0
+            print(json.dumps(value), flush=True)
+            if args.status:
+                return 0
+        else:
+            flutter = shutil.which('flutter')
+            if flutter is None:
+                raise RuntimeError('Flutter is not on PATH')
+            value = {'pid': os.getpid(), 'mode': mode, 'cwd': str(ROOT)}
+            pending = RUN / 'supervisor.json.tmp'
+            fd = os.open(pending, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, 'w') as output:
+                json.dump(value, output)
+            os.replace(pending, RUN / 'supervisor.json')
+            print(json.dumps(value), flush=True)
+            os.chdir(ROOT)
+            # exec preserves the terminal and exit status. The non-inheritable
+            # lock closes only once Flutter's discoverable entrypoint replaces us.
+            os.execv(flutter, [flutter, 'run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'])
     finally:
         os.close(lock)
+
+    # Reusing a session must also keep the Moon task open. Its original terminal
+    # retains Flutter's input and output; --status remains a one-shot inspection.
+    existing = set(supervisors or apps)
+    try:
+        while any(pid in existing and not state.startswith('Z') for pid, state in processes('pid=,stat=')):
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        return 130
+    return 0
 
 
 if __name__ == '__main__':

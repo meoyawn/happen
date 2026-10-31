@@ -1,0 +1,13 @@
+name: opencode
+publish_to: none
+version: 0.1.0
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+dependencies:
+  code_mode: any
+  tool_runtime: any
+  path: ^1.9.1
+  ai: any
+  html: ^0.15.7
+  protocol: any

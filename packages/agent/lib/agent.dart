@@ -7,13 +7,10 @@ import 'package:protocol/protocol.dart';
 import 'package:code_mode/code_mode.dart';
 import 'package:telemetry/telemetry.dart';
 
-import 'src/tools.dart';
 import 'src/instructions.dart';
-import 'src/history_tools.dart';
 import 'src/discovery.dart';
-import 'src/tool_specs.dart' show toolSearchDefinition;
+import 'src/providers.dart';
 
-export 'src/tool_specs.dart' show agentInstructions, codeTool;
 export 'src/config.dart' show initialConfiguration;
 
 Future<IsolateOwner> startAgent({
@@ -127,7 +124,8 @@ class _Agent {
     _accepting = !compact;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
-    HostTools? host;
+    final interface = toolInterface(config['tool_interface'] as String? ?? config['provider'] as String);
+    ToolRuntime? host;
     final turnId = newId();
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
@@ -160,7 +158,7 @@ class _Agent {
       final previousCwd = savedCwd ?? config['cwd'] as String;
       final cwd = settings['cwd'] as String? ?? previousCwd;
       var values = jsonObject(await _metadata('values') ?? {});
-      host = HostTools(cwd, cancellation);
+      host = interface.createRuntime(cwd, cancellation);
       final persisted = await _metadata('config');
       if (persisted == null) {
         final effective = {...config}
@@ -226,12 +224,12 @@ class _Agent {
           (hadInstructions || (snapshot['files'] as List).isNotEmpty)) {
         update(
           'agents.updated',
-          instructionMessage(snapshot, replacement: hadInstructions),
+          interface.instructionContext(snapshot, previousSnapshot is Map ? jsonObject(previousSnapshot) : null),
           {'snapshot': snapshot},
         );
       }
       if (savedCwd == null || previousCwd != cwd) {
-        update('environment.updated', environmentMessage(cwd), {'cwd': cwd});
+        update('environment.updated', interface.environmentContext(cwd, replacement: savedCwd != null), {'cwd': cwd});
       }
       if (settings['instructions'] != null) {
         update(
@@ -343,9 +341,22 @@ class _Agent {
         await _metadata('client_tools_snapshot') ?? {'tools': []},
       );
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
-      final initialTools = (config['tools'] as List)
+      final legacyInterface = config['tool_interface'] == null && interface.replacesLegacyCatalog;
+      final initialTools = legacyInterface ? interface.definitions : (config['tools'] as List)
           .map((v) => ToolDefinition.fromJson(jsonObject(v)))
           .toList();
+      final providerContext = <ConversationItem>[
+        if (legacyInterface) ConversationItem(
+          role: 'developer', tools: interface.definitions,
+          content: [{'type': 'text', 'text': interface.baseInstructions(config['model'] as String, config['base_instructions'] as String)}],
+          native: {'harness': {'context': 'provider_tools', 'interface': interface.id}},
+        ),
+      ];
+      if (providerContext.isNotEmpty && !input.any((item) => item.native['harness']?['context'] == 'provider_tools')) {
+        final item = providerContext.single;
+        event(await _append('tools.updated', {'item': item.toJson()}));
+        input.add(item);
+      }
       Map<String, ToolDefinition> loaded() => {
         for (final tool in initialTools) toolKey(tool): tool,
         ...loadedTools(input),
@@ -371,61 +382,47 @@ class _Agent {
         await Future.wait([readMcpCatalog(token), readClientCatalog(token)]);
         return deferredCatalog(mcpCatalog, clientCatalog);
       }
-      Future<void> updateCatalog(Json current, Json previous, {required bool mcp}) async {
+      Future<void> refreshTools() async {
+        await Future.wait([readMcpCatalog(), readClientCatalog()]);
+        final mcpChanged = contextFingerprint(mcpCatalog) != contextFingerprint(mcpSnapshot);
+        final clientChanged = contextFingerprint(clientCatalog) != contextFingerprint(clientSnapshot);
+        final hasContext = input.any((item) => ['mcp', 'client_tools', 'tool_catalog'].contains(item.native['harness']?['context']));
+        if (!mcpChanged && !clientChanged && hasContext) return;
         final known = loaded();
-        final definitions = mcp ? mcpToolDefinitions(current).tools : clientToolDefinitions(current).tools;
-        final changed = definitions.where((tool) => known.containsKey(toolKey(tool)) &&
+        final definitions = [...mcpToolDefinitions(mcpCatalog).tools, ...clientToolDefinitions(clientCatalog).tools];
+        final changed = interface.discovery == null ? <ToolDefinition>[] : definitions.where((tool) => known.containsKey(toolKey(tool)) &&
           contextFingerprint(known[toolKey(tool)]!.toJson()) != contextFingerprint(tool.toJson()),
         ).toList();
+        final text = interface.catalogContext(deferredCatalog(mcpCatalog, clientCatalog),
+          hasContext ? deferredCatalog(mcpSnapshot, clientSnapshot) : null);
         final updates = <ConversationItem>[
-          if (changed.isNotEmpty) ConversationItem(
-            kind: 'tools', tools: changed,
-            native: {'harness': {'context': mcp ? 'mcp' : 'client_tools'}},
-          ),
-          ?catalogContext(current, previous, known.keys.toSet(), mcp: mcp),
+          if (changed.isNotEmpty) ConversationItem(kind: 'tools', tools: changed,
+            native: {'harness': {'context': mcpChanged ? 'mcp' : 'client_tools'}}),
+          if (text != null) ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
+            native: {'harness': {'context': 'tool_catalog'}}),
         ];
-        if (updates.isEmpty) return;
-        cancellation.throwIfCancelled();
-        final entries = await callIsolate(writer, 'append_batch', {
-          'events': [for (final item in updates) {
-            'type': mcp ? 'mcp.updated' : 'client_tools.updated',
-            'data': {'item': item.toJson(), 'snapshot': current},
-          }],
-          'metadata': {mcp ? 'mcp_snapshot' : 'client_tools_snapshot': current},
-        }) as List;
-        for (final entry in entries) {
-          event(jsonObject(entry));
+        if (updates.isNotEmpty) {
+          cancellation.throwIfCancelled();
+          final entries = await callIsolate(writer, 'append_batch', {
+            'events': [for (final item in updates) {
+              'type': mcpChanged ? 'mcp.updated' : 'client_tools.updated',
+              'data': {'item': item.toJson(), 'snapshot': mcpChanged ? mcpCatalog : clientCatalog},
+            }],
+            'metadata': {'mcp_snapshot': mcpCatalog, 'client_tools_snapshot': clientCatalog},
+          }) as List;
+          for (final entry in entries) { event(jsonObject(entry)); }
+          input.addAll(updates);
+          persistedMcp = mcpCatalog; persistedClient = clientCatalog;
         }
-        input.addAll(updates);
-        if (mcp) {
-          persistedMcp = current;
-        } else {
-          persistedClient = current;
-        }
-      }
-
-      Future<void> refreshClientTools() async {
-        final current = await readClientCatalog();
-        if (identical(current, clientSnapshot)) return;
-        if (contextFingerprint(current) == contextFingerprint(clientSnapshot)) return;
-        await updateCatalog(current, clientSnapshot, mcp: false);
-        clientSnapshot = current;
-      }
-
-      Future<void> refreshMcp() async {
-        final current = await readMcpCatalog();
-        if (identical(current, mcpSnapshot)) return;
-        if (contextFingerprint(current) != contextFingerprint(mcpSnapshot)) {
-          await updateCatalog(current, mcpSnapshot, mcp: true);
-          mcpSnapshot = current;
-        }
+        mcpSnapshot = mcpCatalog; clientSnapshot = clientCatalog;
       }
 
       // Older tasks retain their frozen prefix; introduce discovery as an
       // ordered declaration instead of rewriting their original configuration.
-      if (!loaded().containsKey(toolKey(toolSearchDefinition))) {
+      final discovery = interface.discovery;
+      if (discovery != null && !loaded().containsKey(toolKey(discovery))) {
         final item = ConversationItem(
-          kind: 'tools', tools: [toolSearchDefinition],
+          kind: 'tools', tools: [discovery],
           native: {'harness': {'context': 'discovery'}},
         );
         event(await _append('tools.updated', {'item': item.toJson()}));
@@ -434,7 +431,7 @@ class _Agent {
       ModelRequest request() => ModelRequest(
         taskId: taskId,
         model: config['model'] as String,
-        instructions: config['instructions'] as String,
+        instructions: interface.baseInstructions(config['model'] as String, config['instructions'] as String),
         input: input,
         tools: initialTools,
         settings: baseline,
@@ -480,7 +477,7 @@ class _Agent {
           await callIsolate(network, 'web.search', {
             'provider': config['provider'],
             ...request().toJson(),
-            'commands': webSearchCommands(commands),
+            'commands': commands,
           }, timeout: null, cancellation: token) as String;
 
       void countUsage(ModelUsage usage) {
@@ -506,6 +503,11 @@ class _Agent {
           mcpSnapshot: mcpSnapshot,
           clientSnapshot: clientSnapshot,
           initialTools: initialTools,
+          discovery: discovery,
+          catalogContext: interface.catalogContext,
+          instructionContext: interface.instructionContext,
+          environmentContext: interface.environmentContext,
+          providerContext: providerContext,
         );
         final size =
             estimateTokens(restored) +
@@ -547,9 +549,21 @@ class _Agent {
         );
       }
 
+      Future<bool> takeNotifications({bool wait = false}) async {
+        final notices = await host!.notifications(wait: wait);
+        for (final notice in notices) {
+          final item = ConversationItem(
+            role: 'user', content: [{'type': 'text', 'text': notice}],
+            native: {'harness': {'context': 'tool_notification'}},
+          );
+          event(await _append('input.committed', {'item': item.toJson()}));
+          input.add(item);
+        }
+        return notices.isNotEmpty;
+      }
+
       if (compact) {
-        await refreshMcp();
-        await refreshClientTools();
+        await refreshTools();
         await compactContext('manual');
         await finish('Context compacted. Full history remains available.');
         return;
@@ -559,8 +573,8 @@ class _Agent {
       while (true) {
         cancellation.throwIfCancelled();
         await takeSteering();
-        await refreshMcp();
-        await refreshClientTools();
+        await takeNotifications();
+        await refreshTools();
         final estimate = usageTokens > 0 && usageItems <= input.length
             ? usageTokens + estimateTokens(input.skip(usageItems))
             : estimateTokens(input) +
@@ -602,6 +616,7 @@ class _Agent {
         );
         if (reply.calls.isEmpty) {
           if (await takeSteering()) continue;
+          if (await takeNotifications(wait: true)) continue;
           await finish(reply.text);
           return;
         }
@@ -621,15 +636,11 @@ class _Agent {
           final cellCancellation = CancellationToken();
           final link = CancellationHook(cancellation, cellCancellation.cancel);
           try {
-            if (call.name == 'tool_search' && call.namespace == null) {
-              final selected = searchTools(await currentDeferredCatalog(cellCancellation), jsonObject(jsonDecode(call.input)));
-              final known = loaded();
-              selectedTools = selected.map((tool) => catalogDefinition(tool, mcp: mcpCatalog)).where((tool) =>
-                contextFingerprint(known[toolKey(tool)]?.toJson()) != contextFingerprint(tool.toJson()),
-              ).toList();
-              result = {'output': {'tools': selected.map((tool) => tool['name']).toList()}};
-            } else if (call.namespace == 'web' && call.name == 'run') {
-              result = {'output': await searchWeb(jsonDecode(call.input), cellCancellation)};
+            if (discovery != null && call.name == discovery.name && call.namespace == discovery.namespace) {
+              final found = interface.search(await currentDeferredCatalog(cellCancellation), jsonObject(jsonDecode(call.input)));
+              final selected = found.tools;
+              selectedTools = selected.map((tool) => catalogDefinition(tool, mcp: mcpCatalog)).toList();
+              result = {'output': found.output};
             } else if (call.namespace == 'client') {
               if (clientTools == null) {
                 throw StateError('Client tools are unavailable');
@@ -656,23 +667,14 @@ class _Agent {
                   ? {'error': output}
                   : {'output': output};
             } else {
-              if (call.name != 'exec' ||
-                  call.namespace != null && call.namespace != 'functions') {
-                throw StateError('Unknown model tool');
-              }
-              result = await const CodeMode().execute(
-                call.input,
-                catalog: [
-                  ...(config['host_catalog'] as List).map(jsonObject).where((tool) => tool['name'] != 'web__run'),
-                  webSearchHost,
-                  ...historyCatalog,
-                  {...toolSearchDefinition.toJson(), 'format': 'json'},
-                  ...(await currentDeferredCatalog(cellCancellation)).map(describeHostTool),
-                  ...mcpResourceCatalog,
+              result = await host.execute(call, ToolExecution(
+                catalog: () async => [
+                  ...interface.hostCatalog,
+                  ...interface.externalCatalog(await currentDeferredCatalog(cellCancellation)),
                 ],
                 cancellation: cellCancellation,
                 values: values,
-                tool: (name, arguments) async {
+                call: (name, arguments) async {
                   cellCancellation.throwIfCancelled();
                   final id = newId();
                   event(
@@ -685,16 +687,17 @@ class _Agent {
                   );
                   try {
                     final Object? output;
-                    if (name == 'tool_search') {
-                      output = discoveryResult(searchTools(
-                        await currentDeferredCatalog(cellCancellation), jsonObject(arguments),
-                      ), mcpCatalog);
-                    } else if (name == 'web__run') {
+                    final service = interface.services[name];
+                    if (discovery != null && name == discovery.name) {
+                      output = interface.search(
+                        await currentDeferredCatalog(cellCancellation), jsonObject(arguments), nested: true,
+                      ).output;
+                    } else if (service == 'web.search') {
                       output = await searchWeb(arguments, cellCancellation);
-                    } else if (name.startsWith('history__')) {
+                    } else if (service?.startsWith('history.') == true) {
                       output = await callIsolate(
                         writer,
-                        'history.${name.substring(9)}',
+                        service!,
                         jsonObject(arguments),
                         cancellation: cellCancellation,
                       );
@@ -715,10 +718,10 @@ class _Agent {
                           'arguments': arguments,
                         }, cancellation: cellCancellation),
                       )..remove('_meta');
-                    } else if (mcpResourceMethods.containsKey(name)) {
+                    } else if (service != null) {
                       output = await callIsolate(network, 'mcp.resources', {
                         'task_id': taskId,
-                        'method': mcpResourceMethods[name],
+                        'method': service,
                         'arguments': arguments,
                       }, cancellation: cellCancellation);
                     } else {
@@ -746,8 +749,8 @@ class _Agent {
                     rethrow;
                   }
                 },
-              );
-              values = jsonObject(result['values']);
+              ));
+              if (result['values'] != null) values = jsonObject(result['values']);
             }
           } on CancelledException {
             rethrow;
@@ -759,12 +762,7 @@ class _Agent {
           }
           telemetry.observe('code', watch.elapsed);
           telemetry.add('code_cells');
-          final output = call.namespace == 'web' && call.name == 'run' && !result.containsKey('error')
-              ? result['output'] as String : jsonEncode(
-            result.containsKey('error')
-                ? result
-                : {'output': result['output']},
-          );
+          final output = interface.formatResult(call, result);
           final item = ConversationItem.toolResult(
             call,
             call.namespace?.startsWith('mcp__') == true

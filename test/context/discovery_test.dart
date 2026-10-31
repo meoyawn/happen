@@ -14,7 +14,8 @@ void main() {
     final config = File('${root.path}/config.yaml');
     const guidance = 'This server inspects process ownership and returns a process identifier. '
       'Use the returned identifier to distinguish supervised process generations. '
-      'The tool results identify the process that actually handled the request. Original guidance tail.';
+      'The tool results identify the process that actually handled the request. '
+      'Preserve the identifier while inspecting the current supervised process. Original guidance tail.';
     String configuration(String description, {String? instructions = guidance}) => jsonEncode({
       'mcp_servers': {'archive': {
         'command': Platform.resolvedExecutable,
@@ -133,12 +134,13 @@ void main() {
     final found = jsonDecode(printed.first as String)['tools'] as List;
     expect(found.single['name'], 'mcp__archive__probe');
     expect(found.single['description'], contains('Discovered after an in-cell config edit'));
-    expect(found.single['description'], contains('tools.mcp__archive__probe'));
+    expect(found.single['description'], contains('declare const tools: { mcp__archive__probe('));
     expect(found.single['description'], contains('action'));
-    expect(jsonDecode(printed.first as String)['instructions'].single['text'], contains('Current guidance tail.'));
+    expect(found.single['description'], contains('Current guidance tail.'));
+    expect(found.single.keys, unorderedEquals(['name', 'description']));
     expect((requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer')['content'],
-      contains('Previously retrieved usage guidance'));
-    expect(jsonDecode(printed[1] as String)['description'], contains('tools.mcp__archive__probe'));
+      contains('Deferred tool namespaces:'));
+    expect(jsonDecode(printed[1] as String)['description'], contains('declare const tools: { mcp__archive__probe('));
     expect(jsonDecode(jsonDecode(printed.last as String)['content'][0]['text'])['pid'], isPositive);
 
     await turn('task.send', {'task_id': id, 'prompt': 'native'});
@@ -149,8 +151,8 @@ void main() {
     expect(nativeResult['tools'][0]['name'], 'mcp__archive');
     expect(nativeResult['tools'][0]['tools'][0]['parameters']['properties']['action']['type'], 'string');
     await turn('task.send', {'task_id': id, 'prompt': 'again'});
-    expect(definitions(requests.last).map((tool) => tool['name']), ['probe'],
-      reason: 'Repeated search must not repeat a loaded schema');
+    expect(definitions(requests.last).map((tool) => tool['name']), ['probe', 'probe'],
+      reason: 'Codex returns selected schemas in every native search result');
 
     await client.close();
     await server.close();
@@ -158,7 +160,7 @@ void main() {
     server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path, endpoint: endpoint);
     client = await AgentClient.connect(server.uri);
     await turn('task.send', {'task_id': id, 'prompt': 'direct'});
-    expect(definitions(requests.last).map((tool) => tool['name']), ['probe', 'probe']);
+    expect(definitions(requests.last).map((tool) => tool['name']), ['probe', 'probe', 'probe']);
     expect(definitions(requests.last).last['description'], 'Updated process inspection');
     expect(jsonEncode(requests.last), isNot(contains('unused_schema_')));
     for (var i = 0; i < 2; i++) {

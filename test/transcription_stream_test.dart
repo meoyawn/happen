@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:gpt/gpt.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 

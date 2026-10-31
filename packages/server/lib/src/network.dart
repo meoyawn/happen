@@ -5,8 +5,8 @@ import 'dart:isolate';
 
 import 'package:ai/ai.dart';
 import 'package:config/config.dart';
-import 'package:gpt/gpt.dart';
-import 'package:deepseek/deepseek.dart';
+import 'package:openai/openai.dart';
+import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
 
@@ -41,14 +41,14 @@ void _networkMain(List<Object?> args) async {
   final configPath = startup['config_path'] as String;
   final global = jsonObject(startup['config']);
   final providerOptions = jsonObject(global['providers'] ?? {});
-  final gptOptions = jsonObject(providerOptions['gpt'] ?? {});
+  final gptOptions = jsonObject(providerOptions['openai'] ?? providerOptions['gpt'] ?? {});
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
   final deepseekSearch = jsonObject(deepseekOptions['web_search'] ?? {});
   final http = HttpClient()..connectionTimeout = const Duration(seconds: 30);
   final auth = AuthManager(directory, http: http);
   final consoleAuth = OpenCodeAuthManager(directory, http: http);
   final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
-  final gpt = GptProvider(
+  final gpt = OpenAIProvider(
     ResponsesClient(
       http: http,
       credentials: auth.credentials,
@@ -63,14 +63,14 @@ void _networkMain(List<Object?> args) async {
       ? null
       : Uri.parse(deepseekOptions['endpoint'] as String);
   final deepseek = backend == 'opencode'
-      ? DeepSeekProvider.opencode(
+      ? OpenCodeProvider(
           http: http,
           auth: consoleAuth,
           endpoint: deepseekEndpoint,
           searchAuth: consoleAuth,
           openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
         )
-      : DeepSeekProvider(
+      : OpenCodeProvider.native(
           http: http,
           searchAuth: consoleAuth,
           openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
@@ -91,7 +91,7 @@ void _networkMain(List<Object?> args) async {
   final openCodeOptions = jsonObject(providerOptions['opencode'] ??
       (backend == 'opencode' ? deepseekOptions : <String, dynamic>{}));
   final openCodeSearch = jsonObject(openCodeOptions['web_search'] ?? {});
-  final opencode = DeepSeekProvider.opencode(
+  final opencode = OpenCodeProvider(
     http: http,
     auth: consoleAuth,
     searchAuth: consoleAuth,
@@ -99,7 +99,7 @@ void _networkMain(List<Object?> args) async {
     endpoint: openCodeOptions['endpoint'] == null
         ? null : Uri.parse(openCodeOptions['endpoint'] as String),
   );
-  final providers = <String, ModelProvider>{'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
+  final providers = <String, ModelProvider>{'openai': gpt, 'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
   final repositoryInstructions = RepositoryInstructions();
@@ -279,8 +279,9 @@ void _networkMain(List<Object?> args) async {
         return;
       }
       if (request['method'] == 'auth.login') {
-        final provider = requiredString(params, 'provider');
-        if (provider != 'gpt' && provider != 'opencode' && !(provider == 'deepseek' && backend == 'opencode')) {
+        final requestedProvider = requiredString(params, 'provider');
+        final provider = requestedProvider == 'gpt' ? 'openai' : requestedProvider;
+        if (provider != 'openai' && provider != 'opencode' && !(provider == 'deepseek' && backend == 'opencode')) {
           throw ArgumentError('Browser sign-in is unavailable for this provider');
         }
         if (loginCancellation != null) {
@@ -300,8 +301,8 @@ void _networkMain(List<Object?> args) async {
                 'code': ?code,
               },
             });
-          if (provider == 'gpt') {
-            (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'gpt'}});
+          if (provider == 'openai') {
+            (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
             await auth.login(cancellation: cancellation, notify: notify);
           } else {
             await consoleAuth.login(
@@ -310,7 +311,7 @@ void _networkMain(List<Object?> args) async {
             );
           }
           reply?.send({
-            'result': {'status': provider == 'gpt' ? await auth.status() : await consoleAuth.status()},
+            'result': {'status': provider == 'openai' ? await auth.status() : await consoleAuth.status()},
           });
         } finally {
           loginCancellation = null;
@@ -320,9 +321,10 @@ void _networkMain(List<Object?> args) async {
         return;
       }
       if (request['method'] == 'auth.logout') {
-        final provider = requiredString(params, 'provider');
-        if (provider == 'gpt') {
-          (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'gpt'}});
+        final requestedProvider = requiredString(params, 'provider');
+        final provider = requestedProvider == 'gpt' ? 'openai' : requestedProvider;
+        if (provider == 'openai') {
+          (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
           await auth.signOut();
         } else if (provider == 'opencode' || provider == 'deepseek' && backend == 'opencode') {
           await consoleAuth.signOut();
@@ -437,10 +439,10 @@ void _networkMain(List<Object?> args) async {
       if (request['method'] == 'providers.list') {
         reply?.send({
           'result': {
-            'default_provider': global['default_provider'] ?? 'gpt',
+            'default_provider': global['default_provider'] == 'gpt' ? 'openai' : global['default_provider'] ?? 'openai',
             'providers': [
               {
-                'id': 'gpt',
+                'id': 'openai',
                 'name': 'ChatGPT',
                 'auth': 'chatgpt',
                 'status': await auth.status(),
@@ -483,27 +485,28 @@ void _networkMain(List<Object?> args) async {
       }
       if (request['method'] == 'configure') {
         final modelInput = params['model'] as String?;
-        final lab =
+        final selectedProvider =
             params['provider'] as String? ??
             (modelInput == openCodeDeepSeekModel
                 ? 'opencode'
                 : modelInput?.startsWith('deepseek') == true
                 ? 'deepseek'
-                : global['default_provider'] as String? ?? 'gpt');
+                : global['default_provider'] as String? ?? 'openai');
+        final lab = selectedProvider == 'gpt' ? 'openai' : selectedProvider;
         final provider = providers[lab];
         if (provider == null) throw ArgumentError('Unsupported provider');
-        final defaults = lab == 'opencode' ? openCodeOptions : jsonObject(providerOptions[lab] ?? {});
+        final defaults = lab == 'openai' ? gptOptions : lab == 'opencode' ? openCodeOptions : jsonObject(providerOptions[lab] ?? {});
         final model =
             modelInput ??
             defaults['model'] as String? ??
-            (provider is DeepSeekProvider ? provider.defaultModel : 'gpt-6.1-sol');
+            (provider is OpenCodeProvider ? provider.defaultModel : 'gpt-6.1-sol');
         final selected = {
           ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],
         };
         final settings = provider.resolveSettings(selected, model: model);
-        final info = lab == 'gpt' ? GptModel(model) : null;
+        final info = lab == 'openai' ? GptModel(model) : null;
         final base = info == null
             ? deepseekInstructions(model)
             : [
@@ -517,9 +520,9 @@ void _networkMain(List<Object?> args) async {
             'provider_settings': settings,
             'base_instructions': base,
             'reasoning_updates': info?.reasoningUpdates ?? false,
-            'catalog_revision': lab == 'gpt'
+            'catalog_revision': lab == 'openai'
                 ? gptCatalogRevision
-                : (provider as DeepSeekProvider).catalogRevision,
+                : (provider as OpenCodeProvider).catalogRevision,
           },
         });
         return;
@@ -543,10 +546,18 @@ void _networkMain(List<Object?> args) async {
       if (provider == null) throw ArgumentError('Unsupported provider');
       if (id == null) throw ArgumentError('Model request requires a task');
       final input = ModelRequest.fromJson(params);
-      void onEvent(Json event) => reply?.send({'event': event});
+      void onEvent(Json event) {
+        // Compaction reports progress through compaction.started and its durable
+        // checkpoint. Its internal summary/reasoning is not an assistant reply.
+        if (request['method'] == 'compact' &&
+            {'text.delta', 'reasoning.delta'}.contains(event['type'])) {
+          return;
+        }
+        reply?.send({'event': event});
+      }
       final Object? result;
       if (request['method'] == 'web.search') {
-        result = await provider.webSearch(input, webSearchCommands(params['commands']), cancellation: cancellation);
+        result = await provider.webSearch(input, jsonObject(params['commands']), cancellation: cancellation);
       } else if (request['method'] == 'compact') {
         result = (await provider.compact(
           input,

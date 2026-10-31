@@ -7,8 +7,8 @@ environment:
 dependencies:
   config: any
   protocol: any
-  gpt: any
-  deepseek: any
+  openai: any
+  opencode: any
   mcp: any
   ai: any
   agent: any

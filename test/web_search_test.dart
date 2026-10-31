@@ -5,8 +5,8 @@ import 'dart:io';
 
 import 'package:ai/ai.dart';
 import 'package:crypto/crypto.dart';
-import 'package:deepseek/deepseek.dart';
-import 'package:gpt/gpt.dart';
+import 'package:opencode/opencode.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -29,18 +29,18 @@ String _schemaHash(Object? schema) {
 }
 
 void main() {
-  for (final lab in ['gpt', 'opencode']) {
-    test('$lab executes shared web.run directly and in code mode, preserving results after restart', () async {
+  for (final lab in ['openai', 'opencode']) {
+    test('$lab uses its own web tools and preserves results after restart', () async {
       final root = await Directory.systemTemp.createTemp('web-search-task-');
       final remote = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final endpoint = 'http://127.0.0.1:${remote.port}';
-      final sourceUrl = lab == 'gpt' ? 'https://dart.dev/docs' : '$endpoint/docs';
+      final sourceUrl = lab == 'openai' ? 'https://dart.dev/docs' : '$endpoint/docs';
       final domain = Uri.parse(sourceUrl).host;
       final config = File('${root.path}/config.yaml');
       final modelRequests = <Json>[], searchRequests = <Json>[];
       final searches = <String>[];
       await config.writeAsString(jsonEncode({'providers': {
-        'gpt': {'endpoint': '$endpoint/codex/responses'},
+        'openai': {'endpoint': '$endpoint/codex/responses'},
         'opencode': {
           'endpoint': '$endpoint/inference/openai/v1',
           'web_search': {'endpoint': '$endpoint/hosted/search'},
@@ -71,7 +71,7 @@ void main() {
         if (request.uri.path == '/codex/alpha/search' || request.uri.path == '/hosted/search') {
           searchRequests.add(body);
           searches.add(request.uri.path);
-          if (lab == 'gpt') {
+          if (lab == 'openai') {
             expect(request.headers.value('Authorization'), 'Bearer fixture-access');
             expect(request.headers.value('chatgpt-account-id'), 'fixture-account');
             request.response.headers.contentType = ContentType.json;
@@ -86,18 +86,16 @@ void main() {
             request.response.write(jsonEncode({'providerID': 'opencode', 'results': [
               {'url': sourceUrl, 'title': 'Dart guide', 'content': 'Search evidence',
                 'time': {'published': DateTime.now().subtract(const Duration(days: 1)).millisecondsSinceEpoch}},
-              {'url': 'https://other.example/docs', 'content': 'excluded-domain', 'time': {}},
-              {'url': sourceUrl, 'content': 'excluded-old', 'time': {'published': 0}},
             ]}));
           }
           await request.response.close();
           return;
         }
         modelRequests.add(body);
-        final web = (body['tools'] as List).singleWhere((tool) => lab == 'gpt'
-            ? tool['name'] == 'web' : tool['function']['name'] == 'web__run');
-        final parameters = lab == 'gpt' ? web['tools'][0]['parameters'] : web['function']['parameters'];
-        if (_schemaHash(parameters) != _codexWebSchemaHash) {
+        final web = (body['tools'] as List).singleWhere((tool) => lab == 'openai'
+            ? tool['name'] == 'web' : tool['function']['name'] == 'websearch');
+        final parameters = lab == 'openai' ? web['tools'][0]['parameters'] : web['function']['parameters'];
+        if (lab == 'openai' && _schemaHash(parameters) != _codexWebSchemaHash) {
           request.response.statusCode = 400;
           request.response.headers.contentType = ContentType.json;
           request.response.write(jsonEncode({'error': {
@@ -107,13 +105,14 @@ void main() {
           await request.response.close();
           return;
         }
-        final input = (body[lab == 'gpt' ? 'input' : 'messages'] as List).map(jsonObject).toList();
+        final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
         final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
         final resumed = input[lastUser]['content'] == 'Continue';
-        final results = input.skip(lastUser + 1).where((item) => lab == 'gpt'
+        final results = input.skip(lastUser + 1).where((item) => lab == 'openai'
             ? {'function_call_output', 'custom_tool_call_output'}.contains(item['type'])
             : item['role'] == 'tool').toList();
-        final arguments = results.isEmpty ? jsonEncode({
+        final arguments = lab == 'opencode' ? jsonEncode(results.isEmpty
+          ? {'query': 'Dart guide'} : {'url': sourceUrl, 'format': 'markdown'}) : results.isEmpty ? jsonEncode({
           'search_query': [{'q': 'Dart guide', 'recency': 7, 'domains': [domain]}],
           'response_length': 'short',
         }) : 'text(await tools.web__run({open:[{ref_id:${jsonEncode(sourceUrl)},lineno:1}],'
@@ -124,7 +123,7 @@ void main() {
           expect(jsonEncode(input), contains('Cancel requests with their owner.'));
         }
         request.response.headers.contentType = ContentType('text', 'event-stream');
-        if (lab == 'gpt') {
+        if (lab == 'openai') {
           expect(web['tools'][0]['name'], 'run');
           request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
             'status': 'completed', 'usage': {'input_tokens': 100, 'output_tokens': 10},
@@ -143,8 +142,8 @@ void main() {
           request.response.write('data: ${jsonEncode({'choices': [{
             'delta': finished ? {'content': 'Verified source links and page content'} : {
               'tool_calls': [{'index': 0, 'id': 'call-${modelRequests.length}', 'type': 'function', 'function': {
-                'name': results.isEmpty ? 'web__run' : 'functions__exec',
-                'arguments': results.isEmpty ? arguments : jsonEncode({'input': arguments}),
+                'name': results.isEmpty ? 'websearch' : 'webfetch',
+                'arguments': arguments,
               }}],
             },
             'finish_reason': finished ? 'stop' : 'tool_calls',
@@ -170,16 +169,19 @@ void main() {
       }
       final first = await turn('task.start', {'provider': lab, 'cwd': root.path, 'prompt': 'Research'});
       expect(modelRequests, hasLength(3));
-      expect(searches, everyElement(lab == 'gpt' ? '/codex/alpha/search' : '/hosted/search'));
-      if (lab == 'gpt') {
+      expect(searches, everyElement(lab == 'openai' ? '/codex/alpha/search' : '/hosted/search'));
+      if (lab == 'openai') {
         expect(searchRequests, hasLength(2));
         expect(searchRequests.first['id'], first['task_id']);
         expect(searchRequests.first['settings']['external_web_access'], isTrue);
         expect(searchRequests.first['commands']['search_query'][0]['domains'], ['dart.dev']);
       } else {
         expect(searchRequests, hasLength(1));
-        expect(searchRequests.first['query'], contains('site:$domain'));
-        expect(searchRequests.first['query'], contains('after:'));
+        expect(searchRequests.first['query'], 'Dart guide');
+        final names = (modelRequests.first['tools'] as List).map((tool) => tool['function']['name']);
+        expect(names, containsAll(['websearch', 'webfetch', 'execute', 'read']));
+        expect(names, isNot(contains('web__run')));
+        expect(names, isNot(contains('functions__exec')));
       }
       await client.close();
       await server.close();
@@ -197,7 +199,7 @@ void main() {
     });
   }
 
-  for (final lab in ['gpt', 'deepseek']) {
+  for (final lab in ['openai', 'deepseek']) {
     test('$lab search cancels owned I/O, bounds replies, and sanitizes errors without losing the pool', () async {
       final root = await Directory.systemTemp.createTemp('web-search-auth-');
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -222,7 +224,7 @@ void main() {
         attempts++;
         request.response.headers.contentType = ContentType.json;
         try {
-          if (mode == 'refresh' && lab == 'gpt' && attempts == 1) {
+          if (mode == 'refresh' && lab == 'openai' && attempts == 1) {
             request.response.statusCode = 401;
             request.response.write('{"error":"fixture-secret"}');
           } else if (mode == 'wait') {
@@ -238,7 +240,7 @@ void main() {
             request.response.statusCode = 429;
             request.response.write('{"error":"fixture-secret"}');
           } else {
-            request.response.write(jsonEncode(lab == 'gpt' ? {'output': 'usable pool'} : {
+            request.response.write(jsonEncode(lab == 'openai' ? {'output': 'usable pool'} : {
               'providerID': 'opencode', 'results': [{
                 'url': 'https://dart.dev', 'title': 'usable pool', 'content': 'usable pool', 'time': {},
               }],
@@ -256,18 +258,18 @@ void main() {
         await server.close(force: true);
         await root.delete(recursive: true);
       });
-      final ModelProvider provider = lab == 'gpt' ? GptProvider(ResponsesClient(
+      final ModelProvider provider = lab == 'openai' ? OpenAIProvider(ResponsesClient(
         http: http, endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
         credentials: ({bool refresh = false}) async {
           refreshes.add(refresh);
           return {'access_token': 'fixture-secret', 'account_id': 'fixture'};
         },
-      )) : DeepSeekProvider(
+      )) : OpenCodeProvider.native(
         http: http, credentials: () async => 'unused-model-key',
         searchAuth: auth,
         openCodeSearchEndpoint: Uri.parse('http://127.0.0.1:${server.port}/hosted/search'),
       );
-      final model = lab == 'gpt' ? 'gpt-6.1-sol' : 'deepseek-flash';
+      final model = lab == 'openai' ? 'gpt-6.1-sol' : 'deepseek-flash';
       final request = ModelRequest(
         taskId: 'task', model: model, instructions: 'fixture',
         input: [
@@ -286,7 +288,7 @@ void main() {
         'search_query': [{'q': 'query'}],
       }, cancellation: token);
       expect(await search(CancellationToken()), contains('usable pool'));
-      if (lab == 'gpt') {
+      if (lab == 'openai') {
         expect(refreshes, [false, true]);
         final context = jsonEncode(bodies.last['input']);
         expect(context, contains('previous user'));
@@ -302,7 +304,7 @@ void main() {
         'time': [{'utc_offset': '+03:00'}],
       };
       final beforeSpecialized = bodies.length;
-      if (lab == 'gpt') {
+      if (lab == 'openai') {
         expect(await provider.webSearch(request, specialized, cancellation: CancellationToken()), contains('usable pool'));
         expect(bodies.last['commands'], specialized);
         expect(bodies, hasLength(beforeSpecialized + 1));
@@ -312,9 +314,9 @@ void main() {
         expect(bodies, hasLength(beforeSpecialized));
       }
       final beforeInvalid = bodies.length;
-      await expectLater(() => provider.webSearch(request, {
+      await expectLater(() => provider.webSearch(request, lab == 'openai' ? {
         'finance': [{'ticker': 'AMD', 'type': 'invalid'}],
-      }, cancellation: CancellationToken()), throwsFormatException);
+      } : {'query': 123}, cancellation: CancellationToken()), throwsFormatException);
       expect(bodies, hasLength(beforeInvalid));
       mode = 'wait';
       final token = CancellationToken();

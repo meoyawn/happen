@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
-import 'package:gpt/gpt.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 
@@ -24,7 +24,7 @@ void main() {
             'account_id': 'fixture',
           },
         );
-        final provider = GptProvider(raw);
+        final provider = OpenAIProvider(raw);
         final settings = provider.resolveSettings({
           'reasoning': 'low',
           'transport': transport,

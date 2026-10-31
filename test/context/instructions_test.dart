@@ -185,7 +185,7 @@ void main() {
     expect(files.map((file) => file['text']), ['global independent budget', 'a' * 32765, 'é�']);
     expect(files.last['truncated'], isTrue);
     expect(snapshot['truncated'], isTrue);
-    expect(instructions().single, contains('Instruction budget reached'));
+    expect(instructions().single, contains('${'a' * 32765}\n\né�\n</INSTRUCTIONS>'));
     expect(instructions().single, isNot(contains('SECRET_TAIL')));
   });
 

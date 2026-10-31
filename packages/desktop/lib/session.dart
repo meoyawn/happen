@@ -18,6 +18,7 @@ class Project {
   final String checkoutKey, path;
   String id;
   final List<DesktopTask> tasks;
+  bool available = true, removing = false;
   String get name => path.split(Platform.pathSeparator).last;
 }
 
@@ -72,6 +73,7 @@ class DesktopSession extends ChangeNotifier {
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
+  double sidebarWidth = 248;
   Project? project;
   DesktopTask? task;
   String? error;
@@ -83,7 +85,10 @@ class DesktopSession extends ChangeNotifier {
   Future<void> Function(String)? _openLogin;
 
   String get draftKey => task?.id ?? project?.checkoutKey ?? '';
-  String? get providerId => task?.provider ?? _provider;
+  String? get providerId {
+    final selected = task?.provider ?? _provider;
+    return selected == 'gpt' ? 'openai' : selected;
+  }
   String? get modelId => task?.model ?? _model;
   String? get reasoning => task?.nextReasoning ?? task?.reasoning ?? _reasoning;
   Json? get providerInfo =>
@@ -102,7 +107,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> refreshProviders() async {
     final result = jsonObject(await _request('providers.list'));
     providers = (result['providers'] as List).map(jsonObject)
-        .where((provider) => {'gpt', 'opencode'}.contains(provider['id'])).toList();
+        .where((provider) => {'openai', 'opencode'}.contains(provider['id'])).toList();
     if (!models.any((m) => m['provider'] == _provider && m['id'] == _model)) {
       final provider = providers.firstOrNull;
       final available = (provider?['models'] as List? ?? []).map(jsonObject);
@@ -137,9 +142,16 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> chooseSidebarWidth(double width) async {
+    if (!width.isFinite || width <= 0) throw ArgumentError('Invalid sidebar width');
+    sidebarWidth = width;
+    notifyListeners();
+    await _setting('sidebar_width', width.toString());
+  }
+
   Future<bool> signIn(String provider, Future<void> Function(String) openBrowser) async {
     if (signingIn || !connected) return false;
-    if (provider == 'gpt') await _dictation?.cancel();
+    if (provider == 'openai') await _dictation?.cancel();
     final id = _loginId = newId();
     signingIn = true;
     loginProvider = provider;
@@ -181,7 +193,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> signOut(String provider) async {
     if (signingOut != null || signingIn) return;
-    if (provider == 'gpt') await _dictation?.cancel();
+    if (provider == 'openai') await _dictation?.cancel();
     signingOut = provider;
     loginError = null;
     loginProvider = provider;
@@ -252,6 +264,8 @@ class DesktopSession extends ChangeNotifier {
     final settings = jsonObject(saved['settings'] ?? {});
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
+    final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
+    sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
       final key = requiredString(value, 'checkout_key');
@@ -273,6 +287,7 @@ class DesktopSession extends ChangeNotifier {
     }
     project = projects.firstOrNull;
     await refreshProviders();
+    await _checkProjectAvailability();
     await refreshProjects();
     notifyListeners();
   }
@@ -296,6 +311,8 @@ class DesktopSession extends ChangeNotifier {
       project = Project(key, id, canonical);
       projects.add(project!);
     } else {
+      if (project!.removing) throw StateError('Project is being removed');
+      project!.available = true;
       await _refreshIdentity(project!);
     }
     task = null;
@@ -315,13 +332,62 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> refreshProjects() async {
-    for (final owner in projects) {
+    for (final owner in List.of(projects)) {
+      if (!owner.available || owner.removing) continue;
       await _refreshIdentity(owner);
     }
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
+  Future<void> _checkProjectAvailability() async {
+    var changed = false;
+    for (final owner in List.of(projects)) {
+      final available = await Directory(owner.path).exists();
+      _lifetime.throwIfCancelled();
+      if (owner.available == available) continue;
+      owner.available = available;
+      changed = true;
+    }
+    if (changed && !_lifetime.isCancelled) notifyListeners();
+  }
+
+  Future<void> removeProject(Project target) async {
+    if (!projects.contains(target) || target.removing) return;
+    if (submitting || target.tasks.any((task) => task.archiving)) {
+      throw StateError('Wait for the current action to finish before removing this project');
+    }
+    target.removing = true;
+    notifyListeners();
+    try {
+      if (project == target) await _dictation?.cancel();
+      for (final task in target.tasks.where((task) => task.running).toList()) {
+        await _request('task.cancel', {'task_id': task.id});
+      }
+      await callIsolate(database.port, 'project.remove', {
+        'checkout_key': target.checkoutKey,
+      }, cancellation: _lifetime);
+      projects.remove(target);
+      if (project == target) {
+        project = projects.where((project) => project.available && !project.removing).firstOrNull ?? projects.firstOrNull;
+        task = null;
+        error = null;
+      }
+      final attachments = <ComposerAttachment>[];
+      for (final key in [target.checkoutKey, ...target.tasks.map((task) => task.id)]) {
+        drafts.remove(key);
+        fileDrafts.remove(key);
+        attachments.addAll(attachmentDrafts.remove(key) ?? const []);
+      }
+      if (!_lifetime.isCancelled) notifyListeners();
+      for (final attachment in attachments) { await attachment.discard(); }
+    } finally {
+      target.removing = false;
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+  }
+
   Future<void> select(Project nextProject, [DesktopTask? nextTask]) async {
+    if (nextProject.removing || !projects.contains(nextProject)) return;
     project = nextProject;
     task = nextTask;
     error = null;
@@ -388,6 +454,8 @@ class DesktopSession extends ChangeNotifier {
     final existing = task;
     final wasRunning = existing?.running == true;
     if (owner == null ||
+        !owner.available ||
+        owner.removing ||
         (prompt.trim().isEmpty && attachments.isEmpty) ||
         submitting ||
         !connected ||
@@ -521,7 +589,8 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> setArchived(DesktopTask target, bool archived) async {
-    if (target.archiving) return;
+    final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
+    if (target.archiving || owner == null || owner.removing) return;
     target.archiving = true;
     notifyListeners();
     try {
@@ -548,7 +617,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
-    if (event['type'] == 'auth.changed' && event['provider'] == 'gpt') {
+    if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
       unawaited(_dictation?.cancel());
       return;
     }
@@ -611,6 +680,8 @@ class DesktopSession extends ChangeNotifier {
       case 'text.delta':
         target.streamingText += event['delta'] as String;
         target.retryStatus = null;
+      case 'compaction.started':
+      case 'context.compacted':
       case 'model.completed':
         target.streamingText = '';
         target.retryStatus = null;
@@ -632,7 +703,7 @@ class DesktopSession extends ChangeNotifier {
     if ({'task.unarchived', 'task.imported', 'task.forked'}.contains(event['type'])) target.archived = false;
     if (event['type'] == 'task.created' ||
         event['type'] == 'task.configuration_migrated') {
-      target.provider = data['provider'] as String? ?? 'gpt';
+      target.provider = data['provider'] as String? ?? 'openai';
       target.model = data['model'] as String?;
       target.reasoning =
           data['provider_settings']?['reasoning'] as String? ??
@@ -677,13 +748,21 @@ class ToolActivity {
 /// A visible transcript row. Provider replay state never enters this projection.
 class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
-    this.tool, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
+    this.tool, this.compaction, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
   });
   final String id, role, text;
   final ToolActivity? tool;
+  final CompactionActivity? compaction;
   final DateTime? timestamp, startedAt;
   final bool streaming;
   final List<Json> attachments;
+}
+
+class CompactionActivity {
+  CompactionActivity({this.startedAt});
+  final DateTime? startedAt;
+  DateTime? endedAt;
+  String status = 'running', summary = '';
 }
 
 List<ChatEntry> conversation(DesktopTask task) {
@@ -693,6 +772,7 @@ List<ChatEntry> conversation(DesktopTask task) {
   if (task.transientTerminal case final terminal?) events.add(terminal);
   final tools = <String, ToolActivity>{};
   ToolActivity? activeCell;
+  CompactionActivity? activeCompaction;
   DateTime? turnStartedAt;
   String turnId = task.id;
   void finishTools(String status, [DateTime? at]) {
@@ -703,6 +783,13 @@ List<ChatEntry> conversation(DesktopTask task) {
       }
     }
   }
+  void finishCompaction(String status, [DateTime? at]) {
+    final compaction = activeCompaction;
+    if (compaction == null) return;
+    compaction.status = status;
+    compaction.endedAt = at;
+    activeCompaction = null;
+  }
 
   for (final event in events) {
     final data = jsonObject(event['data']);
@@ -710,6 +797,7 @@ List<ChatEntry> conversation(DesktopTask task) {
     final id = event['id'] as String? ?? '${task.id}:${event['seq']}';
     switch (event['type']) {
       case 'turn.started':
+        finishCompaction('interrupted', at);
         turnStartedAt = at;
         turnId = id;
       case 'input.committed':
@@ -802,21 +890,36 @@ List<ChatEntry> conversation(DesktopTask task) {
         }
       case 'turn.failed':
         finishTools('failed', at);
+        finishCompaction('failed', at);
         result.add(ChatEntry(id, 'Error', '${data['error']}', timestamp: at, startedAt: turnStartedAt));
         turnStartedAt = null;
       case 'turn.cancelled':
         finishTools('stopped', at);
+        finishCompaction('stopped', at);
         result.add(ChatEntry(id, 'Status', 'Stopped', timestamp: at, startedAt: turnStartedAt));
         turnStartedAt = null;
       case 'turn.completed':
         finishTools('interrupted', at);
+        finishCompaction('interrupted', at);
         result.add(ChatEntry(id, 'Status', 'Completed', timestamp: at, startedAt: turnStartedAt));
         turnStartedAt = null;
+      case 'compaction.started':
+        finishCompaction('interrupted', at);
+        final compaction = activeCompaction = CompactionActivity(startedAt: at);
+        result.add(ChatEntry(id, 'Compaction', '', compaction: compaction));
       case 'context.compacted':
-        result.add(ChatEntry(id, 'Status', 'Context compacted', timestamp: at));
+        final compaction = activeCompaction ?? CompactionActivity();
+        if (activeCompaction == null) {
+          result.add(ChatEntry(id, 'Compaction', '', compaction: compaction));
+        }
+        compaction
+          ..status = 'done'
+          ..endedAt = at
+          ..summary = data['summary'] as String? ?? '';
+        activeCompaction = null;
     }
   }
-  if (task.streamingText.isNotEmpty) {
+  if (task.streamingText.isNotEmpty && activeCompaction == null) {
     result.add(ChatEntry('$turnId:streaming', 'Happen', task.streamingText, streaming: true));
   }
   for (final message in task.pending.values) {
@@ -828,6 +931,7 @@ List<ChatEntry> conversation(DesktopTask task) {
     ));
   }
   if (!task.running) finishTools('interrupted');
+  if (!task.running) finishCompaction('interrupted');
   return result;
 }
 

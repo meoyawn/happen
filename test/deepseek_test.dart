@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
-import 'package:deepseek/deepseek.dart';
+import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 
@@ -762,7 +762,7 @@ void main() {
     );
     expect(harness.bodies.single['thinking'], {'type': 'disabled'});
     expect(harness.bodies.single['temperature'], 0.5);
-    expect(harness.bodies.single['system'], contains('Be pragmatic'));
+    expect(harness.bodies.single['system'], 'Complete the user task.');
   });
 }
 
@@ -821,12 +821,12 @@ Future<void> _send(
 class _Harness {
   _Harness(this.server) {
     final endpoint = Uri.parse('http://127.0.0.1:${server.port}');
-    provider = DeepSeekProvider(
+    provider = OpenCodeProvider.native(
       http: http,
       credentials: () async => 'fixture-only',
       endpoint: endpoint,
     );
-    chatProvider = DeepSeekProvider(
+    chatProvider = OpenCodeProvider.native(
       http: http,
       credentials: () async => 'fixture-only',
       endpoint: endpoint,
@@ -859,7 +859,7 @@ class _Harness {
   final HttpClient http = HttpClient();
   final bodies = <Json>[], headers = <Json>[];
   final paths = <String>[];
-  late final DeepSeekProvider provider, chatProvider;
+  late final OpenCodeProvider provider, chatProvider;
   Future<void> Function(HttpRequest, Json) handler = (request, _) =>
       _send(request.response, _text('Okay'));
   Future<void> close() async {

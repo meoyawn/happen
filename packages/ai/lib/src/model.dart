@@ -175,17 +175,19 @@ class ToolDefinition {
     required this.name,
     required this.description,
     this.namespace,
+    this.namespaceDescription,
     this.format = 'json',
     this.parameters = const {},
     this.grammar,
   });
   final String name, description, format;
-  final String? namespace, grammar;
+  final String? namespace, namespaceDescription, grammar;
   final Json parameters;
   factory ToolDefinition.fromJson(Json json) => ToolDefinition(
     name: requiredString(json, 'name'),
     description: json['description'] as String? ?? '',
     namespace: json['namespace'] as String?,
+    namespaceDescription: json['namespace_description'] as String?,
     format: json['format'] as String? ?? 'json',
     parameters: jsonObject(json['parameters'] ?? {}),
     grammar: json['grammar'] as String?,
@@ -195,6 +197,7 @@ class ToolDefinition {
     'description': description,
     'format': format,
     if (namespace != null) 'namespace': namespace,
+    if (namespaceDescription != null) 'namespace_description': namespaceDescription,
     if (parameters.isNotEmpty) 'parameters': parameters,
     if (grammar != null) 'grammar': grammar,
   };

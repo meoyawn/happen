@@ -1951,7 +1951,8 @@ provider availability or operating-system uptime.
 ## 2026-10-31 — Local macOS desktop launch and release workflows
 
 Initial implementation and verification. The stop-only reinstallation policy
-in the following entry supersedes the restart behavior recorded here.
+in the following entry supersedes the restart behavior recorded here. The
+foreground development decision below supersedes background debug launching.
 
 User requirements: follow the Spotify checkout's debug hot-reload and release
 reinstallation workflows, allow one debug and one release instance, and keep
@@ -3377,3 +3378,453 @@ models, the original selected GPT model, and both active tasks still running.
 No runtime errors were reported. These checks establish local routing and UI
 behavior; subscription entitlements and new live-model inference were not
 retested. No Dart formatter was run.
+
+## 2026-10-31 — Foreground persistent desktop development
+
+User correction: `moon run dev` must stay open with Flutter in the foreground
+and use Moon's persistent-task behavior. Set `preset: server` and
+`options.interactive: true`. The server preset supplies `persistent: true`,
+disables caching and CI, and streams output; interactive mode passes terminal
+input through for Flutter's single-character controls.
+
+Replace detached subprocess launching, log redirection and FIFO input with
+`os.execv`. Flutter replaces the launcher, inheriting its terminal, process
+session, signals and exit status. Keep the launch lock until exec closes its
+non-inheritable descriptor, when the Flutter entrypoint becomes discoverable.
+Keep checkout-local supervisor metadata for inspection, without log/input paths
+for new sessions. No workflow state enters the application bundle.
+
+Existing debug sessions are still reused without another app or supervisor.
+The reusing invocation releases the launch lock and waits for the existing
+supervisor, or the app when there is no supervisor, to exit. Ignore zombie
+processes so a parent awaiting reaping cannot keep the command open.
+`--status` remains an immediate inspection; existing duplicates still return 2.
+
+References inspected: Moon's [persistent-task documentation](https://moonrepo.dev/docs/concepts/task#persistent),
+its [server preset and interactive options](https://moonrepo.dev/docs/config/project#preset),
+and Moon v2.6.5's `crates/task/src/task_options.rs` and
+`crates/action-pipeline/src/action_pipeline.rs` at that upstream tag. Inspected
+the installed Flutter `737ba8f885dc774b53b442759999a312c9461e4e`,
+`packages/flutter_tools/lib/src/resident_runner.dart` and `base/terminal.dart`:
+Flutter enables single-character terminal input and handles SIGINT/SIGTERM.
+
+Verification on macOS 26.4 arm64, Python 3.15.2, Moon 2.6.5, Flutter 3.47.8:
+
+    python3 -m unittest discover -s packages/desktop/tool -p 'test_*.py' -v
+    moon task happen:dev --json
+    moon run dev -- --status
+    moon run dev
+    git diff --check
+
+All five launcher tests pass, covering eight concurrent launches sharing one
+foreground supervisor, live `r`/`R` input and output, quit/relaunch, exit status
+42, duplicate refusal, stopping a reused waiter and terminating the foreground
+session without leaving Flutter running. Three regressions fail against the
+previous detached launcher. Moon's resolved task reports `persistent: true`,
+`interactive: true`, `cache: false` and `runInCI: false`.
+
+A temporary checkout using the real Moon CLI, a pseudo-terminal and the tests'
+Flutter stand-in accepts `r`/`R` without Enter; `q` exits 0 and Ctrl+C exits 130,
+both leaving no supervisor. The real checkout's `moon run dev` reuses the live
+native debug session and stays open; interrupting that waiter leaves the app
+and Flutter PIDs unchanged. Temporary verification code stays outside the repo.
+
+Tradeoffs and remaining uncertainty: a reused session retains its original
+terminal/VM controls. A waiter cannot recover another process's exit status;
+it returns 0 on natural completion and 130 on Ctrl+C. Previously detached
+sessions retain their existing controls until their next launch. The native
+app was not stopped for a cold rebuild; foreground terminal lifecycle was
+verified with the stand-in rather than another native app launch. No Dart
+code or release behavior changed.
+
+## 2026-10-31 — Global configuration under ~/.config/happen
+
+User requirement: use `~/.config/happen/config.yaml` as the default global
+configuration file. This supersedes the path in the earlier global YAML decision.
+The shared `defaultConfigPath()` resolves it from `HOME`, falling back to
+`USERPROFILE`, for both CLI and embedded servers. CLI help and API examples use
+the same path. Explicit `--config`/`configPath` overrides and the existing data
+directory's legacy JSON fallback keep their current behavior.
+
+Existing installations must move their YAML file and restart the server, since
+the network isolate selects its path at startup. No automatic migration or
+additional environment override is introduced. Credentials and task history keep
+their existing locations. The local YAML file was moved without overwriting a
+destination, with byte equality and original permissions verified.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7:
+
+    dart analyze packages/config
+    dart test test/config_test.dart -r expanded
+    dart run bin/agent.dart --help
+    test -f ~/.config/happen/config.yaml
+
+Config analysis and all three parser/loader tests pass. A temporary Dart probe
+outside the repository verified default discovery and loading under an isolated
+`HOME`, with malformed YAML at the previous default to detect accidental fallback.
+It also successfully loaded the moved local config without printing its contents.
+
+Analysis of `packages/config` and `bin/agent.dart` passes. CLI execution and Dart
+MCP hot reload were blocked by compilation errors in a concurrent provider/tool
+package refactor. The broader reload/MCP test attempt also encountered concurrent
+native-asset generation (`libcode_mode.dylib` was not a Mach-O file). These checks
+did not establish integration or hot-reload success for this workspace state.
+
+Tradeoffs and remaining uncertainty: the old YAML path is no longer discovered
+automatically. Already running servers keep their selected path until restart;
+hot reload alone does not replace that startup state. Path behavior on Windows
+was not executed locally.
+
+## 2026-10-31 — Resizable desktop sidebar
+
+Replace the desktop sidebar's fixed 248-pixel width with an eight-pixel drag
+handle, a column-resize cursor, and a highlighted divider on hover or drag.
+Keep the saved width in `DesktopSession` and the existing SQLite settings table.
+Update the layout during dragging and save `sidebar_width` on release, avoiding
+database writes on every pointer movement. Missing, non-finite, or nonpositive
+saved values use the original 248-pixel default.
+
+Allow widths from 200 to 480 logical pixels, reserving 480 pixels for the
+conversation when the window permits. Window resizing clamps the displayed
+width without replacing the saved preference, so widening the window restores
+it. Cancelling a drag restores the saved width.
+
+Evidence and verification on macOS arm64, Flutter 3.47.8 (`737ba8f885`), Dart
+3.13.7:
+
+    cd packages/desktop
+    flutter analyze --no-pub lib/app.dart lib/session.dart
+    flutter test --no-pub --reporter expanded
+
+Scoped analysis passes in the working tree. The desktop suite passes all 46
+tests in a temporary `git archive HEAD` snapshot with the sidebar changes in
+`app.dart` and `session.dart` overlaid and the pinned QuickJS source included;
+dependencies were resolved with `flutter pub get --offline`. No test or probe
+code was added to the repository. Whitespace checks pass.
+
+The shared-workspace suite and initial official Dart MCP hot reload attempts
+encountered compilation errors in a concurrent provider/tool refactor, including
+missing `OpenCodeToolInterface` and `webSearchCommands`. At the user's request,
+finish without waiting for those refactors or further hot reload attempts.
+Live dragging and persistence after an application relaunch remain unverified.
+The temporary suite establishes compatibility with the committed dependencies;
+it does not establish integration with the unfinished refactor or behavior on
+other OSes.
+
+## 2026-10-31 — Option-arrow sidebar task navigation
+
+User requirement: Option+Up/Down selects the previous/next sidebar task, including
+across projects. Scope `CallbackShortcuts` to `DesktopView`, below Flutter's
+default editing shortcuts, so it also works with the composer focused. Flatten
+projects and their non-archived tasks in the sidebar's existing order and reuse
+`DesktopSession.select` for selection and history loading. Key repeat advances;
+the first/last task stops further movement. With no selected sidebar task, Down
+starts at the first task and Up at the last. An empty sidebar does nothing.
+Settings retains its separate route and does not navigate the underlying tasks.
+
+Evidence: Flutter 3.47.8, Dart 3.13.7, macOS arm64. The installed Flutter source
+at `737ba8f885dc774b53b442759999a312c9461e4e`,
+`packages/flutter/lib/src/widgets/default_text_editing_shortcuts.dart`, documents
+overriding Alt+Up/Down through a descendant shortcuts widget. Both new widget
+regressions fail when these bindings are removed. They cover both Option keys,
+project boundaries, empty/archived-only projects, archived tasks, key repeat,
+endpoints, new drafts, restored task drafts/focus, and Settings isolation.
+
+Reproduce from `packages/desktop`:
+
+    flutter test --no-pub test/view_test.dart --plain-name 'Option arrows' --reporter expanded
+    flutter test --no-pub test/view_test.dart --reporter expanded
+    dart analyze lib/app.dart test/view_test.dart
+
+All 18 view checks pass in a temporary `git archive HEAD` snapshot of `370c408`
+with current desktop `app.dart`, `session.dart`, and `view_test.dart` overlaid,
+the pinned QuickJS source included, and dependencies resolved offline. Scoped
+analysis passes in the working tree. Shared-workspace test compilation and Dart
+MCP hot reload are blocked by the concurrent provider/tool refactor. The snapshot
+verifies behavior against committed dependencies; live integration with that
+unfinished refactor remains unverified. No task storage or execution contract
+changes, navigation wrapping, or new native keyboard handler are introduced.
+
+## 2026-10-31 — Desktop project removal and missing folders
+
+User requirement: projects must be removable manually, and missing project
+folders must appear unavailable. Check availability at application launch only;
+the user rejected periodic checks and a refresh button. Reopening a restored
+folder through Open project also enables its existing entry. Existing identity
+refreshes on resume do not change the launch availability snapshot.
+
+Add Remove project to each project's sidebar menu, including unavailable
+projects. Confirm removal before stopping running tasks and deleting the desktop
+project/task references together in one SQLite transaction. Clear that project's
+text, file-reference, and attachment drafts, and release owned temporary
+attachments. Preserve the checkout directory and server-owned task history.
+Removing the selected project selects an available remaining project, or the
+empty workspace when none remain. Concurrent message admission or task archiving
+blocks removal; cancellation failure retains the project and its references.
+
+Keep availability in desktop memory. Missing directories retain their stable
+checkout key, last known identity, and task references. Grey out their sidebar
+entry, disable new tasks and messages, and allow existing conversations to be
+read. An already running task can still be stopped. No schema version or server
+protocol change is needed: desktop reference deletion uses the existing SQLite
+owner, and task cancellation uses the implemented task.cancel operation.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    dart analyze packages/desktop
+    git diff --check
+
+All 54 desktop tests, desktop analysis, and whitespace checks pass in the working
+tree. The new project tests use real
+SQLite owners and temporary directories to cover missing folders at launch,
+restoration after relaunch or reopening, removal persistence, archived task
+references, selection fallback, draft cleanup, retained files, and cancellation
+failure. Widget checks exercise greyed-out controls, accessible removal menus,
+confirmation/cancellation, and the last project's empty workspace. The existing
+real WebSocket/server fixture also removes a project during streamed inference,
+observes turn.cancelled, and verifies its prior history and project file remain
+readable. The macOS fixture resolves temporary paths before seeding references,
+matching Open project's canonical paths across /var and /private/var.
+
+Tradeoffs and remaining uncertainty: folder changes after launch do not update
+availability until the next launch or explicit reopening. Removed task history
+remains on disk but no longer has a desktop reference. Official Dart MCP hot
+reload, including a forced reload through Flutter Tools, was attempted; the
+existing development compiler still reports errors from the concurrent
+provider/tool refactor even though cold desktop test compilation passes. Live
+integration in that running process and other operating systems remain
+unverified. No Dart formatter was run.
+
+## 2026-10-31 — Visible conversation compaction
+
+User requirement: the desktop conversation must render compaction and the server
+must communicate it. Keep the existing durable `compaction.started` and
+`context.compacted` events for manual, threshold, and overflow operations. The
+agent already broadcasts both through the server. Failed/cancelled operations
+settle through their turn terminal event without installing a checkpoint.
+
+Project each start and its checkpoint into one stable conversation row. While
+active, show Compacting context with elapsed time from the durable start and
+any model retry status, replacing the generic Working indicator. Completion,
+failure, cancellation, or interruption settles that row. Replay sorts the same
+sequence-keyed events; idle incomplete starts become interrupted. Older
+checkpoints without a start remain visible with unknown duration.
+
+Only the checkpoint's shared summary can appear in an expandable Markdown
+disclosure. Native GPT checkpoints have no visible summary; their opaque
+replacement context stays outside the rendered projection. Filter compaction
+text/reasoning deltas in the server network owner so internal summarization
+cannot appear as an assistant reply. Preserve model retry notifications and
+ordinary reply streaming. Clear desktop partial text/retry state at both
+compaction boundaries, and suppress prose during an active compaction when
+connected to an older server that still forwards its deltas. No provider wire
+contract or durable storage schema changes are involved.
+
+Evidence and reproduction on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    dart test test/context/compaction_test.dart --reporter expanded
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze
+    git diff --check
+
+The server regression first failed because an internal compaction text delta
+reached the client. It now passes through the actual HTTP/SSE provider fixture,
+network/agent/storage owners, and WebSocket. It checks live ordered lifecycle
+events, matching durable checkpoint identity/time, retry notifications, ordinary
+reply deltas, filtered internal text/reasoning, cancellation observed by a second
+subscriber joining mid-compaction, restart, transfer, and overflow recovery.
+All 56 desktop tests pass, including narrow progress/retry rows, settled
+failures/cancellations, stable replay identities, Markdown summary disclosure,
+and hidden opaque state. Whole-workspace analysis and whitespace checks pass.
+
+The full repository run passed 91 tests and failed two checks in the concurrent
+provider/tool work: `test/tool_interfaces_test.dart:88` fails decoding an OpenCode
+tool result without involving the server; `test/context/bloat_test.dart:152`
+expects a missing tool declaration before reaching its compaction operations.
+Official Dart MCP hot reload and Flutter Tools reload, including force, were
+attempted and rejected with RPC error -32603. The running native process remains
+unverified; cold desktop test compilation succeeds. Other operating systems and
+live provider compaction latency were not measured. No Dart formatter was run.
+
+## 2026-10-31 — Recover inaccessible OpenAI source pages with direct HTTP
+
+The reported `web.run` open of `https://adelnz.com/writing/tool-search/` reaches
+OpenAI's `alpha/search` endpoint and receives HTTP 200 with an `Internal Error`
+result saying the URL is not accessible. Direct unauthenticated GET returns HTTP
+200 and 26,709 characters of HTML. The hosted failure persists with live,
+indexed, and omitted settings, the Codex originator, and a preceding search.
+Hosted search and a control open of `https://dart.dev/docs` both work. Sanitized
+observations are in [OpenAI page recovery evidence](evidence/openai-web-pages.json).
+
+Keep the pinned `web.run` schema and OpenAI search requests. After an explicit
+inaccessible-URL result, retrieve the requested HTTP(S) source without provider
+credentials. Replace only that failed open/find block with readable text,
+absolute links, and zero-based lines. Preserve other hosted results verbatim.
+Deduplicate page requests within an invocation. Direct results identify their
+source URL and retrieval method; follow-up reads use the URL. Hosted opaque
+references continue to belong to OpenAI. Failed, empty, oversized, or binary
+direct responses preserve the original hosted error. Caller cancellation still
+propagates and leaves the shared HTTP pool usable.
+
+This extends the earlier hosted-only GPT reader decision for public text/HTML
+pages. It adds no search provider or auxiliary model request. Reuse the network
+owner's existing HTTP helper, 60-second request deadline, 2 MiB response bound,
+and final 64 KiB output bound. HTML scripts/navigation are excluded from model
+text; no JavaScript execution, PDF reader, or new opaque reference registry is
+introduced. Parsed page content remains untrusted evidence.
+
+Pinned sources consulted: Codex
+`2681f8cba2831ef72bca2c0672b2e49d5f690745`,
+`codex-rs/codex-api/src/{search.rs,endpoint/search.rs}` and
+`codex-rs/ext/web-search/src/{tool,history,extension}.rs`. These establish the
+existing request/session/settings contract, which remains intact. This direct
+recovery is a Happen reader extension, not claimed Codex behavior.
+
+Reproduce on macOS arm64, Dart 3.13.7:
+
+    dart test test/openai_web_pages_test.dart test/web_search_test.dart --reporter expanded
+    dart test test/openai_web_pages_test.dart test/web_search_test.dart test/gpt_test.dart --reporter expanded
+    dart analyze packages/openai/lib/src/web_pages.dart packages/openai/lib/src/responses.dart test/openai_web_pages_test.dart
+    git diff --check
+
+The ten web tests pass, including the observed HTTP-200 failure, preservation of
+mixed hosted results, independent open offsets, case-insensitive find, shared
+line numbering, redirect handling, credential isolation, cancellation, response
+limits, and HTTP-pool reuse. Scoped analysis passes. A temporary Dart probe
+outside the repository called the real `ResponsesClient.search` with the current
+login: open returned 12,425 characters and find returned 9,889, both from the
+210-line article without an Internal Error. No credentials or encrypted outputs
+were printed or recorded.
+
+All 15 focused web/GPT transport tests pass, and analysis of the complete
+`packages/openai` package and new regression file passes. Whitespace checks
+pass. Official Dart MCP hot reload was attempted and failed with RPC -32603;
+the running Flutter compiler still reports earlier provider/tool refactor
+definitions (`ToolDiscovery` missing and the old `ToolRuntime` interface),
+although cold test compilation succeeds. Applying this change to that desktop
+process remains blocked by its existing compiler state.
+
+Tradeoffs and remaining uncertainty: recovery recognizes the observed hosted
+error shape and preserves unfamiliar errors. Direct text has its own line
+numbering and may differ from OpenAI's cached page. Dynamic-only pages, binary
+documents, and pages inaccessible from this machine remain unavailable. Live
+recovery was checked for the reported URL and model; other hosted failure
+variants and platforms were not measured.
+
+## 2026-10-31 — Provider-owned tools, instructions, and upstream search runtimes
+
+User requirement: rename `gpt` to `openai` and `deepseek` to `opencode`; make
+each provider own its upstream tool interface and instruction text. Reuse
+execution infrastructure. OpenAI search must be entirely Dart, without an
+OpenAI native directory or Rust build hook. Verify both searches against
+executed upstream implementations, rather than expectations derived from Dart.
+This supersedes the shared Codex tool contract, shared harness instruction
+overlay, and approximate BM25 behavior in the earlier decisions.
+
+The generic `ai.ToolInterface` supplies provider-owned definitions, discovery,
+catalog summaries, instructions, environment text, and result encoding. The
+agent retains task orchestration and persistence. `tool_runtime` owns one process
+runner and patch engine; `code_mode` owns the shared QuickJS engine. Provider
+packages own declarations and JavaScript-facing adapters. Existing configuration
+aliases and saved provider records remain readable. New tasks use the provider
+prompt without an added shared Happen instruction block. Frozen OpenAI task
+prefixes remain task data. Legacy OpenCode tasks switch to the current native
+tool definitions; replay and compaction do not restore old eager external tools.
+
+Pinned tool sources inspected in the local upstream checkouts:
+
+- Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`: tool-search handlers,
+  MCP/dynamic search metadata, code-mode names and declarations, schema renderer,
+  namespace context, and its UTF-8 budget implementation.
+- OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`: codemode ToolRuntime,
+  schema signatures, catalog budgets, session system prompt, file instruction
+  updates, MCP instructions, namespace normalization, and MCP result decoding.
+
+OpenAI uses the actual BM25 2.3.2 algorithm: deunicode normalization, Unicode word
+boundaries, NLTK stop words, English Snowball stemming, FxHash32 embeddings,
+corpus fitting, and float32 arithmetic. MCP and dynamic tools have distinct
+metadata corpora. Remove Happen's exact-name boost, camel-case expansion, and
+32-result clamp. Native search returns selected definitions on every call;
+nested search returns callable names with full typed descriptions. Namespace
+summaries use Codex's 4 KiB UTF-8 budget and delta text. Declarations preserve
+reference/work budgets, dynamic namespace defaults, MCP output envelopes, and
+the underscore boundary rule for callable names. `ALL_TOOLS` contains only
+sorted, deduplicated name/description pairs; transport names stay internal.
+
+OpenCode uses global `search()` inside `execute`, exact bracket paths, weighted
+path/word/description matching, plural alternatives, namespace scopes, paging,
+and stable path ties. It exposes native file/process/web tools separately from
+external nested tools. Catalog rendering applies the actual shared token budget,
+pinned entries, round-robin allocation, and upstream update text. MCP guidance
+is a separate instruction block. Preserve hyphens in OpenCode paths and decode
+MCP structured/text results according to the upstream output-schema rules.
+
+The selected Codex model prompts and OpenCode system prompt are verbatim, with
+digest assertions. The Codex model-catalog pin remains
+`2681f8cba2831ef72bca2c0672b2e49d5f690745`; all supported prompt bytes also match
+the newer tool pin. Provider renderers supply the upstream AGENTS.md wrappers,
+roles, separators, replacements, and removals. OpenCode instruction changes use
+a Dart port of jsdiff 8.0.4 with the upstream three-line context and choice
+between a diff and a shorter replacement. Happen retains its repository file
+discovery, cache, byte budget, and environment observation lifecycle.
+
+Evidence: [captured upstream contracts](../test/fixtures/tool_search/README.md).
+Temporary Rust and Bun hosts outside the repository executed unchanged upstream
+functions with minimal metadata/service adapters. JSON fixtures record source
+hashes, revisions, synthetic inputs, and independent expected outputs. No oracle
+compiler or operational capture script is checked in. The portable tests cover
+27 Codex metadata queries, 30 exact scoring cases, 185 representative tokenizer
+inputs, 32 schemas, 17 namespace snapshots/deltas, 13 declaration/name cases,
+58 OpenCode search/validation/signature cases, nine catalog cases, and 37 file/MCP
+instruction updates. A broader temporary tokenizer comparison checked 2,304
+strings against Rust with zero differences.
+
+The captures exposed and fixed mutable Dart stemmer reuse, corpus metadata
+differences, float32 scoring drift, incorrect limits, namespace budgets,
+OpenCode signatures and plural matching, MCP path/value handling, omitted
+namespace guidance, and incorrect underscore joins. Integration tests exercise
+fresh discovery inside a cell, repeated native searches, client/MCP changes,
+cold resume, legacy OpenCode upgrade, compaction, cancellation, and shared tools.
+
+Reproduce on macOS arm64, Dart 3.13.7, Flutter 3.47.8; captures used Rust 1.96.0,
+Bun 1.4.4, Effect 4.1.0, and diff 8.0.4:
+
+    flutter pub get
+    dart test test/provider_search_test.dart test/provider_instructions_test.dart test/tool_interfaces_test.dart --reporter expanded
+    ulimit -n 4096
+    dart test --concurrency=1 --reporter expanded
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    dart analyze
+    git diff --check
+
+All 328 root tests pass with serial test-file concurrency, including the
+100-task streaming check. The 233 focused provider tests and all 56 desktop
+tests pass. Whole-workspace analysis and whitespace checks pass. Official Dart
+MCP hot reload succeeds and
+reports no runtime errors, resolving the stale compiler state recorded above.
+The default macOS shell limit of 256 descriptors is insufficient for the full
+server suite. A parallel run also produced one extra retry in the accelerated
+HTTP idle-timeout test under load; its fixture compresses five minutes to 500 ms.
+All five GPT transport tests also pass in isolation.
+Run the complete suite with the descriptor setting and serial test-file
+concurrency above to avoid conflating those constraints with search behavior.
+No Dart formatter was run.
+
+Tradeoffs and remaining uncertainty: equal BM25 scores have unspecified Rust
+HashMap order; Dart retains registration order for those ties. Captured parity
+applies to the implemented search and rendering surface, not the entire upstream
+applications. Happen's process/history ownership, QuickJS resource limits, and
+transport bounds remain local policies. PTYs, interactive approvals, delegated
+agents, yielded JavaScript cells, inline media, and the full OpenCode plugin and
+instruction-observation lifecycle are outside the implemented surface and are
+not advertised as available. These tests establish deterministic compatibility,
+not a live-provider quality or prompt-cache benchmark.

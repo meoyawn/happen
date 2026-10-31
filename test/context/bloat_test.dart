@@ -98,7 +98,8 @@ void main() {
       if (previousInput == null) {
         // The only automatic context needed without instruction files or extra tools.
         expect(input, hasLength(2));
-        expect(input.first['content'], 'Current working directory: ${work.path}');
+        expect(input.first['content'], '<environment_context>\n  <cwd>${work.path}</cwd>\n'
+          '  <shell>${Platform.environment['SHELL']!.split('/').last}</shell>\n</environment_context>');
         expect(input.last, {'role': 'user', 'content': 'turn-0'});
       } else {
         expect(input.take(previousInput.length).toList(), previousInput);
@@ -159,9 +160,8 @@ void main() {
     final beforeRemoval = requests.length;
     await turn('task.send', {'task_id': id, 'prompt': 'removed tools'});
     final notice = (requests[beforeRemoval]['input'] as List).lastWhere((item) => item['role'] == 'developer');
-    expect(notice['content'], contains('client.browser_title'));
-    expect(notice['content'], contains('client.stable_lookup'));
-    expect(notice['content'], contains('unavailable'));
+    expect(notice['content'], '<tools>\nRemoved deferred tool namespaces:\n'
+      '- client: Tools in the client namespace.\nNo deferred tool namespaces remain.\n</tools>');
     previousInput = requests.last['input'] as List;
 
     await client.close();

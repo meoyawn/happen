@@ -4,12 +4,12 @@ toolchains:
   default: system
 tasks:
   dev:
-    description: Launch or reuse one Flutter desktop with stateful hot reload
+    description: Run one Flutter desktop in the foreground with stateful hot reload
     command: python3 packages/desktop/tool/run_flutter.py
-    preset: utility
+    preset: server
     inputs: []
     options:
-      interactive: false
+      interactive: true
       cache: false
       shell: false
       outputStyle: stream

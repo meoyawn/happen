@@ -6,7 +6,6 @@ import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'discovery.dart';
-import 'tool_specs.dart' show toolSearchDefinition;
 
 /// Global instructions have an independent budget; the server owns repository discovery.
 Future<Json> loadAgentsMd(
@@ -52,6 +51,7 @@ Future<Json> loadAgentsMd(
             'path': file.absolute.path,
             'scope': directory.absolute.path,
             'text': content,
+            'global': true,
             if (cut) 'truncated': true,
           });
           remaining -= content.isEmpty ? 0 : bytes.length.clamp(0, remaining);
@@ -73,61 +73,6 @@ Future<Json> loadAgentsMd(
   return {'cwd': repository['cwd'], 'files': files, 'truncated': truncated};
 }
 
-ConversationItem instructionMessage(Json snapshot, {bool replacement = false}) {
-  final files = (snapshot['files'] as List).map(jsonObject);
-  final directory = files.isEmpty ? '' : ' for ${snapshot['cwd']}';
-  final text = StringBuffer(
-    '# AGENTS.md instructions$directory\n\n',
-  );
-  text.writeln('<INSTRUCTIONS>');
-  if (files.isEmpty) {
-    text.writeln(
-      'The previously provided AGENTS.md instructions no longer apply.',
-    );
-  } else if (replacement) {
-    text.writeln(
-      'These AGENTS.md instructions replace all previously provided AGENTS.md instructions.',
-    );
-  }
-  if (files.isNotEmpty) {
-    for (final file in files) {
-      text.writeln(
-        '\nInstructions from ${file['path']} (scope: ${file['scope']}):\n${file['text']}',
-      );
-      if (file['truncated'] == true) {
-        text.writeln(
-          '[File truncated: read the full file before working in its scope.]',
-        );
-      }
-    }
-  }
-  if (snapshot['truncated'] == true) {
-    text.writeln(
-      '[Instruction budget reached. Check applicable files for omitted instructions.]',
-    );
-  }
-  text.writeln('</INSTRUCTIONS>');
-  return ConversationItem(
-    role: 'user',
-    content: [
-      {'type': 'text', 'text': text.toString()},
-    ],
-    native: {
-      'harness': {'context': 'agents_md'},
-    },
-  );
-}
-
-ConversationItem environmentMessage(String cwd) => ConversationItem(
-  role: 'user',
-  content: [
-    {'type': 'text', 'text': 'Current working directory: $cwd'},
-  ],
-  native: {
-    'harness': {'context': 'environment'},
-  },
-);
-
 bool isHarnessContext(ConversationItem item) => item.native['harness'] is Map;
 
 /// Restore current context exactly; summaries are not responsible for these rules.
@@ -142,6 +87,11 @@ List<ConversationItem> restoreContext(
   Json? mcpSnapshot,
   Json? clientSnapshot,
   List<ToolDefinition> initialTools = const [],
+  ToolDefinition? discovery,
+  String? Function(List<Json>, List<Json>?)? catalogContext,
+  required ConversationItem Function(Json, Json?) instructionContext,
+  required ConversationItem Function(String, {bool replacement}) environmentContext,
+  List<ConversationItem> providerContext = const [],
 }) {
   final known = {
     for (final tool in initialTools) toolKey(tool): tool,
@@ -170,22 +120,24 @@ List<ConversationItem> restoreContext(
   );
   final initial = [
     ...retained,
-    if (!initialTools.any((tool) => toolKey(tool) == toolKey(toolSearchDefinition)))
-      ConversationItem(kind: 'tools', tools: [toolSearchDefinition],
+    ...providerContext,
+    if (discovery != null && !initialTools.any((tool) => toolKey(tool) == toolKey(discovery)))
+      ConversationItem(kind: 'tools', tools: [discovery],
         native: {'harness': {'context': 'discovery'}},
       ),
-    if ((snapshot['files'] as List).isNotEmpty) instructionMessage(snapshot),
-    environmentMessage(cwd),
-    if (mcpSnapshot != null &&
+    if ((snapshot['files'] as List).isNotEmpty) instructionContext(snapshot, null),
+    environmentContext(cwd),
+    if (catalogContext?.call(deferredCatalog(mcpSnapshot ?? {}, clientSnapshot ?? {}), null) case final String text)
+      ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
+        native: {'harness': {'context': 'tool_catalog'}}),
+    if (discovery != null && mcpSnapshot != null &&
         ((mcpSnapshot['tools'] as List? ?? []).isNotEmpty ||
             (mcpSnapshot['instructions'] as List? ?? []).isNotEmpty)) ...[
       if ((mcpSnapshot['tools'] as List? ?? []).isNotEmpty)
         ..._restoreTools(mcpToolDefinitions(mcpSnapshot), known),
-      ?catalogContext(mcpSnapshot, null, known.keys.toSet(), mcp: true),
     ],
-    if (clientSnapshot != null && (clientSnapshot['tools'] as List).isNotEmpty) ...[
+    if (discovery != null && clientSnapshot != null && (clientSnapshot['tools'] as List).isNotEmpty) ...[
       ..._restoreTools(clientToolDefinitions(clientSnapshot), known),
-      ?catalogContext(clientSnapshot, null, known.keys.toSet(), mcp: false),
     ],
   ];
   var insertion = result.lastIndexWhere(

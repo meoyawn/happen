@@ -1,0 +1,4731 @@
+{
+  "upstream": {
+    "repository": "https://github.com/anomalyco/opencode",
+    "revision": "e8238bae9b807b72ecfc75afd3a9fe2e6b07b944",
+    "source_sha256": {
+      "packages/codemode/src/tool-runtime.ts": "5588ade78704bfaf2af9a0d1bf529b5443cd3bd1550e5b9ee6aab5d36870fc46",
+      "packages/codemode/src/tool-schema.ts": "da072e1eaaca07eca74969c8927e39115fba213fa2f860a6dd61657e0fcec18b",
+      "packages/codemode/test/codemode.test.ts": "d03aa583f603ba52b7fea43ad7497ad9ac91a3c07c737f41c5d353b6d05c69f1",
+      "packages/codemode/test/signature.test.ts": "e88e176c76d6064b865f3464839a682703dc9b6e0d9cf09a41d433b0e73deb2b",
+      "packages/core/src/codemode/catalog.ts": "258c8646ad4c3aa9df739347dbd68f9928856a52a7645f1a07221d9de44960d0",
+      "packages/core/src/codemode/instructions.ts": "c550421a843992e84d8b3c197a9ebd6fcaba1265db89b047a275e21f74694cce"
+    }
+  },
+  "catalogs": [
+    [
+      {
+        "name": "github.list_issues",
+        "description": "List issues",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "tracker.fetch_all",
+        "description": "Fetch every open issue in the project",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "cloudflare.get_timezones",
+        "description": "List timezones",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "cloudflare.get_zones",
+        "description": "List zones",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "files.upload",
+        "description": "Send a document to the workspace",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "attachment": {
+              "type": "string",
+              "description": "Local path of the payload to send"
+            }
+          },
+          "required": [
+            "attachment"
+          ]
+        }
+      },
+      {
+        "name": "context7.resolve-library-id",
+        "description": "Resolve the library",
+        "parameters": {
+          "properties": {
+            "library": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.find",
+        "description": "Search archived records",
+        "parameters": {
+          "type": "object"
+        },
+        "namespace_description": "Research historical invoices"
+      },
+      {
+        "name": "getHTTPRecords",
+        "description": "camelCase numbers2Tool",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_0",
+        "description": "Schema 0",
+        "parameters": {},
+        "output_schema": {}
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_1",
+        "description": "Schema 1",
+        "parameters": {
+          "type": "object"
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_2",
+        "description": "Schema 2",
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output_schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_3",
+        "description": "Schema 3",
+        "parameters": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Record key"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "output_schema": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Record key"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_4",
+        "description": "Schema 4",
+        "parameters": {
+          "properties": {
+            "tags": {
+              "type": "array",
+              "description": "People to notify",
+              "items": {
+                "type": "string",
+                "format": "email",
+                "description": "Email address"
+              }
+            }
+          }
+        },
+        "output_schema": {
+          "properties": {
+            "tags": {
+              "type": "array",
+              "description": "People to notify",
+              "items": {
+                "type": "string",
+                "format": "email",
+                "description": "Email address"
+              }
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_5",
+        "description": "Schema 5",
+        "parameters": {
+          "properties": {
+            "records": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "output_schema": {
+          "properties": {
+            "records": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_6",
+        "description": "Schema 6",
+        "parameters": {
+          "properties": {
+            "z": {
+              "type": "string",
+              "description": "First\nSecond */\n\nLast"
+            },
+            "a-b": {
+              "enum": [
+                "a",
+                "b"
+              ],
+              "default": "a"
+            }
+          }
+        },
+        "output_schema": {
+          "properties": {
+            "z": {
+              "type": "string",
+              "description": "First\nSecond */\n\nLast"
+            },
+            "a-b": {
+              "enum": [
+                "a",
+                "b"
+              ],
+              "default": "a"
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_7",
+        "description": "Schema 7",
+        "parameters": {
+          "$defs": {
+            "Q": {
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "File location"
+                }
+              }
+            }
+          },
+          "$ref": "#/$defs/Q"
+        },
+        "output_schema": {
+          "$defs": {
+            "Q": {
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "File location"
+                }
+              }
+            }
+          },
+          "$ref": "#/$defs/Q"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_8",
+        "description": "Schema 8",
+        "parameters": {
+          "$defs": {
+            "Q": {
+              "type": "object",
+              "properties": {
+                "next": {
+                  "$ref": "#/$defs/Q"
+                }
+              }
+            }
+          },
+          "$ref": "#/$defs/Q"
+        },
+        "output_schema": {
+          "$defs": {
+            "Q": {
+              "type": "object",
+              "properties": {
+                "next": {
+                  "$ref": "#/$defs/Q"
+                }
+              }
+            }
+          },
+          "$ref": "#/$defs/Q"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_9",
+        "description": "Schema 9",
+        "parameters": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "NaN",
+                "Infinity",
+                "-Infinity"
+              ]
+            }
+          ]
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "NaN",
+                "Infinity",
+                "-Infinity"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_10",
+        "description": "Schema 10",
+        "parameters": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_11",
+        "description": "Schema 11",
+        "parameters": {
+          "allOf": [
+            {
+              "properties": {
+                "x": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "properties": {
+                "y": {
+                  "type": "integer"
+                }
+              }
+            }
+          ]
+        },
+        "output_schema": {
+          "allOf": [
+            {
+              "properties": {
+                "x": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "properties": {
+                "y": {
+                  "type": "integer"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_12",
+        "description": "Schema 12",
+        "parameters": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "output_schema": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_13",
+        "description": "Schema 13",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_14",
+        "description": "Schema 14",
+        "parameters": {
+          "not": {
+            "type": "null"
+          }
+        },
+        "output_schema": {
+          "not": {
+            "type": "null"
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_15",
+        "description": "Schema 15",
+        "parameters": {
+          "properties": {
+            "x": false
+          }
+        },
+        "output_schema": {
+          "properties": {
+            "x": false
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_16",
+        "description": "Schema 16",
+        "parameters": {
+          "properties": {
+            "x": {
+              "description": "",
+              "minLength": 0
+            }
+          }
+        },
+        "output_schema": {
+          "properties": {
+            "x": {
+              "description": "",
+              "minLength": 0
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_17",
+        "description": "Schema 17",
+        "parameters": {
+          "$defs": {
+            "a/b": {
+              "type": "string"
+            }
+          },
+          "$ref": "#/$defs/a~1b"
+        },
+        "output_schema": {
+          "$defs": {
+            "a/b": {
+              "type": "string"
+            }
+          },
+          "$ref": "#/$defs/a~1b"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_18",
+        "description": "Schema 18",
+        "parameters": {
+          "$defs": {
+            "Q": {
+              "type": "string"
+            }
+          },
+          "$ref": "#%2F$defs%2FQ"
+        },
+        "output_schema": {
+          "$defs": {
+            "Q": {
+              "type": "string"
+            }
+          },
+          "$ref": "#%2F$defs%2FQ"
+        }
+      }
+    ],
+    [
+      {
+        "name": "ns.tool_19",
+        "description": "Schema 19",
+        "parameters": {
+          "$ref": "#/missing"
+        },
+        "output_schema": {
+          "$ref": "#/missing"
+        }
+      }
+    ],
+    [
+      {
+        "name": "tools.github.run",
+        "description": "Owned tools root",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "github.run",
+        "description": "Normal root",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    [
+      {
+        "name": "archive.tool_0",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": true,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_1",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_2",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_3",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_4",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_5",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_6",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_7",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "archive.tool_8",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "archive services"
+      },
+      {
+        "name": "calendar.tool_0",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": true,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_1",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_2",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_3",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_4",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_5",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_6",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_7",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "calendar.tool_8",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "calendar services"
+      },
+      {
+        "name": "drive.tool_0",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": true,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_1",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_2",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_3",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_4",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_5",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_6",
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_7",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      },
+      {
+        "name": "drive.tool_8",
+        "description": "A short operation",
+        "parameters": {
+          "type": "object"
+        },
+        "pinned": false,
+        "namespace_description": "drive services"
+      }
+    ],
+    [
+      {
+        "name": "archive.tool_0",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_1",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_2",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_3",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_4",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_5",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_6",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_7",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_8",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_9",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_10",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_11",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_12",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_13",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_14",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_15",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_16",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_17",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_18",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_19",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_20",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_21",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_22",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_23",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_24",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_25",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_26",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_27",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_28",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_29",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_30",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_31",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_32",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_33",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_34",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_35",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_36",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_37",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_38",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_39",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_40",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_41",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_42",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_43",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_44",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "archive.tool_0",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_1",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_2",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_3",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_4",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_5",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_6",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_7",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_8",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_9",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_10",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_11",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_12",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_13",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_14",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_15",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_16",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_17",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_18",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_19",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_20",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_21",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_22",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_23",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_24",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_25",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_26",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_27",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_28",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_29",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_30",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_31",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_32",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_33",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_34",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_35",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_36",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_37",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_38",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_39",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_40",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_41",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_42",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_43",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      }
+    ],
+    [
+      {
+        "name": "archive.tool_0",
+        "description": "New operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_1",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_2",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_3",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_4",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_5",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_6",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_7",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_8",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_9",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_10",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_11",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_12",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_13",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_14",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_15",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_16",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_17",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_18",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_19",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_20",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_21",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_22",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_23",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_24",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_25",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_26",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_27",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_28",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_29",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_30",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_31",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_32",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_33",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_34",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_35",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_36",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_37",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_38",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_39",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_40",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_41",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_42",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_43",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      },
+      {
+        "name": "archive.tool_44",
+        "description": "Operation",
+        "parameters": {
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Key of record"
+            }
+          }
+        }
+      }
+    ],
+    []
+  ],
+  "search": [
+    {
+      "catalog": 0,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            },
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "issues"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "zones"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "attachment"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "payload"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "docum"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "invoices"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "archive.find"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "tools.archive.find"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "tools.context7[\"resolve-library-id\"]"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": "tools.github"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": "tools"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            },
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": "missing"
+      },
+      "expected": {
+        "value": {
+          "items": [],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": ""
+      },
+      "expected": {
+        "value": {
+          "items": [],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "HTTP records"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            },
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "***"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            },
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "limit": 2,
+        "offset": 2
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            }
+          ],
+          "remaining": 4,
+          "next": {
+            "offset": 4
+          }
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "limit": 2,
+        "offset": 100
+      },
+      "expected": {
+        "value": {
+          "items": [],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "issues",
+        "namespace": "tracker"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "zones zones"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "études"
+      },
+      "expected": {
+        "value": {
+          "items": [],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "not_in_catalog"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": "a",
+        "unknown": 42
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            },
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "limit": 0
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected a value greater than 0\n  at [\"limit\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "limit": 1.5
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected an integer\n  at [\"limit\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "limit": null
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected number\n  at [\"limit\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "offset": -1
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected a value greater than or equal to 0\n  at [\"offset\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": 7
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected string\n  at [\"namespace\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "namespace": null
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected string\n  at [\"namespace\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "query": {
+        "query": null
+      },
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected string\n  at [\"query\"])"
+      }
+    },
+    {
+      "catalog": 0,
+      "args": [],
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.archive.find",
+              "description": "Search archived records",
+              "signature": "tools.archive.find(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_timezones",
+              "description": "List timezones",
+              "signature": "tools.cloudflare.get_timezones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.cloudflare.get_zones",
+              "description": "List zones",
+              "signature": "tools.cloudflare.get_zones(): Promise<unknown>"
+            },
+            {
+              "path": "tools.context7[\"resolve-library-id\"]",
+              "description": "Resolve the library",
+              "signature": "tools.context7[\"resolve-library-id\"]({\n  library?: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.files.upload",
+              "description": "Send a document to the workspace",
+              "signature": "tools.files.upload({\n  /** Local path of the payload to send */\n  attachment: string,\n}): Promise<unknown>"
+            },
+            {
+              "path": "tools.getHTTPRecords",
+              "description": "camelCase numbers2Tool",
+              "signature": "tools.getHTTPRecords(): Promise<unknown>"
+            },
+            {
+              "path": "tools.github.list_issues",
+              "description": "List issues",
+              "signature": "tools.github.list_issues(): Promise<unknown>"
+            },
+            {
+              "path": "tools.tracker.fetch_all",
+              "description": "Fetch every open issue in the project",
+              "signature": "tools.tracker.fetch_all(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 0,
+      "args": [
+        null
+      ],
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected object)"
+      }
+    },
+    {
+      "catalog": 0,
+      "args": [
+        {},
+        {}
+      ],
+      "expected": {
+        "error": "ToolRuntimeError: Tool 'search' expects at most one input object."
+      }
+    },
+    {
+      "catalog": 0,
+      "args": [
+        "query"
+      ],
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected object)"
+      }
+    },
+    {
+      "catalog": 0,
+      "args": [
+        false
+      ],
+      "expected": {
+        "error": "ToolRuntimeError: Invalid input for tool 'search': SchemaError(Expected object)"
+      }
+    },
+    {
+      "catalog": 1,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_0",
+              "description": "Schema 0",
+              "signature": "tools.ns.tool_0(unknown): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 2,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_1",
+              "description": "Schema 1",
+              "signature": "tools.ns.tool_1(): Promise<{}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 3,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_2",
+              "description": "Schema 2",
+              "signature": "tools.ns.tool_2(Array<string>): Promise<Array<string>>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 4,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_3",
+              "description": "Schema 3",
+              "signature": "tools.ns.tool_3({\n  /** Record key */\n  id: string,\n  /** @integer @minimum 1 */\n  count?: number,\n}): Promise<{\n  /** Record key */\n  id: string,\n  /** @integer @minimum 1 */\n  count?: number,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 5,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_4",
+              "description": "Schema 4",
+              "signature": "tools.ns.tool_4({\n  /**\n   * People to notify\n   * Each item: Email address. @format email\n   */\n  tags?: Array<string>,\n}): Promise<{\n  /**\n   * People to notify\n   * Each item: Email address. @format email\n   */\n  tags?: Array<string>,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 6,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_5",
+              "description": "Schema 5",
+              "signature": "tools.ns.tool_5({\n  /** Each value: @minimum 0 */\n  records?: {\n    [key: string]: number,\n  },\n}): Promise<{\n  /** Each value: @minimum 0 */\n  records?: {\n    [key: string]: number,\n  },\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 7,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_6",
+              "description": "Schema 6",
+              "signature": "tools.ns.tool_6({\n  /**\n   * First\n   * Second * /\n   *\n   * Last\n   */\n  z?: string,\n  /** @default \"a\" */\n  \"a-b\"?: \"a\" | \"b\",\n}): Promise<{\n  /**\n   * First\n   * Second * /\n   *\n   * Last\n   */\n  z?: string,\n  /** @default \"a\" */\n  \"a-b\"?: \"a\" | \"b\",\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 8,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_7",
+              "description": "Schema 7",
+              "signature": "tools.ns.tool_7({\n  /** File location */\n  path?: string,\n}): Promise<{\n  /** File location */\n  path?: string,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 9,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_8",
+              "description": "Schema 8",
+              "signature": "tools.ns.tool_8({\n  next?: unknown,\n}): Promise<{\n  next?: unknown,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 10,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_9",
+              "description": "Schema 9",
+              "signature": "tools.ns.tool_9(number): Promise<number>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 11,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_10",
+              "description": "Schema 10",
+              "signature": "tools.ns.tool_10(string | null): Promise<string | null>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 12,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_11",
+              "description": "Schema 11",
+              "signature": "tools.ns.tool_11({\n    x?: string,\n  } & {\n    /** @integer */\n    y?: number,\n  }): Promise<{\n    x?: string,\n  } & {\n    /** @integer */\n    y?: number,\n  }>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 13,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_12",
+              "description": "Schema 12",
+              "signature": "tools.ns.tool_12(null | string): Promise<null | string>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 14,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_13",
+              "description": "Schema 13",
+              "signature": "tools.ns.tool_13(): Promise<{}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 15,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_14",
+              "description": "Schema 14",
+              "signature": "tools.ns.tool_14(): Promise<{}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 16,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_15",
+              "description": "Schema 15",
+              "signature": "tools.ns.tool_15({\n  x?: unknown,\n}): Promise<{\n  x?: unknown,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 17,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_16",
+              "description": "Schema 16",
+              "signature": "tools.ns.tool_16({\n  /** @minLength 0 */\n  x?: unknown,\n}): Promise<{\n  /** @minLength 0 */\n  x?: unknown,\n}>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 18,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_17",
+              "description": "Schema 17",
+              "signature": "tools.ns.tool_17(string): Promise<string>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 19,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_18",
+              "description": "Schema 18",
+              "signature": "tools.ns.tool_18(string): Promise<string>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 20,
+      "query": {},
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.ns.tool_19",
+              "description": "Schema 19",
+              "signature": "tools.ns.tool_19(unknown): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 21,
+      "query": {
+        "namespace": "tools"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.tools.github.run",
+              "description": "Owned tools root",
+              "signature": "tools.tools.github.run(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 21,
+      "query": {
+        "namespace": "tools.github"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.tools.github.run",
+              "description": "Owned tools root",
+              "signature": "tools.tools.github.run(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    },
+    {
+      "catalog": 21,
+      "query": {
+        "query": "tools.github.run"
+      },
+      "expected": {
+        "value": {
+          "items": [
+            {
+              "path": "tools.github.run",
+              "description": "Normal root",
+              "signature": "tools.github.run(): Promise<unknown>"
+            }
+          ],
+          "remaining": 0,
+          "next": null
+        },
+        "calls": [
+          {
+            "name": "search"
+          }
+        ]
+      }
+    }
+  ],
+  "catalog": [
+    {
+      "catalog": 22,
+      "budget": 0,
+      "expected": {
+        "summary": {
+          "total": 27,
+          "shown": 3,
+          "namespaces": [
+            {
+              "name": "archive",
+              "description": "archive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "calendar",
+              "description": "calendar services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "calendar.tool_0",
+                  "line": "  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "drive",
+              "description": "drive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "drive.tool_0",
+                  "line": "  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names. Each result's `path` is the complete call expression: write it out as code, for example `await tools.ns.tool_name({ ... })`. Do not use it as a key such as `tools[path]`.\n\n- search({\n  query?: string,\n  namespace?: string,\n  /** @integer @exclusiveMinimum 0 */\n  limit?: number,\n  /** @integer @minimum 0 */\n  offset?: number,\n}): {\n  items: Array<{\n      path: string,\n      description: string,\n      signature: string,\n    }>,\n  /** @integer @minimum 0 */\n  remaining: number,\n  next: {\n      /** @integer @minimum 0 */\n      offset: number,\n    } | null,\n}\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (9 tools, 1 shown) // archive services\n  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- calendar (9 tools, 1 shown) // calendar services\n  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- drive (9 tools, 1 shown) // drive services\n  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+      }
+    },
+    {
+      "catalog": 22,
+      "budget": 30,
+      "expected": {
+        "summary": {
+          "total": 27,
+          "shown": 3,
+          "namespaces": [
+            {
+              "name": "archive",
+              "description": "archive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "calendar",
+              "description": "calendar services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "calendar.tool_0",
+                  "line": "  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "drive",
+              "description": "drive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "drive.tool_0",
+                  "line": "  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names. Each result's `path` is the complete call expression: write it out as code, for example `await tools.ns.tool_name({ ... })`. Do not use it as a key such as `tools[path]`.\n\n- search({\n  query?: string,\n  namespace?: string,\n  /** @integer @exclusiveMinimum 0 */\n  limit?: number,\n  /** @integer @minimum 0 */\n  offset?: number,\n}): {\n  items: Array<{\n      path: string,\n      description: string,\n      signature: string,\n    }>,\n  /** @integer @minimum 0 */\n  remaining: number,\n  next: {\n      /** @integer @minimum 0 */\n      offset: number,\n    } | null,\n}\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (9 tools, 1 shown) // archive services\n  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- calendar (9 tools, 1 shown) // calendar services\n  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- drive (9 tools, 1 shown) // drive services\n  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+      }
+    },
+    {
+      "catalog": 22,
+      "budget": 75,
+      "expected": {
+        "summary": {
+          "total": 27,
+          "shown": 3,
+          "namespaces": [
+            {
+              "name": "archive",
+              "description": "archive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "calendar",
+              "description": "calendar services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "calendar.tool_0",
+                  "line": "  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            },
+            {
+              "name": "drive",
+              "description": "drive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "drive.tool_0",
+                  "line": "  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names. Each result's `path` is the complete call expression: write it out as code, for example `await tools.ns.tool_name({ ... })`. Do not use it as a key such as `tools[path]`.\n\n- search({\n  query?: string,\n  namespace?: string,\n  /** @integer @exclusiveMinimum 0 */\n  limit?: number,\n  /** @integer @minimum 0 */\n  offset?: number,\n}): {\n  items: Array<{\n      path: string,\n      description: string,\n      signature: string,\n    }>,\n  /** @integer @minimum 0 */\n  remaining: number,\n  next: {\n      /** @integer @minimum 0 */\n      offset: number,\n    } | null,\n}\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (9 tools, 1 shown) // archive services\n  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- calendar (9 tools, 1 shown) // calendar services\n  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n- drive (9 tools, 1 shown) // drive services\n  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+      }
+    },
+    {
+      "catalog": 22,
+      "budget": 2000,
+      "expected": {
+        "summary": {
+          "total": 27,
+          "shown": 27,
+          "namespaces": [
+            {
+              "name": "archive",
+              "description": "archive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "archive.tool_1",
+                  "line": "  - tools.archive.tool_1(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "archive.tool_2",
+                  "line": "  - tools.archive.tool_2(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "archive.tool_3",
+                  "line": "  - tools.archive.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "archive.tool_4",
+                  "line": "  - tools.archive.tool_4(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "archive.tool_5",
+                  "line": "  - tools.archive.tool_5(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "archive.tool_6",
+                  "line": "  - tools.archive.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "archive.tool_7",
+                  "line": "  - tools.archive.tool_7(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "archive.tool_8",
+                  "line": "  - tools.archive.tool_8(): Promise<unknown> // A short operation"
+                }
+              ]
+            },
+            {
+              "name": "calendar",
+              "description": "calendar services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "calendar.tool_0",
+                  "line": "  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "calendar.tool_1",
+                  "line": "  - tools.calendar.tool_1(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "calendar.tool_2",
+                  "line": "  - tools.calendar.tool_2(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "calendar.tool_3",
+                  "line": "  - tools.calendar.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "calendar.tool_4",
+                  "line": "  - tools.calendar.tool_4(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "calendar.tool_5",
+                  "line": "  - tools.calendar.tool_5(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "calendar.tool_6",
+                  "line": "  - tools.calendar.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "calendar.tool_7",
+                  "line": "  - tools.calendar.tool_7(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "calendar.tool_8",
+                  "line": "  - tools.calendar.tool_8(): Promise<unknown> // A short operation"
+                }
+              ]
+            },
+            {
+              "name": "drive",
+              "description": "drive services",
+              "count": 9,
+              "entries": [
+                {
+                  "path": "drive.tool_0",
+                  "line": "  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "drive.tool_1",
+                  "line": "  - tools.drive.tool_1(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "drive.tool_2",
+                  "line": "  - tools.drive.tool_2(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "drive.tool_3",
+                  "line": "  - tools.drive.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "drive.tool_4",
+                  "line": "  - tools.drive.tool_4(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "drive.tool_5",
+                  "line": "  - tools.drive.tool_5(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "drive.tool_6",
+                  "line": "  - tools.drive.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..."
+                },
+                {
+                  "path": "drive.tool_7",
+                  "line": "  - tools.drive.tool_7(): Promise<unknown> // A short operation"
+                },
+                {
+                  "path": "drive.tool_8",
+                  "line": "  - tools.drive.tool_8(): Promise<unknown> // A short operation"
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (9 tools) // archive services\n  - tools.archive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.archive.tool_1(): Promise<unknown> // A short operation\n  - tools.archive.tool_2(): Promise<unknown> // A short operation\n  - tools.archive.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.archive.tool_4(): Promise<unknown> // A short operation\n  - tools.archive.tool_5(): Promise<unknown> // A short operation\n  - tools.archive.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.archive.tool_7(): Promise<unknown> // A short operation\n  - tools.archive.tool_8(): Promise<unknown> // A short operation\n- calendar (9 tools) // calendar services\n  - tools.calendar.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.calendar.tool_1(): Promise<unknown> // A short operation\n  - tools.calendar.tool_2(): Promise<unknown> // A short operation\n  - tools.calendar.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.calendar.tool_4(): Promise<unknown> // A short operation\n  - tools.calendar.tool_5(): Promise<unknown> // A short operation\n  - tools.calendar.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.calendar.tool_7(): Promise<unknown> // A short operation\n  - tools.calendar.tool_8(): Promise<unknown> // A short operation\n- drive (9 tools) // drive services\n  - tools.drive.tool_0(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.drive.tool_1(): Promise<unknown> // A short operation\n  - tools.drive.tool_2(): Promise<unknown> // A short operation\n  - tools.drive.tool_3(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.drive.tool_4(): Promise<unknown> // A short operation\n  - tools.drive.tool_5(): Promise<unknown> // A short operation\n  - tools.drive.tool_6(): Promise<unknown> // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\n  - tools.drive.tool_7(): Promise<unknown> // A short operation\n  - tools.drive.tool_8(): Promise<unknown> // A short operation"
+      }
+    },
+    {
+      "catalog": 23,
+      "budget": 2000,
+      "previous": 24,
+      "expected": {
+        "summary": {
+          "total": 45,
+          "shown": 45,
+          "namespaces": [
+            {
+              "name": "archive",
+              "count": 45,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_1",
+                  "line": "  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_10",
+                  "line": "  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_11",
+                  "line": "  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_12",
+                  "line": "  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_13",
+                  "line": "  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_14",
+                  "line": "  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_15",
+                  "line": "  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_16",
+                  "line": "  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_17",
+                  "line": "  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_18",
+                  "line": "  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_19",
+                  "line": "  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_2",
+                  "line": "  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_20",
+                  "line": "  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_21",
+                  "line": "  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_22",
+                  "line": "  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_23",
+                  "line": "  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_24",
+                  "line": "  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_25",
+                  "line": "  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_26",
+                  "line": "  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_27",
+                  "line": "  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_28",
+                  "line": "  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_29",
+                  "line": "  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_3",
+                  "line": "  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_30",
+                  "line": "  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_31",
+                  "line": "  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_32",
+                  "line": "  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_33",
+                  "line": "  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_34",
+                  "line": "  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_35",
+                  "line": "  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_36",
+                  "line": "  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_37",
+                  "line": "  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_38",
+                  "line": "  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_39",
+                  "line": "  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_4",
+                  "line": "  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_40",
+                  "line": "  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_41",
+                  "line": "  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_42",
+                  "line": "  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_43",
+                  "line": "  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_44",
+                  "line": "  - tools.archive.tool_44({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_5",
+                  "line": "  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_6",
+                  "line": "  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_7",
+                  "line": "  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_8",
+                  "line": "  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_9",
+                  "line": "  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (45 tools)\n  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_44({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation",
+        "update": "The Code Mode tool catalog has changed.\n\nNew tools are available in addition to those previously listed:\n  - tools.archive.tool_44({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+      }
+    },
+    {
+      "catalog": 24,
+      "budget": 2000,
+      "previous": 23,
+      "expected": {
+        "summary": {
+          "total": 44,
+          "shown": 44,
+          "namespaces": [
+            {
+              "name": "archive",
+              "count": 44,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_1",
+                  "line": "  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_10",
+                  "line": "  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_11",
+                  "line": "  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_12",
+                  "line": "  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_13",
+                  "line": "  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_14",
+                  "line": "  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_15",
+                  "line": "  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_16",
+                  "line": "  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_17",
+                  "line": "  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_18",
+                  "line": "  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_19",
+                  "line": "  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_2",
+                  "line": "  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_20",
+                  "line": "  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_21",
+                  "line": "  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_22",
+                  "line": "  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_23",
+                  "line": "  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_24",
+                  "line": "  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_25",
+                  "line": "  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_26",
+                  "line": "  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_27",
+                  "line": "  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_28",
+                  "line": "  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_29",
+                  "line": "  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_3",
+                  "line": "  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_30",
+                  "line": "  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_31",
+                  "line": "  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_32",
+                  "line": "  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_33",
+                  "line": "  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_34",
+                  "line": "  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_35",
+                  "line": "  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_36",
+                  "line": "  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_37",
+                  "line": "  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_38",
+                  "line": "  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_39",
+                  "line": "  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_4",
+                  "line": "  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_40",
+                  "line": "  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_41",
+                  "line": "  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_42",
+                  "line": "  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_43",
+                  "line": "  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_5",
+                  "line": "  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_6",
+                  "line": "  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_7",
+                  "line": "  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_8",
+                  "line": "  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_9",
+                  "line": "  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (44 tools)\n  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation",
+        "update": "The Code Mode tool catalog has changed.\n\nThe following tools are no longer available and must not be called: tools.archive.tool_44."
+      }
+    },
+    {
+      "catalog": 25,
+      "previous": 23,
+      "budget": 2000,
+      "expected": {
+        "summary": {
+          "total": 45,
+          "shown": 45,
+          "namespaces": [
+            {
+              "name": "archive",
+              "count": 45,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // New operation"
+                },
+                {
+                  "path": "archive.tool_1",
+                  "line": "  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_10",
+                  "line": "  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_11",
+                  "line": "  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_12",
+                  "line": "  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_13",
+                  "line": "  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_14",
+                  "line": "  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_15",
+                  "line": "  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_16",
+                  "line": "  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_17",
+                  "line": "  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_18",
+                  "line": "  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_19",
+                  "line": "  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_2",
+                  "line": "  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_20",
+                  "line": "  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_21",
+                  "line": "  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_22",
+                  "line": "  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_23",
+                  "line": "  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_24",
+                  "line": "  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_25",
+                  "line": "  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_26",
+                  "line": "  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_27",
+                  "line": "  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_28",
+                  "line": "  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_29",
+                  "line": "  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_3",
+                  "line": "  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_30",
+                  "line": "  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_31",
+                  "line": "  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_32",
+                  "line": "  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_33",
+                  "line": "  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_34",
+                  "line": "  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_35",
+                  "line": "  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_36",
+                  "line": "  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_37",
+                  "line": "  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_38",
+                  "line": "  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_39",
+                  "line": "  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_4",
+                  "line": "  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_40",
+                  "line": "  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_41",
+                  "line": "  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_42",
+                  "line": "  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_43",
+                  "line": "  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_44",
+                  "line": "  - tools.archive.tool_44({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_5",
+                  "line": "  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_6",
+                  "line": "  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_7",
+                  "line": "  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_8",
+                  "line": "  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                },
+                {
+                  "path": "archive.tool_9",
+                  "line": "  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (45 tools)\n  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // New operation\n  - tools.archive.tool_1({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_10({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_11({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_12({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_13({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_14({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_15({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_16({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_17({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_18({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_19({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_2({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_20({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_21({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_22({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_23({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_24({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_25({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_26({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_27({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_28({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_29({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_3({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_30({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_31({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_32({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_33({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_34({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_35({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_36({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_37({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_38({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_39({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_4({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_40({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_41({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_42({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_43({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_44({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_5({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_6({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_7({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_8({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation\n  - tools.archive.tool_9({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation",
+        "update": "The Code Mode tool catalog has changed.\n\nChanged tool listings supersede the previously listed ones:\n  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // New operation"
+      }
+    },
+    {
+      "catalog": 26,
+      "previous": 23,
+      "expected": {
+        "summary": {
+          "total": 0,
+          "shown": 0,
+          "namespaces": []
+        },
+        "render": "No Code Mode tools are currently available. Later Code Mode catalog updates may add or remove tools. Do not call `execute` unless there is at least one available Code Mode tool.",
+        "update": "The Code Mode tool catalog has changed. This catalog supersedes the previous Code Mode tool catalog.\n\nNo Code Mode tools are currently available. Later Code Mode catalog updates may add or remove tools. Do not call `execute` unless there is at least one available Code Mode tool."
+      }
+    },
+    {
+      "catalog": 23,
+      "previous": 24,
+      "budget": 40,
+      "expected": {
+        "summary": {
+          "total": 45,
+          "shown": 1,
+          "namespaces": [
+            {
+              "name": "archive",
+              "count": 45,
+              "entries": [
+                {
+                  "path": "archive.tool_0",
+                  "line": "  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation"
+                }
+              ]
+            }
+          ]
+        },
+        "render": "# Code Mode\n\nThe tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.\n\nThe catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names. Each result's `path` is the complete call expression: write it out as code, for example `await tools.ns.tool_name({ ... })`. Do not use it as a key such as `tools[path]`.\n\n- search({\n  query?: string,\n  namespace?: string,\n  /** @integer @exclusiveMinimum 0 */\n  limit?: number,\n  /** @integer @minimum 0 */\n  offset?: number,\n}): {\n  items: Array<{\n      path: string,\n      description: string,\n      signature: string,\n    }>,\n  /** @integer @minimum 0 */\n  remaining: number,\n  next: {\n      /** @integer @minimum 0 */\n      offset: number,\n    } | null,\n}\n\n## Code Mode tools (call only inside `execute`)\n\n- archive (45 tools, 1 shown)\n  - tools.archive.tool_0({\n  /** Key of record */\n  key?: string,\n}): Promise<unknown> // Operation",
+        "update": "The Code Mode tool catalog has changed.\n\nThe following namespace inventories changed; search them again before relying on previous results: `archive` now has 45 tools."
+      }
+    }
+  ]
+}

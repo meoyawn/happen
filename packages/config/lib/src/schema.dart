@@ -20,13 +20,22 @@ const globalConfigSchema = <String, Object?>{
   'additionalProperties': false,
   'properties': {
     'default_provider': {
-      'enum': ['gpt', 'deepseek', 'opencode'],
+      'enum': ['openai', 'gpt', 'deepseek', 'opencode'],
     },
     'public_url': {'type': 'string', 'format': 'uri', 'pattern': r'^https://'},
     'providers': {
       'type': 'object',
       'additionalProperties': false,
       'properties': {
+        'openai': {
+          'type': 'object',
+          'additionalProperties': false,
+          'properties': {
+            'model': _nonemptyString,
+            'endpoint': {'type': 'string', 'format': 'uri'},
+            'settings': {'type': 'object'},
+          },
+        },
         'gpt': {
           'type': 'object',
           'additionalProperties': false,

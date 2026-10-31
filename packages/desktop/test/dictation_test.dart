@@ -32,10 +32,10 @@ void main() {
     HttpOverrides.global = _TranscriptionHttp(client);
     session = DesktopSession(client, _Database());
     session.dictationMode = 'on_stop';
-    session.providers = [{'id': 'gpt', 'name': 'ChatGPT', 'status': 'signed_in', 'models': [
+    session.providers = [{'id': 'openai', 'name': 'ChatGPT', 'status': 'signed_in', 'models': [
       {'id': 'gpt-6.1-sol', 'reasoning_levels': ['low'], 'reasoning_updates': true},
     ]}];
-    final task = DesktopTask('task', 'Example')..loaded = true..provider = 'gpt'..model = 'gpt-6.1-sol'..reasoning = 'low';
+    final task = DesktopTask('task', 'Example')..loaded = true..provider = 'openai'..model = 'gpt-6.1-sol'..reasoning = 'low';
     session.project = Project('checkout', '/project', '/project', [task]);
     session.projects.add(session.project!);
     session.task = task;

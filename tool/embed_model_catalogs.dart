@@ -3,7 +3,7 @@ import 'dart:io';
 
 /// Rebuild checked-in constants. Runtime and AOT builds never read these files.
 Future<void> main() async {
-  for (final lab in ['gpt', 'deepseek']) {
+  for (final lab in ['openai', 'opencode']) {
     final input = File('packages/$lab/catalog/models.json');
     final source = await input.readAsString();
     final decoded = jsonDecode(source);

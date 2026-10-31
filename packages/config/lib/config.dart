@@ -24,7 +24,7 @@ String defaultConfigPath() {
   if (home == null || home.isEmpty) {
     throw StateError('Cannot locate the home directory; pass --config PATH');
   }
-  return p.join(home, '.happen', 'config.yaml');
+  return p.join(home, '.config', 'happen', 'config.yaml');
 }
 
 /// Parses one YAML document into immutable plain Dart data. Never includes

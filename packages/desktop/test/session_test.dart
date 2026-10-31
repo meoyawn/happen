@@ -57,13 +57,13 @@ void main() {
     await callIsolate(database.port, 'settings.set', {'key': 'provider', 'value': 'deepseek'});
     final session = desktop = DesktopSession(await AgentClient.connect(server.uri), database);
     await session.load();
-    expect(session.providers.map((p) => p['id']), ['gpt', 'opencode']);
+    expect(session.providers.map((p) => p['id']), ['openai', 'opencode']);
     expect(session.models.map((m) => m['id']), isNot(contains('deepseek-flash')));
-    expect(session.providerId, 'gpt', reason: 'Desktop selection no longer follows a saved default provider');
+    expect(session.providerId, 'openai', reason: 'Desktop selection no longer follows a saved default provider');
     await session.addProject(root.path);
     for (final (id, model, effort, path, reply) in [
       ('opencode', 'deepseek-v4.1-flash-free', 'max', '/v1/chat/completions', 'OpenCode reply'),
-      ('gpt', 'gpt-6-astra', 'low', '/responses', 'ChatGPT reply'),
+      ('openai', 'gpt-6-astra', 'low', '/responses', 'ChatGPT reply'),
     ]) {
       await session.select(session.project!);
       session.chooseModel(model);
@@ -77,8 +77,8 @@ void main() {
       await _until(session, () => !session.task!.running);
       expect(requests.last.path, path);
       expect(requests.last.body['model'], model);
-      expect(requests.last.body[id == 'gpt' ? 'reasoning' : 'reasoning_effort'],
-        id == 'gpt' ? {'effort': effort} : effort);
+      expect(requests.last.body[id == 'openai' ? 'reasoning' : 'reasoning_effort'],
+        id == 'openai' ? {'effort': effort} : effort);
       expect(session.task!.provider, id);
       expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
     }
@@ -416,7 +416,7 @@ void main() {
       expect(conversation(desktop.task!).last.text, 'Stopped');
       expect(desktop.task!.pending, isEmpty);
       desktop.chooseModel('deepseek-v4.1-flash-free');
-      expect(desktop.providerId, 'gpt');
+      expect(desktop.providerId, 'openai');
       expect(desktop.modelId, 'gpt-6-astra');
       final archivedTask = desktop.task!;
       await desktop.setArchived(archivedTask, true);
@@ -456,7 +456,7 @@ void main() {
       await server!.close();
       server = null;
       desktop = await open();
-      expect(desktop.providerId, 'gpt');
+      expect(desktop.providerId, 'openai');
       expect(desktop.deliveryMode, 'queue');
       expect(desktop.dictationMode, 'on_stop');
       expect(desktop.project!.id, 'https://github.com/acme/again');
@@ -494,7 +494,19 @@ void main() {
         2,
       );
       expect(restored.last.text, 'Stopped');
-      await desktop.signOut('gpt');
+      expect(await desktop.send('hold'), isTrue);
+      await _until(desktop, () => desktop.task!.streamingText == 'Waiting');
+      final historyBefore = await desktop.client.request('history.page', {'task_id': taskId, 'limit': 100}) as List;
+      final stopped = desktop.client.events.stream.firstWhere((event) => event['task_id'] == taskId && event['type'] == 'turn.cancelled');
+      await desktop.removeProject(desktop.project!);
+      await stopped.timeout(const Duration(seconds: 5));
+      expect(desktop.projects, isEmpty);
+      expect(desktop.project, isNull);
+      expect(desktop.task, isNull);
+      final historyAfter = await desktop.client.request('history.page', {'task_id': taskId, 'limit': 100}) as List;
+      expect(historyAfter, containsAll(historyBefore), reason: 'Removing a project keeps the server task history');
+      expect(await File('${work.path}/input.txt').readAsString(), 'from a real tool');
+      await desktop.signOut('openai');
       expect(desktop.authenticated, isFalse);
       expect(await File('${root.path}/auth.json').exists(), isFalse);
     } finally {
@@ -521,7 +533,7 @@ void main() {
       await session.load();
       var opened = Completer<Uri>();
       Future<void> open(String url) async { opened.complete(Uri.parse(url)); }
-      var signing = session.signIn('gpt', open);
+      var signing = session.signIn('openai', open);
       final url = await opened.future.timeout(const Duration(seconds: 5));
       expect(url.host, 'auth.openai.com');
       expect(url.path, '/oauth/authorize');
@@ -534,7 +546,7 @@ void main() {
 
       // Reusing the fixed callback port proves cancellation released the listener.
       opened = Completer<Uri>();
-      signing = session.signIn('gpt', open);
+      signing = session.signIn('openai', open);
       final retry = await opened.future.timeout(const Duration(seconds: 5));
       final response = await (await http.getUrl(Uri(
         scheme: 'http', host: '127.0.0.1', port: 1455, path: '/auth/callback',
