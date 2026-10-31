@@ -141,6 +141,10 @@ void main() {
       cancellation: CancellationToken(),
     );
     expect(reply.text, 'READY');
+    final sent = jsonObject(requests.last['body']);
+    expect(sent['reasoning_effort'], 'low');
+    expect(sent.containsKey('thinking'), false,
+      reason: 'The pinned OpenAI-compatible OpenCode variant sends effort without the native DeepSeek thinking override');
     expect(jsonEncode(reply.toJson()), isNot(contains('fixture-access')));
     var denied = 0;
     handler = (http, _) async {

@@ -51,6 +51,13 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
     await tester.pumpAndSettle();
+    // Settle the conversation's initial connection inventory before exercising
+    // a composer command. Auth rendering has its own browser/lifecycle tests.
+    for (final inventory in client.inventories) {
+      if (!inventory.reply.isCompleted) inventory.reply.complete({'servers': []});
+    }
+    client.inventories.clear();
+    await tester.pumpAndSettle();
   }
 
   testWidgets('missing projects are greyed out with readable history and an active removal menu', (tester) async {

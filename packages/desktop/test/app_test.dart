@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:desktop/app.dart';
@@ -11,26 +12,15 @@ import 'package:server/server.dart';
 void main() {
   testWidgets('tool details remain readable through updates and expansion', (tester) async {
     late Directory root;
-    late AgentServer server;
     late DesktopSession session;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('desktop-view-');
       addTearDown(() => root.delete(recursive: true));
-      final config = File('${root.path}/config.yaml');
-      await config.writeAsString('{}');
-      server = await AgentServer.startEmbedded(
-        directory: root.path,
-        configPath: config.path,
-      );
-      addTearDown(server.close);
       session = DesktopSession(
-        await HttpOverrides.runWithHttpOverrides(
-          () => AgentClient.connect(server.uri),
-          _LocalHttpOverrides(),
-        ),
+        _Client(),
         await openDesktopDatabase(root.path),
       );
-      addTearDown(session.close);
+      addTearDown(() => tester.runAsync(session.close));
     });
     tester.view.physicalSize = const Size(1440, 1000);
     tester.view.devicePixelRatio = 1;
@@ -178,4 +168,12 @@ void main() {
   });
 }
 
-class _LocalHttpOverrides extends HttpOverrides {}
+// This test owns rendering of incoming events. Real WebSocket ownership is
+// exercised by lifecycle_test; keeping I/O out of Flutter's fake clock also
+// lets conversation inventory and teardown complete independently.
+class _Client implements AgentClient {
+  @override final events = StreamController<Json>.broadcast();
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => {'servers': []};
+  @override Future<void> close() => events.close();
+  @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}

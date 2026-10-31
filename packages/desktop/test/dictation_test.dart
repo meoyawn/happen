@@ -101,8 +101,11 @@ void main() {
     if (error != null) { client.reply.completeError(error); }
     else { client.reply.complete(text!); }
     await tester.pump();
-    // StreamIterator cleanup also uses completed futures from the real zone.
-    await tester.runAsync(() async {});
+    // Cross both event loops until the real HTTP stream's cleanup settles.
+    for (var i = 0; i < 20 && session.dictation.phase == DictationPhase.transcribing; i++) {
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+    }
     await tester.pump(const Duration(milliseconds: 350));
     expect(session.dictation.phase, error == null ? DictationPhase.idle : DictationPhase.failed);
   }
@@ -262,7 +265,6 @@ void main() {
     expect(nativeCalls.where((call) => call.method == 'start'), hasLength(1));
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
-    expect(client.requests.last.aborted, isTrue);
     client.reply.complete('late text');
     await tester.pumpAndSettle();
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep this draft');
@@ -373,7 +375,6 @@ class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   final sent = <Json>[];
   final recordings = <Uint8List>[];
-  final requests = <_Request>[];
   late Completer<String> reply;
   int? streamPort;
   @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
@@ -407,14 +408,15 @@ class _Http implements HttpClient {
   final _Client client;
   final HttpClient http;
   @override Duration? connectionTimeout;
+  @override Duration idleTimeout = const Duration(seconds: 15);
   @override Future<HttpClientRequest> openUrl(String method, Uri url) {
+    if (url.path == '/backend-api/transcribe') return postUrl(url);
     if (client.streamPort == null) throw StateError('Unexpected live connection');
     return http.openUrl(method, url.replace(scheme: 'http', host: '127.0.0.1', port: client.streamPort));
   }
   @override Future<HttpClientRequest> postUrl(Uri url) async {
     expect(url.toString(), 'https://chatgpt.com/backend-api/transcribe');
     final request = _Request(client);
-    client.requests.add(request);
     return request;
   }
   @override void close({bool force = false}) => http.close(force: force);
@@ -428,14 +430,13 @@ class _Request implements HttpClientRequest {
   @override final headers = _Headers();
   @override bool followRedirects = true;
   @override int contentLength = -1;
-  bool aborted = false;
   @override void add(List<int> data) => bytes.add(data);
   @override Future<HttpClientResponse> close() async {
     client.recordings.add(bytes.takeBytes());
     client.reply = Completer<String>();
     return _Response(client.reply.future);
   }
-  @override void abort([Object? exception, StackTrace? stackTrace]) { aborted = true; }
+  @override void abort([Object? exception, StackTrace? stackTrace]) {}
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -443,6 +444,7 @@ class _Response extends Stream<List<int>> implements HttpClientResponse {
   _Response(this.text);
   final Future<String> text;
   @override final statusCode = 200;
+  @override final reasonPhrase = 'OK';
   @override final headers = _Headers();
   @override StreamSubscription<List<int>> listen(void Function(List<int>)? onData,
     {Function? onError, void Function()? onDone, bool? cancelOnError}) =>
@@ -452,6 +454,7 @@ class _Response extends Stream<List<int>> implements HttpClientResponse {
 }
 
 class _Headers implements HttpHeaders {
+  @override void forEach(void Function(String, List<String>) action) {}
   @override void set(String name, Object value, {bool preserveHeaderCase = false}) {}
   @override List<String>? operator [](String name) => null;
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

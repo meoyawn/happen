@@ -20,6 +20,12 @@ mcp_servers:
   remote:
     url: https://example.com/mcp
     header_env: {Authorization: MCP_AUTHORIZATION}
+    oauth:
+      client_id: fixture-client
+      client_secret_env: MCP_CLIENT_SECRET
+      token_endpoint_auth_method: client_secret_basic
+      scopes: [training]
+      callback_port: 8766
     enabled: false
 providers:
   deepseek:
@@ -32,6 +38,8 @@ providers:
     expect(local['cwd'], '/tmp/a directory');
     expect(local['env'], {'PORT': '3000', 'FLAG': 'false'});
     expect(config['mcp_servers']['remote']['enabled'], isFalse);
+    expect(config['mcp_servers']['remote']['oauth']['callback_port'], 8766);
+    expect(config['mcp_servers']['remote']['oauth']['scopes'], ['training']);
     expect(() => local['args'].add('unexpected'), throwsUnsupportedError);
     expect(() => local['command'] = 'changed', throwsUnsupportedError);
     expect(() => config.clear(), throwsUnsupportedError);
@@ -69,6 +77,12 @@ providers:
           'mcp_servers: {dart: {url: https://example.com, args: []}}',
       'header type':
           'mcp_servers: {remote: {url: https://example.com, headers: {Authorization: [$secret]}}}',
+      'local OAuth': 'mcp_servers: {local: {command: dart, oauth: {}}}',
+      'OAuth enabled scalar': 'mcp_servers: {remote: {url: https://example.com, oauth: true}}',
+      'OAuth unknown option': 'mcp_servers: {remote: {url: https://example.com, oauth: {token: $secret}}}',
+      'OAuth callback port': 'mcp_servers: {remote: {url: https://example.com, oauth: {callback_port: 65536}}}',
+      'OAuth scopes': 'mcp_servers: {remote: {url: https://example.com, oauth: {scopes: [$secret, 42]}}}',
+      'OAuth client dependency': 'mcp_servers: {remote: {url: https://example.com, oauth: {client_secret_env: $secret}}}',
       'URL credentials':
           'mcp_servers: {remote: {url: "https://user:$secret@example.com"}}',
       'URL scheme': 'mcp_servers: {remote: {url: "file:///$secret"}}',

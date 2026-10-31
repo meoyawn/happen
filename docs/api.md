@@ -5,8 +5,8 @@ Initialize the pinned QuickJS submodule, then resolve the Dart workspace:
 ```sh
 git submodule update --init --recursive
 dart pub get
-dart run bin/agent.dart login --from-codex
-dart run bin/agent.dart exec --cwd /path/to/repo "Complete this task"
+dart run bin/happen.dart login --from-codex
+dart run bin/happen.dart exec --cwd /path/to/repo "Complete this task"
 ```
 
 `exec` starts an embedded server and connects through a private temporary Unix
@@ -37,9 +37,9 @@ For a remote server, run the loopback listener on the remote machine and forward
 its port with SSH:
 
 ```sh
-dart run bin/agent.dart serve --host 127.0.0.1 --port 8765
+dart run bin/happen.dart serve --host 127.0.0.1 --port 8765
 ssh -N -L 8765:127.0.0.1:8765 user@remote
-dart run bin/agent.dart exec --url ws://127.0.0.1:8765/ws "Complete this task"
+dart run bin/happen.dart exec --url ws://127.0.0.1:8765/ws "Complete this task"
 ```
 
 The first command runs remotely; the remaining commands run locally. SSH process
@@ -54,10 +54,35 @@ connect to its `uri`. Call `close()` on the client and server when their owner
 exits. Build a distributable CLI with its native libraries using:
 
 ```sh
-dart build cli --target=bin/agent.dart --output=build/agent
+dart build cli --target=bin/happen.dart --output=build/happen
 ```
 
-Keep the resulting `bundle/bin` and `bundle/lib` directories together.
+Keep the resulting `bundle/bin` and `bundle/lib` directories together. For a
+single-file macOS arm64 release, use the Moon target instead:
+
+```sh
+moon run build-cli
+build/cli/happen --version
+python3 tool/verify_cli.py
+```
+
+`build/cli/happen` contains the stock Dart AOT runtime, program, and compressed
+QuickJS/SQLite dylibs. The first launch installs the dylibs in a private cache at
+`~/Library/Caches/dev.happen/cli/native/`; subsequent launches check a small marker
+and file metadata, then load the cached libraries. They do not decompress or hash
+the payload, acquire an installation lock, start a helper, or require a Dart SDK.
+The cache is addressed by native asset content, so Dart-only rebuilds can reuse
+it. Missing files trigger repair; concurrent cold launches share one installation.
+`HAPPEN_NATIVE_CACHE` overrides the cache directory. The build pins Dart 3.13.7
+and verifies the matching upstream Mach-O writer before using it. Its first build
+downloads those compiler source files into the build cache; later builds reuse
+them. Native assets still come from the existing package hooks.
+
+The verification command copies only the executable into a temporary directory,
+runs without a Dart SDK on `PATH`, measures cold/warm launches, checks concurrent
+extraction and repair, and executes a fixture-backed task through SQLite and
+Code Mode. Reports are written next to the executable. This release target
+currently supports macOS arm64 and uses ad-hoc code signing.
 
 ## Desktop development
 
@@ -147,7 +172,7 @@ providers:
 ```
 
 Use the global `--config PATH` option to select another YAML file, for example
-`dart run bin/agent.dart --config /path/config.yaml serve`. Embedded applications
+`dart run bin/happen.dart --config /path/config.yaml serve`. Embedded applications
 can pass `configPath` to `AgentServer.start` or `startEmbedded`; their default is
 also `~/.config/happen/config.yaml`. A missing file at startup means empty
 configuration.
@@ -202,11 +227,58 @@ expansion requires an explicit shell command, such as `command: sh` with
 `args: [-c, "exec my-server"]`. Both transports accept `enabled` and
 `legacy_fallback`. A server needs exactly one of `command` or `url`.
 
+HTTP servers can use browser OAuth without adding tokens to global config:
+
+```sh
+happen mcp list
+happen mcp login strength
+happen mcp logout strength
+```
+
+`login` resolves the named global server, discovers its authorization server,
+registers a public client when supported, and opens the default browser. It uses
+PKCE S256, a loopback callback, OAuth state and issuer validation, and resource-bound
+tokens. The network owner saves and refreshes credentials; existing tasks discover
+the connected tools on their next step. The desktop surfaces servers requiring
+sign-in inline in the conversation above the composer. **Sign in** opens the
+default browser, with waiting, retry and cancellation controls kept in the
+conversation. `/mcp` and `/mcp verbose` also offer sign-in and sign-out actions.
+Account sign-in (`happen login`) remains separate from MCP server sign-in.
+
+Local subprocess servers use `env` / `inherit_env`. Explicit HTTP `Authorization`
+headers take precedence over OAuth. `oauth: false` disables interactive auth for
+an HTTP server. Optional `oauth` settings include `client_id` for a pre-registered
+client, `client_secret_env`, `token_endpoint_auth_method` (`none`,
+`client_secret_basic`, or `client_secret_post`), `scopes`, and `callback_port`.
+Otherwise scopes come from the server's challenge/resource metadata, with
+`offline_access` added only when the authorization server advertises it.
+
+The CLI starts a temporary local server by default. `happen mcp --url URL`
+connects to an existing server, so its server-side credentials and connections
+are used. For a browser on another machine:
+
+```sh
+happen mcp --url ws://127.0.0.1:8765/ws login strength --no-browser
+```
+
+Open the printed authorization URL and paste the complete final callback URL
+when prompted; input is hidden and does not enter shell or task history. The
+callback is accepted only by the client that initiated that login, with the same
+state, redirect and issuer checks as the loopback listener. Alternatively, a fixed
+`oauth.callback_port` permits SSH forwarding of the loopback callback. Credentials
+remain on the Happen server and are not synchronized between machines.
+
+Credentials live under the data directory's `mcp-auth/`, separately from config
+and task history, keyed by server name and full URL. Files use private permissions
+and atomic replacement, with refresh coalescing and file locks for local processes
+sharing that directory. CLI login/logout is observed by an already running desktop
+at its next catalog/inventory read. Logout clears Happen's locally saved login.
+
 `packages/config` owns YAML parsing, the embedded JSON Schema, and file watching
 in Dart. Startup and reload validate types, supported fields, transport options,
 and server-name collisions before changing connections. Diagnostics omit config
 values. Export the schema for a YAML editor with
-`dart run bin/agent.dart config-schema > /path/happen.schema.json`.
+`dart run bin/happen.dart config-schema > /path/happen.schema.json`.
 Provider-specific settings and model limits remain validated by their providers.
 Provider configuration and `public_url` take effect at server startup; resolved
 provider settings remain saved with each task.
@@ -343,7 +415,7 @@ provider instructions, namespace summaries, and OpenAI's loaded subset once.
 Create Happen's own Console login:
 
 ```sh
-dart run bin/agent.dart login --provider opencode
+dart run bin/happen.dart login --provider opencode
 ```
 
 Open the displayed URL in your signed-in browser, confirm the device code, and
@@ -361,7 +433,7 @@ providers:
     settings: {reasoning: low}
 ```
 
-Then run `dart run bin/agent.dart exec --provider opencode "Complete this task"`.
+Then run `dart run bin/happen.dart exec --provider opencode "Complete this task"`.
 The route uses Chat Completions, with a 200,000-token context and a maximum output
 of 32,000 tokens from the pinned OpenCode catalog. The exact free model is required;
 there is no automatic paid fallback. Native DeepSeek remains available with
@@ -600,16 +672,22 @@ implemented. Discovery and event delivery are distinct from model execution.
 | `mcp.status` / `mcp.reload` | No parameters. |
 | `mcp.inventory` | Optional `verbose` boolean (default false) and `server` name. Read-only server inventory, including disabled entries. |
 | `mcp.inventory.cancel` | Notification with the inventory call's `request_id`; cancels only that request. |
+| `mcp.auth.login` | `server`, `login_id`. Emits a private `mcp.auth.login` event containing the browser `url`; returns the connected state/tool count. Five-minute deadline. |
+| `mcp.auth.login.cancel` | Notification with `request_id`; cancels this client's pending auth request and its callback listener. Disconnect also cancels it. |
+| `mcp.auth.callback` | `server`, `login_id`, `callback_url`. Completes this connection's own pending login without requiring the browser to reach the server's loopback listener. |
+| `mcp.auth.logout` | `server`. Deletes local OAuth credentials and reconciles the shared connection. |
 | `mcp.request` | `server`, `method`, optional `arguments`; supports event discovery/polling, resources, and prompts. |
 | `mcp.events.subscribe` | `server`, `name`, optional `arguments`, `mode` (`push`, `poll`, `webhook`), `cursor`, `max_age_ms`, `ttl_ms`, `task_id`. |
 | `mcp.events.subscriptions` | Lists this connection's subscriptions. |
 | `mcp.events.unsubscribe` | `subscription_id`. |
 
 `mcp.inventory` returns `{servers: [...]}` sorted by name. Each row contains
-`name`, `enabled`, `state`, `auth_status`, `tool_count`, and an optional sanitized
+`name`, `enabled`, `state`, `auth_status`, `oauth_supported`, `tool_count`, and an optional sanitized
 `error`. Configured HTTP headers are reported as `configured_headers`, without
-their values; this does not claim OAuth support or successful authentication.
-HTTP 401/403 is `not_authenticated`. Other connections report `unsupported`.
+their values; this does not claim successful authentication.
+HTTP 401/403 is `not_authenticated`; saved OAuth is `oauth`, and an active login
+is `signing_in`. Other connections report `unsupported`. Auth changes emit a
+credential-free `mcp.auth.changed` event containing only the server name.
 With `verbose: true`, rows also contain sorted `tools` names, `resources`
 (`name`, optional `title`, `uri`), and `resource_templates` (`name`, optional
 `title`, `uriTemplate`). Resource discovery follows cursors and reports catalog

@@ -8,26 +8,19 @@ import 'package:protocol/protocol.dart';
 
 import '../auth.dart';
 
-Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancellation) async {
+Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancellation, {HttpConnections? connections}) async {
   final url = Uri.parse(_pageUrl(requiredString(input, 'url')));
   final deadline = TimeoutCancellationToken(Duration(milliseconds: ((input['timeout'] as num? ?? 30) * 1000).round()));
   final token = cancellation.merge(deadline);
-  HttpClientRequest? outgoing;
   Future<void> Function()? closeBody;
-  final hook = CancellationHook(token, () => outgoing?.abort(token.exception));
   try {
-    outgoing = await http.openUrl(input['method'] as String? ?? 'GET', url).then((request) {
-      if (token.isCancelled) request.abort(token.exception);
-      return request;
-    }).asCancellable(token);
-    token.throwIfCancelled();
-    outgoing.headers.set(HttpHeaders.acceptHeader, input['format'] == 'html' ? 'text/html, */*;q=0.1'
-      : 'text/markdown, text/plain, text/html, */*;q=0.1');
-    for (final entry in jsonObject(input['headers'] ?? {}).entries) {
-      outgoing.headers.set(entry.key, entry.value as String);
-    }
-    if (input['body'] != null) outgoing.write(input['body'] as String);
-    final response = await outgoing.close().asCancellable(token);
+    final response = await httpRequest(http, input['method'] as String? ?? 'GET', url,
+      connections: connections, cancellation: token, followRedirects: true,
+      headers: {
+        HttpHeaders.acceptHeader: input['format'] == 'html' ? 'text/html, */*;q=0.1'
+          : 'text/markdown, text/plain, text/html, */*;q=0.1',
+        for (final entry in jsonObject(input['headers'] ?? {}).entries) entry.key: entry.value as String,
+      }, body: input['body'] == null ? const [] : utf8.encode(input['body'] as String));
     final incoming = ownStream(response, token);
     closeBody = incoming.close;
     final bytes = <int>[];
@@ -38,8 +31,7 @@ Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancel
       }
       bytes.addAll(chunk);
     }
-    final headers = <String, String>{};
-    response.headers.forEach((name, values) => headers[name.toLowerCase()] = values.join(', '));
+    final headers = response.headers;
     return {'url': url.toString(), 'status': response.statusCode, 'statusText': response.reasonPhrase,
       'headers': headers, 'body': utf8.decode(bytes, allowMalformed: true)};
   } catch (error) {
@@ -48,7 +40,7 @@ Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancel
     if (error is ModelFailure) rethrow;
     throw const ModelFailure('web_fetch_transport', 'Web request failed');
   } finally {
-    hook.dispose(); outgoing?.abort(); await closeBody?.call(); deadline.cancel();
+    await closeBody?.call(); deadline.cancel();
   }
 }
 
@@ -58,11 +50,12 @@ Future<String> openCodeWebSearch(
   Json commands, {
   required CancellationToken cancellation,
   Uri? endpoint,
+  HttpConnections? connections,
 }) async {
   cancellation.throwIfCancelled();
-  if (commands['fetch'] != null) return jsonEncode(await openCodeFetch(http, jsonObject(commands['fetch']), cancellation));
+  if (commands['fetch'] != null) return jsonEncode(await openCodeFetch(http, jsonObject(commands['fetch']), cancellation, connections: connections));
   if (commands['url'] != null) {
-    final response = await openCodeFetch(http, commands, cancellation);
+    final response = await openCodeFetch(http, commands, cancellation, connections: connections);
     if ((response['status'] as int) < 200 || (response['status'] as int) >= 300) {
       throw ModelFailure('web_fetch_http', 'Page retrieval failed (HTTP ${response['status']})');
     }
@@ -96,7 +89,7 @@ Future<String> openCodeWebSearch(
       final credentials = await auth.credentials(refresh: attempt != 0).asCancellable(cancellation);
       final response = await postWebSearch(http, endpoint ?? Uri.parse('${auth.endpoint}/api/websearch'), {
         'query': question, 'providerID': 'opencode',
-      }, cancellation: cancellation, headers: {
+      }, cancellation: cancellation, connections: connections, headers: {
         HttpHeaders.authorizationHeader: 'Bearer ${requiredString(credentials, 'access_token')}',
         'x-org-id': requiredString(credentials, 'org_id'),
       });
@@ -140,7 +133,7 @@ Future<String> openCodeWebSearch(
 
   Future<String> page(Json operation, bool find) async {
     final url = _pageUrl(requiredString(operation, 'ref_id'));
-    final response = await webSearchRequest(http, Uri.parse(url), cancellation: cancellation);
+    final response = await webSearchRequest(http, Uri.parse(url), cancellation: cancellation, connections: connections);
     if (response.status != 200) {
       throw ModelFailure('web_fetch_http', 'Page retrieval failed (HTTP ${response.status})');
     }

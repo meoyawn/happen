@@ -16,6 +16,7 @@ import 'dictation.dart';
 import 'dictation_controls.dart';
 import 'file_autocomplete.dart';
 import 'model_picker.dart';
+import 'mcp_conversation.dart';
 import 'session.dart';
 
 class DesktopView extends StatefulWidget {
@@ -404,6 +405,8 @@ class _DesktopViewState extends State<DesktopView> {
                       ),
                     ),
                   ),
+                if (session.project != null && session.project!.available && session.task?.archived != true)
+                  McpConversationAuth(key: ValueKey(session.client), client: session.client),
                 if (session.project?.removing == true)
                   const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
                 else if (session.project?.available == false)

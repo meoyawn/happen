@@ -94,7 +94,8 @@ Map<String, dynamic> parseConfig(String source) {
         ? 'unsupported option'
         : switch (error.schemaPath.split('/').last) {
             'additionalProperties' => 'unsupported field',
-            'oneOf' => 'specify exactly one command or URL',
+            'oneOf' => error.schemaPath.contains('/oauth/')
+                ? 'specify OAuth options or false' : 'specify exactly one command or URL',
             'dependencies' => 'field does not apply to this transport',
             'maxProperties' => 'at most 64 MCP servers are supported',
             'minLength' || 'pattern' => 'invalid or empty string',

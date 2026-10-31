@@ -46,11 +46,16 @@ bool FlutterWindow::OnCreate() {
     if (call.method_name() == "activate") {
       ShowMainWindow();
       result->Success();
-    } else if (call.method_name() == "openLoginUrl") {
+    } else if (call.method_name() == "openLoginUrl" || call.method_name() == "openMcpLoginUrl") {
       const auto* url = std::get_if<std::string>(call.arguments());
-      if (!url || !(url->rfind("https://auth.openai.com/", 0) == 0 ||
-                    url->rfind("https://opencode.ai/", 0) == 0 ||
-                    url->rfind("https://auth.opencode.ai/", 0) == 0)) {
+      const bool mcp = call.method_name() == "openMcpLoginUrl";
+      const bool allowed = url && (mcp
+          ? (url->rfind("https://", 0) == 0 && url->size() > 8) ||
+            url->rfind("http://127.0.0.1:", 0) == 0 || url->rfind("http://localhost:", 0) == 0 ||
+            url->rfind("http://[::1]:", 0) == 0
+          : url->rfind("https://auth.openai.com/", 0) == 0 ||
+            url->rfind("https://opencode.ai/", 0) == 0 || url->rfind("https://auth.opencode.ai/", 0) == 0);
+      if (!allowed || url->find_first_of("\r\n\\") != std::string::npos) {
         result->Error("invalid_url", "Invalid sign-in URL");
         return;
       }

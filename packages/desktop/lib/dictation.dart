@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:ai/ai.dart' show HttpConnections;
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -24,6 +25,7 @@ class DictationService extends ChangeNotifier {
   DictationService(this.client);
   final AgentClient client;
   HttpClient? _http;
+  HttpConnections? _connections;
   TranscriptionClient? _transcription;
   static const methods = MethodChannel('happen/dictation');
   static const _audioEvents = EventChannel('happen/dictation/audio');
@@ -177,8 +179,12 @@ class DictationService extends ChangeNotifier {
       if (text == null) {
         final pcm = BytesBuilder(copy: false);
         for (final bytes in _audio) { pcm.add(bytes); }
+        final http = _http ??= HttpClient()
+          ..connectionTimeout = const Duration(seconds: 30)
+          ..idleTimeout = const Duration(minutes: 5);
+        final connections = _connections ??= HttpConnections(http: http);
         final transcription = _transcription ??= TranscriptionClient(
-          http: _http ??= HttpClient()..connectionTimeout = const Duration(seconds: 30),
+          http: http, connections: connections,
           credentials: client.desktopAuthorization,
         );
         text = await transcription.transcribe(_wav(pcm.takeBytes()), accountId: _accountId!, cancellation: _operation!);
@@ -299,6 +305,7 @@ class DictationService extends ChangeNotifier {
     owner = null;
     unawaited(_subscription?.cancel());
     _clearAudio();
+    unawaited(_connections?.close());
     _http?.close(force: true);
     amplitude.dispose();
     super.dispose();

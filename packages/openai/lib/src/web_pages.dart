@@ -10,6 +10,7 @@ import 'package:protocol/protocol.dart';
 // only its explicit open/find failure blocks, leaving other results untouched.
 Future<String> recoverWebPages(HttpClient http, Json commands, String output, {
   required CancellationToken cancellation,
+  HttpConnections? connections,
 }) async {
   final failures = RegExp(r'Internal Error[^\n]*\n[^\n]*Source: (open|find)\((\{[^\n]*\})\);[ \t]*\nURL ([^\n]+) is not accessible via this tool\.');
   final pages = <Uri, Future<List<String>>>{};
@@ -29,7 +30,7 @@ Future<String> recoverWebPages(HttpClient http, Json commands, String output, {
             : (value['lineno'] ?? 0) == (arguments['lineno'] ?? 0)));
       if (requested && ref == match.group(3) && url != null &&
           {'http', 'https'}.contains(url.scheme) && url.host.isNotEmpty && url.userInfo.isEmpty) {
-        final lines = await pages.putIfAbsent(url, () => _pageLines(http, url, cancellation));
+        final lines = await pages.putIfAbsent(url, () => _pageLines(http, url, cancellation, connections));
         final limit = switch (commands['response_length']) {'short' => 40, 'long' => 160, _ => 80};
         final selected = <int>{};
         if (operation == 'find') {
@@ -61,8 +62,8 @@ Future<String> recoverWebPages(HttpClient http, Json commands, String output, {
   return recovered.toString();
 }
 
-Future<List<String>> _pageLines(HttpClient http, Uri url, CancellationToken cancellation) async {
-  final response = await webSearchRequest(http, url, cancellation: cancellation);
+Future<List<String>> _pageLines(HttpClient http, Uri url, CancellationToken cancellation, HttpConnections? connections) async {
+  final response = await webSearchRequest(http, url, cancellation: cancellation, connections: connections);
   if (response.status != 200) {
     throw ModelFailure('web_fetch_http', 'Page retrieval failed (HTTP ${response.status})');
   }

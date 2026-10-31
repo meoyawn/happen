@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:ai/ai.dart' show ModelFailure, decodeSse, postWebSearch;
+import 'package:ai/ai.dart' show ModelFailure, decodeSse, postWebSearch, HttpConnections, httpRequest;
 import 'package:protocol/protocol.dart';
 
 import 'web_pages.dart';
@@ -24,15 +24,17 @@ class ResponsesReply {
 
 /// Transport only. The network owner supplies a shared HTTP connection pool.
 class ResponsesClient {
-  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http})
+  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http, this.connections})
     : endpoint =
           endpoint ??
+          // Match Codex's endpoint for ChatGPT subscription OAuth.
           Uri.parse('https://chatgpt.com/backend-api/codex/responses'),
       _http = http ?? HttpClient(),
       _ownsHttp = http == null;
   final Credentials credentials;
   final Uri endpoint;
   final HttpClient _http;
+  final HttpConnections? connections;
   final bool _ownsHttp;
 
   Future<String> search({
@@ -53,7 +55,7 @@ class ResponsesClient {
         'commands': commands,
         'settings': {'external_web_access': true, 'allowed_callers': ['direct']},
         'max_output_tokens': 10000,
-      }, cancellation: cancellation, headers: {
+      }, cancellation: cancellation, connections: connections, headers: {
         HttpHeaders.authorizationHeader: 'Bearer ${requiredString(auth, 'access_token')}',
         'chatgpt-account-id': requiredString(auth, 'account_id'),
         'originator': 'agent',
@@ -68,7 +70,7 @@ class ResponsesClient {
       if (output is! String) {
         throw const ModelFailure('web_search_response', 'OpenAI search returned an invalid response');
       }
-      return clippedText(await recoverWebPages(_http, commands, output, cancellation: cancellation));
+      return clippedText(await recoverWebPages(_http, commands, output, cancellation: cancellation, connections: connections));
     }
     throw const ModelFailure('web_search_auth', 'OpenAI search authentication failed');
   }
@@ -159,27 +161,13 @@ class ResponsesClient {
       if (transport == 'websocket') {
         return _websocket(body, headers, cancellation, onEvent);
       }
-      HttpClientRequest? request;
       Future<void> Function()? closeBody;
-      final hook = CancellationHook(
-        cancellation,
-        () => request?.abort(cancellation.exception),
-      );
       try {
-        request = await _http
-            .postUrl(endpoint)
-            .then((value) {
-              if (cancellation.isCancelled) value.abort(cancellation.exception);
-              return value;
-            })
-            .asCancellable(cancellation);
-        cancellation.throwIfCancelled();
-        headers.forEach(request.headers.set);
-        request.headers
-          ..set(HttpHeaders.acceptHeader, 'text/event-stream')
-          ..contentType = ContentType.json;
-        request.write(jsonEncode(body));
-        final response = await request.close().asCancellable(cancellation);
+        final response = await httpRequest(_http, 'POST', endpoint,
+          connections: connections, cancellation: cancellation,
+          headers: {...headers, HttpHeaders.acceptHeader: 'text/event-stream',
+            HttpHeaders.contentTypeHeader: 'application/json'},
+          body: utf8.encode(jsonEncode(body)));
         if (response.statusCode != 200) {
           final detail = await _errorBody(response, cancellation);
           if (response.statusCode == 401 && attempt == 0) continue;
@@ -196,8 +184,6 @@ class ResponsesClient {
         cancellation.throwIfCancelled();
         rethrow;
       } finally {
-        hook.dispose();
-        request?.abort();
         await closeBody?.call();
       }
     }
@@ -347,7 +333,7 @@ class ResponsesClient {
   }
 
   static Future<Json> _errorBody(
-    HttpClientResponse response,
+    Stream<List<int>> response,
     CancellationToken cancellation,
   ) async {
     final iterator = StreamIterator(

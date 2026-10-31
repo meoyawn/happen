@@ -10,11 +10,12 @@ import 'transport.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
-  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory});
+  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged});
   final HttpClient http;
   final void Function(String owner, Json event) onEvent;
   final String? publicUrl;
   final String? directory;
+  final void Function(String server)? onAuthChanged;
   final lifetime = CancellationToken();
   final _servers = <String, _Server>{};
   Json _configured = {};
@@ -26,7 +27,7 @@ class McpManager {
 
   _Server _server(String name, Json config) => _Server(name, config, http,
     directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
-      ? McpOAuth(directory!, name, config, http) : null);
+      ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name));
 
   Future<void> configure(Json config, CancellationToken cancellation) {
     final next = _reload.then((_) => _configure(config, cancellation));
@@ -99,7 +100,9 @@ class McpManager {
     if (!_authenticating.add(name)) throw const McpFailure('An MCP sign-in is already in progress');
     try {
       await server!.oauth!.login(cancellation.merge(lifetime).merge(server.lifetime), notify);
-      await _restart(name, server, cancellation);
+      // Credential installation is the commit point. Reconcile the shared
+      // connection even if this client stops waiting immediately afterwards.
+      await _restart(name, server, lifetime);
       return {'server': name, 'state': _servers[name]!.state, 'tool_count': _servers[name]!.tools.length};
     } finally {
       _authenticating.remove(name);
@@ -110,8 +113,11 @@ class McpManager {
     cancellation.throwIfCancelled();
     final server = _servers[name];
     if (server?.oauth == null) throw const McpFailure('OAuth sign-out is unavailable for this MCP server');
-    await server!.oauth!.logout(cancellation.merge(lifetime));
-    await _restart(name, server, cancellation);
+    try {
+      await server!.oauth!.logout(cancellation.merge(lifetime));
+    } finally {
+      if (!lifetime.isCancelled) await _restart(name, server!, lifetime);
+    }
   }
 
   void completeLogin(String name, String callbackUrl) {
@@ -437,11 +443,12 @@ class McpManager {
 }
 
 class _Server {
-  _Server(this.name, this.config, this.http, this.oauth);
+  _Server(this.name, this.config, this.http, this.oauth, this.onAuthChanged);
   final String name;
   final Json config;
   final HttpClient http;
   final McpOAuth? oauth;
+  final void Function() onAuthChanged;
   final lifetime = CancellationToken();
   final initial = Completer<void>();
   Future<void>? _runner, _refreshing;
@@ -482,7 +489,9 @@ class _Server {
         await _refresh();
         state = 'ready';
         error = null;
+        final wasRequired = authenticationRequired;
         authenticationRequired = false;
+        if (wasRequired || oauth?.authenticated == true) onAuthChanged();
         if (!initial.isCompleted) initial.complete();
         unawaited(_listen(current));
         await current.closed.future.asCancellable(lifetime);
@@ -491,6 +500,7 @@ class _Server {
       } catch (failure) {
         authenticationRequired = failure is McpFailure && (failure.status == 401 || failure.status == 403);
         error = authenticationRequired ? 'MCP server requires authentication' : 'MCP connection unavailable';
+        if (authenticationRequired) onAuthChanged();
       } finally {
         await current.close();
         tools = {};
@@ -549,6 +559,7 @@ class _Server {
         authenticationRequired = true;
         error = 'MCP server requires authentication';
         tools = {};
+        onAuthChanged();
         unawaited(current.close());
       }
       rethrow;

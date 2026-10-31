@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
+import 'package:ai/ai.dart' show HttpConnections, httpRequest;
 
 const _clientId = 'opencode-cli';
 
 /// Owns one Console login and its coalesced refresh operation.
 /// Browser authorization is completed at the URL delivered to [login].
 class OpenCodeAuthManager {
-  OpenCodeAuthManager(this.directory, {HttpClient? http, Uri? endpoint})
+  OpenCodeAuthManager(this.directory, {HttpClient? http, Uri? endpoint, this.connections})
     : _http =
           http ??
           (HttpClient()..connectionTimeout = const Duration(seconds: 30)),
@@ -19,6 +20,7 @@ class OpenCodeAuthManager {
   final String directory;
   final Uri endpoint;
   final HttpClient _http;
+  final HttpConnections? connections;
   final bool _ownsHttp;
   final _lifetime = CancellationToken();
   Future<Json>? _refreshing;
@@ -276,39 +278,17 @@ class OpenCodeAuthManager {
     String? access,
   }) async {
     cancellation.throwIfCancelled();
-    HttpClientRequest? request;
     Future<void> Function()? closeBody;
-    final hook = CancellationHook(
-      cancellation,
-      () => request?.abort(cancellation.exception),
-    );
     try {
-      request = await _http
-          .openUrl(method, endpoint.replace(path: '${endpoint.path}$path'))
-          .then((request) {
-            if (cancellation.isCancelled) request.abort(cancellation.exception);
-            return request;
-          })
-          .asCancellable(cancellation);
-      cancellation.throwIfCancelled();
-      request.followRedirects = false;
-      request.headers
-        ..set(HttpHeaders.acceptHeader, 'application/json')
-        ..set(
-          HttpHeaders.userAgentHeader,
-          'happen/0.1.0 (Dart; OpenCode Console device login)',
-        );
-      if (access != null) {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $access');
-      }
-      if (body != null) {
-        request.headers.contentType = ContentType.json;
-        request.write(jsonEncode(body));
-      }
-      final response = await request
-          .close()
-          .timeout(const Duration(seconds: 30))
-          .asCancellable(cancellation);
+      final response = await httpRequest(_http, method,
+        endpoint.replace(path: '${endpoint.path}$path'),
+        connections: connections, cancellation: cancellation,
+        headersTimeout: const Duration(seconds: 30), headers: {
+          HttpHeaders.acceptHeader: 'application/json',
+          HttpHeaders.userAgentHeader: 'happen/0.1.0 (Dart; OpenCode Console device login)',
+          if (access != null) HttpHeaders.authorizationHeader: 'Bearer $access',
+          if (body != null) HttpHeaders.contentTypeHeader: 'application/json',
+        }, body: body == null ? const [] : utf8.encode(jsonEncode(body)));
       final incoming = ownStream(response, cancellation);
       closeBody = incoming.close;
       final iterator = StreamIterator(
@@ -343,9 +323,7 @@ class OpenCodeAuthManager {
       if (error is StateError) rethrow;
       throw StateError('OpenCode authentication transport failed');
     } finally {
-      hook.dispose();
       await closeBody?.call();
-      request?.abort();
     }
   }
 

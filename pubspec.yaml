@@ -31,6 +31,7 @@ dependencies:
   code_mode: any
   telemetry: any
 dev_dependencies:
+  http2: ^3.1.0
   crypto: ^3.0.6
   fake_async: ^1.3.3
   lints: ^6.0.0

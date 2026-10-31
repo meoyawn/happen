@@ -5,16 +5,18 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:protocol/protocol.dart';
+import 'package:ai/ai.dart' show HttpConnections, HttpReply, httpRequest;
 
 typedef TranscriptionCredentials = Future<Json> Function({bool refresh, required CancellationToken cancellation});
 
 /// Harness's non-streaming composer protocol, sent directly by the desktop.
 /// Audio and response bodies never enter task history or diagnostics.
 class TranscriptionClient {
-  TranscriptionClient({required this.http, required this.credentials, Uri? endpoint})
+  TranscriptionClient({required this.http, required this.credentials, Uri? endpoint, this.connections})
     : endpoint = endpoint ?? Uri.parse('https://chatgpt.com/backend-api/transcribe');
 
   final HttpClient http;
+  final HttpConnections? connections;
   final TranscriptionCredentials credentials;
   final Uri endpoint;
 
@@ -65,27 +67,17 @@ class TranscriptionClient {
 
   Future<_TranscriptionFailure> _post(Uint8List body, String boundary, Json auth,
     CancellationToken cancellation) async {
-    HttpClientRequest? request;
     StreamIterator<List<int>>? input;
-    final hook = CancellationHook(cancellation, () {
-      request?.abort(cancellation.exception);
-      unawaited(input?.cancel());
-    });
+    final hook = CancellationHook(cancellation, () { unawaited(input?.cancel()); });
     try {
-      request = await http.postUrl(endpoint).then((value) {
-        if (cancellation.isCancelled) value.abort(cancellation.exception);
-        return value;
-      }).asCancellable(cancellation);
-      cancellation.throwIfCancelled();
-      request.followRedirects = false;
-      request.headers.set('Content-Type', 'multipart/form-data; boundary=$boundary');
-      request.headers.set('Authorization', 'Bearer ${requiredString(auth, 'access_token')}');
-      request.headers.set('ChatGPT-Account-Id', requiredString(auth, 'account_id'));
-      request.headers.set('originator', 'agent');
-      request.headers.set('User-Agent', 'agent/0.1.0 (Dart)');
-      request.contentLength = body.length;
-      request.add(body);
-      final response = await request.close().asCancellable(cancellation);
+      final response = await httpRequest(http, 'POST', endpoint,
+        connections: connections, cancellation: cancellation,
+        headers: {
+          'Content-Type': 'multipart/form-data; boundary=$boundary',
+          'Authorization': 'Bearer ${requiredString(auth, 'access_token')}',
+          'ChatGPT-Account-Id': requiredString(auth, 'account_id'),
+          'originator': 'agent', 'User-Agent': 'agent/0.1.0 (Dart)',
+        }, body: body);
       input = StreamIterator(response);
       final bytes = BytesBuilder(copy: false);
       while (await input.moveNext().asCancellable(cancellation)) {
@@ -111,7 +103,6 @@ class TranscriptionClient {
     } finally {
       hook.dispose();
       await input?.cancel();
-      request?.abort();
     }
   }
 }
@@ -126,12 +117,12 @@ class _TranscriptionFailure implements Exception {
   final bool workspaceRefusal;
   final String message;
 
-  factory _TranscriptionFailure.response(HttpClientResponse response, Json body) {
+  factory _TranscriptionFailure.response(HttpReply response, Json body) {
     final detail = body['detail'] is Map ? jsonObject(body['detail']) : <String, dynamic>{};
     final error = body['error'] is Map ? jsonObject(body['error']) : <String, dynamic>{};
     final refusal = response.statusCode == 401 && (error['type'] == 'ip_not_authorized' ||
       const ['ip_not_authorized', 'validate_whitelist_failed', 'workspace_ip_not_authorized'].contains(error['code']));
-    String? header(String name) => response.headers[name]?.join(', ');
+    String? header(String name) => response.headers[name];
     final retry = header('cf-mitigated') == 'challenge' ? null : detail['can_retry'] ?? body['can_retry'];
     final dates = <double>[];
     final retryAfter = header('retry-after');

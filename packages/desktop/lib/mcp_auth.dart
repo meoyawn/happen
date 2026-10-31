@@ -11,10 +11,11 @@ Future<void> showMcpAuthentication(BuildContext context, AgentClient client, Str
 }
 
 class _McpAuthentication extends StatefulWidget {
-  const _McpAuthentication({required this.client, required this.server, required this.signOut});
+  const _McpAuthentication({required this.client, required this.server, required this.signOut, this.onDone});
   final AgentClient client;
   final String server;
   final bool signOut;
+  final VoidCallback? onDone;
   @override
   State<_McpAuthentication> createState() => _McpAuthenticationState();
 }
@@ -57,7 +58,7 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
       }
       if (mounted && !cancellation.isCancelled) {
         await _desktop.invokeMethod<void>('activate');
-        if (mounted) Navigator.of(context).pop();
+        if (mounted) _close();
       }
     } on CancelledException {
       // Closing the dialog or its client cancels discovery and the callback.
@@ -69,6 +70,10 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
         });
       }
     }
+  }
+
+  void _close() {
+    if (widget.onDone case final callback?) { callback(); } else { Navigator.of(context).pop(); }
   }
 
   Future<void> _openBrowser() async {
@@ -91,17 +96,33 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text('${widget.signOut ? 'Sign out of' : 'Connect to'} ${widget.server}'),
-    content: SizedBox(width: 360, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget build(BuildContext context) {
+    final title = Text('${widget.signOut ? 'Sign out of' : 'Connect to'} ${widget.server}', style: const TextStyle(fontWeight: FontWeight.w600));
+    final body = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
       if (_working) Text(widget.signOut ? 'Signing out…' : _url == null ? 'Preparing sign-in…' : 'Complete sign-in in your default browser.'),
       if (_error != null) Padding(padding: const EdgeInsets.only(top: 8),
         child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
-    ])),
-    actions: [
+    ]);
+    final actions = <Widget>[
       if (_working && _url != null) TextButton(onPressed: () => unawaited(_openBrowser()), child: const Text('Open browser')),
       if (!_working) TextButton(onPressed: () => unawaited(_run()), child: const Text('Try again')),
-      TextButton(onPressed: () => Navigator.of(context).pop(), child: Text(_working ? 'Cancel' : 'Close')),
-    ],
-  );
+      TextButton(onPressed: _close, child: Text(_working ? 'Cancel' : 'Close')),
+    ];
+    if (widget.onDone != null) {
+      return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        title, const SizedBox(height: 6), body,
+        Align(alignment: Alignment.centerRight, child: Wrap(children: actions)),
+      ]);
+    }
+    return AlertDialog(title: title, content: SizedBox(width: 360, child: body), actions: actions);
+  }
+}
+
+class McpAuthenticationCard extends StatelessWidget {
+  const McpAuthenticationCard({super.key, required this.client, required this.server, required this.onDone});
+  final AgentClient client;
+  final String server;
+  final VoidCallback onDone;
+  @override
+  Widget build(BuildContext context) => _McpAuthentication(client: client, server: server, signOut: false, onDone: onDone);
 }

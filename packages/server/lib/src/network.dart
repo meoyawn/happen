@@ -47,13 +47,17 @@ void _networkMain(List<Object?> args) async {
   final gptOptions = jsonObject(providerOptions['openai'] ?? providerOptions['gpt'] ?? {});
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
   final deepseekSearch = jsonObject(deepseekOptions['web_search'] ?? {});
-  final http = HttpClient()..connectionTimeout = const Duration(seconds: 30);
-  final auth = AuthManager(directory, http: http);
-  final consoleAuth = OpenCodeAuthManager(directory, http: http);
+  final http = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 30)
+    ..idleTimeout = const Duration(minutes: 5);
+  final connections = HttpConnections(http: http);
+  final auth = AuthManager(directory, http: http, connections: connections);
+  final consoleAuth = OpenCodeAuthManager(directory, http: http, connections: connections);
   final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
   final gpt = OpenAIProvider(
     ResponsesClient(
       http: http,
+      connections: connections,
       credentials: auth.credentials,
       endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
     ),
@@ -68,6 +72,7 @@ void _networkMain(List<Object?> args) async {
   final deepseek = backend == 'opencode'
       ? OpenCodeProvider(
           http: http,
+          connections: connections,
           auth: consoleAuth,
           endpoint: deepseekEndpoint,
           searchAuth: consoleAuth,
@@ -75,6 +80,7 @@ void _networkMain(List<Object?> args) async {
         )
       : OpenCodeProvider.native(
           http: http,
+          connections: connections,
           searchAuth: consoleAuth,
           openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
           credentials: () async {
@@ -96,6 +102,7 @@ void _networkMain(List<Object?> args) async {
   final openCodeSearch = jsonObject(openCodeOptions['web_search'] ?? {});
   final opencode = OpenCodeProvider(
     http: http,
+    connections: connections,
     auth: consoleAuth,
     searchAuth: consoleAuth,
     openCodeSearchEndpoint: openCodeSearch['endpoint'] == null ? null : Uri.parse(openCodeSearch['endpoint'] as String),
@@ -115,6 +122,9 @@ void _networkMain(List<Object?> args) async {
   final mcp = McpManager(
     http: http,
     directory: directory,
+    onAuthChanged: (server) => (startup['events'] as SendPort?)?.send({
+      'event': {'type': 'mcp.auth.changed', 'server': server},
+    }),
     publicUrl: global['public_url'] as String?,
     onEvent: (owner, event) => (startup['events'] as SendPort?)?.send({
       'owner': owner,
@@ -649,6 +659,7 @@ void _networkMain(List<Object?> args) async {
         await mcp.close();
         auth.close();
         consoleAuth.close();
+        await connections.close();
         http.close(force: true);
         await Future.wait(pending.toList());
         (request['reply'] as SendPort).send({'result': null});

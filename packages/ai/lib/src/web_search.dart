@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 
 import 'model.dart';
+import 'http.dart';
 
 /// Both backends share the network owner's pool and release only their request.
 Future<({int status, String text, String? contentType})> webSearchRequest(
@@ -13,6 +14,7 @@ Future<({int status, String text, String? contentType})> webSearchRequest(
   required CancellationToken cancellation,
   Json? body,
   Map<String, String> headers = const {},
+  HttpConnections? connections,
 }) async {
   cancellation.throwIfCancelled();
   if (!{'http', 'https'}.contains(endpoint.scheme) || endpoint.host.isEmpty || endpoint.userInfo.isNotEmpty) {
@@ -20,26 +22,20 @@ Future<({int status, String text, String? contentType})> webSearchRequest(
   }
   final deadline = TimeoutCancellationToken(const Duration(seconds: 60));
   final token = cancellation.merge(deadline);
-  HttpClientRequest? outgoing;
   Future<void> Function()? closeBody;
-  final hook = CancellationHook(token, () => outgoing?.abort(token.exception));
   try {
-    outgoing = await http.openUrl(body == null ? 'GET' : 'POST', endpoint).then((request) {
-      if (token.isCancelled) request.abort(token.exception);
-      return request;
-    }).asCancellable(token);
-    token.throwIfCancelled();
-    outgoing.followRedirects = body == null;
-    outgoing.headers
-      ..set(HttpHeaders.acceptHeader, body == null ? 'text/html, text/plain, text/markdown' : 'application/json')
-      ..set(HttpHeaders.userAgentHeader, 'happen/0.1.0 (Dart)');
-    headers.forEach(outgoing.headers.set);
-    if (body != null) {
-      outgoing.headers.contentType = ContentType.json;
-      outgoing.write(jsonEncode(body));
+    final response = await httpRequest(http, body == null ? 'GET' : 'POST', endpoint,
+      connections: connections, cancellation: token, followRedirects: body == null,
+      headers: {
+        HttpHeaders.acceptHeader: body == null ? 'text/html, text/plain, text/markdown' : 'application/json',
+        HttpHeaders.userAgentHeader: 'happen/0.1.0 (Dart)',
+        if (body != null) HttpHeaders.contentTypeHeader: 'application/json',
+        ...headers,
+      }, body: body == null ? const [] : utf8.encode(jsonEncode(body)));
+    if (response.statusCode != 200) {
+      await response.listen((_) {}).cancel();
+      return (status: response.statusCode, text: '', contentType: null);
     }
-    final response = await outgoing.close().asCancellable(token);
-    if (response.statusCode != 200) return (status: response.statusCode, text: '', contentType: null);
     final incoming = ownStream(response, token);
     closeBody = incoming.close;
     const maxBytes = 2 * 1024 * 1024;
@@ -56,7 +52,7 @@ Future<({int status, String text, String? contentType})> webSearchRequest(
       unawaited(chunks.cancel().catchError((Object _) {}));
     }
     return (status: 200, text: utf8.decode(bytes, allowMalformed: true),
-        contentType: response.headers.contentType?.mimeType);
+        contentType: response.headers[HttpHeaders.contentTypeHeader]?.split(';').first.trim());
   } catch (error) {
     cancellation.throwIfCancelled();
     if (deadline.isCancelled) {
@@ -65,8 +61,6 @@ Future<({int status, String text, String? contentType})> webSearchRequest(
     if (error is ModelFailure) rethrow;
     throw const ModelFailure('web_search_transport', 'Web request failed');
   } finally {
-    hook.dispose();
-    outgoing?.abort();
     await closeBody?.call();
     deadline.cancel();
   }
@@ -78,9 +72,10 @@ Future<({int status, Json body})> postWebSearch(
   Json body, {
   required CancellationToken cancellation,
   Map<String, String> headers = const {},
+  HttpConnections? connections,
 }) async {
   final response = await webSearchRequest(http, endpoint, body: body,
-      cancellation: cancellation, headers: headers);
+      cancellation: cancellation, headers: headers, connections: connections);
   if (response.status != 200) return (status: response.status, body: <String, dynamic>{});
   try {
     return (status: 200, body: jsonObject(jsonDecode(response.text)));

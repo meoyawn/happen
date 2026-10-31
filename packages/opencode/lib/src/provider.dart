@@ -17,6 +17,7 @@ typedef DeepSeekCredentials = Future<String> Function();
 class OpenCodeProvider implements ModelProvider {
   OpenCodeProvider.native({
     required this.http,
+    this.connections,
     required DeepSeekCredentials this.credentials,
     Uri? endpoint,
     this.searchAuth,
@@ -35,6 +36,7 @@ class OpenCodeProvider implements ModelProvider {
 
   OpenCodeProvider({
     required this.http,
+    this.connections,
     required OpenCodeAuthManager auth,
     Uri? endpoint,
     this.searchAuth,
@@ -48,6 +50,7 @@ class OpenCodeProvider implements ModelProvider {
        );
 
   final HttpClient http;
+  final HttpConnections? connections;
   final DeepSeekCredentials? credentials;
   final OpenCodeAuthManager? _console;
   final Uri endpoint;
@@ -68,6 +71,7 @@ class OpenCodeProvider implements ModelProvider {
   }) => openCodeWebSearch(http, searchAuth ?? _console, commands,
     cancellation: cancellation,
     endpoint: openCodeSearchEndpoint,
+    connections: connections,
   );
 
   String get defaultModel =>
@@ -480,9 +484,10 @@ class OpenCodeProvider implements ModelProvider {
       'stream': true,
       'stream_options': {'include_usage': true},
       'max_tokens': settings['max_output_tokens'],
-      'thinking': {
-        'type': settings['reasoning'] == 'off' ? 'disabled' : 'enabled',
-      },
+      if (_console == null || settings['reasoning'] == 'off')
+        'thinking': {
+          'type': settings['reasoning'] == 'off' ? 'disabled' : 'enabled',
+        },
       if (settings['reasoning'] != 'off')
         'reasoning_effort': settings['reasoning'],
       if (settings['temperature'] != null)
@@ -519,48 +524,32 @@ class OpenCodeProvider implements ModelProvider {
     if (key.isEmpty) {
       throw const ModelFailure('auth', 'DeepSeek credentials are missing');
     }
-    // A connection may finish opening after cancellation; abort that late handle.
-    final opening = http.postUrl(endpoint).then((request) {
-      if (cancellation.isCancelled) request.abort(cancellation.exception);
-      return request;
-    });
-    final request = await opening.asCancellable(cancellation);
     StreamIterator<Json>? events;
     Future<void> Function()? closeBody;
     try {
-      request.followRedirects = false;
-      request.headers
-        ..contentType = ContentType.json
-        ..set(HttpHeaders.acceptHeader, 'text/event-stream')
-        ..set(HttpHeaders.userAgentHeader, 'happen/0.1.0 (Dart)');
-      if (console != null) {
-        // Match OpenCode 2.2.5's Console inference contract (see decisions.md).
-        request.headers
-          ..set(HttpHeaders.userAgentHeader, 'opencode/latest/2.2.5/cli')
-          ..set('x-opencode-org-id', console['org_id'] as String)
-          ..set('x-opencode-session', modelRequest.taskId)
-          ..set('x-opencode-client', 'cli');
-      }
-      if (transport == 'messages') {
-        request.headers.set('x-api-key', key);
-        request.headers.set('anthropic-version', '2023-06-01');
-        if (modelRequest.input.any((item) => item.tools.isNotEmpty)) {
-          request.headers.set(
-            'anthropic-beta',
-            'mid-conversation-tool-changes-2026-07-01',
-          );
-        }
-      } else {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $key');
-      }
-      request.write(jsonEncode(body));
-      final response = await request
-          .close()
-          .timeout(const Duration(seconds: 60))
-          .asCancellable(
-            cancellation,
-            onCancel: () => request.abort(cancellation.exception),
-          );
+      final headers = <String, String>{
+        HttpHeaders.contentTypeHeader: 'application/json',
+        HttpHeaders.acceptHeader: 'text/event-stream',
+        HttpHeaders.userAgentHeader: console == null ? 'happen/0.1.0 (Dart)' : 'opencode/latest/2.2.5/cli',
+        if (console != null) ...{
+          'x-opencode-org-id': console['org_id'] as String,
+          'x-opencode-session': modelRequest.taskId,
+          'x-opencode-session-id': modelRequest.taskId,
+          'x-session-affinity': modelRequest.taskId,
+          'X-Session-Id': modelRequest.taskId,
+          'x-opencode-client': 'cli',
+        },
+        if (transport == 'messages') ...{
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          if (modelRequest.input.any((item) => item.tools.isNotEmpty))
+            'anthropic-beta': 'mid-conversation-tool-changes-2026-07-01',
+        } else HttpHeaders.authorizationHeader: 'Bearer $key',
+      };
+      final response = await httpRequest(http, 'POST', endpoint,
+        connections: connections, cancellation: cancellation,
+        headers: headers, body: utf8.encode(jsonEncode(body)),
+        headersTimeout: const Duration(seconds: 60));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final bytes = <int>[];
         final chunks = StreamIterator(response);
@@ -570,7 +559,7 @@ class OpenCodeProvider implements ModelProvider {
               .timeout(const Duration(seconds: 30))
               .asCancellable(
                 cancellation,
-                onCancel: () => request.abort(cancellation.exception),
+                onCancel: () => unawaited(chunks.cancel()),
               )) {
             bytes.addAll(chunks.current);
             if (bytes.length > 64 * 1024) break;
@@ -603,7 +592,7 @@ class OpenCodeProvider implements ModelProvider {
       events = StreamIterator(decodeSse(bytes));
       Future<bool> next() => events!.moveNext().asCancellable(
         cancellation,
-        onCancel: () => request.abort(cancellation.exception),
+        onCancel: () => unawaited(closeBody!()),
       );
       return transport == 'messages'
           ? await _readMessages(modelRequest, catalog, events, next, onEvent)
@@ -618,10 +607,17 @@ class OpenCodeProvider implements ModelProvider {
     } catch (error) {
       cancellation.throwIfCancelled();
       if (error is ModelFailure || error is ArgumentError) rethrow;
-      throw const ModelFailure('transport', 'DeepSeek transport failed');
+      final detail = switch (error) {
+        HandshakeException() => 'TLS handshake',
+        SocketException() => 'connection',
+        TimeoutException() => 'timeout',
+        HttpException() => 'HTTP connection',
+        FormatException() => 'response encoding',
+        _ => 'stream',
+      };
+      throw ModelFailure('transport', '${_console == null ? 'DeepSeek' : 'OpenCode'} transport failed ($detail)');
     } finally {
       await closeBody?.call();
-      request.abort();
       if (events != null) unawaited(events.cancel().catchError((Object _) {}));
     }
   }

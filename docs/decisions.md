@@ -4312,3 +4312,255 @@ process-owned; the regression injects the native state left after VM restart,
 while actual Flutter hot restart was not performed on the user's process. The
 recovery ID property uses a key from Apple's private header, so future OS changes
 remain a compatibility risk covered by the native regression.
+
+## 2026-10-31 — MCP OAuth, conversation sign-in, and the happen release CLI
+
+User requirements: implement MCP auth using the local Codex checkout, open the
+default browser from the desktop, support CLI auth, surface sign-in in the
+conversation in the OpenCode style, name the CLI happen, and add a Moon AOT build
+that embeds dylibs and extracts them once for fast subsequent launches.
+
+The shared MCP/network owner implements OAuth independently of model providers.
+Discover protected-resource metadata from Bearer challenges/well-known paths,
+then OAuth/OIDC authorization metadata. Use PKCE S256, resource-bound grants,
+challenge/resource scopes and advertised offline access. Support dynamic public
+registration and configured client IDs with none/basic/post token authentication.
+Configured Authorization headers retain precedence; stdio servers use their
+environment. Optional OAuth configuration is validated by packages/config.
+
+The server owns the ephemeral loopback callback, state/verifier, five-minute
+deadline and token exchange. Validate the exact recorded issuer when returned,
+require it when advertised, and otherwise use a server-specific callback path.
+Invalid state does not consume a login. Only its initiating client receives the
+browser URL or can submit a pasted callback. Codes/tokens never become model
+input, task history or telemetry. Native browser handlers use the default browser
+and restrict MCP URLs to HTTPS or HTTP loopback.
+
+Keep credentials under the existing data directory's mcp-auth directory, keyed
+by server name/full URL. Private files are atomically replaced. Refreshes share
+one operation per owner; a file lock and fresh read avoid using credentials
+another local process rotated. Refresh validates the original issuer/resource.
+Login/logout reconciles shared connections after the credential commit, even if
+the requester stops waiting then. Never replay a rejected tool call. Catalog and
+inventory reads notice external credential writes, so CLI login/logout updates an
+existing desktop without editing config or tasks.
+
+Auth-gated servers appear inline above the composer. Sign in opens the default
+browser; waiting, retry, errors and Cancel stay in the conversation. Runtime auth
+changes emit only the server name. Retain an active card through its own login
+completion/window activation; a readiness event must not dispose it prematurely.
+These requests are transient UI state and leave the draft/transcript intact.
+/mcp retains explicit sign-in/sign-out actions using the same flow.
+
+Use `happen mcp list`, `happen mcp login SERVER`, and `happen mcp logout SERVER`.
+Each named entry determines its transport/auth. The default temporary local owner
+shares credentials with the desktop; `mcp --url URL` uses a running server.
+`--no-browser` reads the complete callback URL with terminal echo disabled and
+applies the same state/issuer/redirect checks. This works when the browser is on
+another machine; callback_port also permits SSH forwarding. Tokens remain on
+the MCP host and are not automatically synchronized between machines.
+
+Pinned source evidence, inspected with git show/direct reads:
+
+- Codex 67f0994b532b8740f14b5b738af7b7b2a915b1d6, under codex-rs/:
+  rmcp-client/src/perform_oauth_login.rs, oauth_callback.rs,
+  oauth_client_registration.rs, oauth/issuer_binding.rs and oauth.rs;
+  cli/src/mcp_login.rs and mcp_cmd.rs; and
+  app-server/src/request_processors/mcp_processor.rs. The CLI's --no-browser
+  accepts callback input; the app server returns the authorization URL.
+- OpenCode e8238bae9b807b72ecfc75afd3a9fe2e6b07b944:
+  packages/core/src/mcp/oauth.ts, credential.ts and integration.ts;
+  packages/app/src/providers/connect/mcp.ts and mcp-dialog.tsx; and
+  packages/tui/src/app.tsx and component/dialog-mcp.tsx. Its needs_auth state,
+  explicit Sign in and platform.openExternal inform this interaction. Inline
+  placement is the user's Happen requirement, not an assertion that OpenCode's
+  MCP selector itself is an inline chat card. Its credentials stay with its
+  owner, with a configurable loopback listener, rather than cross-machine sync.
+- [MCP authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
+
+The release entry point is bin/happen.dart. `moon run build-cli` produces
+build/cli/happen and a build report. It reuses the existing package hooks, then
+embeds compressed SQLite/QuickJS dylibs in a stock Dart AOT executable. Bootstrap
+installs missing libraries into a private content-addressed cache and preloads
+each with RTLD_LOCAL. Explicit asset-ID bindings reopen their real Mach-O install
+names; anchor-address checks verify the loaded libraries. There is no runtime
+helper process, child server, SDK requirement or compiler invocation.
+
+Warm launch reads a completion marker and file metadata, then loads libraries;
+it does not decode/decompress payloads, hash entire dylibs, or acquire the cold
+installation lock. Cold installation verifies checksums and publishes complete
+last. Concurrent first launches share one installation; missing files trigger
+repair. Native asset content identifies the cache, allowing Dart-only releases
+to reuse it. Its default is ~/Library/Caches/dev.happen/cli/native;
+HAPPEN_NATIVE_CACHE permits isolated verification.
+
+This follows harness e8de710, tool/build_macos_cli.dart and
+tool/cli_native_bootstrap.dart, recovered from history because the current
+server/moon.yml references a removed builder. tool/dart2native.json pins Dart
+3.13.7 and SHA-256 values for the unmodified BSD-licensed upstream Mach-O writer.
+Compiler sources/LICENSE download into the build cache and are verified before
+use. Their bytes match the harness writer pin, checked against official 3.13.7
+sources. The build verifies the executable signature and allows only system
+dylib load commands. Native source/dependency ownership remains unchanged.
+References: [Dart bundling](https://dart.dev/tools/dart-build) and
+[pinned writer](https://github.com/dart-lang/sdk/blob/3.13.7/pkg/dart2native/lib/dart2native_macho.dart).
+
+Reproduction on macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
+
+    dart test test/mcp_auth_test.dart test/mcp_test.dart test/mcp_inventory_test.dart test/config_reload_test.dart test/config_test.dart test/server_tools_test.dart --reporter expanded --concurrency=1
+    cd packages/desktop
+    flutter test test/mcp_auth_test.dart test/view_test.dart --reporter expanded --no-pub
+    cd ../..
+    moon run build-cli
+    python3 tool/verify_cli.py
+    dart analyze bin/happen.dart tool/build_cli.dart tool/cli_native_bootstrap.dart packages/mcp packages/config packages/server/lib/server.dart packages/server/lib/src/network.dart packages/desktop/lib/mcp_auth.dart packages/desktop/lib/mcp_conversation.dart
+    git diff --check
+
+All 19 focused backend tests and 24 focused desktop tests passed; final auth,
+configuration and inline-UI repeats passed after subsequent edits. Changed-file
+analysis has no issues. HTTP fixtures check PKCE, resource/issuer binding,
+registration, private-header isolation, persistence, rotating refresh, no tool
+replay, cancellation, callback ownership and CLI input. Desktop tests exercise
+native browser dispatch and both auth surfaces while preserving drafts. Native
+relaunch followed an idle/no-draft check; official hot reload succeeded without
+runtime errors. Actual inventory reports StrengthMCP OAuth connected with ten
+tools and Listenbox with 27. No workout data or model turn was requested.
+
+The reusable release verifier copies only the executable into a temporary
+directory and runs without a Dart SDK on PATH. Ten warm launches leave dylibs
+unchanged; eight concurrent cold launches produce one installation; deleting a
+library triggers repair. A fixture-backed task executes QuickJS and persists
+through SQLite, checking the real AOT binding paths. Local --version measurements
+were approximately 71 ms cold, 23 ms warm median, and 2 ms median native bootstrap.
+Generated reports live beside the binary. These are startup observations, not
+latency guarantees for commands that connect to servers or execute tasks.
+
+Intentional differences/limits: Happen uses private credential files rather than
+Codex's OS keyring-first storage. It does not impersonate either upstream's
+hosted client-metadata document; CIMD-only servers need a pre-registered client.
+Managed/enterprise OAuth extensions and hosted callback relays are unimplemented.
+A physical second-machine login and the Windows native handler were not exercised.
+The single-file release currently targets macOS arm64 and ad-hoc signing;
+Developer ID/notarization and other release layouts are outside this target.
+Warm checks intentionally omit full-file hashing; same-size cache corruption is
+left for OS loader/signature checks to reject. No Dart formatter was run.
+
+## 2026-10-31 — Reuse provider connections with pure-Dart HTTP/2
+
+User requirements: investigate 4–9-second DeepSeek Max greetings versus warm
+OpenCode greetings near one second; reuse connections aggressively across tasks,
+include OpenAI and desktop dictation, and track HTTP/3 separately. The final auth
+decision is to retain the sign-in flows and subscription routes used by the
+pinned Codex/OpenCode implementations. No credential migration is performed.
+
+The network isolate owns one HttpConnections pool and one native HttpClient,
+shared by inference, authentication, hosted search and page retrieval. Offer h2
+and http/1.1 with TLS ALPN. Multiplex HTTP/2 requests by origin, share concurrent
+dials, honor peer stream limits, preserve flow control and decompress gzip.
+Keep idle connections for five minutes. A server choosing HTTP/1.1 uses native
+keep-alive; pass the already-negotiated TLS socket to that pool to avoid another
+handshake. Explicit HttpOverrides retain control of routing/certificates rather
+than being bypassed by raw TLS. WebSocket upgrades retain HTTP/1.1.
+
+Use public transport primitives from http2 3.1.0. The pooled Http2Client added by
+[Dart HTTP PR 1956](https://github.com/dart-lang/http/pull/1956) does not consume
+Abortable.abortTrigger in its published send implementation. It can reset a body
+subscription, but cannot promptly cancel an individual request before response
+headers. Happen owns that stream directly: Stop/deadline/owner shutdown resets
+only that request, including before headers and while waiting for a pool slot.
+Hold the actual I/O subscription rather than only cancelling an SSE decoder.
+Sensitive headers are never indexed in HPACK. Retire draining/closed connections
+without interrupting accepted responses. Normalize HTTP/2 disconnects to the
+providers' existing bounded recovery policy. Retry a failed TLS handshake once,
+after a cancellable 200 ms delay, only before any HTTP request bytes are sent;
+the shared transport does not replay an ambiguous model POST.
+
+The desktop owns its own pool for on-stop transcription uploads because audio
+must remain local and bypass the task server. Repeated recordings reuse that
+pool; disposal releases it. Live transcription keeps its existing WebSocket
+session and fallback behavior. Auth refresh/account guards remain in effect.
+
+Pinned compatibility evidence, inspected from the local checkouts:
+
+- OpenCode e8238bae9b807b72ecfc75afd3a9fe2e6b07b944:
+  packages/core/src/session/model-request.ts supplies session/affinity headers;
+  packages/core/src/variant.ts routes OpenAI-compatible providers through the
+  effort-only openaiChat serializer. Console requests now include those affinity
+  headers and omit the native DeepSeek thinking override for low/high/max.
+  Preserve the selected effort, including Max; native DeepSeek retains its own
+  thinking flag. packages/ai/src/route/executor.ts shares its Fetch HTTP layer,
+  and packages/util/src/no-timeout-fetch.ts preserves caller cancellation.
+- Codex 67f0994b532b8740f14b5b738af7b7b2a915b1d6:
+  codex-rs/http-client/src/route_aware_client_pool.rs shares cached Reqwest
+  clients, with connection settings in client_builder.rs.
+  codex-rs/model-provider-info/src/lib.rs selects
+  https://chatgpt.com/backend-api/codex for ChatGPT subscription authentication;
+  https://api.openai.com/v1 is a different authentication route. Happen's saved
+  subscription token received HTTP 401 at the public Responses endpoint.
+  Keep the working subscription login, search, inference and dictation paths.
+
+[Sanitized measurements](evidence/http2-latency.json) distinguish model time,
+cache usage and transport negotiation. Happen's original slowest greeting spent
+9.974 seconds in the model call out of 9.995 seconds for the turn, despite 5,376
+cached tokens out of 5,405. This rules out local rendering/storage as the main
+delay for that turn; it does not separate remote queueing, inference and network
+time. The frozen original request later completed in 2.189–3.295 seconds.
+Desktop checks before the final wire alignment completed in 6.604, 4.267 and
+2.450 seconds. The final Console check was rejected before generation with
+HTTP 429/FreeUsageLimitError; further probes stopped. Consistent one-second
+latency and a controlled post-alignment speedup have not been established.
+Two simultaneous real OpenAI tasks completed successfully after HTTP/2
+disconnect recovery was integrated, in 3.337 and 5.981 seconds.
+
+Protocol checks from macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
+the ChatGPT subscription route negotiated h2; api.openai.com negotiated h2 and
+advertised h3 with Alt-Svc. The OpenCode inference origin selected http/1.1 when
+offered h2,http/1.1, so Happen cannot force multiplexing there. HTTP/3-only curl
+checks failed QUIC connectivity on all three hosts. This does not establish lack
+of server support; network/VPN UDP reachability remains uncertain.
+[HTTP/3 issue #3](https://github.com/meoyawn/happen/issues/3) records these checks,
+Dart HTTP cancellation limitations, fallback, ownership and verification needs.
+
+Reproduction and verification:
+
+    dart pub get
+    ulimit -n 4096
+    dart test test/http_connections_test.dart test/deepseek_auth_test.dart --reporter expanded
+    dart test --concurrency=1 --reporter expanded
+    cd packages/desktop
+    flutter test --no-pub test/dictation_test.dart --reporter expanded
+    flutter test --no-pub test --reporter expanded
+    cd ../..
+    git diff --check
+
+The full root suite passed 353 tests and all 64 desktop tests passed. The tool
+details rendering test previously hung closing its real WebSocket under the
+widget test's fake clock. Its assertions already inject incoming events; use an
+event-client fixture for that UI boundary and retain real transport ownership in
+the lifecycle/transport suites. This removes unrelated live I/O from rendering
+verification without changing any rendering assertions.
+While the existing Flutter runner holds
+native-hook build locks, the equivalent pinned test entry point ran with the
+workspace package config and existing native-assets mapping:
+
+    dart --packages=.dart_tool/package_config.json /Users/meoyawn/.pub-cache/hosted/pub.dev/test-1.31.1/bin/test.dart --concurrency=1 --reporter expanded
+
+Five real TLS transport tests exercise twelve overlapping requests across both
+providers on one connection, repeated dictation uploads, stream cancellation
+before headers, HTTP/1.1 reuse, interrupted-response recovery, GOAWAY draining,
+peer limits, queued cancellation and shutdown. Negative controls reproduced the
+reasoning wire mismatch, initial TLS failure, lost-response recovery and drain
+failures before their repairs. TLS fixture certificates are public test data,
+valid for 365 days; macOS rejects excessively long server-certificate validity
+even with this test trust root. Full analysis has no errors or warnings and
+reports 48 existing informational diagnostics outside the changed behavior;
+scoped transport analysis retains one existing brace lint in the adapter.
+The running desktop accepted hot reload without runtime errors. No formatter
+was run; temporary probes remain outside the repository and record no tokens.
+
+Tradeoffs: this is an additional transport owner around a maintained public Dart
+HTTP/2 implementation, needed for cancellation before headers. Pools are scoped
+to their isolate/desktop owner rather than shared across isolates or processes.
+HTTP/1.1-only origins cannot multiplex, and explicit native HTTP overrides choose
+their own transport policy. HTTP/3 and guaranteed model latency are not
+implemented capabilities.

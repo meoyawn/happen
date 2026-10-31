@@ -23,9 +23,16 @@ One action button sends messages, or stops a running task when the draft is empt
 With a draft or attachments during a running task, it steers or queues the message
 according to Settings.
 
+Servers requiring MCP authentication appear inline in the conversation above the
+composer. Choose **Sign in** to open the default browser; waiting, retry and
+cancellation stay in the conversation. Successful connection removes the request
+and makes tools available on the next model step without changing the draft.
+
 Type `/mcp` and press Enter to view MCP server status in the composer popover.
 Use `/mcp verbose` for tool names, resources, and resource templates. Both use
-the same popover as `@` file search. Server rows are read-only; type to filter,
+the same popover as `@` file search. HTTP OAuth servers offer **Sign in**, which
+opens your default browser, and **Sign out** after connection. Cancel stops a
+pending login; Open browser retries launching the browser. Type to filter,
 press Escape to close, or start a new `@` mention to switch back to files.
 Commands preserve surrounding draft text and run without sending a message.
 

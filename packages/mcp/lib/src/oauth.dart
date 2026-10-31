@@ -27,7 +27,7 @@ class McpOAuth {
   Future<String?>? _refreshing;
   bool _rejected = false, _needsLogin = false;
   String? _diskStamp;
-  void Function(Uri)? _callback;
+  bool Function(Uri)? _callback;
   Uri? _redirect;
   String get _url => config['url'] as String;
   String get _key => sha256.convert(utf8.encode('$name\u0000$_url')).toString();
@@ -214,12 +214,16 @@ class McpOAuth {
         final issuer = query['iss'];
         if (issuer != null && (issuer.length != 1 || issuer.single != metadata['issuer']) || issuerBound && issuer == null) {
           result.completeError(const McpFailure('MCP sign-in issuer did not match; try again'));
+          return false;
         } else if (query.containsKey('error')) {
           result.completeError(const McpFailure('MCP sign-in was declined'));
+          return false;
         } else if (query['code']?.length != 1 || query['code']!.single.isEmpty) {
           result.completeError(const McpFailure('MCP sign-in callback did not contain a code'));
+          return false;
         } else {
           result.complete(query['code']!.single);
+          return true;
         }
       };
       subscription = listener.listen((request) async {
@@ -227,7 +231,8 @@ class McpOAuth {
           request.response.statusCode = 404;
         } else {
           var accepted = false;
-          try { _callback!(request.uri); accepted = true; } on McpFailure { request.response.statusCode = 400; }
+          try { accepted = _callback!(request.uri); } on McpFailure { /* Keep waiting after unrelated callbacks. */ }
+          request.response.statusCode = accepted ? 200 : 400;
           request.response.headers.contentType = ContentType.html;
           request.response.headers.set('Cache-Control', 'no-store');
           request.response.headers.set('Referrer-Policy', 'no-referrer');
@@ -275,7 +280,7 @@ class McpOAuth {
   void completeLogin(String value) {
     final uri = value.length <= 16384 ? Uri.tryParse(value) : null;
     if (uri == null || _redirect == null || _callback == null || uri.userInfo.isNotEmpty || uri.hasFragment ||
-        uri.origin != _redirect!.origin || uri.path != _redirect!.path) {
+        uri.scheme != _redirect!.scheme || uri.host != _redirect!.host || uri.port != _redirect!.port || uri.path != _redirect!.path) {
       throw const McpFailure('Paste the complete callback URL from this sign-in');
     }
     _callback!(uri);
@@ -368,6 +373,7 @@ class McpOAuth {
         values['client_secret'] = secret;
       } else if (method == 'client_secret_basic') {
         basic = 'Basic ${base64.encode(utf8.encode('${Uri.encodeQueryComponent(values['client_id']!)}:${Uri.encodeQueryComponent(secret)}'))}';
+        values.remove('client_id');
       } else {
         throw const McpFailure('MCP OAuth token authentication method is unsupported');
       }

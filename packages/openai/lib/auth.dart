@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
+import 'package:ai/ai.dart' show HttpConnections, httpRequest;
 
 const _clientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const _issuer = 'https://auth.openai.com';
@@ -18,7 +19,7 @@ String defaultDataDirectory() {
 
 /// Owned by the server isolate: all agents share a single refresh operation.
 class AuthManager {
-  AuthManager(this.directory, {HttpClient? http})
+  AuthManager(this.directory, {HttpClient? http, this.connections})
     : _http = http ?? HttpClient(),
       _ownsHttp = http == null;
   final String directory;
@@ -26,6 +27,7 @@ class AuthManager {
   Future<void>? _loggingIn, _signingOut;
   CancellationToken _authentication = CancellationToken();
   final HttpClient _http;
+  final HttpConnections? connections;
   final bool _ownsHttp;
   final _lifetime = CancellationToken();
   File get _file => File('$directory/auth.json');
@@ -328,35 +330,15 @@ class AuthManager {
     required CancellationToken cancellation,
   }) async {
     cancellation.throwIfCancelled();
-    HttpClientRequest? request;
-    final hook = CancellationHook(
-      cancellation,
-      () => request?.abort(cancellation.exception),
-    );
     try {
-      request = await _http
-          .postUrl(Uri.parse('$_issuer$path'))
-          .then((value) {
-            if (cancellation.isCancelled) value.abort(cancellation.exception);
-            return value;
-          })
-          .asCancellable(cancellation);
-      cancellation.throwIfCancelled();
-      request.headers.contentType = ContentType(
-        'application',
-        form ? 'x-www-form-urlencoded' : 'json',
-      );
-      request.write(
-        form
-            ? Uri(
-                queryParameters: body.map((k, v) => MapEntry(k, v.toString())),
-              ).query
-            : jsonEncode(body),
-      );
-      final response = await request
-          .close()
-          .timeout(const Duration(seconds: 30))
-          .asCancellable(cancellation);
+      final encoded = form
+          ? Uri(queryParameters: body.map((k, v) => MapEntry(k, v.toString()))).query
+          : jsonEncode(body);
+      final response = await httpRequest(_http, 'POST', Uri.parse('$_issuer$path'),
+        connections: connections, cancellation: cancellation,
+        headersTimeout: const Duration(seconds: 30), headers: {
+          HttpHeaders.contentTypeHeader: form ? 'application/x-www-form-urlencoded' : 'application/json',
+        }, body: utf8.encode(encoded));
       final iterator = StreamIterator(
         response.timeout(const Duration(seconds: 30)),
       );
@@ -384,9 +366,6 @@ class AuthManager {
     } catch (_) {
       cancellation.throwIfCancelled();
       rethrow;
-    } finally {
-      hook.dispose();
-      request?.abort();
     }
   }
 
