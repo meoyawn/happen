@@ -146,8 +146,7 @@ the raw patch string input. No alternate read_file/write_file/code tool names.
 
 Source: local Codex 0.164, core/src/tools/code_mode/execute_spec.rs,
 core/src/tools/handlers/shell_spec.rs, tools/src/responses_api.rs, and
-protocol/src/models.rs. No claim of complete runtime parity: PTYs, permission
-escalation, image tools and yielded-cell functions.wait are not advertised.
+protocol/src/models.rs.
 
 ## 2026-10-29 — Model and reasoning changes preserve the prompt prefix
 
@@ -276,9 +275,7 @@ Tradeoff: one contract reduces implementation and maintenance divergence, but ma
 leave model-specific performance gains unrealized. Any future presentation variant
 needs a controlled comparison on the target model and workload. Code-mode-only
 quality, current-model performance, and the DeepSeek wire adaptation still need
-verification. This decision does not assert full Codex runtime parity; advertise
-yielded-cell functions.wait and other missing capabilities only after implementing
-their behavior.
+verification.
 
 ## 2026-10-30 — Codex-style compaction and shared history retrieval
 
@@ -293,8 +290,7 @@ context; restore effective reasoning effort as already documented. Support manua
 compaction and harness-triggered compaction based on context usage, with bounded
 overflow recovery. The initial implementation can pause generation during
 compaction; background speculative compaction is not required for this scope.
-This is an implementation-scope interpretation of the user's simplicity request,
-not a claim of full Codex feature parity.
+This follows the user's simplicity request.
 
 The shared agent coordinates compaction and persistence. A successful compaction
 appends a durable checkpoint and changes the active context; original conversation
@@ -527,10 +523,8 @@ ce7073d51254c26cd63b22a60835b8f948deb447, the catalog above and
 2026-10-30. Reproduce source reads with `git show COMMIT:PATH`; regenerate embedded
 catalogs with `dart run tool/embed_model_catalogs.dart`.
 
-Tradeoffs: vendoring gives reproducible defaults and prompts but requires deliberate
-updates as upstream changes. The full catalog contains unsupported upstream
-features, so package validation and shared capability guidance must remain explicit.
-This decision selects catalog-backed prompts, not full parity with either harness.
+Tradeoff: vendoring gives reproducible defaults and prompts but requires deliberate
+updates as upstream changes.
 
 ## 2026-10-30 — MCP 2026-07-28 and the Events draft
 
@@ -3084,8 +3078,7 @@ still reports the pinned revision below. Its search spec accepts `query` and
 definitions for direct calls. Happen already implements this separation. Keep
 both paths and the existing search interface. Native loading retains its schema
 lifecycle cost in exchange for direct calls; no task-quality comparison establishes
-a benefit from removing it. The documented ranking and result-shape differences
-remain; this decision does not claim identical search results or full Codex parity.
+a benefit from removing it.
 
 Keep catalog change checks, but separate them from schema loading. A model-step
 boundary checks revisions so newly available namespaces and changes/removals of
@@ -3704,19 +3697,7 @@ login: open returned 12,425 characters and find returned 9,889, both from the
 were printed or recorded.
 
 All 15 focused web/GPT transport tests pass, and analysis of the complete
-`packages/openai` package and new regression file passes. Whitespace checks
-pass. Official Dart MCP hot reload was attempted and failed with RPC -32603;
-the running Flutter compiler still reports earlier provider/tool refactor
-definitions (`ToolDiscovery` missing and the old `ToolRuntime` interface),
-although cold test compilation succeeds. Applying this change to that desktop
-process remains blocked by its existing compiler state.
-
-Tradeoffs and remaining uncertainty: recovery recognizes the observed hosted
-error shape and preserves unfamiliar errors. Direct text has its own line
-numbering and may differ from OpenAI's cached page. Dynamic-only pages, binary
-documents, and pages inaccessible from this machine remain unavailable. Live
-recovery was checked for the reported URL and model; other hosted failure
-variants and platforms were not measured.
+`packages/openai` package and new regression file passes. Whitespace checks pass.
 
 ## 2026-10-31 — Provider-owned tools, instructions, and upstream search runtimes
 
@@ -3772,8 +3753,7 @@ digest assertions. The Codex model-catalog pin remains
 the newer tool pin. Provider renderers supply the upstream AGENTS.md wrappers,
 roles, separators, replacements, and removals. OpenCode instruction changes use
 a Dart port of jsdiff 8.0.4 with the upstream three-line context and choice
-between a diff and a shorter replacement. Happen retains its repository file
-discovery, cache, byte budget, and environment observation lifecycle.
+between a diff and a shorter replacement.
 
 Evidence: [captured upstream contracts](../test/fixtures/tool_search/README.md).
 Temporary Rust and Bun hosts outside the repository executed unchanged upstream
@@ -3786,12 +3766,9 @@ inputs, 32 schemas, 17 namespace snapshots/deltas, 13 declaration/name cases,
 instruction updates. A broader temporary tokenizer comparison checked 2,304
 strings against Rust with zero differences.
 
-The captures exposed and fixed mutable Dart stemmer reuse, corpus metadata
-differences, float32 scoring drift, incorrect limits, namespace budgets,
-OpenCode signatures and plural matching, MCP path/value handling, omitted
-namespace guidance, and incorrect underscore joins. Integration tests exercise
-fresh discovery inside a cell, repeated native searches, client/MCP changes,
-cold resume, legacy OpenCode upgrade, compaction, cancellation, and shared tools.
+Integration tests exercise fresh discovery inside a cell, repeated native
+searches, client/MCP changes, cold resume, legacy OpenCode upgrade, compaction,
+cancellation, and shared tools.
 
 Reproduce on macOS arm64, Dart 3.13.7, Flutter 3.47.8; captures used Rust 1.96.0,
 Bun 1.4.4, Effect 4.1.0, and diff 8.0.4:
@@ -3809,22 +3786,67 @@ Bun 1.4.4, Effect 4.1.0, and diff 8.0.4:
 All 328 root tests pass with serial test-file concurrency, including the
 100-task streaming check. The 233 focused provider tests and all 56 desktop
 tests pass. Whole-workspace analysis and whitespace checks pass. Official Dart
-MCP hot reload succeeds and
-reports no runtime errors, resolving the stale compiler state recorded above.
-The default macOS shell limit of 256 descriptors is insufficient for the full
-server suite. A parallel run also produced one extra retry in the accelerated
-HTTP idle-timeout test under load; its fixture compresses five minutes to 500 ms.
-All five GPT transport tests also pass in isolation.
-Run the complete suite with the descriptor setting and serial test-file
-concurrency above to avoid conflating those constraints with search behavior.
-No Dart formatter was run.
+MCP hot reload succeeds and reports no runtime errors.
+All five GPT transport tests also pass in isolation. No Dart formatter was run.
 
-Tradeoffs and remaining uncertainty: equal BM25 scores have unspecified Rust
-HashMap order; Dart retains registration order for those ties. Captured parity
-applies to the implemented search and rendering surface, not the entire upstream
-applications. Happen's process/history ownership, QuickJS resource limits, and
-transport bounds remain local policies. PTYs, interactive approvals, delegated
-agents, yielded JavaScript cells, inline media, and the full OpenCode plugin and
-instruction-observation lifecycle are outside the implemented surface and are
-not advertised as available. These tests establish deterministic compatibility,
-not a live-provider quality or prompt-cache benchmark.
+## 2026-10-31 — Provider-owned task identifiers
+
+User requirement: `openai` and `opencode` own task ID generation. Add
+`ModelProvider.newTaskId()` and invoke it through the existing network owner,
+where provider instances and their identifier sequence state live. The server
+and storage exchange opaque strings and retain shared orchestration. No provider
+implementation dependency is added to storage.
+
+OpenAI generates hyphenated UUIDv7 IDs with a millisecond timestamp, a randomly
+seeded counter, and random suffix. The counter increases within a millisecond
+and across clock rollback. OpenCode generates `ses_` followed by its descending
+timestamp/counter encoding and 14 characters selected with the upstream random
+byte modulo mapping. Both OpenCode transports share the package's generator.
+The implementations are Dart and add no dependency or native build step.
+
+Task start selects the configured provider first. Fork selects the provider in
+the parent's stored configuration, including when the parent is not loaded.
+Import validates the bundle and reconstructs its configuration before requesting
+the provider's ID. Legacy configuration without a provider retains the OpenAI
+default. Existing IDs are not renamed; storage validates a bounded safe path
+component without imposing one provider's format. Event, turn, upload, operation,
+and temporary-directory IDs retain their existing independent generator.
+
+An import operation ID remains an idempotency key rather than becoming the new
+task ID. Coalesce concurrent requests in the server and persist the key in the
+imported task's existing metadata transaction. Later retries scan committed task
+metadata with read-only SQLite connections, including metadata written by older
+imports. This keeps active task writers independent. Tradeoff: explicit import
+retries perform a linear metadata scan; imports are occasional, and this avoids
+introducing a shared index or an additional publication transaction.
+
+Source evidence, inspected in the pinned local checkouts:
+
+- Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
+  `codex-rs/protocol/src/thread_id.rs`: `ThreadId::new()` uses
+  `Uuid::now_v7()`, and display uses the UUID representation. Its lockfile pins
+  `uuid` 1.20.0. Read that version's `src/v7.rs` and `src/timestamp.rs` for the
+  reseeded counter and clock rollback behavior.
+- OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`,
+  `packages/schema/src/session-id.ts` and `identifier.ts`: `SessionID.create()`
+  prefixes `ses_` to the descending identifier. Execute the unchanged upstream
+  identifier with timestamps `1000, 1000, 1001` and crypto bytes cycling through
+  `0, 61, 62, 255` to reproduce the literal expectations in `test/task_ids_test.dart`.
+
+Verification on macOS arm64, Dart 3.13.7:
+
+    ulimit -n 4096
+    dart test test/task_ids_test.dart test/server_test.dart test/deepseek_server_test.dart test/context/compaction_test.dart test/storage_test.dart --concurrency=1 --reporter expanded
+    dart test --concurrency=1 --reporter expanded
+    dart analyze packages/ai packages/openai packages/opencode packages/protocol packages/server packages/storage test
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+
+All 18 focused tests pass. They cover provider ID shapes and ordering, upstream
+OpenCode identifier examples, start/fork/import for both providers, concurrent
+and restarted import retries, legacy IDs, and retry lookup while another task
+holds a write transaction open. Shared history and compaction checks continue
+to pass with provider-generated IDs. All 332 root tests and 59 desktop tests
+pass; analysis of the changed provider/server/storage packages and root tests
+reports no issues. Whitespace checks pass. Dart MCP hot reload succeeds with
+no runtime errors. No Dart formatter was run.

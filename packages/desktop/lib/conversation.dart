@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,57 @@ import 'package:flutter/rendering.dart';
 import 'conversation_markdown.dart';
 import 'session.dart';
 import 'composer_attachments.dart';
+
+/// Retain a small working set of laid-out transcripts during sidebar navigation.
+class ConversationDeck extends StatefulWidget {
+  const ConversationDeck({super.key, required this.task, required this.tasks,
+    required this.directory, required this.empty, required this.onRetry});
+  final DesktopTask? task;
+  final Set<DesktopTask> tasks;
+  final String directory;
+  final Widget empty;
+  final ValueChanged<DesktopTask> onRetry;
+
+  @override
+  State<ConversationDeck> createState() => _ConversationDeckState();
+}
+
+class _ConversationDeckState extends State<ConversationDeck> {
+  final _retained = LinkedHashMap<DesktopTask, ({Object state, Widget view})>();
+
+  @override
+  Widget build(BuildContext context) {
+    _retained.removeWhere((task, _) => !widget.tasks.contains(task));
+    final selected = widget.task;
+    if (selected != null) {
+      final previous = _retained.remove(selected);
+      final state = (conversation(selected), selected.loading, selected.loadError,
+        selected.retryStatus, widget.directory);
+      _retained[selected] = previous?.state == state ? previous! : (
+        state: state,
+        view: ConversationTranscript(
+          task: selected, directory: widget.directory,
+          onRetry: () => widget.onRetry(selected),
+        ),
+      );
+      while (_retained.length > 16) { _retained.remove(_retained.keys.first); }
+    }
+    return Stack(fit: StackFit.expand, children: [
+      for (final entry in _retained.entries) Offstage(
+        key: ValueKey(entry.key.id),
+        offstage: entry.key != selected,
+        child: TickerMode(
+          enabled: entry.key == selected,
+          child: ExcludeFocus(
+            excluding: entry.key != selected,
+            child: RepaintBoundary(child: entry.value.view),
+          ),
+        ),
+      ),
+      if (selected == null) widget.empty,
+    ]);
+  }
+}
 
 class ConversationTranscript extends StatefulWidget {
   const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry});
@@ -40,10 +92,10 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
       if (!mounted || !_following || !_scroll.hasClients) return;
-      if (_scroll.position.extentAfter > .5) {
+      if (_scroll.position.extentBefore > .5) {
         _jumping = true;
         try {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+          _scroll.jumpTo(_scroll.position.minScrollExtent);
         } finally {
           _jumping = false;
         }
@@ -55,11 +107,11 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     if (notification.depth != 0) return false;
     if (notification is ScrollStartNotification && !_jumping) _following = false;
     if (notification is UserScrollNotification) {
-      if (notification.direction == ScrollDirection.forward) _following = false;
-      if (notification.direction == ScrollDirection.reverse && notification.metrics.extentAfter < 80) _following = true;
+      if (notification.direction == ScrollDirection.reverse) _following = false;
+      if (notification.direction == ScrollDirection.forward && notification.metrics.extentBefore < 80) _following = true;
     }
-    if (notification is ScrollEndNotification && notification.metrics.extentAfter < 1) _following = true;
-    final showLatest = notification.metrics.extentAfter > 100;
+    if (notification is ScrollEndNotification && notification.metrics.extentBefore < 1) _following = true;
+    final showLatest = notification.metrics.extentBefore > 100;
     if (showLatest != _showLatest) setState(() => _showLatest = showLatest);
     return false;
   }
@@ -88,7 +140,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     }
     final entries = conversation(task);
     final compacting = entries.any((entry) => entry.compaction?.status == 'running');
-    final indices = {for (var i = 0; i < entries.length; i++) entries[i].id: i};
+    final count = entries.length + (task.running && !compacting ? 1 : 0);
+    final indices = {for (var i = 0; i < entries.length; i++) entries[i].id: count - 1 - i};
     final starts = task.events.values.where((event) => event['type'] == 'turn.started').toList()
       ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
     final startedAt = DateTime.tryParse(starts.lastOrNull?['created_at'] as String? ?? '');
@@ -109,10 +162,14 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                 child: ListView.builder(
                   key: PageStorageKey('transcript:${task.id}'),
                   controller: _scroll,
+                  // Start at the newest row without laying out the entire history.
+                  reverse: true,
+                  cacheExtent: 0,
                   padding: const EdgeInsets.fromLTRB(32, 28, 32, 28),
-                  itemCount: entries.length + (task.running && !compacting ? 1 : 0),
+                  itemCount: count,
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
+                    index = count - 1 - index;
                     if (index == entries.length) return _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus);
                     final entry = entries[index];
                     return Padding(
@@ -307,11 +364,12 @@ class _TurnClockState extends State<_TurnClock> {
   Timer? _timer;
 
   @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _timer?.cancel();
+    _timer = TickerMode.of(context) ? Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
-    });
+    }) : null;
   }
 
   @override
@@ -389,7 +447,7 @@ class _ToolRow extends StatelessWidget {
       children: [
         if (tool.startedAt case final at?) Align(alignment: Alignment.centerLeft,
           child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: _Timestamp(at: at))),
-        _ToolImages(output: tool.output, directory: directory),
+        Builder(builder: (context) => _ToolImages(output: tool.output, directory: directory)),
         if (!nested) ...[
           for (final child in tool.children)
             _ToolRow(key: ValueKey(child.id), tool: child, directory: directory, nested: true, onExpand: onExpand),
@@ -400,10 +458,10 @@ class _ToolRow extends StatelessWidget {
             shape: const Border(), collapsedShape: const Border(),
             title: const Text('Code & output', style: TextStyle(fontSize: 12)),
             onExpansionChanged: (_) => onExpand(),
-            children: [_details()],
+            children: [Builder(builder: (context) => _details())],
           ),
         ] else
-          _details(),
+          Builder(builder: (context) => _details()),
       ],
     );
   }

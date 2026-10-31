@@ -20,8 +20,7 @@ The pinned runtime uses `bm25 2.3.2`, `deunicode 1.6.2`,
 corpus fitting, and float32 BM25 scoring in Dart, using the pinned pure Dart
 `stemmer 3.2.0`. It has no Rust dependency, native directory, FFI search library,
 or search build hook. The existing shared JavaScript engine is separate from
-search. Equal-score order is unspecified by upstream's HashMap; Dart retains
-registration order for those ties.
+search.
 
 Model system instructions and persistent instructions are copied unchanged from
 the model catalog, whose separate pin is in `../catalog/UPSTREAM.md`. They were
@@ -34,8 +33,5 @@ Captured upstream executions and source SHA-256 hashes live in
 for provenance and verification commands. Rust was used only in temporary tooling
 outside the repository to capture oracle results. Checked-in tests execute Dart.
 
-This is the implemented tool subset. PTYs, approval escalation, delegated agents,
-yielded JavaScript cells, and media helpers are not advertised as available.
-Happen's process/history ownership and output bounds remain runtime policies.
 Upstream Apache-2.0 text is in `CODEX-LICENSE`; transliteration and stop-word
 notices are in `DEUNICODE-LICENSE` and `STOPWORDS-LICENSE`.

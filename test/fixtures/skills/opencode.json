@@ -1,0 +1,27 @@
+{
+  "revision": "e8238bae9b807b72ecfc75afd3a9fe2e6b07b944",
+  "path": "packages/core/src/skill.ts",
+  "sha256": "9d5c29f5cec09375f3a70bf107c50ea3b71842374c7f8827d26541d8be0f5584",
+  "cases": [
+    {
+      "skill": {
+        "name": "release",
+        "path": "/workspace/skills/release/SKILL.md",
+        "content": "\nRun the release checks.\n"
+      },
+      "files": [
+        "/workspace/skills/release/scripts/check.sh"
+      ],
+      "expected": "<skill_content name=\"release\">\n# Skill: release\n\nRun the release checks.\n\nBase directory for this skill: /workspace/skills/release\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skill_files>\n<file>/workspace/skills/release/scripts/check.sh</file>\n</skill_files>\n</skill_content>"
+    },
+    {
+      "skill": {
+        "name": "文档",
+        "path": "/workspace/shared skill/SKILL.md",
+        "content": "\n完整说明。\n\nKeep this paragraph.\n"
+      },
+      "files": [],
+      "expected": "<skill_content name=\"文档\">\n# Skill: 文档\n\n完整说明。\n\nKeep this paragraph.\n\nBase directory for this skill: /workspace/shared skill\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skill_files>\n</skill_files>\n</skill_content>"
+    }
+  ]
+}

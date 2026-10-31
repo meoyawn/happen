@@ -9,6 +9,7 @@ import 'package:telemetry/telemetry.dart';
 
 import 'src/instructions.dart';
 import 'src/discovery.dart';
+import 'src/skills.dart';
 import 'src/providers.dart';
 
 export 'src/config.dart' show initialConfiguration;
@@ -203,6 +204,25 @@ class _Agent {
         }
       }
 
+      var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
+      var skillsCatalog = <String, dynamic>{'skills': []};
+      Future<void> refreshSkills() async {
+        skillsCatalog = jsonObject(await callIsolate(network, 'skills.catalog', {
+          'task_id': taskId, 'cwd': cwd,
+        }, cancellation: cancellation));
+        final next = skillContext(skillsCatalog, previous: skillsSnapshot,
+          contextWindow: baseline['context_limit'] as int?);
+        if (contextFingerprint(next.snapshot) == contextFingerprint(skillsSnapshot)) return;
+        cancellation.throwIfCancelled();
+        final item = next.item;
+        event(await _append('skills.updated', {
+          'skills_state': next.snapshot,
+          if (item != null) 'item': item.toJson(),
+        }, metadata: {'skills_state': next.snapshot}));
+        skillsSnapshot = next.snapshot;
+        if (item != null) input.add(item);
+      }
+
       final repository = jsonObject(await callIsolate(network, 'agents.repository', {
         'task_id': taskId, 'cwd': cwd,
       }, cancellation: cancellation));
@@ -361,6 +381,21 @@ class _Agent {
         for (final tool in initialTools) toolKey(tool): tool,
         ...loadedTools(input),
       };
+      final additions = interface.definitions.where((tool) =>
+        (interface.discovery == null || toolKey(tool) != toolKey(interface.discovery!)) &&
+        !initialTools.any((initial) => toolKey(initial) == toolKey(tool))).toList();
+      if (additions.isNotEmpty) {
+        final item = ConversationItem(kind: 'tools', tools: additions,
+          native: {'harness': {'context': 'provider_additions'}});
+        providerContext.add(item);
+        final known = loaded();
+        final missing = additions.where((tool) => !known.containsKey(toolKey(tool))).toList();
+        if (missing.isNotEmpty) {
+          final update = ConversationItem(kind: 'tools', tools: missing, native: item.native);
+          event(await _append('tools.updated', {'item': update.toJson()}));
+          input.add(update);
+        }
+      }
       final clientTools = config['client_tools'] as SendPort?;
       var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
       Future<Json> readMcpCatalog([CancellationToken? token]) async {
@@ -492,6 +527,8 @@ class _Agent {
         event(await _append('compaction.started', {'reason': reason}));
         final result = CompactionResult.fromJson(await networkCall('compact'));
         cancellation.throwIfCancelled();
+        final freshSkills = skillContext(skillsCatalog,
+          contextWindow: baseline['context_limit'] as int?);
         final restored = restoreContext(
           result.context,
           input,
@@ -508,6 +545,7 @@ class _Agent {
           instructionContext: interface.instructionContext,
           environmentContext: interface.environmentContext,
           providerContext: providerContext,
+          skills: freshSkills.item,
         );
         final size =
             estimateTokens(restored) +
@@ -519,13 +557,16 @@ class _Agent {
             'summary': result.summary,
             'usage': result.usage.toJson(),
             'reason': reason,
+            'skills_state': freshSkills.snapshot,
           },
           metadata: {
             'context_usage': size,
             'context_usage_items': restored.length,
+            'skills_state': freshSkills.snapshot,
           },
         );
         input = restored;
+        skillsSnapshot = freshSkills.snapshot;
         usageTokens = size;
         usageItems = input.length;
         countUsage(result.usage);
@@ -563,6 +604,7 @@ class _Agent {
       }
 
       if (compact) {
+        await refreshSkills();
         await refreshTools();
         await compactContext('manual');
         await finish('Context compacted. Full history remains available.');
@@ -574,6 +616,7 @@ class _Agent {
         cancellation.throwIfCancelled();
         await takeSteering();
         await takeNotifications();
+        await refreshSkills();
         await refreshTools();
         final estimate = usageTokens > 0 && usageItems <= input.length
             ? usageTokens + estimateTokens(input.skip(usageItems))
@@ -692,6 +735,10 @@ class _Agent {
                       output = interface.search(
                         await currentDeferredCatalog(cellCancellation), jsonObject(arguments), nested: true,
                       ).output;
+                    } else if (service == 'skills.read') {
+                      output = await callIsolate(network, 'skills.read', {
+                        ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
+                      }, cancellation: cellCancellation);
                     } else if (service == 'web.search') {
                       output = await searchWeb(arguments, cellCancellation);
                     } else if (service?.startsWith('history.') == true) {

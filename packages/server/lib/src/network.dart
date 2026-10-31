@@ -11,11 +11,13 @@ import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
 
 import 'agents_md.dart';
+import 'skills.dart';
 
 Future<IsolateOwner> startNetwork(
   String directory, {
   String? endpoint,
   String? configPath,
+  String? skillsHome,
   SendPort? events,
 }) async {
   configPath = File(configPath ?? defaultConfigPath()).absolute.path;
@@ -27,6 +29,7 @@ Future<IsolateOwner> startNetwork(
   );
   return IsolateOwner.start(_networkMain, {
     'directory': directory,
+    'skills_home': skillsHome,
     'endpoint': endpoint,
     'config_path': configPath,
     'config': global.values,
@@ -103,6 +106,7 @@ void _networkMain(List<Object?> args) async {
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
   final repositoryInstructions = RepositoryInstructions();
+  final skills = FilesystemSkills(directory, homeDirectory: startup['skills_home'] as String?);
   String? loginId, loginOwner;
   CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
@@ -244,6 +248,14 @@ void _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
+      if (request['method'] == 'skills.catalog' || request['method'] == 'skills.read') {
+        if (id == null) throw ArgumentError('Skills require a task');
+        final cwd = requiredString(params, 'cwd');
+        reply?.send({'result': request['method'] == 'skills.catalog'
+          ? await skills.catalog(cwd, cancellation)
+          : await skills.read(cwd, requiredString(params, 'id'), cancellation)});
+        return;
+      }
       if (request['method'] == 'agents.repository') {
         if (id == null) throw ArgumentError('Repository instructions require a task');
         reply?.send({'result': await repositoryInstructions.load(
@@ -525,6 +537,12 @@ void _networkMain(List<Object?> args) async {
                 : (provider as OpenCodeProvider).catalogRevision,
           },
         });
+        return;
+      }
+      if (request['method'] == 'task.new_id') {
+        final provider = providers[params['provider'] as String? ?? 'openai'];
+        if (provider == null) throw ArgumentError('Unsupported provider');
+        reply?.send({'result': provider.newTaskId()});
         return;
       }
       if (request['method'] == 'validate_settings') {

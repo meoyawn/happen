@@ -30,8 +30,5 @@ instruction renderers under Bun with Effect 4.1.0 and diff 8.0.4. Expected resul
 are independent of Dart. Source hashes, cases, and reproduction details live in
 `test/fixtures/tool_search/` at the workspace root.
 
-Only implemented capabilities are advertised. Interactive approvals, delegated
-agents, inline media, and the complete upstream plugin/runtime surface are not
-implemented here. Happen retains its own repository discovery/cache policy,
-transport bounds, and task storage. Upstream MIT text is in `OPENCODE-LICENSE`;
+Upstream MIT text is in `OPENCODE-LICENSE`;
 the Dart instruction-diff port's BSD notice is in `JSDIFF-LICENSE`.

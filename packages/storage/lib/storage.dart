@@ -224,6 +224,7 @@ class TaskStore {
           'agents.updated' ||
           'mcp.updated' ||
           'client_tools.updated' => [jsonObject(data['item'])],
+          'skills.updated' => [if (data['item'] != null) jsonObject(data['item'])],
           'model.completed' =>
             (data['output'] as List).map(jsonObject).toList(),
           'tool.completed' => [jsonObject(data['item'])],
@@ -545,6 +546,15 @@ class TaskStore {
         );
       }
     }
+    final skills = db.select(
+      "SELECT data FROM events WHERE type IN ('skills.updated', 'context.compacted') "
+      "AND json_type(data, '\$.skills_state') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+    );
+    if (skills.isNotEmpty) {
+      final data = jsonObject(jsonDecode(skills.single['data'] as String));
+      db.execute('INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
+        ['skills_state', jsonEncode(data['skills_state'])]);
+    }
     final latest = db.select(
       'SELECT window_id FROM events ORDER BY seq DESC LIMIT 1',
     );
@@ -618,23 +628,33 @@ class TaskStore {
     String directory,
     String source, {
     String? operationId,
+    required Future<String> Function(Json config) newTaskId,
     CancellationToken? cancellation,
   }) async {
     cancellation?.throwIfCancelled();
-    final id = operationId ?? newId();
-    validateTaskId(id);
-    if (File('$directory/tasks/$id/history.sqlite').existsSync()) {
-      final existing = TaskStore(directory, id, create: false);
-      try {
-        if (existing.metadata('import_operation') == id) return id;
-        throw StateError('Destination exists');
-      } finally {
-        existing.close();
+    if (operationId != null) {
+      validateTaskId(operationId);
+      final tasks = Directory('$directory/tasks');
+      if (tasks.existsSync()) {
+        for (final entry in tasks.listSync(followLinks: false).whereType<Directory>()) {
+          cancellation?.throwIfCancelled();
+          final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
+          try { validateTaskId(id); } on FormatException { continue; }
+          if (!File('${entry.path}/history.sqlite').existsSync()) continue;
+          final existing = sqlite3.open('${entry.path}/history.sqlite', mode: OpenMode.readOnly);
+          try {
+            final rows = existing.select("SELECT value FROM metadata WHERE key IS 'import_operation'");
+            if (rows.isNotEmpty && jsonDecode(rows.single['value'] as String) == operationId) return id;
+          } finally {
+            existing.close();
+          }
+        }
       }
     }
     final stage = Directory('$directory/staging/${newId()}')
       ..createSync(recursive: true);
-    final store = TaskStore(stage.path, id);
+    const stagingId = 'import';
+    final store = TaskStore(stage.path, stagingId);
     final digest = _DigestSink();
     final hasher = sha256.startChunkedConversion(digest);
     var count = 0;
@@ -698,15 +718,18 @@ class TaskStore {
       }
       store._copy(batch);
       store._rebuildMetadata();
+      final id = await newTaskId(jsonObject(store.metadata('config') ?? {}));
+      validateTaskId(id);
+      if (Directory('$directory/tasks/$id').existsSync()) throw StateError('Destination exists');
       store.append(
         'task.imported',
         {'source_task': header!['source_task']},
-        metadata: {'status': 'idle', 'import_operation': id},
+        metadata: {'status': 'idle', 'import_operation': ?operationId},
       );
       store.close();
       Directory('$directory/tasks').createSync(recursive: true);
       cancellation?.throwIfCancelled();
-      Directory('${stage.path}/tasks/$id').renameSync('$directory/tasks/$id');
+      Directory('${stage.path}/tasks/$stagingId').renameSync('$directory/tasks/$id');
       return id;
     } finally {
       store.close();

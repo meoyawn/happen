@@ -34,6 +34,9 @@ class DesktopTask {
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
+  List<ChatEntry>? _conversation;
+  List<Json>? _conversationEvents, _conversationPending;
+  Object? _conversationState;
 }
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
@@ -391,6 +394,7 @@ class DesktopSession extends ChangeNotifier {
     project = nextProject;
     task = nextTask;
     error = null;
+    if (nextTask != null) conversation(nextTask);
     notifyListeners();
     await _refreshIdentity(nextProject);
     // Live events can leave a cached task without its initial configuration.
@@ -736,13 +740,25 @@ class DesktopSession extends ChangeNotifier {
 }
 
 class ToolActivity {
-  ToolActivity(this.id, this.name, this.input, {this.startedAt});
-  final String id, name, input;
+  ToolActivity(this.id, this.name, Object? input, {this.startedAt, bool formatInput = false})
+    : _rawInput = input, _input = formatInput ? null : input as String;
+  final String id, name;
+  final Object? _rawInput;
+  String? _input, _output;
+  Object? _rawOutput;
+  bool _hasOutput = false;
+  // Collapsed tools should not parse and re-encode their potentially large JSON.
+  String get input => _input ??= _pretty(_rawInput);
+  String? get output => _hasOutput ? _output ??= _pretty(_rawOutput) : null;
+  set output(Object? value) {
+    _hasOutput = true;
+    _rawOutput = value;
+    _output = null;
+  }
   final DateTime? startedAt;
   DateTime? endedAt;
   final children = <ToolActivity>[];
   String status = 'running';
-  String? output;
 }
 
 /// A visible transcript row. Provider replay state never enters this projection.
@@ -765,7 +781,22 @@ class CompactionActivity {
   String status = 'running', summary = '';
 }
 
+bool _sameRecords(Iterable<Json> records, List<Json>? previous) {
+  if (previous == null) return false;
+  var index = 0;
+  for (final record in records) {
+    if (index >= previous.length || !identical(record, previous[index++])) return false;
+  }
+  return index == previous.length;
+}
+
 List<ChatEntry> conversation(DesktopTask task) {
+  final state = (task.running, task.streamingText, task.transientTerminal);
+  // Durable records are immutable. Compare identities so replay/replacement of
+  // an existing sequence invalidates the cache as well as newly appended events.
+  if (task._conversation != null && task._conversationState == state &&
+      _sameRecords(task.events.values, task._conversationEvents) &&
+      _sameRecords(task.pending.values, task._conversationPending)) return task._conversation!;
   final result = <ChatEntry>[];
   final events = task.events.values.toList()
     ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
@@ -853,7 +884,8 @@ List<ChatEntry> conversation(DesktopTask task) {
         final tool = ToolActivity(
           data['id'] as String,
           data['name'] as String,
-          _pretty(data['arguments']),
+          data['arguments'],
+          formatInput: true,
           startedAt: at,
         );
         tools[tool.id] = tool;
@@ -875,7 +907,7 @@ List<ChatEntry> conversation(DesktopTask task) {
             : data.containsKey('error')
             ? 'failed'
             : 'done';
-        tool.output = _pretty(data['error'] ?? data['output']);
+        tool.output = data['error'] ?? data['output'];
         tool.endedAt = at;
       case 'tool.completed':
         final item = jsonObject(data['item']);
@@ -884,7 +916,7 @@ List<ChatEntry> conversation(DesktopTask task) {
           final tool = tools[part['call_id']];
           if (tool == null) continue;
           tool.status = part['is_error'] == true ? 'failed' : 'done';
-          tool.output = _pretty(part['output']);
+          tool.output = part['output'];
           tool.endedAt = at;
           if (tool == activeCell) activeCell = null;
         }
@@ -932,7 +964,10 @@ List<ChatEntry> conversation(DesktopTask task) {
   }
   if (!task.running) finishTools('interrupted');
   if (!task.running) finishCompaction('interrupted');
-  return result;
+  task._conversationState = state;
+  task._conversationEvents = task.events.values.toList(growable: false);
+  task._conversationPending = task.pending.values.toList(growable: false);
+  return task._conversation = result;
 }
 
 String _pretty(Object? value) {

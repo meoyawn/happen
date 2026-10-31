@@ -32,6 +32,7 @@ class _DesktopViewState extends State<DesktopView> {
   bool _picking = false, _settingsOpen = false;
   double? _dragSidebarWidth;
   bool _sidebarHovered = false;
+  final _taskTiles = <DesktopTask, ({Object state, Widget tile})>{};
 
   @override
   void initState() {
@@ -312,6 +313,8 @@ class _DesktopViewState extends State<DesktopView> {
   );
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
+    final tasks = session.projects.expand((project) => project.tasks).toSet();
+    _taskTiles.removeWhere((task, _) => !tasks.contains(task));
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(200.0, 480.0).toDouble();
     final sidebarWidth = (_dragSidebarWidth ?? session.sidebarWidth).clamp(200.0, maxSidebarWidth).toDouble();
     return Row(
@@ -355,15 +358,13 @@ class _DesktopViewState extends State<DesktopView> {
                 _header(context),
                 const Divider(height: 1),
                 Expanded(
-                  child: session.task == null
-                      ? _empty(context)
-                      : ConversationTranscript(
-                          key: ValueKey(session.task!.id),
-                          task: session.task!,
-                          directory: session.project!.path,
-                          onRetry: () =>
-                              _run(() => session.loadHistory(session.task!)),
-                        ),
+                  child: ConversationDeck(
+                    task: session.task,
+                    tasks: tasks,
+                    directory: session.project?.path ?? '',
+                    empty: _empty(context),
+                    onRetry: (task) => unawaited(_run(() => session.loadHistory(task))),
+                  ),
                 ),
                 if (session.error case final error?)
                   Padding(
@@ -402,7 +403,7 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                   )
                 else if (session.project != null)
-                  _Composer(key: ValueKey(session.draftKey), session: session),
+                  _Composer(session: session),
               ],
             ),
           ),
@@ -531,7 +532,12 @@ class _DesktopViewState extends State<DesktopView> {
     ),
   );
 
-  Widget _taskTile(Project project, DesktopTask task) => Padding(
+  Widget _taskTile(Project project, DesktopTask task) {
+    final state = (session.task == task, task.running, task.archiving, task.archived,
+      session.connected, project.available, project.removing);
+    final cached = _taskTiles[task];
+    if (cached?.state == state) return cached!.tile;
+    final tile = Padding(
     padding: const EdgeInsets.only(left: 22, bottom: 2),
     child: ListTile(
       dense: true,
@@ -558,6 +564,9 @@ class _DesktopViewState extends State<DesktopView> {
       onTap: () => _run(() => session.select(project, task)),
     ),
   );
+    _taskTiles[task] = (state: state, tile: tile);
+    return tile;
+  }
 
   Future<void> _archiveTask(DesktopTask task, bool archived) async {
     final project = session.projects.where((project) => project.tasks.contains(task)).firstOrNull;
@@ -634,7 +643,7 @@ class _DesktopViewState extends State<DesktopView> {
 }
 
 class _Composer extends StatefulWidget {
-  const _Composer({super.key, required this.session});
+  const _Composer({required this.session});
   final DesktopSession session;
 
   @override
@@ -642,17 +651,17 @@ class _Composer extends StatefulWidget {
 }
 
 class _ComposerState extends State<_Composer> {
-  late final String _draftKey = widget.session.draftKey;
+  late String _draftKey = widget.session.draftKey;
   late TextEditingController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
     files: widget.session.fileDrafts[_draftKey] ?? const [],
   );
   final _focus = FocusNode();
   final _autocomplete = GlobalKey<ComposerAutocompleteState>();
-  final _attachmentLifetime = CancellationToken();
+  var _attachmentLifetime = CancellationToken();
   bool _receivingAttachments = false, _draggingAttachments = false;
   List<ComposerAttachment> get _attachments => widget.session.attachmentDrafts[_draftKey] ?? const [];
-  late final _voiceOwner = Object();
+  late Object _voiceOwner = Object();
   DictationService? _boundVoice;
   ComposerDictationSession? _voiceText;
   bool _finishingVoice = false, _disposing = false;
@@ -716,19 +725,22 @@ class _ComposerState extends State<_Composer> {
 
   Future<void> _finishVoice(DictationAction action, {bool retry = false}) async {
     if (!_ownsVoice || _finishingVoice) return;
+    final owner = _voiceOwner;
     setState(() => _finishingVoice = true);
     try {
       final result = retry ? await _voice.retry(action) : await _voice.stop(action);
-      if (!mounted || !_ownsVoice || result == null) return;
+      if (!mounted || !identical(_voiceOwner, owner) || !_ownsVoice || result == null) return;
       final inserted = await _voiceText?.finish(result.text) ?? false;
-      if (!mounted || !_ownsVoice || !inserted) return;
+      if (!mounted || !identical(_voiceOwner, owner) || !_ownsVoice || !inserted) return;
       _voiceText?.dispose();
       _voiceText = null;
       _focus.requestFocus();
       if (result.action == DictationAction.send) await _sendPrompt();
     } finally {
-      _finishingVoice = false;
-      if (mounted) setState(() {});
+      if (identical(_voiceOwner, owner)) {
+        _finishingVoice = false;
+        if (mounted) setState(() {});
+      }
     }
   }
 
@@ -736,6 +748,33 @@ class _ComposerState extends State<_Composer> {
   void initState() {
     super.initState();
     _text.addListener(_saveDraft);
+    _focus.requestFocus();
+  }
+
+  @override
+  void didUpdateWidget(_Composer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_draftKey == widget.session.draftKey) return;
+    _attachmentLifetime.cancel();
+    _attachmentLifetime = CancellationToken();
+    _receivingAttachments = false;
+    _draggingAttachments = false;
+    _boundVoice?.removeListener(_voiceChanged);
+    _voiceText?.dispose(cancel: true);
+    _voiceText = null;
+    if (_boundVoice != null && identical(_boundVoice!.owner, _voiceOwner)) unawaited(_boundVoice!.cancel());
+    _boundVoice = null;
+    _voiceOwner = Object();
+    _finishingVoice = false;
+    final previous = _text;
+    previous.removeListener(_saveDraft);
+    _draftKey = widget.session.draftKey;
+    _text = ComposerTextController(
+      text: widget.session.drafts[_draftKey] ?? '',
+      files: widget.session.fileDrafts[_draftKey] ?? const [],
+    )..addListener(_saveDraft);
+    // EditableText and autocomplete detach their listeners during this build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
   }
 
   void _saveDraft() {
@@ -753,13 +792,14 @@ class _ComposerState extends State<_Composer> {
   }
 
   Future<void> _copy({bool cut = false}) async {
+    final controller = _text;
     final before = _text.value, selection = _text.selection;
     if (!selection.isValid || selection.isCollapsed) return;
     final text = _text is ComposerTextController
         ? (_text as ComposerTextController).serializeRange(selection.start, selection.end)
         : selection.textInside(before.text);
     await Clipboard.setData(ClipboardData(text: text));
-    if (cut && mounted && _text.value == before && !widget.session.submitting) {
+    if (cut && mounted && identical(_text, controller) && _text.value == before && !widget.session.submitting) {
       final editor = _focus.context;
       if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(before, '', selection, SelectionChangedCause.keyboard));
     }
@@ -778,11 +818,11 @@ class _ComposerState extends State<_Composer> {
 
   Future<void> _paste(SelectionChangedCause cause) async {
     if (_receivingAttachments || widget.session.submitting || _dictating || !widget.session.connected) return;
-    final before = _text.value;
+    final before = _text.value, lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
-      final snapshot = await readComposerClipboard(widget.session.attachmentDirectory, _attachmentLifetime);
-      if (!mounted) {
+      final snapshot = await readComposerClipboard(widget.session.attachmentDirectory, lifetime);
+      if (!mounted || lifetime.isCancelled) {
         for (final attachment in snapshot.attachments) { await attachment.discard(); }
         return;
       }
@@ -799,18 +839,19 @@ class _ComposerState extends State<_Composer> {
     } on CancelledException {
       // Leaving this composer owns the pending native snapshot.
     } catch (error) {
-      if (mounted) widget.session.showError(error);
+      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
     } finally {
-      if (mounted) setState(() => _receivingAttachments = false);
+      if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
     }
   }
 
   Future<void> _drop(DropDetails details) async {
     if (_receivingAttachments || widget.session.submitting) return;
+    final lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
-      final attachments = await receiveComposerDrop(details, widget.session.attachmentDirectory, _attachmentLifetime);
-      if (mounted) {
+      final attachments = await receiveComposerDrop(details, widget.session.attachmentDirectory, lifetime);
+      if (mounted && !lifetime.isCancelled) {
         _addAttachments(attachments);
       } else {
         for (final attachment in attachments) { await attachment.discard(); }
@@ -818,9 +859,9 @@ class _ComposerState extends State<_Composer> {
     } on CancelledException {
       // The source is released by DropTarget after this operation settles.
     } catch (error) {
-      if (mounted) widget.session.showError(error);
+      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
     } finally {
-      if (mounted) setState(() => _receivingAttachments = false);
+      if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
     }
   }
 
@@ -836,24 +877,25 @@ class _ComposerState extends State<_Composer> {
   Future<void> _sendPrompt() async {
     if (_receivingAttachments) return;
     if (_autocomplete.currentState?.consumeCommand() == true) return;
+    final controller = _text, draftKey = _draftKey;
     final draft = _text.text;
     final prompt = _text is ComposerTextController ? (_text as ComposerTextController).serializePrompt() : draft;
     final attachments = List<ComposerAttachment>.of(_attachments);
     try {
       final accepted = await widget.session.send(prompt, attachments: attachments);
       if (accepted) {
-        _autocomplete.currentState?.dismiss();
-        if (widget.session.drafts[_draftKey] == draft) {
-          widget.session.drafts.remove(_draftKey);
-          widget.session.fileDrafts.remove(_draftKey);
+        if (mounted && identical(_text, controller)) _autocomplete.currentState?.dismiss();
+        if (widget.session.drafts[draftKey] == draft) {
+          widget.session.drafts.remove(draftKey);
+          widget.session.fileDrafts.remove(draftKey);
         }
         final ids = attachments.map((attachment) => attachment.id).toSet();
-        widget.session.attachmentDrafts[_draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
-        if (widget.session.attachmentDrafts[_draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(_draftKey);
+        widget.session.attachmentDrafts[draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
+        if (widget.session.attachmentDrafts[draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(draftKey);
         for (final attachment in attachments) {
           if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
         }
-        if (mounted && _text.text == draft) _text.clear();
+        if (mounted && identical(_text, controller) && _text.text == draft) _text.clear();
         if (mounted) setState(() {});
       }
     } on CancelledException {

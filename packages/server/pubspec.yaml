@@ -6,6 +6,8 @@ environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
   config: any
+  path: ^1.9.1
+  yaml: ^3.1.4
   protocol: any
   openai: any
   opencode: any

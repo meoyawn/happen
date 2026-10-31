@@ -312,6 +312,7 @@ class CompactionResult {
 
 abstract interface class ModelProvider {
   String get id;
+  String newTaskId();
   Json resolveSettings(Json selected, {String? model});
   Future<String> webSearch(
     ModelRequest request,

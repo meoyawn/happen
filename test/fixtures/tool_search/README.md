@@ -56,4 +56,4 @@ dart test test/tool_interfaces_test.dart test/context/discovery_test.dart test/d
 Codex model prompts and OpenCode system prompt. Integration tests cover native
 versus nested discovery, in-cell catalog updates, cold resume, repeated native
 searches, legacy task upgrade, compaction, cancellation, and shared execution.
-The provider `tools/UPSTREAM.md` files describe the supported surface and limits.
+The provider `tools/UPSTREAM.md` files record source pins and contract ownership.

@@ -1,6 +1,8 @@
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
+import 'skills.dart';
+
 // OpenCode e8238bae9b807b72ecfc75afd3a9fe2e6b07b944. See tools/UPSTREAM.md.
 const executeDefinition = ToolDefinition(
   name: 'execute',
@@ -15,6 +17,7 @@ const executeDefinition = ToolDefinition(
 
 final openCodeDefinitions = <ToolDefinition>[
   executeDefinition,
+  skillDefinition,
   ToolDefinition(name: 'shell', description: 'Execute a shell command and return its output. Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands when possible. When output is large, the full result is saved to a file and a truncated preview is returned. Rely on automatic truncation unless filtering the output is more useful. Commands accept an optional timeout, background commands have no timeout by default. Background commands return immediately, and you will be notified when they complete.', parameters: _object({
     'command': _string('Shell command string to execute'),
     'workdir': _string('Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.'),

@@ -92,6 +92,7 @@ List<ConversationItem> restoreContext(
   required ConversationItem Function(Json, Json?) instructionContext,
   required ConversationItem Function(String, {bool replacement}) environmentContext,
   List<ConversationItem> providerContext = const [],
+  ConversationItem? skills,
 }) {
   final known = {
     for (final tool in initialTools) toolKey(tool): tool,
@@ -127,6 +128,7 @@ List<ConversationItem> restoreContext(
       ),
     if ((snapshot['files'] as List).isNotEmpty) instructionContext(snapshot, null),
     environmentContext(cwd),
+    if (skills != null) skills,
     if (catalogContext?.call(deferredCatalog(mcpSnapshot ?? {}, clientSnapshot ?? {}), null) case final String text)
       ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
         native: {'harness': {'context': 'tool_catalog'}}),

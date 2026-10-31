@@ -21,6 +21,7 @@ Future<String> importHistory(
   String directory,
   String source, {
   String? operationId,
+  required SendPort taskIds,
   required CancellationToken cancellation,
 }) async {
   cancellation.throwIfCancelled();
@@ -30,6 +31,7 @@ Future<String> importHistory(
       'directory': directory,
       'path': source,
       'operation_id': operationId,
+      'task_ids': taskIds,
     }, cancellation: cancellation) as String;
   } finally {
     await owner.close();
@@ -125,6 +127,10 @@ void _storeMain(List<Object?> args) async {
             params['directory'] as String,
             params['path'] as String,
             operationId: params['operation_id'] as String?,
+            newTaskId: (config) async => await callIsolate(
+              params['task_ids'] as SendPort, 'task.new_id', {'provider': config['provider']},
+              cancellation: cancellation,
+            ) as String,
             cancellation: cancellation,
           ),
           'close' => null,

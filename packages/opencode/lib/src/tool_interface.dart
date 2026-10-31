@@ -9,6 +9,7 @@ import 'tool_specs.dart';
 import 'tool_catalog.dart';
 import 'instructions.dart';
 import 'mcp_instructions.dart';
+import 'skills.dart';
 
 class OpenCodeToolInterface extends ToolInterface {
   const OpenCodeToolInterface();
@@ -37,6 +38,7 @@ class OpenCodeToolInterface extends ToolInterface {
   }
   @override
   Map<String, String> get services => const {
+    'skill': 'skills.read',
     'websearch': 'web.search', 'webfetch': 'web.search', '__fetch': 'web.search',
     '__resource_list': 'resources/list', '__resource_templates': 'resources/templates/list',
     'opencode.read_mcp_resource': 'resources/read',
@@ -104,6 +106,10 @@ class _OpenCodeTools extends ToolRuntime {
           return context.call(name, name == '__fetch' ? {'fetch': arguments} : arguments);
         },
       ));
+    }
+    if (call.name == 'skill') {
+      final skill = jsonObject(await context.call('skill', input));
+      return {'output': skillOutput(skill)};
     }
     if (call.name == 'websearch' || call.name == 'webfetch') {
       return {'output': await context.call(call.name, input)};

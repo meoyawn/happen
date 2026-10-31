@@ -208,6 +208,79 @@ print(message);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  test('conversation reuses unchanged records and invalidates replay and live state', () {
+    final task = DesktopTask('cache', 'Projection cache')..running = true;
+    Map<String, dynamic> answer(String text) => {'seq': 1, 'type': 'model.completed', 'data': {'output': [
+      {'content': [{'type': 'text', 'text': text}]},
+    ]}};
+    task.events[1] = answer('First');
+    final first = conversation(task);
+    expect(identical(conversation(task), first), isTrue);
+    task.events[1] = answer('Replayed');
+    expect(conversation(task).single.text, 'Replayed');
+    expect(identical(conversation(task), first), isFalse);
+    task.streamingText = 'Partial';
+    expect(conversation(task).last.text, 'Partial');
+    task.pending['pending'] = {'id': 'pending', 'delivery': 'queue', 'prompt': 'Queued'};
+    expect(conversation(task).last.text, 'Queued');
+    task.pending['pending'] = {'id': 'pending', 'delivery': 'queue', 'prompt': 'Replaced'};
+    expect(conversation(task).last.text, 'Replaced');
+    task.pending.clear();
+    task.streamingText = '';
+    task.transientTerminal = {'type': 'turn.cancelled', 'data': {}};
+    expect(conversation(task).last.text, 'Stopped');
+    task.transientTerminal = null;
+    task.events.clear();
+    expect(conversation(task), isEmpty);
+  });
+
+  testWidgets('long conversations show the newest rows in the first frame', (tester) async {
+    final task = DesktopTask('long', 'Long conversation');
+    for (var i = 1; i <= 500; i++) {
+      task.events[i] = {'seq': i, 'type': 'model.completed', 'data': {'output': [
+        {'content': [{'type': 'text', 'text': 'Answer $i\n\n${List.filled(4, 'A paragraph with enough detail to wrap across lines.').join('\n\n')}'}]},
+      ]}};
+    }
+    await open(tester, task, size: const Size(800, 650));
+    expect(find.textContaining('Answer 500', findRichText: true).hitTestable(), findsOneWidget);
+    expect(find.textContaining('Answer 1\n', findRichText: true), findsNothing);
+    expect(find.byType(ConversationMarkdown).evaluate().length, lessThan(12));
+    final position = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
+    expect(position.extentBefore, 0);
+    await tester.pump();
+    expect(position.pixels, 0, reason: 'Opening at the end needs no corrective scrolling');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('collapsed tools defer JSON formatting until their contents are opened', (tester) async {
+    final arguments = _CountedJson({'cmd': 'pwd'});
+    final output = _CountedJson({'output': '/project'});
+    final task = DesktopTask('lazy-tools', 'Lazy tools')..events.addAll({
+      1: {'seq': 1, 'type': 'tool.started', 'data': {
+        'call_id': 'cell', 'namespace': 'functions', 'name': 'exec', 'input': 'text(await tools.exec_command({cmd: "pwd"}));',
+      }},
+      2: {'seq': 2, 'type': 'host_tool.started', 'data': {
+        'id': 'shell', 'parent_call_id': 'cell', 'name': 'exec_command', 'arguments': arguments,
+      }},
+      3: {'seq': 3, 'type': 'host_tool.completed', 'data': {'id': 'shell', 'output': output}},
+    });
+    await open(tester, task);
+    expect(arguments.encodes, 0);
+    expect(output.encodes, 0);
+    await tester.tap(find.text('functions.exec'));
+    await tester.pumpAndSettle();
+    expect(arguments.encodes, 0);
+    expect(output.encodes, 0);
+    await tester.tap(find.text('exec_command'));
+    await tester.pumpAndSettle();
+    expect(arguments.encodes, 1);
+    expect(output.encodes, 1);
+    expect(find.textContaining('/project'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('new output follows the end but does not pull readers away from older messages', (tester) async {
     final task = DesktopTask('scroll', 'Long conversation');
     void addMessage(int sequence, String text) {
@@ -221,18 +294,18 @@ print(message);
     await open(tester, task, size: const Size(800, 650));
     await tester.pumpAndSettle();
     final position = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
-    expect(position.extentAfter, lessThan(1));
+    expect(position.extentBefore, lessThan(1));
     await tester.drag(find.byType(ListView), const Offset(0, 550));
     await tester.pumpAndSettle();
     final readingOffset = position.pixels;
-    expect(position.extentAfter, greaterThan(100));
+    expect(position.extentBefore, greaterThan(100));
     addMessage(31, 'The latest answer');
     await open(tester, task, size: const Size(800, 650));
     await tester.pumpAndSettle();
     expect(position.pixels, closeTo(readingOffset, 1));
     await tester.tap(find.text('Jump to latest'));
     await tester.pumpAndSettle();
-    expect(position.extentAfter, lessThan(1));
+    expect(position.extentBefore, lessThan(1));
     expect(find.text('The latest answer', findRichText: true).hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -297,4 +370,14 @@ const value = "${List.filled(100, 'long').join()}";
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+}
+
+class _CountedJson {
+  _CountedJson(this.value);
+  final Map<String, Object?> value;
+  int encodes = 0;
+  Map<String, Object?> toJson() {
+    encodes++;
+    return value;
+  }
 }

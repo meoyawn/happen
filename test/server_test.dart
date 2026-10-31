@@ -391,6 +391,7 @@ void main() {
           isTrue,
         );
         final id = first['task_id'] as String;
+        expect(id, matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'));
         final page = await client.request('history.page', {
           'task_id': id,
           'limit': 2,
@@ -429,6 +430,7 @@ void main() {
           }),
         );
         final bundle = '${root.path}/portable.jsonl';
+        expect(fork['task_id'], matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'));
         await client.request('history.export', {
           'task_id': fork['task_id'],
           'path': bundle,
@@ -451,6 +453,8 @@ void main() {
           'operation_id': operationId,
         });
         expect(retry, imported);
+        expect(imported['task_id'], matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'));
+        expect(imported['task_id'], isNot(operationId));
         final moved = await turn('task.send', {
           'task_id': imported['task_id'],
           'prompt': 'continue',

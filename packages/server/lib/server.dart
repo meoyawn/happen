@@ -43,6 +43,7 @@ class AgentServer {
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
   final _requests = <Future<Object?>>{};
+  final _imports = <String, Future<String>>{};
   bool _closing = false;
   bool _networkExited = false;
   Timer? _maintenanceTimer;
@@ -56,6 +57,7 @@ class AgentServer {
     String? token,
     String? endpoint,
     String? configPath,
+    String? skillsHome,
     String? socketPath,
     int maxAgents = 256,
     bool telemetry = true,
@@ -86,6 +88,7 @@ class AgentServer {
         directory,
         endpoint: endpoint,
         configPath: configPath,
+        skillsHome: skillsHome,
         events: events.sendPort,
       );
     } catch (_) {
@@ -165,6 +168,7 @@ class AgentServer {
     required String directory,
     String? endpoint,
     String? configPath,
+    String? skillsHome,
     bool telemetry = true,
   }) async {
     if (Platform.isWindows) {
@@ -175,6 +179,7 @@ class AgentServer {
         token: newId(),
         endpoint: endpoint,
         configPath: configPath,
+        skillsHome: skillsHome,
         telemetry: telemetry,
       );
     }
@@ -189,6 +194,7 @@ class AgentServer {
         socketPath: '${sockets.path}/s',
         endpoint: endpoint,
         configPath: configPath,
+        skillsHome: skillsHome,
         telemetry: telemetry,
       );
       server._socketDirectory = sockets;
@@ -468,8 +474,8 @@ class AgentServer {
       case 'maintenance.run':
         return maintain();
       case 'task.start':
-        final id = newId();
         final config = await _config(params);
+        final id = await _newTaskId(config, client.cancellation);
         if (params['client_tools'] != null) {
           _clientTools.register(
             id,
@@ -490,14 +496,19 @@ class AgentServer {
         final targetDirectory = directory;
         final source = requiredString(params, 'path');
         final operationId = params['operation_id'] as String?;
+        final pending = _imports[operationId];
+        if (pending != null) return {'task_id': await pending.asCancellable(client.cancellation)};
         _transfers++;
+        final imported = importHistory(
+          targetDirectory, source, operationId: operationId,
+          taskIds: network.port, cancellation: client.cancellation,
+        );
+        if (operationId != null) _imports[operationId] = imported;
         try {
-          final id = await importHistory(
-            targetDirectory, source, operationId: operationId,
-            cancellation: client.cancellation,
-          );
+          final id = await imported;
           return {'task_id': id};
         } finally {
+          _imports.remove(operationId);
           _transfers--;
         }
       default:
@@ -620,19 +631,24 @@ class AgentServer {
           );
         }
         if (method == 'task.fork') {
-          final child = newId();
           _transfers++;
           try {
-            await _withWriter(
+            final child = await _withWriter(
               task,
-              (writer) => callIsolate(writer.port, 'fork', {
-                'id': child, 'through': params['through'],
-              }, cancellation: client.cancellation),
+              (writer) async {
+                final config = jsonObject(await callIsolate(writer.port, 'metadata',
+                  {'key': 'config'}, cancellation: client.cancellation) ?? {});
+                final child = await _newTaskId(config, client.cancellation);
+                await callIsolate(writer.port, 'fork', {
+                  'id': child, 'through': params['through'],
+                }, cancellation: client.cancellation);
+                return child;
+              },
             );
+            return {'task_id': child};
           } finally {
             _transfers--;
           }
-          return {'task_id': child};
         }
         throw StateError('Unknown method: $method');
     }
@@ -751,6 +767,10 @@ class AgentServer {
       'data': {'ids': ids, 'reason': reason},
     });
   }
+
+  Future<String> _newTaskId(Json config, CancellationToken cancellation) async =>
+      await callIsolate(network.port, 'task.new_id', {'provider': config['provider']},
+        cancellation: cancellation) as String;
 
   Future<Json> _config(Json input) async {
     final cwd = Directory(input['cwd'] as String? ?? Directory.current.path)

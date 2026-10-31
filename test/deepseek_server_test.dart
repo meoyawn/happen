@@ -149,6 +149,7 @@ void main() {
       'prompt': 'Write 42.',
     });
     expect(first['type'], 'turn.completed', reason: first.toString());
+    expect(first['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
     expect(await File('${root.path}/verified.txt').readAsString(), '42\n');
     expect(requests.length, 2);
     final previous = requests.last;
@@ -168,6 +169,19 @@ void main() {
     expect(messages.where((message) => message['role'] == 'tool'), hasLength(1));
     expect(messages.where((message) => message['tool_calls'] != null), hasLength(1));
     expect(requests.last['tools'], requests.first['tools']);
+    final fork = jsonObject(await client.request('task.fork', {'task_id': first['task_id']}));
+    expect(fork['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
+    final bundle = '${root.path}/opencode-task.jsonl';
+    await client.request('history.export', {'task_id': fork['task_id'], 'path': bundle});
+    final operationId = newId();
+    final imports = await Future.wait(List.generate(3, (_) => client!.request('history.import', {
+      'path': bundle, 'operation_id': operationId,
+    })));
+    final imported = jsonObject(imports.first);
+    expect(imports, everyElement(imported));
+    expect(imported['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
+    expect(imported['task_id'], isNot(operationId));
+    expect((await client.request('history.page', {'task_id': imported['task_id']}) as List).last['type'], 'task.imported');
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({
       ...jsonObject(jsonDecode(await File('${root.path}/config.json').readAsString())),
       'mcp_servers': {'archive': {
@@ -214,6 +228,7 @@ void main() {
       await server.close();
       server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml');
       client = await AgentClient.connect(server.uri);
+      expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
       for (var pass = 0; pass < 2; pass++) {
         if (pass > 0) {
           final compacted = await turn('task.compact', {'task_id': legacyId});

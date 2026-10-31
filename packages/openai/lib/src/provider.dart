@@ -5,12 +5,15 @@ import 'records.dart';
 import 'responses.dart';
 import 'catalog.dart';
 import 'web_search.dart';
+import 'task_id.dart';
 
 class OpenAIProvider implements ModelProvider {
   OpenAIProvider(this.client);
   final ResponsesClient client;
   @override
   String get id => 'openai';
+  @override
+  String newTaskId() => taskIds.create();
 
   @override
   Future<String> webSearch(

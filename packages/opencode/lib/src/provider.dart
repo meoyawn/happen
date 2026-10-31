@@ -7,6 +7,7 @@ import 'package:protocol/protocol.dart';
 
 import 'catalog.dart';
 import 'web_search.dart';
+import 'task_id.dart';
 import '../auth.dart';
 
 typedef DeepSeekCredentials = Future<String> Function();
@@ -56,6 +57,8 @@ class OpenCodeProvider implements ModelProvider {
 
   @override
   String get id => _console == null ? 'deepseek' : 'opencode';
+  @override
+  String newTaskId() => taskIds.create();
 
   @override
   Future<String> webSearch(
