@@ -611,6 +611,10 @@ class DesktopSession extends ChangeNotifier {
         target.pending[message['id'] as String] = message;
       case 'input.committed':
         target.pending.remove(event['data']?['message_id']);
+        if (event['data']?['delivery'] == 'steer') {
+          target.streamingText = '';
+          target.retryStatus = null;
+        }
       case 'input.discarded':
         for (final id in event['data']['ids'] as List) {
           target.pending.remove(id);

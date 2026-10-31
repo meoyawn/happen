@@ -3076,6 +3076,16 @@ change in its owning layer, and group the important context-bloat regressions
 under `test/context/`. The user also asked whether refreshing tools is necessary
 when code mode can discover them later.
 
+After comparing OpenCode-style discovery, the user reaffirmed following the local
+Codex checkout. `git -C /Users/meoyawn/Developer/github/codex rev-parse HEAD`
+still reports the pinned revision below. Its search spec accepts `query` and
+`limit`; its handler returns declarations for code-mode calls and native tool
+definitions for direct calls. Happen already implements this separation. Keep
+both paths and the existing search interface. Native loading retains its schema
+lifecycle cost in exchange for direct calls; no task-quality comparison establishes
+a benefit from removing it. The documented ranking and result-shape differences
+remain; this decision does not claim identical search results or full Codex parity.
+
 Keep catalog change checks, but separate them from schema loading. A model-step
 boundary checks revisions so newly available namespaces and changes/removals of
 already loaded native tools remain visible. Code-mode cells read the current host
@@ -3232,3 +3242,76 @@ Tradeoff: an incomplete cache requires a history replay on selection. This
 targets missing admission, not arbitrary missing events in an otherwise complete
 cache. Compaction still leaves usage explicitly unknown until a model response
 measures the replacement context; no new size estimate is presented as measured.
+
+## 2026-10-31 — Steering preempts in-flight inference
+
+User requirement: repair slow steering in `packages/agent` and follow the local
+Codex checkout. Previously, accepted input waited for the complete provider
+response, which could leave a correction pending throughout long reasoning.
+Supersede the earlier next-model-boundary delivery policy for in-flight inference.
+
+Give each ordinary model request a fresh cancellation token linked to its turn.
+Steering queues the input and cancels only that request. The existing isolate RPC
+cancellation forwards its operation ID to the network owner, releasing the owned
+provider request without cancelling tools, other requests, or the shared pool.
+Resume the same turn, committing steering and its effort update in their existing
+atomic batch before sampling again. Cancellation caused by Stop still ends the
+turn; genuine provider failures keep their existing failure/recovery paths.
+Recheck pending steering before starting inference so arrivals during catalog
+refresh or automatic compaction do not start another request with stale input.
+Ignore stream events after cancellation. Desktop clears abandoned partial text
+and reconnecting state when the steered input is committed.
+
+Pinned evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`, inspected
+in `/Users/meoyawn/Developer/github/codex`:
+
+- `codex-rs/features/src/lib.rs`: `instant_interrupt` is enabled by default.
+- `codex-rs/core/src/session/mod.rs` and `step_context.rs`: each sampling step
+  owns a separate preemption token.
+- `codex-rs/core/src/session/input_queue.rs`: `watch_user_input` subscribes
+  before checking already pending user input and signals that token.
+- `codex-rs/core/src/session/turn.rs`: stream reads and retry waits observe
+  preemption separately from turn cancellation, then continue the same turn with
+  queued input; already dispatched native tools settle before continuation.
+- `codex-rs/core/tests/suite/pending_input.rs`: the preemption regression keeps
+  the original stream gated until the replacement request arrives.
+
+Reproduce source inspection with `git show REVISION:PATH` in that checkout.
+Verification environment: macOS arm64, Dart 3.13.7, Flutter 3.47.8.
+
+    dart test test/server_test.dart --plain-name 'steering preempts inference' --reporter expanded
+    cd packages/desktop
+    flutter test --no-pub test/session_test.dart --plain-name 'streams nested code-mode calls' --reporter expanded
+
+The server regression first failed with `Steering did not advance the active
+turn`. It now passes two successive interruptions with both original streams
+still blocked, completed tool state preserved, no stale-input retries, ordered
+effort/input updates, and the queued message starting its own later turn. The
+desktop regression independently reproduced abandoned `Hello` text after steering
+was committed and passes after clearing that projection. It exercises the existing
+real UDS session, receipt timestamps, effort selection and restart behavior.
+
+Full verification from the repository root:
+
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    git diff --check
+
+All 89 repository tests and all 45 desktop tests pass. Analysis and whitespace
+checks pass. Official Dart MCP hot reload succeeds in the native app, with no
+runtime errors before or after reload. No Dart formatter was run. These are local
+provider fixtures, not live-model latency measurements. Suspended async turn
+bodies are not replaced by hot reload; an already running turn adopts the new
+loop on its next turn invocation.
+
+Limits: this adopts Codex's ordinary inference preemption, not its Responses Lite
+drain protocol or yielded code-mode runtime. Running tools and automatic
+compaction retain their existing cancellation owners and settle before steering
+is committed. Happen still commits model output at response completion; abandoned
+partial output and unreported provider usage are not durable conversation data.
+Repeated steering can therefore discard inference work. No provider wire format,
+tool capability, task-history schema, or one-time operational repair was added.

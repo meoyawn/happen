@@ -81,11 +81,13 @@ class _Agent {
   _Agent(this.config);
   final Json config;
   CancellationToken? _cancellation;
+  CancellationToken? _responseCancellation;
   bool _accepting = false;
   final _steering = <Json>[];
   void steer(Json message) {
     if (_accepting && _cancellation?.isCancelled == false) {
       _steering.add(message);
+      _responseCancellation?.cancel();
     }
   }
 
@@ -438,18 +440,40 @@ class _Agent {
         settings: baseline,
         effectiveReasoning: effort,
       );
-      Future<Json> networkCall(String method) async {
-        cancellation.throwIfCancelled();
+      Future<Json> networkCall(String method, [CancellationToken? token]) async {
+        final active = token ?? cancellation;
+        active.throwIfCancelled();
         return jsonObject(
           await callIsolate(
             network,
             method,
             {'provider': config['provider'], ...request().toJson()},
-            onEvent: event,
+            onEvent: (value) {
+              if (!active.isCancelled) event(value);
+            },
             timeout: null,
-            cancellation: cancellation,
+            cancellation: active,
           ),
         );
+      }
+
+      Future<ModelReply?> respond() async {
+        // Steering preempts inference, without cancelling the turn or its tools.
+        final token = _responseCancellation = CancellationToken();
+        final link = CancellationHook(cancellation, token.cancel);
+        try {
+          // Input may arrive during catalog refresh or automatic compaction.
+          if (_steering.isNotEmpty) return null;
+          return ModelReply.fromJson(await networkCall('respond', token));
+        } on CancelledException {
+          cancellation.throwIfCancelled();
+          if (!token.isCancelled || _steering.isEmpty) rethrow;
+          return null;
+        } finally {
+          _responseCancellation = null;
+          link.dispose();
+          token.cancel();
+        }
       }
 
       Future<String> searchWeb(Object? commands, CancellationToken token) async =>
@@ -547,9 +571,9 @@ class _Agent {
           await compactContext('threshold');
         }
         final modelTime = Stopwatch()..start();
-        final ModelReply reply;
+        final ModelReply? reply;
         try {
-          reply = ModelReply.fromJson(await networkCall('respond'));
+          reply = await respond();
         } on RemoteFailure catch (error) {
           if (error.code == 'context_overflow' && !overflowRecovered) {
             overflowRecovered = true;
@@ -559,6 +583,7 @@ class _Agent {
           rethrow;
         }
         cancellation.throwIfCancelled();
+        if (reply == null) continue;
         telemetry.observe('model', modelTime.elapsed);
         telemetry.add('model_requests');
         countUsage(reply.usage);

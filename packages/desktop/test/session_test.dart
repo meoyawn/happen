@@ -153,10 +153,12 @@ void main() {
           (item) => item['type'] == 'custom_tool_call_output',
         );
         if (called) {
-          request.response.write(
-            'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
-          );
-          await request.response.flush();
+          if (prompt == 'hello') {
+            request.response.write(
+              'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+            );
+            await request.response.flush();
+          }
           await firstReply.future;
         }
         request.response.write(
@@ -248,22 +250,26 @@ void main() {
       desktop.chooseReasoning('max');
       expect(desktop.reasoning, 'max');
       expect(await desktop.send('queued follow-up'), isTrue, reason: desktop.error);
+      final pendingTimes = {
+        'queued follow-up': conversation(desktop.task!).singleWhere((entry) => entry.role == 'Queued').timestamp,
+      };
       await desktop.chooseDeliveryMode('steer');
       desktop.chooseReasoning('high');
       expect(desktop.reasoning, 'high');
+      final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'input.pending' && event['data']['prompt'] == 'steer this turn');
       expect(await desktop.send('steer this turn'), isTrue, reason: desktop.error);
+      pendingTimes['steer this turn'] = DateTime.parse((await steeredPending)['data']['created_at'] as String);
+      await _until(desktop, () => desktop.task!.pending.length == 1);
+      expect(desktop.task!.streamingText, isEmpty, reason: 'Interrupted inference must not leave abandoned partial text visible');
+      expect(desktop.task!.retryStatus, isNull, reason: 'Steering is an input change, not stream recovery');
       await expectLater(desktop.client.request('task.send', {
         'task_id': desktop.task!.id, 'prompt': 'invalid effort', 'reasoning': 'ultra',
       }), throwsA(isA<StateError>().having((error) => error.message, 'message', contains('Unsupported single-agent GPT reasoning effort'))));
       await expectLater(desktop.client.request('task.send', {
         'task_id': desktop.task!.id, 'prompt': 'change model', 'model': 'gpt-6.1-sol',
       }), throwsStateError);
-      expect(desktop.task!.pending.length, 2);
-      expect(conversation(desktop.task!).map((e) => e.role), containsAll(['Queued', 'Steer pending']));
-      final pendingTimes = {
-        for (final entry in conversation(desktop.task!).where((entry) => entry.role == 'Queued' || entry.role == 'Steer pending'))
-          entry.text: entry.timestamp,
-      };
+      expect(desktop.task!.pending.length, 1);
+      expect(conversation(desktop.task!).map((e) => e.role), contains('Queued'));
       expect(pendingTimes.keys, unorderedEquals(['queued follow-up', 'steer this turn']));
       expect(pendingTimes.values, everyElement(isNotNull), reason: 'Pending messages show their actual send time');
       expect(desktop.task!.events.values.where((e) => e['type'] == 'turn.started').length, 1);
@@ -274,7 +280,7 @@ void main() {
         conversation(desktop.task!)
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        List.filled(3, 'Hello from the server.'),
+        List.filled(2, 'Hello from the server.'),
       );
       final timeline = desktop.task!.events.values.toList();
       final starts = timeline.where((e) => e['type'] == 'turn.started').toList();
@@ -401,7 +407,7 @@ void main() {
         restored
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        List.filled(3, 'Hello from the server.'),
+        List.filled(2, 'Hello from the server.'),
       );
       expect(
         restored

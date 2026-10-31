@@ -65,7 +65,12 @@ void main() {
             await request.response.close();
             return;
           }
-          if (prompt == 'stream') {
+          final completedCalls = input
+              .skip(userIndex + 1)
+              .where((item) => item['type'] == 'custom_tool_call_output')
+              .length;
+          final hasOutput = completedCalls >= (prompt == 'long' ? 70 : 1);
+          if (prompt == 'stream' || prompt == 'steering' && hasOutput) {
             request.response.bufferOutput = false;
             streaming.add(request.response);
             request.response.write('data: {"type":"response.created"}\n\n');
@@ -74,11 +79,6 @@ void main() {
             await request.response.close();
             return;
           }
-          final completedCalls = input
-              .skip(userIndex + 1)
-              .where((item) => item['type'] == 'custom_tool_call_output')
-              .length;
-          final hasOutput = completedCalls >= (prompt == 'long' ? 70 : 1);
           if (prompt == 'recover' && hasOutput && interruptedReplies++ < 2) {
             request.response.write('data: {"type":"response.output_text.delta","delta":"Abandoned partial answer"}\n\n');
             await request.response.close();
@@ -277,6 +277,69 @@ void main() {
       expect(resumed['type'], 'turn.completed', reason: resumed.toString());
       expect(requests.length, 142);
       expect((requests.last['input'] as List).where((item) => item['type'] == 'custom_tool_call_output'), hasLength(140));
+    });
+
+    test('steering preempts inference, preserves completed work, and leaves queued input for its turn', () async {
+      final events = <Json>[];
+      final subscription = client.events.stream.listen(events.add);
+      addTearDown(subscription.cancel);
+      final id = jsonObject(await client.request('task.start', {
+        'cwd': work.path, 'prompt': 'steering', 'reasoning': 'low',
+      }))['task_id'] as String;
+      Future<void> until(bool Function() ready) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (!ready()) {
+          if (DateTime.now().isAfter(deadline)) fail('Steering did not advance the active turn');
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+      }
+      await until(() => streaming.isNotEmpty);
+      expect(await File('${work.path}/result.txt').readAsString(), '42\n');
+      await client.request('task.send', {
+        'task_id': id, 'prompt': 'continue', 'delivery': 'queue', 'reasoning': 'medium',
+      });
+      expect(requests, hasLength(2), reason: 'Queue must not interrupt inference');
+      final firstSteer = jsonObject(await client.request('task.send', {
+        'task_id': id, 'prompt': 'stream', 'delivery': 'steer', 'reasoning': 'high',
+      }));
+      // Both provider streams stay blocked. Only steering can advance the turn.
+      await until(() => streaming.length == 2);
+      final finished = Completer<void>();
+      final terminal = <Json>[];
+      final terminals = client.events.stream.where((event) => {
+        'turn.completed', 'turn.cancelled', 'turn.failed',
+      }.contains(event['type'])).listen((event) {
+        terminal.add(event);
+        if (!finished.isCompleted && (event['type'] != 'turn.completed' || terminal.length == 2)) finished.complete();
+      });
+      addTearDown(terminals.cancel);
+      final secondSteer = jsonObject(await client.request('task.send', {
+        'task_id': id, 'prompt': 'continue', 'delivery': 'steer', 'reasoning': 'max',
+      }));
+      await finished.future.timeout(const Duration(seconds: 5));
+      expect(terminal.map((event) => event['type']), ['turn.completed', 'turn.completed']);
+      expect(events.where((event) => event['type'] == 'model.retrying'), isEmpty);
+      expect(requests, hasLength(7), reason: 'Interrupted requests must not retry stale input');
+      final history = (await client.request('history.page', {'task_id': id}) as List).map(jsonObject).toList();
+      expect(history.where((event) => event['type'] == 'model.completed'), hasLength(5));
+      expect(history.where((event) => event['type'] == 'tool.started'), hasLength(3));
+      final inputs = history.where((event) => event['type'] == 'input.committed').toList();
+      expect(inputs.map((event) => event['data']['message_id']).skip(1).take(2), [firstSteer['message_id'], secondSteer['message_id']]);
+      final commits = events.where((event) => event['type'] == 'input.committed').toList();
+      expect(commits.take(3).map((event) => event['turn_id']).toSet(), {terminal.first['turn_id']});
+      expect(commits.last['turn_id'], terminal.last['turn_id']);
+      expect(terminal.last['turn_id'], isNot(terminal.first['turn_id']));
+      for (final (request, effort) in [(requests[2], 'high'), (requests[3], 'max'), (requests[5], 'medium')]) {
+        final input = (request['input'] as List).map(jsonObject).toList();
+        final user = input.lastIndexWhere((item) => item['role'] == 'user');
+        expect(input[user - 1], {'type': 'configuration_update', 'reasoning': {'effort': effort}});
+        expect(request['reasoning'], {'effort': 'low'});
+        expect(input.take((requests[1]['input'] as List).length), requests[1]['input']);
+      }
+      expect(jsonDecode((requests[4]['input'] as List).last['output'] as String)['output'], ['42']);
+      expect(jsonDecode((requests[6]['input'] as List).last['output'] as String)['output'], ['42']);
+      expect(releaseStreams.isCompleted, isFalse);
+      expect(jsonObject(await client.request('telemetry'))['resident_tasks'], 0);
     });
 
     test('interrupted model streams recover without repeating executed tools', () async {
