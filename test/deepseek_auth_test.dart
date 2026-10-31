@@ -364,6 +364,26 @@ void main() {
     await response.drain<void>();
   });
 
+  test('sign-out cancels shared refresh and permits a fresh login without restoring removed credentials', () async {
+    await login();
+    final waiting = Completer<void>();
+    tokenHandler = (request, _) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write('{"access_token":');
+      await request.response.flush();
+      waiting.complete();
+    };
+    final outcome = expectLater(auth.credentials(refresh: true), throwsA(isA<CancelledException>()));
+    await waiting.future.timeout(const Duration(seconds: 2));
+    await auth.signOut().timeout(const Duration(seconds: 2));
+    await outcome;
+    expect(await auth.status(), 'signed_out');
+    expect(await File('${directory.path}/opencode-auth.json').exists(), isFalse);
+    tokenHandler = (request, _) => _reply(request, _token());
+    await login();
+    expect(await auth.status(), 'signed_in');
+  });
+
   test('refresh denials and changed organization do not expose response data or replace saved credentials', () async {
     await login();
     final file = File('${directory.path}/opencode-auth.json');

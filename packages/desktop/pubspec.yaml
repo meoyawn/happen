@@ -10,10 +10,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_markdown_plus: ^1.0.12
   macos_file_picker: ^2.0.0
+  markdown: ^7.3.1
   protocol: any
+  re_highlight: ^0.0.3
   server: any
   sqlite3: ^3.8.0
+  val_highlight: ^0.1.1
 
 dev_dependencies:
   flutter_test:

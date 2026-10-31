@@ -126,6 +126,22 @@ class TaskStore {
     return metadataValue(key);
   }
 
+  Json archive(bool archived) {
+    final timestamp = archived ? DateTime.now().toUtc().toIso8601String() : null;
+    return append(
+      archived ? 'task.archived' : 'task.unarchived',
+      {'archived_at': timestamp}, metadata: {'archived_at': timestamp},
+    );
+  }
+
+  Json maintain() {
+    if (metadataValue('archived_at') == null) return {'archived': false};
+    // History remains recoverable. Reclaim the WAL only when SQLite can do so
+    // without waiting for another connection; canonical history is never deleted.
+    final checkpoint = db.select('PRAGMA wal_checkpoint(TRUNCATE)').single;
+    return {'archived': true, 'checkpointed': checkpoint.values.first == 0};
+  }
+
   Object? metadataValue(String key) {
     final result = db.select('SELECT value FROM metadata WHERE key IS ?', [
       key,
@@ -431,6 +447,8 @@ class TaskStore {
           'turn.cancelled',
           'task.forked',
           'task.imported',
+          'task.archived',
+          'task.unarchived',
         ].contains(boundary.first['type'])) {
       throw StateError('Forks require a terminal turn boundary');
     }

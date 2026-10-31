@@ -1,0 +1,187 @@
+{
+  "timestamp": "2026-10-31T00:04:39.481932Z",
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "os": "macos",
+  "model": "gpt-6.1-sol",
+  "reasoning": "low",
+  "results": [
+    {
+      "model_transport": "http",
+      "elapsed_ms": 9186,
+      "checks": {
+        "dart_mcp_ready": true,
+        "dart_tools_loaded": true,
+        "declarations_persisted": true,
+        "direct_call_executed": true,
+        "answer_matches_process": true
+      },
+      "telemetry": {
+        "counters": {
+          "model_requests": 2,
+          "input_tokens": 19839,
+          "cached_input_tokens": 6016,
+          "cache_write_tokens": 0,
+          "output_tokens": 40,
+          "code_cells": 1
+        },
+        "timings_us": {
+          "model": {
+            "count": 2,
+            "sum": 5307545,
+            "max": 2699825,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              2,
+              0
+            ]
+          },
+          "code": {
+            "count": 1,
+            "sum": 2798,
+            "max": 2798,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "turn": {
+            "count": 1,
+            "sum": 6843455,
+            "max": 6843455,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "model_transport": "websocket",
+      "elapsed_ms": 10296,
+      "checks": {
+        "dart_mcp_ready": true,
+        "dart_tools_loaded": true,
+        "declarations_persisted": true,
+        "direct_call_executed": true,
+        "answer_matches_process": true
+      },
+      "telemetry": {
+        "counters": {
+          "model_requests": 2,
+          "input_tokens": 19844,
+          "cached_input_tokens": 15744,
+          "cache_write_tokens": 0,
+          "output_tokens": 41,
+          "code_cells": 1
+        },
+        "timings_us": {
+          "model": {
+            "count": 2,
+            "sum": 6316294,
+            "max": 3556446,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              2,
+              0
+            ]
+          },
+          "code": {
+            "count": 1,
+            "sum": 3770,
+            "max": 3770,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "turn": {
+            "count": 1,
+            "sum": 7735282,
+            "max": 7735282,
+            "bounds": [
+              100,
+              1000,
+              10000,
+              100000,
+              1000000,
+              10000000
+            ],
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

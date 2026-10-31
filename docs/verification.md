@@ -6,20 +6,26 @@ operating system, architecture, Dart version, model, effort, and API route.
 
 ## Local checks
 
-Run `dart format --output=none --set-exit-if-changed bin packages test tool`,
-`dart analyze`, and `dart test`. Run focused tests while developing, then the
+Run `dart analyze`, `dart test`, and `git diff --check`. Do not run `dart format`
+(see `AGENTS.md`); preserve existing Dart formatting. Run focused tests while developing, then the
 complete repository suite after integration.
 
 Use `git submodule update --init --recursive` and `dart pub get` first in a fresh
 checkout. See [api.md](api.md) for configuration and the public API.
 
-- Format, static analysis, and focused behavior tests. Exercise actual transport,
+- Static analysis, whitespace checks, and focused behavior tests. Exercise actual transport,
   storage, tool, and WebSocket boundaries; avoid tests that repeat implementation.
 - Verify streaming tool calls, provider state after save/load, append-only GPT
   effort updates, fixed DeepSeek effort, cancellation, incomplete streams, restart,
   independent forks, and validated export/import.
 - Verify global MCP processes are shared across tasks and supervised; task
   cancellation must not terminate unrelated calls or the shared server.
+- Run `dart test test/server_tools_test.dart` for append-only GPT declarations
+  after config edits during active and idle tasks, direct and code-mode calls,
+  invalid edits, removals, and catalog restoration after compaction and restart.
+  It also stops the server before editing config, restarts it, and resumes tasks
+  after tool additions, changes, and removals. A task with no previous MCP tools
+  is stopped during an active model response and resumed first after restart.
 - Run `dart test test/config_test.dart test/config_reload_test.dart test/mcp_test.dart`
   for YAML validation, legacy fallback, automatic reloads through real file saves,
   process replacement/removal, unchanged subscriptions, rapid edit/revert, and
@@ -34,6 +40,13 @@ checkout. See [api.md](api.md) for configuration and the public API.
 - Record AOT measurements and sustained 100-cell/second behavior alongside the
   existing JIT evidence. Record environment and commands with results.
 - Keep credentials out of output, telemetry, history, and evidence artifacts.
+
+Run `flutter test --no-pub packages/desktop/test --reporter expanded` for desktop
+streaming, nested tools, project identity changes, settings persistence, account
+controls, keyboard input, archive/restore, and toast expiry. `moon run dev` verifies
+the actual macOS build; use the Dart MCP hot-reload/runtime-error tools against
+that app's VM service. Native menu and browser return behavior also need a native
+build. Fixture tests must not sign out or replace the user's live credentials.
 
 ## Live comparisons
 
@@ -58,12 +71,12 @@ limitation from tests of the adapter using recorded or local protocol fixtures.
 Never label a local fixture run as live model verification.
 
 For OpenCode Console, run `dart run bin/agent.dart login --provider opencode` and
-approve the device in the signed-in browser. Configure `providers.deepseek.backend`
-as `opencode` and the exact model as `deepseek-v4.1-flash-free`, as shown in
+approve the device in the signed-in browser. Select provider `opencode` and the
+exact model `deepseek-v4.1-flash-free`, as shown in
 [api.md](api.md). Check authentication independently from inference. The package
 owns its credentials; do not copy the OpenCode CLI's tokens into Happen.
 
-Start with `dart run bin/agent.dart exec --provider deepseek --reasoning low
+Start with `dart run bin/agent.dart exec --provider opencode --reasoning low
 "Reply READY only. Do not use tools."`. Compare with
 `opencode run --standalone --log-level none --model
 opencode/deepseek-v4.1-flash-free#low --format json "Reply READY only. Do not use tools."`
@@ -92,6 +105,14 @@ repeated runs and larger tasks are needed to characterize recall or caching.
 
 `tool/verify_compaction.dart /path/to/agent-data` retains the smaller direct
 Responses protocol probe used for the initial native-compaction evidence.
+
+Run `dart run tool/verify_mcp_tools.dart` from this checkout with an existing Codex
+login to verify config-driven tools over both GPT transports. The optional
+positional argument selects the authentication file. Each task starts without
+MCP tools, adds the real Dart MCP and a local probe through a temporary config,
+then calls the newly declared probe directly. Checks compare the returned PID
+with the supervised process and inspect persisted tool declarations. Credentials
+remain private references, and the temporary config and processes are removed.
 
 ## Runtime measurements
 

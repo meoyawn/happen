@@ -928,3 +928,503 @@ be distinguished from an intentional complete config; use atomic saves for
 multi-step programmatic writes. The lifecycle evidence is from local subprocess
 and HTTP fixtures on macOS, not a new independently deployed MCP interoperability
 test or verification on other operating systems.
+
+## 2026-10-31 — Desktop tool detail state
+
+Give the Code & output expansion tile and its selectable text distinct, stable
+`PageStorageKey`s beneath the existing tool-ID key. Expansion state is a boolean;
+the selectable text's internal scroll position is a double. Sharing a storage
+identifier makes the first expansion fail in `ScrollPosition.restoreScrollOffset`
+with `type 'bool' is not a subtype of type 'double?'`, followed by the reported
+`_InactiveElements.remove` assertion when Flutter rebuilds the failed subtree.
+The unkeyed inner tile also shared its parent's expansion state.
+
+Evidence: the desktop widget regression fails before the repair and passes after
+it. It opens details during a running call, receives nested tool results, closes
+and reopens the parent with details collapsed, and opens nested output. Existing
+session tests do not render widgets. Inspected the installed Flutter 3.47.8 source
+at `737ba8f885`: `widgets/page_storage.dart`, `widgets/expansible.dart`,
+`widgets/scroll_position.dart`, and `material/selectable_text.dart` under
+`packages/flutter/lib/src`. PageStorage derives identifiers from the ancestor
+PageStorageKey path; the text scroller and expansion controller otherwise use the
+same path.
+
+Reproduction and verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test test/app_test.dart --no-pub --reporter expanded
+    flutter test --no-pub --reporter expanded
+
+From the repository root, `dart analyze packages/desktop` reports no issues. The
+desktop suite passes all three tests, and the running app accepts hot reload.
+Opening live tool details after reload renders selectable output with zero error
+widgets and no reported runtime errors. The keys are scoped by each tool's
+existing key and preserve independent expansion state and text scroll offsets.
+Verification on other operating systems remains unmeasured.
+
+The broader `dart test --reporter expanded` check in the current working tree
+passes 38 tests and fails `test/compaction_test.dart` and `test/server_test.dart`
+with `Task is busy`; a focused rerun reproduces both failures. Those tests import
+the server, not the desktop UI. Whole-repository `dart analyze` also reports one
+`use_null_aware_elements` informational lint in `packages/server/lib/src/network.dart`.
+
+## 2026-10-31 — Append-only MCP tool updates in existing tasks
+
+User requirement: changing global config must make newly configured server tools
+available to an existing GPT task at its next model request, whether the task is
+running or idle. Keep the task's original top-level tool list and instructions
+fixed. Append shared `tools` records for new or changed MCP definitions, encoded
+as developer-role `additional_tools` by the existing GPT adapter. Commit the
+declarations, availability notice, and MCP snapshot together. Unchanged tools
+are not redeclared; removals append a notice and routing checks the live registry.
+Config changes alone do not start a model turn.
+
+Expose direct calls with the pinned Codex namespace convention
+`mcp__SERVER.TOOL`. Preserve existing code-mode names
+`tools.mcp__SERVER__TOOL`. The shared network owner routes both to the same
+supervised MCP connection, with caller cancellation and no automatic call retry.
+Catalog entries retain their existing flattened `name` and add `namespace` and
+`tool_name`, avoiding ambiguous splitting when names contain double underscores.
+Compaction replaces earlier harness MCP declarations/notices with the current
+catalog; all original updates remain in durable history.
+
+Refresh at each model-step boundary and before manual compaction. Reconcile the
+config through the network owner's serialized reload path before returning the
+catalog, since a tool can write the config and finish before the file watcher's
+200 ms debounce. Invalid/missing edits retain the running catalog and its existing
+sanitized config diagnostic. This adds a bounded config read per model step;
+unchanged settings do not reconnect processes. File notifications still update
+shared processes while tasks are idle. Connecting or changing credentials remains
+separate from declaring tools.
+
+Sources inspected on macOS arm64, Dart 3.13.7:
+
+- Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`,
+  `codex-rs/core/src/context/world_state/top_level_tools.rs` appends changed
+  declarations and textual removals; `codex-rs/codex-mcp/src/tools.rs` and
+  `codex-rs/core/src/tools/handlers/mcp.rs` establish canonical namespace/member
+  identities and MCP function declarations. Reproduce with `git show COMMIT:PATH`
+  in the pinned Codex checkout.
+- The [OpenAI prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching#manage-tools-with-append-only-updates)
+  documents preserving tool-loading history with `additional_tools`. Its
+  [input-item schema](https://developers.openai.com/api/reference/resources/conversations/methods/create)
+  specifies developer role and a tools list. Read 2026-10-31.
+
+Verification:
+
+- `dart test test/server_tools_test.dart` failed before the repair because the
+  model's next request contained no `additional_tools` declaration. It now passes
+  using real config writes and a supervised stdio process. It covers an edit
+  performed by the running task, a changed schema/description between turns,
+  append-only input prefixes, unchanged initial tools, declaration deduplication,
+  invalid config, direct and code-mode execution, removal, and restoration after
+  compaction/restart. It waits for the separate startup maintenance sweep before
+  testing restart continuation.
+- `dart test test/server_tools_test.dart test/gpt_test.dart test/deepseek_test.dart test/mcp_test.dart -r expanded`
+  passes all 15 focused tests. Analysis of the changed server/agent/MCP files,
+  regression and verification script reports no issues; `git diff --check`
+  passes. No Dart formatter was run.
+- The final full `dart test -r expanded` run in the concurrently edited checkout
+  passed 42 tests and failed the separate archive/restore case in
+  `test/server_test.dart`: its restored turn returned `turn.failed` instead of
+  `turn.completed`. This case exercises the concurrent maintenance/archive
+  changes. Whole-repository `dart analyze` reported one informational unnecessary
+  import in the concurrently added `packages/desktop/test/view_test.dart`.
+- `dart run tool/verify_mcp_tools.dart` passes against live `gpt-6.1-sol`, low
+  effort, over HTTP/SSE and WebSocket with a private UDS client. Both tasks began
+  without MCPs, then loaded the actual `dart mcp-server --disable analysis` and a
+  local probe from config. GPT called the new namespaced probe directly and
+  returned its supervised PID. Sanitized measurements and checks are in
+  [mcp-tools-live.json](evidence/mcp-tools-live.json). Elapsed times were 9.2 s and
+  10.3 s, including the initial turn and server discovery; these are single-run
+  functional observations, not latency or cache benchmarks.
+
+This evidence was collected from the uncommitted working tree based on Happen
+`3229e0fc5909b0686f805632b236247dff674146`.
+
+Limits: the live run verifies one GPT model and current Dart MCP discovery, plus
+execution of the independent probe. It does not verify every Dart tool or new
+live DeepSeek behavior. Existing DeepSeek adapters consume the same shared tool
+records through their native ordered-addition or Chat catalog paths; their local
+adapter tests pass. Other operating systems and repeated live compactions remain
+unmeasured for this change.
+
+## 2026-10-31 — Tool changes while the server is stopped
+
+User requirement: stop the server, edit global config, restart it, and resume an
+existing task with the new tools. The task may have had no MCPs previously, and
+shutdown may interrupt an active turn.
+
+Use the same durable-snapshot comparison as live updates. A fresh network owner
+discovers the current validated config; the resumed agent reads `mcp_snapshot`
+from task storage and appends any differences before requesting a model response.
+This does not depend on a file-watcher notification from the previous server or
+change the frozen initial tool prefix. New and changed definitions use the
+existing `additional_tools` encoding; removals append availability notices and
+the current registry rejects stale calls. No further provider or storage format
+change was needed.
+
+Extended the existing server-level test instead of introducing a second fixture
+or a new runtime hook. It closes the embedded server and its owners before each
+config edit, creates a fresh server, and immediately resumes the same task IDs.
+It checks changed definitions, removal, a completely new server, preserved input
+prefixes, and successful calls against actual supervised subprocess PIDs. The
+task with no prior MCPs is stopped with an HTTP/SSE model response in flight and
+resumed first after adding the new MCP offline. The earlier explicit wait for
+startup maintenance was removed; task admission now uses the current server's
+ordinary lifecycle. Compaction and unchanged-catalog restart remain covered.
+
+Verification on macOS arm64, Dart 3.13.7:
+
+- `dart test test/server_tools_test.dart test/config_reload_test.dart test/compaction_test.dart test/server_test.dart -r expanded`
+  passed all nine focused tests before adding the in-flight shutdown case.
+- The final `dart test -r expanded` run, including that case, passed all 44 tests
+  in the current working tree.
+- `dart analyze test/server_tools_test.dart packages/agent packages/server packages/mcp`
+  reports no issues; `git diff --check` passes. No Dart formatter was run.
+
+The restart evidence uses the local GPT protocol fixture and fresh embedded
+server/network/storage owners. Live GPT acceptance of the same tool-update wire
+format is established by the preceding entry; that live run did not restart the
+server between config edits. Abrupt process termination and other operating
+systems were not measured in this follow-up.
+
+## 2026-10-31 — Desktop syntax highlighting and immutable snippets
+
+Use pure Dart parsing for desktop code-mode source, with JavaScript selected
+explicitly for `functions.exec` and legacy unnamespaced `exec`. Keep one
+`SelectableText.rich` for source and output so copying preserves their exact
+text. The output is plain text. Conversation source is immutable once received;
+cache derived spans by `(language, source)`, independently of transient tool
+objects and row lifetimes. Bound the LRU to 128 entries and 256 Ki UTF-16 source
+units. No tokenization happens on a cache hit.
+
+The reusable `highlightedCode` function supports all bundled languages and their
+aliases, including diff/patch. Use `val_highlight` 0.1.1 for its 57 grammar
+definitions (including generic/plain text); initialize `re_highlight` 0.0.3's
+194-language registry only when the requested language is absent from the fast
+registry. Do not auto-detect languages. Both engines are Dart implementations;
+the harness client's `shiki_flutter` 1.1.0 also defaults to pure Dart, but its
+TextMate/Oniguruma pipeline was substantially slower in this local comparison.
+This selects a faster scanner plus broader fallback rather than claiming VS Code
+token/theme fidelity.
+
+Resolve the fast scanner's interned scope stacks once, build flat spans from
+contiguous original-source ranges, and coalesce adjacent equal styles. The
+fallback renderer also builds flat spans, avoiding the dependency renderer's
+repeated copying of parent child lists. Resolve dotted scopes and inherited
+styles against the same GitHub light palette. Fast parsing is limited to 128 Ki
+source units; the regex fallback is limited to 16 Ki and 2,000 units per line.
+Larger, unsupported, or failed parses remain selectable verbatim. These are work
+bounds, not a hard CPU-time guarantee. A future diff viewer can use the same
+language API; a virtualized diff viewer is not implemented by this change.
+
+Evidence on macOS arm64 (Apple M1 Pro), Dart 3.13.7, Flutter 3.47.8, JIT:
+[measurements](evidence/desktop-highlighting.json) and
+[comparison source](evidence/desktop-highlight-comparison.dart.txt). The committed
+desktop benchmark uses 100 warm-up misses, 21 distinct-source samples per size,
+and 10,000 repeated cache hits. Warm uncached JavaScript parse/span construction
+medians were 0.327 ms for 1,010 units, 2.375 ms for 32,320, and 6.197 ms for
+101,000. Cached calls averaged under 1 us. Initial registry/JavaScript parse/render
+took 37.445 ms. A separate five-sample comparison at 32,320 units measured
+2.301 ms for this implementation, 195.179 ms for the stock `re_highlight`
+renderer, and 3,996.052 ms for Shiki with its pure Dart engine and token cache
+disabled for these inputs. These are synthetic repeated snippets and exclude
+Flutter layout/paint; they do not establish AOT performance or exhaustive
+language-quality equivalence.
+
+Source inspection: the pinned packages' highlighter, grammar compiler, scope
+table, JavaScript/diff grammars, token buffer, and renderer implementations, plus
+[val_highlight](https://pub.dev/packages/val_highlight),
+[re_highlight](https://pub.dev/packages/re_highlight), and
+[Shiki](https://pub.dev/packages/shiki_flutter) package documentation. Resolved
+versions and archive checksums are in `pubspec.lock`. The fast scanner compiles
+states lazily and caches compiled grammars; its result stores contiguous token
+ranges in integer buffers. Keeping the second parser costs an extra dependency
+and a cold initialization for less common languages. The new fast package's
+long-term maintenance and full-corpus fidelity remain unmeasured.
+
+Reproduce the desktop checks and benchmark:
+
+    cd packages/desktop
+    flutter analyze lib/app.dart lib/code_highlight.dart test/app_test.dart test/code_highlight_test.dart tool/bench_code_highlight.dart --no-pub
+    flutter test --no-pub --reporter expanded
+    flutter test tool/bench_code_highlight.dart --no-pub --reporter expanded
+
+To reproduce the comparison without adding Shiki to the application, create a
+temporary Flutter package with `flutter` and `flutter_test` SDK dependencies and
+`val_highlight: 0.1.1`, `re_highlight: 0.0.3`, `shiki_flutter: 1.1.0`. Copy
+`packages/desktop/lib/code_highlight.dart` into its `lib/` and the comparison
+source above into `test/comparison_test.dart`, then run `flutter pub get` and
+`flutter test test/comparison_test.dart --no-pub --reporter expanded`. Remove the
+temporary package afterwards.
+
+The focused checks protect JavaScript keyword/function colors, source/output
+selection text, expansion and task switching, aliases, embedded HTML/JavaScript,
+diffs, a fallback-only language, incomplete syntax, Unicode/CRLF, and plain-text
+fallbacks. All eight desktop tests pass, scoped analysis and whitespace checks
+pass. Hot reload succeeded in the running Happen application; VM inspection
+confirmed the new library/function is loaded, and no runtime errors were
+reported. The running route and task state were preserved. Other operating
+systems, production AOT timings, and real large-file rendering remain unmeasured.
+
+## 2026-10-31 — Thin desktop, accounts, and message delivery
+
+The user requested a minimal Flutter desktop that embeds the Dart server, uses
+UDS WebSockets, and preserves its running state during UI development. Root
+`moon run dev` launches `packages/desktop` with Flutter hot reload. Server,
+connection, and desktop database ownership begin in `initState` and end through
+coordinated close. Native menu/file-picker registrations require rebuilding the
+macOS runner. This follows the development objective in the user's
+[language article](https://adelnz.com/writing/a-self-modifying-ai-agent-part-one-choosing-a-language/);
+it does not promise that initialization or suspended async bodies are rerun by
+hot reload.
+
+The desktop's SQLite isolate owns UI settings, checkout identities, and task
+references. Task transcripts remain in the server's per-task stores. Stable
+checkout keys retain tasks through remote addition/removal/replacement; the
+current logical identity is a normalized Git remote or absolute local path.
+Authentication is stripped from remote identities. Multiple-server and SSH
+management is deferred, without binding task ownership to a mutable remote URL.
+
+Use the Harness client's `macos_file_picker` for folder selection. Settings is
+available through the gear and the native Command+, menu. Provider selection
+and Steer/Queue are app settings; composer controls contain model and reasoning.
+Enter sends and Shift+Enter explicitly replaces the current selection with a
+newline. Nested host-tool activity stays beneath its code-mode parent.
+
+Expose OpenCode as provider `opencode` independently of native DeepSeek. The old
+`deepseek` configuration with `backend: opencode` still routes existing tasks;
+its catalog entry declares `alias_for: opencode` so the desktop presents one
+account choice. OpenCode uses the already implemented exact free-model adapter,
+shared HTTP pool, and private Console login. No new model capabilities or paid
+fallback are advertised. Native DeepSeek remains an API-key option. Catalog
+status reveals no credential values.
+
+Each browser account has Sign in, Sign out, and Switch account controls. A
+successful login refreshes status, shows confirmation, and activates Happen's
+window. Sign-out cancels and awaits shared login/refresh work before deleting
+Happen's login or Codex reference; it does not delete another application's
+credentials. The GPT callback flushes its browser response before releasing the
+authorization code. Console device authorization still follows OpenCode
+`fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`, as recorded above.
+
+Steer appends input at the next model boundary; Queue starts subsequent turns in
+order. Admission is bounded to 32 pending messages and 512 KiB per task. Pending
+messages are memory-only until committed; cancellation/archive/failure discards
+the remainder. Persist the chosen UI behavior. Existing model/provider and
+reasoning-update contracts are unchanged.
+
+## 2026-10-31 — Recoverable archive and long-running server ownership
+
+User requirements: archive from the sidebar, list archives only in Settings,
+restore them later, run disk maintenance daily, and design for weeks of uptime.
+For retention the user explicitly chose Codex's behavior. Inspected Codex
+`a795f961be68383738e56ac396742b3e8451696a`,
+`codex-rs/thread-store/src/local/archive_thread.rs`, `unarchive_thread.rs`, and
+`codex-rs/app-server/src/request_processors/thread_processor.rs` using
+`git show COMMIT:PATH`: archive retains rollouts and supports restoration.
+
+Happen records archive/unarchive events and metadata atomically. Archive stops
+active work, discards pending input, releases client tools, and leaves history
+readable. Restore permits new turns. Desktop schema version 3 projects archive
+state into its sidebar references; only active tasks appear in that sidebar.
+Settings lists archived titles and projects with view/restore actions.
+
+Release idle task objects, agent isolates, and SQLite writers after work instead
+of retaining every visited task. Startup, daily, and explicit maintenance share
+one cancellable sweep. It processes stores sequentially, checkpoints archived
+WALs without waiting on another connection, and removes abandoned staging
+directories older than 24 hours when no history transfer is running. It skips
+symlinks, active tasks, and unrelated directory names. It never expires canonical
+history or deletes project files. Shutdown cancels maintenance and active work,
+waits for owned requests, and closes the shared network/MCP owner. WebSocket
+heartbeats and per-client request limits bound abandoned connection/request work.
+
+Two regressions informed admission ordering. Startup maintenance formerly
+returned `Task is busy` to an immediate resume; requests now wait for that task's
+background maintenance to finish. Immediate archive could cancel the first turn
+before configuration was saved, leaving restoration with `Expected a JSON object`.
+The server now commits initial task configuration before the agent can be
+cancelled. The existing server archive test failed before and passes after this
+repair; it also exercises twelve completed tasks with zero retained task owners,
+history retention, restoration, and safe staging cleanup.
+
+The archive toast explicitly uses `persist: false`, a three-second duration, and
+replaces old notifications. Flutter 3.47.8 at `737ba8f885` defaults SnackBar
+persistence to true when an action exists (`material/snack_bar.dart`). The widget
+regression reproduced the lingering Undo toast after four seconds, then passed
+with explicit expiry. Permanent Restore remains available in Settings.
+
+Verification environment: macOS arm64, Dart 3.13.7, Flutter 3.47.8. Reproduction:
+`dart test -r expanded`, `flutter test --no-pub packages/desktop/test -r expanded`,
+`dart analyze`, `git diff --check`, and root `moon run dev`. Fixtures cover
+UDS execution on the new and legacy OpenCode routes, sanitized hosted denials,
+sign-out during refresh, browser login cancellation/denial, archive persistence,
+keyboard behavior, and archive visibility/restore/expiry. The app was rebuilt,
+hot reloaded, inspected, and reported no runtime errors. Local automated menu
+clicking was unavailable because macOS denied assistive access; native menu
+wiring was compiled, and Settings was verified through the running Flutter UI.
+
+These are lifecycle regressions and live desktop checks, not a multi-week soak
+or a claim about crash/power-loss durability. Archived transcript storage still
+grows with retained history. New live OpenCode inference was not retried; the
+earlier hosted-limit evidence still applies. Custom desktop styling is deferred
+to [issue #2](https://github.com/meoyawn/happen/issues/2), as requested by the user.
+
+## 2026-10-31 — Desktop conversation rendering and durable timing
+
+User requirement: make the native desktop transcript a conversation, with user
+messages on the right, rendered Markdown answers, collapsible tools, images,
+message times, and elapsed turn times. Use the existing Flutter client; keep
+execution and history behind the server. The harness client is the closer
+reference than OpenCode's Solid/WebView presentation. This adds conversation
+behavior and uses the existing visual theme; it does not introduce a design system.
+
+Separate the transcript from account/sidebar/composer code. Give visible rows
+stable event-derived identities. Render user messages in compact bubbles and
+assistant text across the reading column. Tools and visible reasoning summaries
+start collapsed; nested call and Code & output state retain distinct storage
+identifiers. Never render opaque provider replay state. Preserve the existing
+bounded syntax highlighter and exact source/output copying.
+
+Use `flutter_markdown_plus` 1.0.12 with `markdown` 7.3.1 for GitHub-flavored
+Markdown, selectable prose, headings, lists, tables, links and inline formatting.
+Custom fenced-code blocks provide explicit-language highlighting, copying and
+line wrapping. Wide tables and code scroll horizontally. Unchanged Markdown
+retains its parsed widget state during other rows' updates. This avoids importing
+the harness client's much larger annotation/browser/diagram integration.
+
+Markdown raster images support HTTP(S), data URLs, absolute local files, and
+project-relative paths. Image previews support zoom and show readable fallbacks
+for invalid or missing content. Decode inline images only below a 24 MiB encoded
+source bound. Recognize MCP image content in tool result envelopes when their
+disclosure opens; preserve raw results separately. This is display support, not
+image attachment submission or a change to provider image-input capabilities.
+HTML execution, SVG, math, and Mermaid rendering are not implemented here.
+
+Auto-follow new output only while the reader follows the end. Manual scrolling
+or opening a disclosure pauses following; Jump to latest resumes it. Late image
+layout and lazy row measurements can update the bottom position. A small owned
+timer updates only the running-turn label and is cancelled when that row leaves.
+
+Display recorded message timestamps in the machine's local timezone, with an
+exact timestamp/timezone tooltip. Derive completed, stopped and failed turn
+durations, and tool durations, from durable start/terminal event timestamps.
+Missing historical times stay unknown. Wall-clock changes can affect these
+durations; they are not a separate monotonic performance measurement.
+
+Add server-owned pending `created_at` and committed `data.sent_at` timestamps.
+Direct inputs record receipt time too. Queue/steer commitment preserves the
+original receipt time, rather than replacing it with processing time. These
+fields remain outside the model-facing item and do not change provider prompts
+or storage schemas. Older inputs fall back to event `created_at`; their original
+queue receipt time cannot be reconstructed. Pending input remains ephemeral
+until committed, as previously specified.
+
+Source inspection on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
+
+- Harness `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`,
+  `client/lib/ui/conversation_transcript.dart` and `conversation_markdown.dart`:
+  separate user/assistant layout, lazy keyed rows, activity disclosures and
+  Markdown/image presentation.
+- OpenCode `958f965d35ed44d32b018fd55b02a5357a7748fd`,
+  `packages/session-ui/src/components/markdown.tsx`: dedicated Markdown, image
+  preview, code and streaming projection. Its web runtime is not introduced.
+- Pinned Codex `f3875db6d943a4447be6883b352a89d232a41219`,
+  `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`: optional item and
+  turn start/completion timestamps. Inspected with `git show COMMIT:PATH`.
+  Happen retains its own ISO 8601 event API rather than claiming wire parity.
+- [Markdown renderer documentation](https://pub.dev/packages/flutter_markdown_plus)
+  and resolved `src/widget.dart`, `src/builder.dart`, `src/style_sheet.dart`:
+  parsing updates, custom builders, selection, intrinsic-width table scrolling,
+  and image callbacks. Resolved versions and checksums are in `pubspec.lock`.
+
+Verification: the queued-message regression first failed with two missing
+timestamps. It now checks receipt-time preservation after processing and after
+server/desktop restart through the real UDS session. Widget checks cover rendered
+Markdown, bubble placement, timestamps/durations, exact copying, expandable tool
+state, data/file/MCP image decoding and preview, unavailable images, lazy scrolling,
+and incomplete streamed code/tables at a 420-pixel viewport. The running native
+app accepted hot reload, was inspected visually, and reported no runtime errors.
+
+Reproduce from the repository root (no Dart formatter):
+
+    cd packages/desktop
+    flutter test --no-pub --reporter expanded
+    cd ../..
+    dart test --reporter expanded
+    dart analyze packages/desktop packages/server/lib/server.dart packages/agent/lib/agent.dart
+    git diff --check
+
+Other operating systems, very large live transcripts, external image-host
+availability, and production AOT rendering performance remain unmeasured.
+
+## 2026-10-31 — macOS native asset identity across rebuilds
+
+Normalize the generated macOS `NativeAssetsManifest.json` framework paths to
+their `@rpath/` install names after Flutter assembles `App.framework`, before
+embedding and signing it. Keep bundled SQLite 3.8.0, the existing schemas, and
+the dedicated database owner isolates. This is a build-output repair; it does
+not require an SDK patch or switching to the operating system's SQLite.
+
+The supplied crash has two mappings of the same SQLite framework UUID
+`7AF7D0CE-4BEF-36D8-B6BE-769720DD0611`, with `pc=0`, `x8=0`, and a return address
+at `sqlite3_bind_int64 + 68`. Disassembling the matching bundled binary shows
+`blr x8` at +64, calling the copy's mutex-enter function. Its null value is
+consistent with a second SQLite copy whose global state was never initialized,
+receiving a statement from the initialized copy.
+
+The installed Flutter 3.47.8 (`737ba8f885`, Dart 3.13.7) records
+`sqlite3.framework/sqlite3` but stamps the binary with
+`@rpath/sqlite3.framework/sqlite3`. Replacing the file during a rebuild changes
+its inode. A later lazy native binding can then load another copy because the
+lookup name does not match the first copy's install name. The same mismatch
+also affects the bundled QuickJS/code-mode framework.
+
+Sources inspected: the installed SDK's
+`packages/flutter_tools/lib/src/isolated/native_assets/macos/native_assets.dart`
+and `native_assets_host.dart`, sqlite3 3.8.0's generated FFI bindings and hook
+documentation, [Flutter issue #190799](https://github.com/flutter/flutter/issues/190799),
+and the upstream fix at
+[`295e9f1e553f2e946d6e24f3bf28ca33fc78a83d`](https://github.com/flutter/flutter/commit/295e9f1e553f2e946d6e24f3bf28ca33fc78a83d).
+The local normalizer follows that fix for macOS bundled framework entries and
+is a no-op when the SDK already emits the corrected names. It leaves system,
+absolute tester, executable/process, and other-platform entries alone. Its
+script is an explicit Xcode build input so editing it reruns the assembly step.
+
+Verification on macOS 26.4, Apple M1 Pro, arm64:
+
+- The retained native-loader probe uses the actual built manifest and SQLite
+  binary in an isolated temporary framework tree. It opens a database and
+  prepares a statement, replaces `Versions/A/sqlite3` with identical bytes at a
+  new inode, then resolves unused integer/text bindings. The original generated
+  manifest reproducibly fails with two mappings. The corrected debug and
+  universal release bundles retain one mapping, bind 42 and `after-rebuild`,
+  and return those exact values from the pre-replacement statement.
+- All 12 desktop tests pass; scoped analysis and whitespace checks pass. The
+  release bundle passes `codesign --verify --deep --strict`. No Dart formatter
+  was run.
+- Relaunched Happen with the corrected debug bundle. While it stayed running,
+  another debug build replaced the SQLite binary (inode 99305522 to 99309702).
+  The existing desktop database owner then completed `task.archive` for a
+  deliberately nonexistent task ID, exercising integer binding without changing
+  a user task. `vmmap` still showed one SQLite `__TEXT` mapping at the original
+  address. Hot reload succeeded and no runtime errors were reported.
+
+Reproduce from `packages/desktop`:
+
+    flutter build macos --debug --no-pub
+    dart --disable-dart-dev tool/verify_native_assets.dart
+    flutter build macos --release --no-pub
+    dart --disable-dart-dev tool/verify_native_assets.dart build/macos/Build/Products/Release/Happen.app
+    codesign --verify --deep --strict build/macos/Build/Products/Release/Happen.app
+    flutter test --no-pub --reporter expanded
+    dart analyze .
+
+Tradeoff: one small platform-specific build step remains until the selected
+Flutter SDK contains the upstream fix. A full process relaunch is required once;
+hot reload cannot repair native mappings already created with the old manifest.
+The report's exact preceding rebuild sequence was not recorded. The loader
+mechanism and live rebuild were reproduced locally; x86_64 execution, other
+operating systems, notarized distribution, and long-running soaks were not tested.

@@ -315,6 +315,8 @@ class _Server {
     for (final entry in tools.entries)
       {
         'name': entry.key,
+        'namespace': 'mcp__${_safeName(name)}',
+        'tool_name': _safeName(entry.value['name'] as String),
         'description': clippedText(
           entry.value['description'] as String? ??
               entry.value['name'] as String,

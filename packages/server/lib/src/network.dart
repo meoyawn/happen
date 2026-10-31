@@ -81,9 +81,19 @@ void _networkMain(List<Object?> args) async {
           endpoint: deepseekEndpoint,
           transport: deepseekOptions['transport'] as String? ?? 'messages',
         );
-  final providers = <String, ModelProvider>{'gpt': gpt, 'deepseek': deepseek};
+  final openCodeOptions = jsonObject(providerOptions['opencode'] ??
+      (backend == 'opencode' ? deepseekOptions : <String, dynamic>{}));
+  final opencode = DeepSeekProvider.opencode(
+    http: http,
+    auth: consoleAuth,
+    endpoint: openCodeOptions['endpoint'] == null
+        ? null : Uri.parse(openCodeOptions['endpoint'] as String),
+  );
+  final providers = <String, ModelProvider>{'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
+  String? loginId, loginOwner;
+  CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
   final lifetime = CancellationToken();
   final mcp = McpManager(
@@ -223,6 +233,65 @@ void _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
+      if (request['method'] == 'auth.cancel') {
+        if (loginId == params['login_id'] && loginOwner == params['owner']) {
+          loginCancellation?.cancel();
+        }
+        reply?.send({'result': null});
+        return;
+      }
+      if (request['method'] == 'auth.login') {
+        final provider = requiredString(params, 'provider');
+        if (provider != 'gpt' && provider != 'opencode' && !(provider == 'deepseek' && backend == 'opencode')) {
+          throw ArgumentError('Browser sign-in is unavailable for this provider');
+        }
+        if (loginCancellation != null) {
+          throw StateError('A sign-in is already in progress');
+        }
+        loginId = requiredString(params, 'login_id');
+        loginOwner = requiredString(params, 'owner');
+        loginCancellation = cancellation;
+        try {
+          void notify(String url, String message, {String? code}) => reply?.send({
+              'event': {
+                'type': 'auth.login',
+                'login_id': loginId,
+                'provider': provider,
+                'url': url,
+                'message': message,
+                'code': ?code,
+              },
+            });
+          if (provider == 'gpt') {
+            await auth.login(cancellation: cancellation, notify: notify);
+          } else {
+            await consoleAuth.login(
+              cancellation: cancellation,
+              notify: (url, code) => notify(url, 'Approve access in your browser.', code: code),
+            );
+          }
+          reply?.send({
+            'result': {'status': provider == 'gpt' ? await auth.status() : await consoleAuth.status()},
+          });
+        } finally {
+          loginCancellation = null;
+          loginOwner = null;
+          loginId = null;
+        }
+        return;
+      }
+      if (request['method'] == 'auth.logout') {
+        final provider = requiredString(params, 'provider');
+        if (provider == 'gpt') {
+          await auth.signOut();
+        } else if (provider == 'opencode' || provider == 'deepseek' && backend == 'opencode') {
+          await consoleAuth.signOut();
+        } else {
+          throw ArgumentError('This provider uses an environment API key');
+        }
+        reply?.send({'result': {'status': 'signed_out'}});
+        return;
+      }
       if ((request['method'] as String).startsWith('mcp.')) {
         await initialized.asCancellable(cancellation);
         final Object? result;
@@ -230,6 +299,15 @@ void _networkMain(List<Object?> args) async {
           case 'mcp.status':
             result = mcp.status();
           case 'mcp.catalog':
+            // A model step can follow a config edit before the watcher fires.
+            // Read and serialize reconciliation here as well as on file events.
+            try {
+              await reload(cancellation);
+            } on CancelledException {
+              rethrow;
+            } catch (_) {
+              // reload already sent a sanitized diagnostic; use the live catalog.
+            }
             result = await mcp.catalog(cancellation);
           case 'mcp.call':
             result = await mcp.callTool(
@@ -311,6 +389,7 @@ void _networkMain(List<Object?> args) async {
               {
                 'id': 'gpt',
                 'name': 'ChatGPT',
+                'auth': 'chatgpt',
                 'status': await auth.status(),
                 'default_model': gptOptions['model'] ?? 'gpt-6.1-sol',
                 'models': [
@@ -330,9 +409,11 @@ void _networkMain(List<Object?> args) async {
               },
               {
                 'id': 'deepseek',
+                if (backend == 'opencode') 'alias_for': 'opencode',
+                'auth': backend == 'opencode' ? 'opencode' : 'api_key',
                 'name': backend == 'opencode'
                     ? 'DeepSeek · OpenCode'
-                    : 'DeepSeek',
+                    : 'DeepSeek API',
                 'status': backend == 'opencode'
                     ? await consoleAuth.status()
                     : deepseekKey == null || deepseekKey.isEmpty
@@ -353,6 +434,20 @@ void _networkMain(List<Object?> args) async {
                   },
                 ],
               },
+              {
+                'id': 'opencode',
+                'name': 'OpenCode',
+                'auth': 'opencode',
+                'status': await consoleAuth.status(),
+                'default_model': openCodeOptions['model'] ?? opencode.defaultModel,
+                'models': [{
+                  'id': opencode.defaultModel,
+                  'name': deepseekModel(opencode.defaultModel)['name'],
+                  'reasoning_levels': ['off', 'low', 'high', 'max'],
+                  'default_reasoning': opencode.resolveSettings(jsonObject(openCodeOptions['settings'] ?? {}))['reasoning'],
+                  'reasoning_updates': false,
+                }],
+              },
             ],
           },
         });
@@ -362,16 +457,18 @@ void _networkMain(List<Object?> args) async {
         final modelInput = params['model'] as String?;
         final lab =
             params['provider'] as String? ??
-            (modelInput?.startsWith('deepseek') == true
+            (modelInput == openCodeDeepSeekModel
+                ? 'opencode'
+                : modelInput?.startsWith('deepseek') == true
                 ? 'deepseek'
                 : global['default_provider'] as String? ?? 'gpt');
         final provider = providers[lab];
         if (provider == null) throw ArgumentError('Unsupported provider');
-        final defaults = jsonObject(providerOptions[lab] ?? {});
+        final defaults = lab == 'opencode' ? openCodeOptions : jsonObject(providerOptions[lab] ?? {});
         final model =
             modelInput ??
             defaults['model'] as String? ??
-            (lab == 'gpt' ? 'gpt-6.1-sol' : deepseek.defaultModel);
+            (provider is DeepSeekProvider ? provider.defaultModel : 'gpt-6.1-sol');
         final selected = {
           ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
@@ -394,7 +491,7 @@ void _networkMain(List<Object?> args) async {
             'reasoning_updates': info?.reasoningUpdates ?? false,
             'catalog_revision': lab == 'gpt'
                 ? gptCatalogRevision
-                : deepseek.catalogRevision,
+                : (provider as DeepSeekProvider).catalogRevision,
           },
         });
         return;

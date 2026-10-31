@@ -247,6 +247,45 @@ void main() {
       },
     );
 
+    test('archive stops work, survives cleanup, restores, and releases idle owners', () async {
+      for (var i = 0; i < 12; i++) {
+        final finished = await turn('task.start', {'cwd': work.path, 'prompt': 'continue'});
+        expect(finished['type'], 'turn.completed');
+        final metrics = jsonObject(await client.request('telemetry'));
+        expect(metrics['resident_tasks'], 0);
+        expect(metrics['active_tasks'], 0);
+      }
+      final started = jsonObject(await client.request('task.start', {'cwd': work.path, 'prompt': 'wait'}));
+      final id = started['task_id'] as String;
+      await client.request('task.send', {'task_id': id, 'prompt': 'do not deliver', 'delivery': 'queue'});
+      await client.request('task.archive', {'task_id': id});
+      final history = (await client.request('history.page', {'task_id': id}) as List).map(jsonObject).toList();
+      expect(history.last['type'], 'task.archived');
+      expect(history.any((event) => event['type'] == 'turn.cancelled'), isTrue);
+      expect(history.any((event) => event['data']['item']?['content']?.toString().contains('do not deliver') == true), isFalse);
+
+      final old = await Directory('${root.path}/staging/${'a' * 32}').create(recursive: true);
+      await File('${old.path}/unfinished').writeAsString('interrupted transfer');
+      expect((await Process.run('touch', ['-t', '200001010000', old.path])).exitCode, 0);
+      final fresh = await Directory('${root.path}/staging/${'b' * 32}').create();
+      final link = await Link('${root.path}/staging/${'c' * 32}').create(work.path);
+      final cleanup = jsonObject(await client.request('maintenance.run'));
+      expect(cleanup['staging_removed'], 1);
+      expect(cleanup['archived_tasks'], 1);
+      expect(await old.exists(), isFalse);
+      expect(await fresh.exists(), isTrue);
+      expect(await link.exists(), isTrue);
+      expect(await File('${work.path}/numbers.txt').readAsString(), '19\n23\n');
+      expect((await client.request('history.page', {'task_id': id}) as List).length, history.length);
+      final blocked = await turn('task.send', {'task_id': id, 'prompt': 'continue'});
+      expect(blocked['type'], 'turn.failed');
+      expect(blocked['data']['error'], contains('Restore this task'));
+      await client.request('task.unarchive', {'task_id': id});
+      final continued = await turn('task.send', {'task_id': id, 'prompt': 'continue'});
+      expect(continued['type'], 'turn.completed', reason: continued.toString());
+      expect(jsonObject(await client.request('telemetry'))['resident_tasks'], 0);
+    });
+
     test(
       'one multiplexed socket serves independent tasks and cancellation',
       () async {

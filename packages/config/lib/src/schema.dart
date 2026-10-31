@@ -13,7 +13,7 @@ const globalConfigSchema = <String, Object?>{
   'additionalProperties': false,
   'properties': {
     'default_provider': {
-      'enum': ['gpt', 'deepseek'],
+      'enum': ['gpt', 'deepseek', 'opencode'],
     },
     'public_url': {'type': 'string', 'format': 'uri', 'pattern': r'^https://'},
     'providers': {
@@ -42,6 +42,15 @@ const globalConfigSchema = <String, Object?>{
             'transport': {
               'enum': ['messages', 'chat'],
             },
+            'settings': {'type': 'object'},
+          },
+        },
+        'opencode': {
+          'type': 'object',
+          'additionalProperties': false,
+          'properties': {
+            'model': _nonemptyString,
+            'endpoint': {'type': 'string', 'format': 'uri'},
             'settings': {'type': 'object'},
           },
         },

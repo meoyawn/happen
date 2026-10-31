@@ -21,7 +21,8 @@ class DesktopTask {
   DesktopTask(this.id, this.title);
   final String id, title;
   final events = <int, Json>{};
-  bool running = false, loaded = false, loading = false;
+  final pending = <String, Json>{};
+  bool running = false, loaded = false, loading = false, archived = false, archiving = false;
   String streamingText = '';
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
@@ -52,12 +53,18 @@ class DesktopSession extends ChangeNotifier {
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
   List<Json> providers = [];
+  Iterable<Json> get selectableProviders => providers.where((provider) => provider['alias_for'] == null);
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   Project? project;
   DesktopTask? task;
   String? error;
   bool connected = true, submitting = false;
+  bool signingIn = false, loginSucceeded = false;
+  String? loginUrl, loginMessage, loginError, loginCode, loginProvider, signingOut;
+  String? _loginId;
+  bool _loginCancelled = false;
+  Future<void> Function(String)? _openLogin;
 
   String get draftKey => task?.id ?? project?.checkoutKey ?? '';
   String? get providerId => task?.provider ?? _provider;
@@ -78,7 +85,15 @@ class DesktopSession extends ChangeNotifier {
   Future<void> refreshProviders() async {
     final result = jsonObject(await _request('providers.list'));
     providers = (result['providers'] as List).map(jsonObject).toList();
-    if (_model == null) _selectProvider(_provider ?? result['default_provider'] as String);
+    final previous = providers.where((provider) => provider['id'] == _provider).firstOrNull;
+    if (previous?['alias_for'] case final String id) _provider = id;
+    if (_model == null || !providers.any((p) => p['id'] == _provider)) {
+      _selectProvider(
+        providers.any((p) => p['id'] == _provider)
+            ? _provider!
+            : (providers.firstWhere((provider) => provider['id'] == result['default_provider'])['alias_for'] as String? ?? result['default_provider'] as String),
+      );
+    }
     notifyListeners();
   }
 
@@ -86,26 +101,117 @@ class DesktopSession extends ChangeNotifier {
     _provider = id;
     final provider = providers.firstWhere((p) => p['id'] == id);
     _model = provider['default_model'] as String;
-    _reasoning = (provider['models'] as List).map(jsonObject)
-        .firstWhere((m) => m['id'] == _model)['default_reasoning'] as String;
+    _reasoning =
+        (provider['models'] as List)
+                .map(jsonObject)
+                .firstWhere((m) => m['id'] == _model)['default_reasoning']
+            as String;
     notifyListeners();
   }
 
   Future<void> chooseProvider(String id) async {
+    if (!providers.any((p) => p['id'] == id)) {
+      throw ArgumentError('Unknown provider');
+    }
     await _setting('provider', id);
     _selectProvider(id);
   }
 
   Future<void> chooseDeliveryMode(String mode) async {
-    if (!{'steer', 'queue'}.contains(mode)) throw ArgumentError('Invalid delivery mode');
+    if (!{'steer', 'queue'}.contains(mode)) {
+      throw ArgumentError('Invalid delivery mode');
+    }
     await _setting('delivery_mode', mode);
     deliveryMode = mode;
     notifyListeners();
   }
 
   Future<void> _setting(String key, String value) async {
-    await callIsolate(database.port, 'settings.set', {'key': key, 'value': value},
-        cancellation: _lifetime);
+    await callIsolate(database.port, 'settings.set', {
+      'key': key,
+      'value': value,
+    }, cancellation: _lifetime);
+  }
+
+  Future<bool> signIn(String provider, Future<void> Function(String) openBrowser) async {
+    if (signingIn || !connected) return false;
+    final id = _loginId = newId();
+    signingIn = true;
+    loginProvider = provider;
+    loginSucceeded = false;
+    _loginCancelled = false;
+    _openLogin = openBrowser;
+    loginError = null;
+    loginUrl = null;
+    loginCode = null;
+    loginMessage = 'Opening sign-in…';
+    notifyListeners();
+    try {
+      await _request('auth.login', {'provider': provider, 'login_id': id});
+      await refreshProviders();
+      loginSucceeded = true;
+      return true;
+    } on CancelledException {
+      // The desktop lifetime owns the connection and server-side cancellation.
+    } catch (failure) {
+      if (!_loginCancelled) loginError = failure.toString();
+    } finally {
+      if (_loginId == id) {
+        _loginId = null;
+        _openLogin = null;
+        signingIn = false;
+        loginUrl = null;
+        loginMessage = null;
+        loginCode = null;
+      }
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+    return false;
+  }
+
+  void dismissLoginResult() {
+    loginSucceeded = false;
+    if (!_lifetime.isCancelled) notifyListeners();
+  }
+
+  Future<void> signOut(String provider) async {
+    if (signingOut != null || signingIn) return;
+    signingOut = provider;
+    loginError = null;
+    loginProvider = provider;
+    loginSucceeded = false;
+    notifyListeners();
+    try {
+      await _request('auth.logout', {'provider': provider});
+      await refreshProviders();
+    } on CancelledException {
+      // Application exit owns cancellation.
+    } catch (failure) {
+      loginError = failure.toString();
+    } finally {
+      signingOut = null;
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+  }
+
+  Future<void> openLoginBrowser() async {
+    final id = _loginId, url = loginUrl, open = _openLogin;
+    if (id == null || url == null || open == null || _loginCancelled) return;
+    try {
+      await open(url);
+    } catch (_) {
+      if (_loginId == id && !_lifetime.isCancelled) {
+        loginError = 'Could not open the browser. Try Open browser again.';
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> cancelLogin() async {
+    final id = _loginId;
+    if (id == null) return;
+    _loginCancelled = true;
+    await _request('auth.cancel', {'login_id': id});
   }
 
   void chooseModel(String id) {
@@ -136,7 +242,7 @@ class DesktopSession extends ChangeNotifier {
     );
     final settings = jsonObject(saved['settings'] ?? {});
     _provider = settings['provider'] as String?;
-    deliveryMode = settings['delivery_mode'] as String? ?? 'steer';
+    deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
       final key = requiredString(value, 'checkout_key');
@@ -151,7 +257,7 @@ class DesktopSession extends ChangeNotifier {
                 DesktopTask(
                   requiredString(t, 'id'),
                   requiredString(t, 'title'),
-                ),
+                )..archived = t['archived'] == 1,
           ],
         ),
       );
@@ -224,7 +330,18 @@ class DesktopSession extends ChangeNotifier {
     try {
       // Subscribe before paging, then merge by durable sequence number. A live
       // event may also be in a page; it must appear only once in the transcript.
-      await _request('task.subscribe', {'task_id': target.id});
+      final status = jsonObject(
+        await _request('task.subscribe', {'task_id': target.id}),
+      );
+      target.running = status['running'] == true;
+      target.pending
+        ..clear()
+        ..addEntries(
+          (status['pending'] as List? ?? []).map((raw) {
+            final message = jsonObject(raw);
+            return MapEntry(message['id'] as String, message);
+          }),
+        );
       var after = 0;
       while (true) {
         final page = (await _request('history.page', {
@@ -257,12 +374,14 @@ class DesktopSession extends ChangeNotifier {
   Future<bool> send(String prompt) async {
     final owner = project;
     final existing = task;
+    final wasRunning = existing?.running == true;
     if (owner == null ||
         prompt.trim().isEmpty ||
         submitting ||
         !connected ||
-        !authenticated ||
-        existing?.running == true) {
+        existing?.archived == true ||
+        existing?.archiving == true ||
+        !authenticated) {
       return false;
     }
     submitting = true;
@@ -316,14 +435,15 @@ class DesktopSession extends ChangeNotifier {
         await _request('task.send', {
           'task_id': existing.id,
           'prompt': prompt,
-          'reasoning': effort,
+          'delivery': deliveryMode,
+          if (!wasRunning) 'reasoning': effort,
         });
       }
       return true;
     } on CancelledException {
       rethrow;
     } catch (failure) {
-      existing?.running = false;
+      existing?.running = wasRunning;
       error = failure.toString();
       return false;
     } finally {
@@ -339,6 +459,27 @@ class DesktopSession extends ChangeNotifier {
     await _request('task.cancel', {'task_id': target.id});
   }
 
+  Future<void> setArchived(DesktopTask target, bool archived) async {
+    if (target.archiving) return;
+    target.archiving = true;
+    notifyListeners();
+    try {
+      await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
+      target.archived = archived;
+      if (archived && task == target) task = null;
+      await _saveArchived(target);
+    } finally {
+      target.archiving = false;
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+  }
+
+  Future<void> _saveArchived(DesktopTask target) async {
+    await callIsolate(database.port, 'task.archive', {
+      'task_id': target.id, 'archived': target.archived,
+    }, cancellation: _lifetime);
+  }
+
   void showError(Object failure) {
     if (_lifetime.isCancelled) return;
     error = failure.toString();
@@ -346,6 +487,16 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (event['type'] == 'auth.login') {
+      if (event['login_id'] == _loginId && !_loginCancelled) {
+        loginUrl = event['url'] as String;
+        loginMessage = event['message'] as String;
+        loginCode = event['code'] as String?;
+        notifyListeners();
+        unawaited(openLoginBrowser());
+      }
+      return;
+    }
     final target = projects
         .expand((p) => p.tasks)
         .where((t) => t.id == event['task_id'])
@@ -355,6 +506,12 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     _applyEvent(target, event);
+    if (event['type'] == 'task.archived' || event['type'] == 'task.unarchived') {
+      if (target.archived && task == target) task = null;
+      unawaited(_saveArchived(target).catchError((Object failure) {
+        if (failure is! CancelledException) showError(failure);
+      }));
+    }
     notifyListeners();
   }
 
@@ -363,6 +520,15 @@ class DesktopSession extends ChangeNotifier {
     final sequence = event['seq'] as int?;
     if (sequence != null) target.events[sequence] = event;
     switch (event['type']) {
+      case 'input.pending':
+        final message = jsonObject(event['data']);
+        target.pending[message['id'] as String] = message;
+      case 'input.committed':
+        target.pending.remove(event['data']?['message_id']);
+      case 'input.discarded':
+        for (final id in event['data']['ids'] as List) {
+          target.pending.remove(id);
+        }
       case 'turn.started':
         target.running = true;
       case 'text.delta':
@@ -382,6 +548,8 @@ class DesktopSession extends ChangeNotifier {
 
   void _settings(DesktopTask target, Json event) {
     final data = jsonObject(event['data'] ?? {});
+    if (event['type'] == 'task.archived') target.archived = true;
+    if ({'task.unarchived', 'task.imported', 'task.forked'}.contains(event['type'])) target.archived = false;
     if (event['type'] == 'task.created' ||
         event['type'] == 'task.configuration_migrated') {
       target.provider = data['provider'] as String? ?? 'gpt';
@@ -409,14 +577,25 @@ class DesktopSession extends ChangeNotifier {
 }
 
 class ToolActivity {
-  ToolActivity(this.id, this.name, this.input);
+  ToolActivity(this.id, this.name, this.input, {this.startedAt});
   final String id, name, input;
+  final DateTime? startedAt;
+  DateTime? endedAt;
   final children = <ToolActivity>[];
   String status = 'running';
   String? output;
 }
 
-typedef ChatEntry = ({String role, String text, ToolActivity? tool});
+/// A visible transcript row. Provider replay state never enters this projection.
+class ChatEntry {
+  const ChatEntry(this.id, this.role, this.text, {
+    this.tool, this.timestamp, this.startedAt, this.streaming = false,
+  });
+  final String id, role, text;
+  final ToolActivity? tool;
+  final DateTime? timestamp, startedAt;
+  final bool streaming;
+}
 
 List<ChatEntry> conversation(DesktopTask task) {
   final result = <ChatEntry>[];
@@ -424,26 +603,57 @@ List<ChatEntry> conversation(DesktopTask task) {
     ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
   final tools = <String, ToolActivity>{};
   ToolActivity? activeCell;
-  void finishTools(String status) {
+  DateTime? turnStartedAt;
+  String turnId = task.id;
+  void finishTools(String status, [DateTime? at]) {
     for (final tool in tools.values) {
-      if (tool.status == 'running') tool.status = status;
+      if (tool.status == 'running') {
+        tool.status = status;
+        tool.endedAt = at;
+      }
     }
   }
 
   for (final event in events) {
     final data = jsonObject(event['data']);
+    final at = DateTime.tryParse(event['created_at'] as String? ?? '');
+    final id = event['id'] as String? ?? '${task.id}:${event['seq']}';
     switch (event['type']) {
+      case 'turn.started':
+        turnStartedAt = at;
+        turnId = id;
       case 'input.committed':
         final item = jsonObject(data['item']);
         if (item['role'] == 'user') {
-          result.add((role: 'You', text: _text(item), tool: null));
+          result.add(ChatEntry(id, 'You', _text(item),
+            timestamp: DateTime.tryParse(data['sent_at'] as String? ?? '') ?? at));
         }
       case 'model.completed':
+        var index = 0;
         for (final raw in data['output'] as List? ?? []) {
-          final text = _text(jsonObject(raw));
-          if (text.isNotEmpty) {
-            result.add((role: 'Happen', text: text, tool: null));
+          final item = jsonObject(raw);
+          // Group adjacent text parts, preserving reasoning/text order. Never
+          // expose opaque native reasoning or tool-call serialization as prose.
+          String? role;
+          final text = StringBuffer();
+          void flush() {
+            if (text.isEmpty) return;
+            result.add(ChatEntry('$id:${index++}', role!, text.toString(), timestamp: at));
+            text.clear();
           }
+          for (final part in (item['content'] as List? ?? []).map(jsonObject)) {
+            final nextRole = switch (part['type']) {
+              'text' => 'Happen',
+              'reasoning' => 'Reasoning',
+              _ => null,
+            };
+            if (nextRole == null || part['text'] is! String || (part['text'] as String).isEmpty) continue;
+            if (role != nextRole) flush();
+            role = nextRole;
+            if (text.isNotEmpty) text.writeln();
+            text.write(part['text']);
+          }
+          flush();
         }
       case 'tool.started':
         final name = data['name'] as String;
@@ -452,18 +662,20 @@ List<ChatEntry> conversation(DesktopTask task) {
           data['call_id'] as String,
           namespace == null ? name : '$namespace.$name',
           data['input'] as String,
+          startedAt: at,
         );
         tools[tool.id] = tool;
         activeCell =
             name == 'exec' && (namespace == null || namespace == 'functions')
             ? tool
             : null;
-        result.add((role: 'Tool', text: tool.name, tool: tool));
+        result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: at));
       case 'host_tool.started':
         final tool = ToolActivity(
           data['id'] as String,
           data['name'] as String,
           _pretty(data['arguments']),
+          startedAt: at,
         );
         tools[tool.id] = tool;
         // Old history predates parent_call_id. Cells execute sequentially, so
@@ -474,7 +686,7 @@ List<ChatEntry> conversation(DesktopTask task) {
         if (parent != null) {
           parent.children.add(tool);
         } else {
-          result.add((role: 'Tool', text: tool.name, tool: tool));
+          result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: at));
         }
       case 'host_tool.completed':
         final tool = tools[data['id']];
@@ -485,6 +697,7 @@ List<ChatEntry> conversation(DesktopTask task) {
             ? 'failed'
             : 'done';
         tool.output = _pretty(data['error'] ?? data['output']);
+        tool.endedAt = at;
       case 'tool.completed':
         final item = jsonObject(data['item']);
         for (final raw in item['content'] as List? ?? []) {
@@ -493,22 +706,34 @@ List<ChatEntry> conversation(DesktopTask task) {
           if (tool == null) continue;
           tool.status = part['is_error'] == true ? 'failed' : 'done';
           tool.output = _pretty(part['output']);
+          tool.endedAt = at;
           if (tool == activeCell) activeCell = null;
         }
       case 'turn.failed':
-        finishTools('failed');
-        result.add((role: 'Error', text: '${data['error']}', tool: null));
+        finishTools('failed', at);
+        result.add(ChatEntry(id, 'Error', '${data['error']}', timestamp: at, startedAt: turnStartedAt));
+        turnStartedAt = null;
       case 'turn.cancelled':
-        finishTools('stopped');
-        result.add((role: 'Status', text: 'Stopped', tool: null));
+        finishTools('stopped', at);
+        result.add(ChatEntry(id, 'Status', 'Stopped', timestamp: at, startedAt: turnStartedAt));
+        turnStartedAt = null;
       case 'turn.completed':
-        finishTools('interrupted');
+        finishTools('interrupted', at);
+        result.add(ChatEntry(id, 'Status', 'Completed', timestamp: at, startedAt: turnStartedAt));
+        turnStartedAt = null;
       case 'context.compacted':
-        result.add((role: 'Status', text: 'Context compacted', tool: null));
+        result.add(ChatEntry(id, 'Status', 'Context compacted', timestamp: at));
     }
   }
   if (task.streamingText.isNotEmpty) {
-    result.add((role: 'Happen', text: task.streamingText, tool: null));
+    result.add(ChatEntry('$turnId:streaming', 'Happen', task.streamingText, streaming: true));
+  }
+  for (final message in task.pending.values) {
+    result.add(ChatEntry('pending:${message['id']}',
+      message['delivery'] == 'steer' ? 'Steer pending' : 'Queued',
+      message['prompt'] as String,
+      timestamp: DateTime.tryParse(message['created_at'] as String? ?? ''),
+    ));
   }
   if (!task.running) finishTools('interrupted');
   return result;

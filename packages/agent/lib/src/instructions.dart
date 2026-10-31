@@ -167,7 +167,11 @@ List<ConversationItem> restoreContext(
     ...retained,
     instructionMessage(snapshot),
     environmentMessage(cwd),
-    if (mcpSnapshot != null) mcpContext(mcpSnapshot),
+    if (mcpSnapshot != null) ...[
+      if ((mcpSnapshot['tools'] as List? ?? []).isNotEmpty)
+        mcpToolDefinitions(mcpSnapshot),
+      mcpContext(mcpSnapshot),
+    ],
     if (clientSnapshot != null) ...[
       if ((clientSnapshot['tools'] as List).isNotEmpty)
         clientToolDefinitions(clientSnapshot),
@@ -233,6 +237,19 @@ ConversationItem clientToolsContext(Json snapshot) => ConversationItem(
   },
 );
 
+ConversationItem mcpToolDefinitions(Json snapshot) => ConversationItem(
+  kind: 'tools',
+  tools: (snapshot['tools'] as List)
+      .map((raw) => ToolDefinition.fromJson({
+        ...jsonObject(raw),
+        'name': raw['tool_name'],
+      }))
+      .toList(),
+  native: {
+    'harness': {'context': 'mcp'},
+  },
+);
+
 ConversationItem mcpContext(Json snapshot) {
   final tools = (snapshot['tools'] as List? ?? []).map(jsonObject);
   final text = StringBuffer(
@@ -240,7 +257,9 @@ ConversationItem mcpContext(Json snapshot) {
   );
   text.writeln(tools.map((tool) => tool['name']).join(', '));
   text.writeln(
-    'Use ALL_TOOLS in functions.exec to inspect descriptions and parameters before calling these tools. Removed tools are unavailable.',
+    'New or changed tools are declared in the appended tool definitions. '
+    'In code mode use the host names above; ALL_TOOLS includes their descriptions and parameters. '
+    'Only the tools in this notice are currently available; removed tools are unavailable.',
   );
   for (final server in (snapshot['instructions'] as List? ?? []).map(
     jsonObject,

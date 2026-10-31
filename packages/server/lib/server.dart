@@ -36,8 +36,12 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
+  final _requests = <Future<Object?>>{};
   bool _closing = false;
   bool _networkExited = false;
+  Timer? _maintenanceTimer;
+  Future<Json>? _maintenance;
+  int _transfers = 0;
 
   static Future<AgentServer> start({
     required String directory,
@@ -134,6 +138,14 @@ class AgentServer {
         }),
       );
       http.listen(server._accept);
+      void maintain() {
+        unawaited(server.maintain().catchError((Object _) {
+          server.telemetry.add('maintenance_failures');
+          return <String, dynamic>{};
+        }));
+      }
+      server._maintenanceTimer = Timer.periodic(const Duration(days: 1), (_) => maintain());
+      maintain();
       return server;
     } catch (_) {
       events.close();
@@ -236,14 +248,18 @@ class AgentServer {
             throw StateError('Too many outstanding requests');
           }
           client.inFlight++;
+          Future<Object?>? operation;
           try {
-            final result = await _dispatch(
+            operation = _dispatch(
               requiredString(request, 'method'),
               jsonObject(request['params'] ?? {}),
               client,
             );
+            _requests.add(operation);
+            final result = await operation;
             client.send({'id': id, 'result': result});
           } finally {
+            _requests.remove(operation);
             client.inFlight--;
           }
         } catch (error) {
@@ -321,7 +337,9 @@ class AgentServer {
   }
 
   Future<Object?> _dispatch(String method, Json params, _Client client) async {
+    _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
+    final receivedAt = DateTime.now().toUtc().toIso8601String();
     if (method.startsWith('mcp.')) {
       if (!{
         'mcp.status',
@@ -348,12 +366,27 @@ class AgentServer {
           {},
           cancellation: client.cancellation,
         );
+      case 'auth.login':
+      case 'auth.cancel':
+      case 'auth.logout':
+        return callIsolate(
+          network.port,
+          method,
+          {...params, 'owner': client.id},
+          onEvent: client.event,
+          cancellation: client.cancellation,
+        );
       case 'telemetry':
         return {
           'active_tasks': _tasks.values.where((task) => task.busy).length,
+          'resident_tasks': _tasks.length,
+          'connected_clients': _clients.length,
+          'pending_messages': _tasks.values.fold<int>(0, (count, task) => count + task.pending.length),
           'rss_bytes': ProcessInfo.currentRss,
           ...telemetry.snapshot(),
         };
+      case 'maintenance.run':
+        return maintain();
       case 'task.start':
         final id = newId();
         final config = await _config(params);
@@ -365,30 +398,38 @@ class AgentServer {
             client.send,
           );
         }
-        final task = _tasks[id] = _Task(id, config);
+        final task = _Task(id, config);
         client.subscriptions.add(id);
         _begin(
           task,
           requiredString(params, 'prompt'),
-          settings: {...params}..remove('settings'),
+          settings: {...params, 'sent_at': receivedAt}..remove('settings'),
         );
         return {'task_id': id};
       case 'history.import':
         final targetDirectory = directory;
         final source = requiredString(params, 'path');
         final operationId = params['operation_id'] as String?;
-        final id = await importHistory(
-          targetDirectory,
-          source,
-          operationId: operationId,
-          cancellation: client.cancellation,
-        );
-        return {'task_id': id};
+        _transfers++;
+        try {
+          final id = await importHistory(
+            targetDirectory, source, operationId: operationId,
+            cancellation: client.cancellation,
+          );
+          return {'task_id': id};
+        } finally {
+          _transfers--;
+        }
       default:
         final id = requiredString(params, 'task_id');
         validateTaskId(id);
         client.subscriptions.add(id);
-        final task = _tasks.putIfAbsent(id, () => _Task(id, null));
+        var task = _tasks[id] ?? _Task(id, null);
+        if (task.backgroundMaintenance case final maintenance?) {
+          await maintenance.future;
+          _lifetime.throwIfCancelled();
+          task = _tasks[id] ?? _Task(id, null);
+        }
         if (method == 'tools.register') {
           return _clientTools.register(
             id,
@@ -397,19 +438,64 @@ class AgentServer {
             client.send,
           );
         }
-        if (method == 'task.subscribe') return {'task_id': id};
+        if (method == 'task.subscribe') {
+          return {'task_id': id, 'running': task.busy, 'pending': task.pending};
+        }
+        if (method == 'task.archive' || method == 'task.unarchive') {
+          await _archive(task, method == 'task.archive');
+          return {'task_id': id, 'archived': method == 'task.archive'};
+        }
         if (method == 'task.cancel') {
           task.cancelled = true;
+          _discardPending(task, 'cancelled');
           final agent = task.agent;
           if (agent != null) await callIsolate(agent.port, 'cancel', {});
           return null;
         }
         if (method == 'task.send' || method == 'task.compact') {
+          final mode = params['delivery'] as String? ?? 'queue';
+          if (!{'steer', 'queue'}.contains(mode)) {
+            throw ArgumentError('Delivery must be steer or queue');
+          }
+          if (method == 'task.send' && task.busy) {
+            if (task.cancelled) throw StateError('Task is stopping');
+            if (task.pending.length >= 32) {
+              throw StateError('Pending message limit reached');
+            }
+            if (params.keys.any(
+              (key) => !{'task_id', 'prompt', 'delivery'}.contains(key),
+            )) {
+              throw ArgumentError('Change task settings between turns');
+            }
+            final prompt = requiredString(params, 'prompt');
+            final pendingBytes = task.pending.fold<int>(0, (size, message) => size + utf8.encode(message['prompt'] as String).length);
+            if (pendingBytes + utf8.encode(prompt).length > 512 * 1024) {
+              throw StateError('Pending messages exceed 512 KiB');
+            }
+            final message = <String, dynamic>{
+              'id': newId(),
+              'prompt': prompt,
+              'delivery': mode,
+              'created_at': receivedAt,
+            };
+            task.pending.add(message);
+            _broadcast(id, {
+              'task_id': id,
+              'type': 'input.pending',
+              'data': message,
+            });
+            _offerSteering(task, message);
+            return {
+              'task_id': id,
+              'message_id': message['id'],
+              'delivery': mode,
+            };
+          }
           _begin(
             task,
             params['prompt'] as String? ?? '',
             compact: method == 'task.compact',
-            settings: params,
+            settings: {...params, 'sent_at': receivedAt},
           );
           return {'task_id': id};
         }
@@ -433,17 +519,131 @@ class AgentServer {
         }
         if (method == 'task.fork') {
           final child = newId();
-          await _withWriter(
-            task,
-            (writer) => callIsolate(writer.port, 'fork', {
-              'id': child,
-              'through': params['through'],
-            }, cancellation: client.cancellation),
-          );
+          _transfers++;
+          try {
+            await _withWriter(
+              task,
+              (writer) => callIsolate(writer.port, 'fork', {
+                'id': child, 'through': params['through'],
+              }, cancellation: client.cancellation),
+            );
+          } finally {
+            _transfers--;
+          }
           return {'task_id': child};
         }
         throw StateError('Unknown method: $method');
     }
+  }
+
+  void _forgetIdle(_Task task) {
+    if (!task.busy && !task.maintenance && task.pending.isEmpty && identical(_tasks[task.id], task)) {
+      _tasks.remove(task.id);
+    }
+  }
+
+  Future<void> _archive(_Task task, bool archived) async {
+    if (task.maintenance) throw StateError('Task has a pending maintenance operation');
+    task.maintenance = true;
+    _tasks[task.id] = task;
+    IsolateOwner? writer;
+    try {
+      if (task.busy) {
+        task.cancelled = true;
+        _discardPending(task, 'archived');
+        if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
+        await task.running;
+      }
+      _lifetime.throwIfCancelled();
+      writer = await startStore(directory, task.id, create: false, legacyDecoder: gptItemFromNative);
+      final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
+      if (archived) _clientTools.archive(task.id);
+      for (final client in _clients.toList()) {
+        client.event({'task_id': task.id, ...event});
+      }
+    } finally {
+      await writer?.close();
+      task.maintenance = false;
+      _forgetIdle(task);
+    }
+  }
+
+  /// Coalesces startup, daily and manual maintenance into one cancellable sweep.
+  /// Archived transcripts remain durable, matching Codex's archive policy.
+  Future<Json> maintain() {
+    _lifetime.throwIfCancelled();
+    return _maintenance ??= _maintain().whenComplete(() => _maintenance = null);
+  }
+
+  Future<Json> _maintain() async {
+    var checked = 0, archived = 0, removed = 0, errors = 0;
+    final tasks = Directory('$directory/tasks');
+    if (await tasks.exists()) {
+      await for (final entry in tasks.list(followLinks: false)) {
+        _lifetime.throwIfCancelled();
+        if (entry is! Directory) continue;
+        final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
+        try { validateTaskId(id); } on FormatException { continue; }
+        if (!await File('${entry.path}/history.sqlite').exists() || _tasks.containsKey(id)) continue;
+        final task = _Task(id, null);
+        final maintenance = task.backgroundMaintenance = Completer<void>();
+        try {
+          final result = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, 'maintain', {}, cancellation: _lifetime)));
+          checked++;
+          if (result['archived'] == true) archived++;
+        } on CancelledException {
+          rethrow;
+        } catch (_) {
+          errors++;
+        } finally {
+          task.backgroundMaintenance = null;
+          maintenance.complete();
+        }
+      }
+    }
+    final staging = Directory('$directory/staging');
+    final cutoff = DateTime.now().subtract(const Duration(days: 1));
+    if (_transfers == 0 && await staging.exists()) {
+      await for (final entry in staging.list(followLinks: false)) {
+        _lifetime.throwIfCancelled();
+        if (_transfers != 0) break;
+        if (entry is! Directory) continue;
+        final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
+        try { validateTaskId(id); } on FormatException { continue; }
+        if (!(await entry.stat()).modified.isBefore(cutoff)) continue;
+        try {
+          await entry.delete(recursive: true);
+          removed++;
+        } on FileSystemException {
+          errors++;
+        }
+      }
+    }
+    telemetry.add('maintenance_runs');
+    telemetry.add('maintenance_failures', errors);
+    telemetry.add('staging_directories_removed', removed);
+    return {'checked_tasks': checked, 'archived_tasks': archived, 'staging_removed': removed, 'errors': errors};
+  }
+
+  void _offerSteering(_Task task, Json message) {
+    if (task.agent == null ||
+        message['delivery'] != 'steer' ||
+        !task.offered.add(message['id'] as String)) {
+      return;
+    }
+    task.agent!.port.send({'method': 'steer', 'params': message});
+  }
+
+  void _discardPending(_Task task, String reason) {
+    if (task.pending.isEmpty) return;
+    final ids = task.pending.map((message) => message['id']).toList();
+    task.pending.clear();
+    task.offered.clear();
+    _broadcast(task.id, {
+      'task_id': task.id,
+      'type': 'input.discarded',
+      'data': {'ids': ids, 'reason': reason},
+    });
   }
 
   Future<Json> _config(Json input) async {
@@ -469,6 +669,7 @@ class AgentServer {
     bool compact = false,
     Json settings = const {},
   }) {
+    _lifetime.throwIfCancelled();
     if (_networkExited) {
       throw StateError(
         'Network worker exited; restart the server before starting a turn',
@@ -490,6 +691,7 @@ class AgentServer {
       effective['cwd'] = cwd.path;
     }
     task.busy = true;
+    _tasks[task.id] = task;
     task.cancelled = false;
     telemetry.add('turns_started');
     task.running = _run(task, prompt, compact: compact, settings: effective);
@@ -509,6 +711,20 @@ class AgentServer {
         create: task.config != null,
         legacyDecoder: gptItemFromNative,
       );
+      if (task.config != null && await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}) == null) {
+        // Commit admission before cancellation can stop the agent's first turn.
+        // An immediately archived or stopped task must still be resumable.
+        final config = {...task.config!, 'task_id': task.id};
+        final created = jsonObject(await callIsolate(task.writer!.port, 'append', {
+          'type': 'task.created',
+          'data': config,
+          'metadata': {'config': config},
+        }));
+        _broadcast(task.id, created);
+      }
+      if (await callIsolate(task.writer!.port, 'metadata', {'key': 'archived_at'}) != null) {
+        throw StateError('Restore this task before sending another message');
+      }
       task.config ??= jsonObject(
         await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}),
       );
@@ -547,11 +763,16 @@ class AgentServer {
         // Cancel after turn admission below; the mailbox preserves send order.
         scheduleMicrotask(() => callIsolate(task.agent!.port, 'cancel', {}));
       }
-      await callIsolate(
+      final turn = callIsolate(
         task.agent!.port,
         'turn',
         {'prompt': prompt, 'compact': compact, 'settings': settings},
         onEvent: (event) {
+          if (event['type'] == 'input.committed') {
+            final id = event['data']?['message_id'];
+            task.pending.removeWhere((message) => message['id'] == id);
+            task.offered.remove(id);
+          }
           if ([
             'turn.completed',
             'turn.failed',
@@ -563,6 +784,11 @@ class AgentServer {
           }
         },
       );
+      if (settings['message_id'] case final String id) task.offered.add(id);
+      for (final message in task.pending) {
+        _offerSteering(task, message);
+      }
+      await turn;
     } catch (error) {
       terminal = {
         'task_id': task.id,
@@ -575,10 +801,26 @@ class AgentServer {
       task.agent = null;
       task.writer = null;
       task.busy = false;
+      task.offered.clear();
       if (terminal != null) {
         telemetry.add(terminal!['type'] as String);
         _broadcast(task.id, terminal!);
       }
+      if (_closing || task.cancelled || terminal?['type'] != 'turn.completed') {
+        _discardPending(task, 'stopped');
+      } else if (task.pending.isNotEmpty) {
+        final next = task.pending.first;
+        try {
+          _begin(
+            task,
+            next['prompt'] as String,
+            settings: {'message_id': next['id'], 'sent_at': next['created_at']},
+          );
+        } catch (_) {
+          _discardPending(task, 'could_not_start');
+        }
+      }
+      _forgetIdle(task);
     }
   }
 
@@ -586,6 +828,10 @@ class AgentServer {
     _Task task,
     Future<Object?> Function(IsolateOwner) operation,
   ) async {
+    _lifetime.throwIfCancelled();
+    if (_tasks[task.id] case final current? when !identical(current, task)) {
+      throw StateError('Task ownership changed; retry the operation');
+    }
     if (task.maintenance) {
       throw StateError('Task has a pending maintenance operation');
     }
@@ -595,6 +841,7 @@ class AgentServer {
       return operation(writer);
     }
     task.maintenance = true;
+    _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
       writer = await startStore(
@@ -607,6 +854,7 @@ class AgentServer {
     } finally {
       await writer?.close();
       task.maintenance = false;
+      _forgetIdle(task);
     }
   }
 
@@ -619,7 +867,9 @@ class AgentServer {
   Future<void> close() async {
     if (_closing) return;
     _closing = true;
+    _maintenanceTimer?.cancel();
     _lifetime.cancel();
+    try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
     _clientTools.close();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
@@ -637,6 +887,7 @@ class AgentServer {
     await Future.wait(
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
     );
+    await Future.wait(_requests.toList().map((operation) => operation.catchError((Object _) => null)));
     await network.close();
     _networkEvents.close();
     for (final client in _clients.toList()) {
@@ -662,6 +913,9 @@ class _Task {
   bool busy = false, maintenance = false, cancelled = false;
   IsolateOwner? writer, agent;
   Future<void>? running;
+  Completer<void>? backgroundMaintenance;
+  final pending = <Json>[];
+  final offered = <String>{};
 }
 
 class _Client {

@@ -1,0 +1,56 @@
+import 'package:flutter/painting.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:re_highlight/languages/all.dart';
+import 'package:re_highlight/re_highlight.dart';
+import 'package:re_highlight/styles/github.dart';
+import 'package:shiki_flutter/shiki_flutter.dart' as shiki;
+import '../lib/code_highlight.dart' as app;
+
+void main() {
+  test('compare Dart engines without token cache hits', () async {
+    const sample = '// sample\nconst value = await tools.exec_command({cmd: "ls", max_output_tokens: 1000});\ntext(value);\n';
+    final clock = Stopwatch()..start();
+    app.highlightedCode(sample, language: 'javascript');
+    print('desktop first registry/parse/render: ${clock.elapsedMicroseconds} us');
+    clock.reset();
+    final highlight = Highlight()..registerLanguages(builtinAllLanguages);
+    print('re_highlight registered ${highlight.listLanguages().length} languages: ${clock.elapsedMicroseconds} us');
+    TextSpan re(String source) {
+      final result = highlight.highlight(code: source, language: 'javascript');
+      expect(result.errorRaised, isNull);
+      final renderer = TextSpanRenderer(null, githubTheme);
+      result.render(renderer);
+      final span = renderer.span!;
+      expect(span.toPlainText(), source);
+      return span;
+    }
+    clock.reset();
+    re(sample);
+    print('re_highlight first parse/render: ${clock.elapsedMicroseconds} us');
+    final sh = shiki.ShikiHighlighter(cache: shiki.TokenCache(maxEntries: 1, maxChars: 1));
+    TextSpan shi(String source) => shiki.codeToTextSpan(sh, source,
+      lang: shiki.CodeLanguages.javascript, theme: shiki.PierreThemes.pierreLight);
+    clock.reset();
+    shi(sample);
+    print('shiki first load/parse/render: ${clock.elapsedMicroseconds} us');
+    for (var i = 0; i < 10; i++) { re(sample); shi(sample); }
+    for (final repeats in [1, 10, 80, 320]) {
+      final source = sample * repeats;
+      var serial = 0;
+      TextSpan appMiss(String code) => app.highlightedCode('$code// ${serial++}', language: 'javascript');
+      TextSpan appHit(String code) => app.highlightedCode(code, language: 'javascript');
+      appHit(source);
+      for (final (name, parse) in [('desktop miss', appMiss), ('desktop hit', appHit), ('re_highlight', re), ('shiki', shi)]) {
+        final times = <int>[];
+        for (var i = 0; i < 5; i++) {
+          clock.reset();
+          parse(source);
+          times.add(clock.elapsedMicroseconds);
+        }
+        times.sort();
+        print('$name ${source.length} chars median: ${times[2]} us');
+      }
+    }
+    await sh.dispose();
+  }, timeout: const Timeout(Duration(minutes: 3)));
+}

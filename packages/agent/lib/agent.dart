@@ -58,6 +58,9 @@ void _agentMain(List<Object?> args) {
         case 'cancel':
           actor.cancel();
           reply?.send({'result': null});
+        case 'steer':
+          actor.steer(params);
+          reply?.send({'result': null});
         case 'close':
           actor.cancel();
           await running;
@@ -76,6 +79,14 @@ class _Agent {
   _Agent(this.config);
   final Json config;
   CancellationToken? _cancellation;
+  bool _accepting = false;
+  final _steering = <Json>[];
+  void steer(Json message) {
+    if (_accepting && _cancellation?.isCancelled == false) {
+      _steering.add(message);
+    }
+  }
+
   String get taskId => config['task_id'] as String;
   SendPort get writer => config['writer'] as SendPort;
   SendPort get network => config['network'] as SendPort;
@@ -109,6 +120,7 @@ class _Agent {
   }) async {
     final cancellation = CancellationToken();
     _cancellation = cancellation;
+    _accepting = !compact;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
     HostTools? host;
@@ -231,7 +243,11 @@ class _Agent {
         );
       }
       if (!compact) {
-        update('input.committed', ConversationItem.text('user', prompt));
+        update('input.committed', ConversationItem.text('user', prompt), {
+          if (settings['message_id'] != null)
+            'message_id': settings['message_id'],
+          if (settings['sent_at'] != null) 'sent_at': settings['sent_at'],
+        });
       } else if (effort != previousEffort) {
         update(
           'input.committed',
@@ -261,6 +277,38 @@ class _Agent {
       }
 
       var usageTokens = await _metadata('context_usage') as int? ?? 0;
+      Future<bool> takeSteering() async {
+        cancellation.throwIfCancelled();
+        if (_steering.isEmpty) return false;
+        final messages = _steering.toList();
+        _steering.clear();
+        final entries = await callIsolate(writer, 'append_batch', {
+          'events': [
+            for (final message in messages)
+              {
+                'type': 'input.committed',
+                'data': {
+                  'message_id': message['id'],
+                  'delivery': 'steer',
+                  if (message['created_at'] != null) 'sent_at': message['created_at'],
+                  'item': ConversationItem.text(
+                    'user',
+                    message['prompt'] as String,
+                  ).toJson(),
+                },
+              },
+          ],
+        }) as List;
+        for (final raw in entries) {
+          final entry = jsonObject(raw);
+          event(entry);
+          input.add(
+            ConversationItem.fromJson(jsonObject(entry['data']['item'])),
+          );
+        }
+        return true;
+      }
+
       var usageItems = await _metadata('context_usage_items') as int? ?? 0;
       var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
       var clientSnapshot = jsonObject(
@@ -314,21 +362,39 @@ class _Agent {
           }, cancellation: cancellation),
         );
         if (jsonEncode(current) != jsonEncode(mcpSnapshot)) {
-          final item = mcpContext(current);
-          event(
-            await _append(
-              'mcp.updated',
-              {'snapshot': current, 'item': item.toJson()},
-              metadata: {'mcp_snapshot': current},
-            ),
-          );
-          input.add(item);
+          final previous = {
+            for (final raw in mcpSnapshot['tools'] as List? ?? [])
+              (raw as Map)['name']: raw,
+          };
+          final changed = (current['tools'] as List)
+              .map(jsonObject)
+              .where(
+                (tool) => jsonEncode(previous[tool['name']]) != jsonEncode(tool),
+              )
+              .toList();
+          final updates = <ConversationItem>[
+            if (changed.isNotEmpty) mcpToolDefinitions({'tools': changed}),
+            mcpContext(current),
+          ];
+          cancellation.throwIfCancelled();
+          final entries = await callIsolate(writer, 'append_batch', {
+            'events': [
+              for (final item in updates)
+                {
+                  'type': 'mcp.updated',
+                  'data': {'snapshot': current, 'item': item.toJson()},
+                },
+            ],
+            'metadata': {'mcp_snapshot': current},
+          }) as List;
+          for (final entry in entries) {
+            event(jsonObject(entry));
+          }
+          input.addAll(updates);
           mcpSnapshot = current;
         }
       }
 
-      await refreshMcp();
-      await refreshClientTools();
       final initialTools = (config['tools'] as List)
           .map((v) => ToolDefinition.fromJson(jsonObject(v)))
           .toList();
@@ -402,6 +468,7 @@ class _Agent {
       }
 
       Future<void> finish(String text) async {
+        _accepting = false;
         telemetry.observe('turn', total.elapsed);
         event(
           await _append(
@@ -413,6 +480,8 @@ class _Agent {
       }
 
       if (compact) {
+        await refreshMcp();
+        await refreshClientTools();
         await compactContext('manual');
         await finish('Context compacted. Full history remains available.');
         return;
@@ -422,6 +491,7 @@ class _Agent {
       final maxSteps = config['max_steps'] as int? ?? 64;
       for (var step = 0; step < maxSteps; step++) {
         cancellation.throwIfCancelled();
+        await takeSteering();
         await refreshMcp();
         await refreshClientTools();
         final estimate = usageTokens > 0 && usageItems <= input.length
@@ -464,6 +534,7 @@ class _Agent {
           ),
         );
         if (reply.calls.isEmpty) {
+          if (await takeSteering()) continue;
           await finish(reply.text);
           return;
         }
@@ -496,6 +567,17 @@ class _Agent {
               result = output['success'] == true
                   ? {'output': output}
                   : {'error': output};
+            } else if (call.namespace?.startsWith('mcp__') == true) {
+              final output = jsonObject(
+                await callIsolate(network, 'mcp.call', {
+                  'task_id': taskId,
+                  'name': '${call.namespace}__${call.name}',
+                  'arguments': jsonObject(jsonDecode(call.input)),
+                }, cancellation: cellCancellation),
+              );
+              result = output['isError'] == true
+                  ? {'error': output}
+                  : {'output': output};
             } else {
               if (call.name != 'exec' ||
                   call.namespace != null && call.namespace != 'functions') {
@@ -622,6 +704,8 @@ class _Agent {
         ),
       );
     } finally {
+      _accepting = false;
+      _steering.clear();
       cancellation.cancel();
       host?.close();
       _cancellation = null;

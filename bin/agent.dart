@@ -42,7 +42,7 @@ ArgParser parser() {
       ..addOption('url')
       ..addOption('token')
       ..addOption('cwd', defaultsTo: Directory.current.path)
-      ..addOption('provider', allowed: ['gpt', 'deepseek'])
+      ..addOption('provider', allowed: ['gpt', 'deepseek', 'opencode'])
       ..addOption('model')
       ..addOption('reasoning')
       ..addOption('max-steps', defaultsTo: '64')

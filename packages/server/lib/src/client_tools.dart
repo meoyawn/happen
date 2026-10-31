@@ -135,6 +135,13 @@ class ClientToolBridge {
     }
   }
 
+  void archive(String task) {
+    _registrations.remove(task);
+    for (final call in _calls.values.where((call) => call.task == task).toList()) {
+      _fail(call, 'Task archived before the tool returned; its outcome is unknown');
+    }
+  }
+
   void _fail(_Call call, String reason) {
     if (!call.result.isCompleted) call.result.completeError(StateError(reason));
     call.send({

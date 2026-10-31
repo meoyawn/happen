@@ -23,13 +23,19 @@ class MainFlutterWindow: NSWindow {
     let channel = FlutterMethodChannel(
       name: "happen/desktop", binaryMessenger: flutterViewController.engine.binaryMessenger)
     desktopChannel = channel
-    channel.setMethodCallHandler { call, result in
+    channel.setMethodCallHandler { [weak self] call, result in
+      if call.method == "activate" {
+        self?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        result(nil)
+        return
+      }
       guard call.method == "openLoginUrl" else {
         result(FlutterMethodNotImplemented)
         return
       }
       guard let value = call.arguments as? String, let url = URL(string: value),
-            url.scheme == "https", url.host == "auth.openai.com" else {
+            url.scheme == "https", ["auth.openai.com", "opencode.ai", "auth.opencode.ai"].contains(url.host ?? "") else {
         result(FlutterError(code: "invalid_url", message: "Invalid sign-in URL", details: nil))
         return
       }

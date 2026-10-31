@@ -1,0 +1,46 @@
+{
+  "environment": {
+    "platform": "macOS arm64",
+    "dart": "3.13.7",
+    "flutter": "3.47.8",
+    "runner": "flutter test (JIT)",
+    "date": "2026-10-31"
+  },
+  "dependencies": {
+    "val_highlight": "0.1.1",
+    "re_highlight": "0.0.3",
+    "shiki_flutter": "1.1.0",
+    "shiki_flutter_dart_engine": "1.0.0",
+    "oniguruma_dart": "1.0.1"
+  },
+  "fixture": "// sample\nconst value = await tools.exec_command({cmd: \"ls\", max_output_tokens: 1000});\ntext(value);\n",
+  "desktop_benchmark": {
+    "command": "cd packages/desktop; flutter test tool/bench_code_highlight.dart --no-pub --reporter expanded",
+    "warmup_misses": 100,
+    "miss_samples": 21,
+    "hit_iterations": 10000,
+    "cold_registry_parse_render_us": 37445,
+    "samples": [
+      {"source_chars": 101, "miss_median_us": 57, "hit_mean_us": 0.90},
+      {"source_chars": 1010, "miss_median_us": 327, "hit_mean_us": 0.13},
+      {"source_chars": 8080, "miss_median_us": 833, "hit_mean_us": 0.21},
+      {"source_chars": 32320, "miss_median_us": 2375, "hit_mean_us": 0.07},
+      {"source_chars": 101000, "miss_median_us": 6197, "hit_mean_us": 0.07}
+    ]
+  },
+  "engine_comparison": {
+    "script": "desktop-highlight-comparison.dart.txt",
+    "samples_per_size": 5,
+    "desktop_cold_us": 36481,
+    "re_highlight_registry_us": 147249,
+    "re_highlight_first_parse_render_us": 27601,
+    "shiki_first_load_parse_render_us": 787380,
+    "samples": [
+      {"source_chars": 101, "desktop_miss_median_us": 76, "re_highlight_median_us": 415, "shiki_median_us": 13195},
+      {"source_chars": 1010, "desktop_miss_median_us": 538, "re_highlight_median_us": 4005, "shiki_median_us": 129337},
+      {"source_chars": 8080, "desktop_miss_median_us": 1997, "re_highlight_median_us": 32825, "shiki_median_us": 1012696},
+      {"source_chars": 32320, "desktop_miss_median_us": 2301, "re_highlight_median_us": 195179, "shiki_median_us": 3996052}
+    ]
+  },
+  "limits": "Synthetic repeated JavaScript, small JIT samples, different grammar/theme fidelity. Measures parsing and TextSpan construction, excluding layout/paint. Not an AOT benchmark, frame-rate guarantee, or exhaustive language-quality comparison."
+}

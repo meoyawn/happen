@@ -23,6 +23,8 @@ class OpenCodeAuthManager {
   final _lifetime = CancellationToken();
   Future<Json>? _refreshing;
   Future<void>? _loggingIn;
+  Future<void>? _signingOut;
+  CancellationToken _authentication = CancellationToken();
   File get _file => File('$directory/opencode-auth.json');
 
   /// Local credential state only; never refreshes or returns credential values.
@@ -60,14 +62,14 @@ class OpenCodeAuthManager {
   }) {
     _lifetime.throwIfCancelled();
     cancellation.throwIfCancelled();
-    if (_loggingIn != null || _refreshing != null) {
+    if (_loggingIn != null || _refreshing != null || _signingOut != null) {
       return Future.error(
         StateError('OpenCode authentication is already active'),
       );
     }
     return _loggingIn = _login(
       notify,
-      cancellation.merge(_lifetime),
+      cancellation.merge(_lifetime).merge(_authentication),
     ).whenComplete(() => _loggingIn = null);
   }
 
@@ -170,11 +172,12 @@ class OpenCodeAuthManager {
   /// Returns only the access token and selected organization, never the refresh token.
   Future<Json> credentials({bool refresh = false}) {
     _lifetime.throwIfCancelled();
-    return _refreshing ??= _credentials(refresh)
+    if (_signingOut != null) throw StateError('OpenCode is signing out');
+    return _refreshing ??= _credentials(refresh, _authentication.merge(_lifetime))
         .whenComplete(() => _refreshing = null);
   }
 
-  Future<Json> _credentials(bool refresh) async {
+  Future<Json> _credentials(bool refresh, CancellationToken cancellation) async {
     await _loggingIn;
     _lifetime.throwIfCancelled();
     if (!await _file.exists()) {
@@ -208,7 +211,7 @@ class OpenCodeAuthManager {
       final (status, response) = await _request(
         'POST',
         '/auth/device/token',
-        _lifetime,
+        cancellation,
         body: {
           'grant_type': 'refresh_token',
           'refresh_token': _required(value, 'refresh_token'),
@@ -227,9 +230,9 @@ class OpenCodeAuthManager {
         );
       }
       value['org_id'] = org;
-      await _save(value, _lifetime);
+      await _save(value, cancellation);
     }
-    _lifetime.throwIfCancelled();
+    cancellation.throwIfCancelled();
     return {'access_token': _required(value, 'access_token'), 'org_id': org};
   }
 
@@ -367,6 +370,19 @@ class OpenCodeAuthManager {
   void close() {
     _lifetime.cancel();
     if (_ownsHttp) _http.close(force: true);
+  }
+
+  Future<void> signOut() => _signingOut ??= _signOut().whenComplete(() => _signingOut = null);
+
+  Future<void> _signOut() async {
+    _authentication.cancel();
+    try { await _loggingIn; } catch (_) { /* The operation was cancelled. */ }
+    try { await _refreshing; } catch (_) { /* The operation was cancelled. */ }
+    try {
+      if (await _file.exists()) await _file.delete();
+    } finally {
+      _authentication = CancellationToken();
+    }
   }
 }
 

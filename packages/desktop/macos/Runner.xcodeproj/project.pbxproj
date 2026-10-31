@@ -329,6 +329,7 @@
 			);
 			inputPaths = (
 				Flutter/ephemeral/tripwire,
+				"$(PROJECT_DIR)/../tool/normalize_native_assets.dart",
 			);
 			outputFileListPaths = (
 				Flutter/ephemeral/FlutterOutputs.xcfilelist,
@@ -337,7 +338,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && \"$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart\" --disable-dart-dev \"$PROJECT_DIR/../tool/normalize_native_assets.dart\" \"$BUILT_PRODUCTS_DIR/App.framework/Resources/flutter_assets/NativeAssetsManifest.json\" && touch Flutter/ephemeral/tripwire";
 		};
 /* End PBXShellScriptBuildPhase section */
 

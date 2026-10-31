@@ -23,6 +23,8 @@ class AuthManager {
       _ownsHttp = http == null;
   final String directory;
   Future<Json>? _refreshing;
+  Future<void>? _loggingIn, _signingOut;
+  CancellationToken _authentication = CancellationToken();
   final HttpClient _http;
   final bool _ownsHttp;
   final _lifetime = CancellationToken();
@@ -67,12 +69,13 @@ class AuthManager {
   }
 
   Future<Json> credentials({bool refresh = false}) {
-    return _refreshing ??= _credentials(refresh)
+    if (_signingOut != null) throw StateError('ChatGPT is signing out');
+    return _refreshing ??= _credentials(refresh, _authentication.merge(_lifetime))
         .whenComplete(() => _refreshing = null);
   }
 
-  Future<Json> _credentials(bool forceRefresh) async {
-    _lifetime.throwIfCancelled();
+  Future<Json> _credentials(bool forceRefresh, CancellationToken cancellation) async {
+    cancellation.throwIfCancelled();
     if (!await _file.exists()) {
       throw StateError(
         'Not signed in. Run "agent login" or "agent login --from-codex".',
@@ -108,9 +111,9 @@ class AuthManager {
           'refresh_token': requiredString(value, 'refresh_token'),
         },
         form: true,
-        cancellation: _lifetime,
+        cancellation: cancellation,
       );
-      _lifetime.throwIfCancelled();
+      cancellation.throwIfCancelled();
       value = _token(response, oldRefresh: value['refresh_token'] as String?);
       await _save(value);
     }
@@ -134,10 +137,22 @@ class AuthManager {
     bool device = false,
     required void Function(String url, String message) notify,
     CancellationToken? cancellation,
+  }) {
+    if (_loggingIn != null || _signingOut != null) {
+      throw StateError('ChatGPT authentication is already active');
+    }
+    return _loggingIn = _login(
+      device: device, notify: notify,
+      cancellation: (cancellation ?? _lifetime).merge(_authentication),
+    ).whenComplete(() => _loggingIn = null);
+  }
+
+  Future<void> _login({
+    required bool device,
+    required void Function(String url, String message) notify,
+    required CancellationToken cancellation,
   }) async {
-    final cancel = cancellation == null
-        ? _lifetime
-        : cancellation.merge(_lifetime);
+    final cancel = cancellation.merge(_lifetime);
     cancel.throwIfCancelled();
     if (device) {
       final info = await _post('/api/accounts/deviceauth/usercode', {
@@ -188,25 +203,41 @@ class AuthManager {
     final hook = CancellationHook(cancel, () {
       if (!result.isCompleted) result.completeError(const CancelledException());
     });
+    var received = false;
     server.listen((request) async {
+      String? code;
+      var accepted = false;
       if (request.uri.path != '/auth/callback') {
         request.response.statusCode = 404;
       } else if (request.uri.queryParameters['state'] != state) {
         request.response.statusCode = 400;
         request.response.write('Invalid OAuth state.');
-      } else if (!result.isCompleted) {
-        final code = request.uri.queryParameters['code'];
+      } else if (!received && !result.isCompleted) {
+        received = accepted = true;
+        code = request.uri.queryParameters['code'];
         if (code == null || request.uri.queryParameters.containsKey('error')) {
-          result.completeError(StateError('ChatGPT login was declined.'));
+          code = null;
           request.response.write('Login was declined.');
         } else {
-          result.complete(code);
           request.response.write(
-            'Authorization received. You can return to the terminal.',
+            'Authorization received. You can return to Happen.',
           );
         }
       }
-      await request.response.close();
+      try {
+        await request.response.close();
+      } on HttpException {
+        // A browser can close the tab after authorizing.
+      } on SocketException {
+        // The authorization result still belongs to this login.
+      }
+      if (accepted && !result.isCompleted) {
+        if (code == null) {
+          result.completeError(StateError('ChatGPT login was declined.'));
+        } else {
+          result.complete(code);
+        }
+      }
     });
     final url = Uri.parse('$_issuer/oauth/authorize').replace(
       queryParameters: {
@@ -378,6 +409,19 @@ class AuthManager {
   void close() {
     _lifetime.cancel();
     if (_ownsHttp) _http.close(force: true);
+  }
+
+  Future<void> signOut() => _signingOut ??= _signOut().whenComplete(() => _signingOut = null);
+
+  Future<void> _signOut() async {
+    _authentication.cancel();
+    try { await _loggingIn; } catch (_) { /* The operation was cancelled. */ }
+    try { await _refreshing; } catch (_) { /* The operation was cancelled. */ }
+    try {
+      if (await _file.exists()) await _file.delete();
+    } finally {
+      _authentication = CancellationToken();
+    }
   }
 }
 

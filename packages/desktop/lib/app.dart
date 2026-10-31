@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
 
+import 'conversation.dart';
 import 'session.dart';
 
 class DesktopView extends StatefulWidget {
@@ -39,38 +40,186 @@ class _DesktopViewState extends State<DesktopView> {
     _settingsOpen = true;
     try {
       await showDialog<void>(
-    context: context,
-    builder: (context) => ListenableBuilder(
-      listenable: session,
-      builder: (context, _) => AlertDialog(
-        title: const Text('App settings'),
-        content: SizedBox(width: 360, child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Default provider', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            const Text('Used for new tasks. Existing tasks keep their provider.',
-                style: TextStyle(fontSize: 12, color: Colors.black54)),
-            const SizedBox(height: 12),
-            for (final provider in session.providers)
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(session.defaultProviderId == provider['id']
-                    ? Icons.radio_button_checked : Icons.radio_button_off),
-                title: Text(provider['name'] as String),
-                subtitle: Text(_authLabel(provider['status'] as String)),
-                onTap: () => _run(() => session.chooseProvider(provider['id'] as String)),
+        context: context,
+        builder: (context) => ListenableBuilder(
+          listenable: session,
+          builder: (context, _) => AlertDialog(
+            title: const Text('Settings'),
+            scrollable: true,
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (session.loginSucceeded) ...[
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(color: const Color(0xffe3f1e8), borderRadius: BorderRadius.circular(12)),
+                      child: Row(children: [
+                        const Icon(Icons.check_circle, color: Color(0xff296748)),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text('Signed in to ${session.loginProvider == 'gpt' ? 'ChatGPT' : 'OpenCode'}. Your account is connected.')),
+                      ]),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                  const Text('Accounts', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 12),
+                  for (final provider in session.selectableProviders) _accountCard(provider),
+                  const SizedBox(height: 20),
+                  const Text('Default provider', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: session.defaultProviderId,
+                    decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                    items: [for (final provider in session.selectableProviders)
+                      DropdownMenuItem(value: provider['id'] as String, child: Text(provider['name'] as String))],
+                    onChanged: session.connected ? (value) => _run(() => session.chooseProvider(value!)) : null,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Used for new tasks. Existing tasks keep their provider.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  const SizedBox(height: 24),
+                  const Text('Messages sent while a task is working', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 12),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'steer', label: Text('Steer')),
+                      ButtonSegment(value: 'queue', label: Text('Queue')),
+                    ],
+                    selected: {session.deliveryMode},
+                    onSelectionChanged: (value) => _run(() => session.chooseDeliveryMode(value.single)),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(session.deliveryMode == 'steer'
+                      ? 'Guide the current turn at the next model step.'
+                      : 'Wait for the current turn to finish, then start the next one.',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                  const SizedBox(height: 24),
+                  _archivedTasks(context),
+                ],
               ),
-          ],
-        )),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Done'))],
-      ),
-    ),
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(session.loginSucceeded ? 'Continue' : 'Done'),
+              ),
+            ],
+          ),
+        ),
       );
     } finally {
       _settingsOpen = false;
+      await _run(session.cancelLogin);
+      session.dismissLoginResult();
     }
+  }
+
+  Future<void> _signIn(String provider) async {
+    final success = await session.signIn(provider, (url) async {
+      if (await _desktop.invokeMethod<bool>('openLoginUrl', url) != true) {
+        throw StateError('Could not open the browser');
+      }
+    });
+    if (success && mounted) await _desktop.invokeMethod<void>('activate');
+  }
+
+  Widget _archivedTasks(BuildContext dialogContext) {
+    final archived = [
+      for (final project in session.projects)
+        for (final task in project.tasks)
+          if (task.archived) (project, task),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Archived tasks (${archived.length})', style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        if (archived.isEmpty)
+          const Text('No archived tasks.', style: TextStyle(fontSize: 12, color: Colors.black54))
+        else ...[
+          const Text('Select a task to view its conversation. Restore to continue it.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: (archived.length * 80.0).clamp(80.0, 240.0),
+            width: double.maxFinite,
+            child: ListView.builder(
+              itemCount: archived.length,
+              itemBuilder: (context, index) {
+                final (project, task) = archived[index];
+                return ListTile(
+                  key: ValueKey('archived:${task.id}'),
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(task.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  subtitle: Tooltip(message: project.path, child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  onTap: task.archiving ? null : () {
+                    Navigator.pop(dialogContext);
+                    unawaited(_run(() => session.select(project, task)));
+                  },
+                  trailing: TextButton(
+                    onPressed: session.connected && !task.archiving
+                        ? () => _run(() => session.setArchived(task, false))
+                        : null,
+                    child: Text(task.archiving ? 'Restoring…' : 'Restore'),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _accountCard(Json provider) {
+    final id = provider['id'] as String;
+    final name = provider['auth'] == 'opencode' ? 'OpenCode' : provider['name'] as String;
+    final status = provider['status'] as String;
+    final connected = {'signed_in', 'refresh_required', 'api_key'}.contains(status);
+    final working = session.signingIn && session.loginProvider == id;
+    final available = session.connected && !session.signingIn && session.signingOut == null;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(border: Border.all(color: const Color(0xffdaddd5)), borderRadius: BorderRadius.circular(12)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+            if (provider['auth'] == 'opencode') const Text('DeepSeek models', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          ])),
+          Icon(connected ? Icons.check_circle : Icons.circle_outlined, size: 15, color: connected ? const Color(0xff296748) : Colors.black38),
+          const SizedBox(width: 6),
+          Text(_authLabel(status), style: const TextStyle(fontSize: 12)),
+        ]),
+        const SizedBox(height: 12),
+        if (working) ...[
+          Row(children: [
+            const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(session.loginMessage ?? 'Waiting for your browser…', style: const TextStyle(fontSize: 12))),
+          ]),
+          if (session.loginCode case final code?) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 18))),
+          Row(children: [
+            TextButton(onPressed: session.loginUrl == null ? null : session.openLoginBrowser, child: const Text('Open browser')),
+            TextButton(onPressed: () => _run(session.cancelLogin), child: const Text('Cancel')),
+          ]),
+        ] else if (provider['auth'] == 'api_key')
+          const Text('Uses the API key configured on this server.', style: TextStyle(fontSize: 12, color: Colors.black54))
+        else
+          Wrap(spacing: 8, children: [
+            if (!connected)
+              FilledButton(onPressed: available ? () => _run(() => _signIn(id)) : null, child: Text('Sign in to $name'))
+            else
+              OutlinedButton(onPressed: available ? () => session.signOut(id) : null, child: Text(session.signingOut == id ? 'Signing out…' : 'Sign out')),
+            if (connected)
+              TextButton(onPressed: available ? () => _run(() => _signIn(id)) : null, child: const Text('Switch account')),
+          ]),
+        if (session.loginProvider == id && session.loginError != null)
+          Padding(padding: const EdgeInsets.only(top: 8), child: Text(session.loginError!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12))),
+      ]),
+    );
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -122,9 +271,10 @@ class _DesktopViewState extends State<DesktopView> {
                 Expanded(
                   child: session.task == null
                       ? _empty(context)
-                      : _Transcript(
+                      : ConversationTranscript(
                           key: ValueKey(session.task!.id),
                           task: session.task!,
+                          directory: session.project!.path,
                           onRetry: () =>
                               _run(() => session.loadHistory(session.task!)),
                         ),
@@ -139,7 +289,16 @@ class _DesktopViewState extends State<DesktopView> {
                       ),
                     ),
                   ),
-                if (session.project != null)
+                if (session.task?.archived == true)
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: FilledButton.icon(
+                      onPressed: () => _run(() => _archiveTask(session.task!, false)),
+                      icon: const Icon(Icons.unarchive_outlined),
+                      label: const Text('Restore task to continue'),
+                    ),
+                  )
+                else if (session.project != null)
                   _Composer(key: ValueKey(session.draftKey), session: session),
               ],
             ),
@@ -217,33 +376,8 @@ class _DesktopViewState extends State<DesktopView> {
                       onPressed: () => _run(() => session.select(project)),
                     ),
                   ),
-                  for (final task in project.tasks)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 22, bottom: 2),
-                      child: ListTile(
-                        dense: true,
-                        visualDensity: const VisualDensity(vertical: -2),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        selected: session.task == task,
-                        selectedTileColor: const Color(0xffe2e7df),
-                        title: Text(
-                          task.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: task.running
-                            ? const SizedBox.square(
-                                dimension: 10,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                ),
-                              )
-                            : null,
-                        onTap: () => _run(() => session.select(project, task)),
-                      ),
-                    ),
+                  for (final task in project.tasks.where((task) => !task.archived))
+                    _taskTile(project, task),
                 ],
               ],
             ),
@@ -272,7 +406,7 @@ class _DesktopViewState extends State<DesktopView> {
               ],
             ),
           ),
-          for (final provider in session.providers)
+          for (final provider in session.selectableProviders)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 3, 20, 3),
               child: Row(
@@ -331,6 +465,49 @@ class _DesktopViewState extends State<DesktopView> {
     ),
   );
 
+  Widget _taskTile(Project project, DesktopTask task) => Padding(
+    padding: const EdgeInsets.only(left: 22, bottom: 2),
+    child: ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.only(left: 12),
+      visualDensity: const VisualDensity(vertical: -2),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      selected: session.task == task,
+      selectedTileColor: const Color(0xffe2e7df),
+      title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (task.running || task.archiving)
+          const SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.5)),
+        PopupMenuButton<String>(
+          tooltip: 'Task actions',
+          enabled: session.connected && !task.archiving,
+          icon: const Icon(Icons.more_horiz, size: 18),
+          onSelected: (value) => _run(() => _archiveTask(task, value == 'archive')),
+          itemBuilder: (_) => [
+            PopupMenuItem(value: task.archived ? 'restore' : 'archive', child: Text(task.archived ? 'Restore task' : 'Archive task')),
+          ],
+        ),
+      ]),
+      onTap: () => _run(() => session.select(project, task)),
+    ),
+  );
+
+  Future<void> _archiveTask(DesktopTask task, bool archived) async {
+    await session.setArchived(task, archived);
+    if (!mounted) return;
+    if (!archived) {
+      final project = session.projects.firstWhere((project) => project.tasks.contains(task));
+      await session.select(project, task);
+    } else {
+      ScaffoldMessenger.of(context)..clearSnackBars()..showSnackBar(SnackBar(
+        content: const Text('Task archived'),
+        duration: const Duration(seconds: 3),
+        persist: false,
+        action: SnackBarAction(label: 'Undo', onPressed: () => _run(() => _archiveTask(task, false))),
+      ));
+    }
+  }
+
   Widget _header(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
     child: Row(
@@ -388,194 +565,6 @@ class _DesktopViewState extends State<DesktopView> {
   );
 }
 
-class _Transcript extends StatefulWidget {
-  const _Transcript({super.key, required this.task, required this.onRetry});
-  final DesktopTask task;
-  final VoidCallback onRetry;
-
-  @override
-  State<_Transcript> createState() => _TranscriptState();
-}
-
-class _TranscriptState extends State<_Transcript> {
-  final _scroll = ScrollController();
-
-  @override
-  void didUpdateWidget(_Transcript oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!_scroll.hasClients || _scroll.position.extentAfter < 100) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _scroll.hasClients) {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
-        }
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final task = widget.task;
-    if (task.loading) return const Center(child: CircularProgressIndicator());
-    if (task.loadError case final error?) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: SelectableText(error),
-            ),
-            TextButton(
-              onPressed: widget.onRetry,
-              child: const Text('Retry loading conversation'),
-            ),
-          ],
-        ),
-      );
-    }
-    final entries = conversation(task);
-    return Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 840),
-        child: ListView.builder(
-          key: PageStorageKey(task.id),
-          controller: _scroll,
-          padding: const EdgeInsets.fromLTRB(32, 28, 32, 20),
-          itemCount: entries.length + (task.running ? 1 : 0),
-          itemBuilder: (context, index) {
-            if (index == entries.length) {
-              return const Padding(
-                padding: EdgeInsets.symmetric(vertical: 18),
-                child: Text(
-                  'Working…',
-                  style: TextStyle(color: Colors.black45),
-                ),
-              );
-            }
-            final entry = entries[index];
-            if (entry.tool case final tool?) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _ToolRow(key: ValueKey(tool.id), tool: tool),
-              );
-            }
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 28),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.role,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: entry.role == 'Error'
-                          ? Theme.of(context).colorScheme.error
-                          : Colors.black45,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    entry.text,
-                    style: const TextStyle(fontSize: 15, height: 1.55),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-class _ToolRow extends StatelessWidget {
-  const _ToolRow({super.key, required this.tool, this.nested = false});
-  final ToolActivity tool;
-  final bool nested;
-
-  @override
-  Widget build(BuildContext context) {
-    final running = tool.status == 'running';
-    final failed = tool.status == 'failed';
-    final color = failed ? Theme.of(context).colorScheme.error : Colors.black54;
-    return ExpansionTile(
-      key: PageStorageKey(tool.id),
-      initiallyExpanded: !nested,
-      dense: true,
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(left: 24, bottom: 8),
-      shape: const Border(),
-      collapsedShape: const Border(),
-      leading: running
-          ? const SizedBox.square(
-              dimension: 14,
-              child: CircularProgressIndicator(strokeWidth: 1.5),
-            )
-          : Icon(
-              failed
-                  ? Icons.error_outline
-                  : tool.status == 'done'
-                  ? Icons.check_rounded
-                  : Icons.stop_circle_outlined,
-              size: 16,
-              color: color,
-            ),
-      title: Text(
-        tool.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: color),
-      ),
-      subtitle: nested
-          ? null
-          : Text(
-              tool.children.isEmpty
-                  ? tool.status
-                  : '${tool.children.length} calls · ${tool.status}',
-              style: TextStyle(fontSize: 11, color: color),
-            ),
-      children: [
-        if (!nested) ...[
-          for (final child in tool.children)
-            _ToolRow(key: ValueKey(child.id), tool: child, nested: true),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            dense: true,
-            shape: const Border(),
-            collapsedShape: const Border(),
-            title: const Text('Code & output', style: TextStyle(fontSize: 12)),
-            children: [_details()],
-          ),
-        ] else
-          _details(),
-      ],
-    );
-  }
-
-  Widget _details() => Align(
-    alignment: Alignment.centerLeft,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: SelectableText(
-        '${tool.input}${tool.output == null ? '' : '\n\n${tool.output}'}',
-        style: const TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 12,
-          height: 1.5,
-        ),
-      ),
-    ),
-  );
-}
-
 class _Composer extends StatefulWidget {
   const _Composer({super.key, required this.session});
   final DesktopSession session;
@@ -613,6 +602,19 @@ class _ComposerState extends State<_Composer> {
     }
   }
 
+  void _newline() {
+    final value = _text.value;
+    if (!value.composing.isCollapsed) return;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    _text.value = TextEditingValue(
+      text: value.text.replaceRange(selection.start, selection.end, '\n'),
+      selection: TextSelection.collapsed(offset: selection.start + 1),
+    );
+    widget.session.drafts[_draftKey] = _text.text;
+  }
+
   @override
   void dispose() {
     _text.dispose();
@@ -635,14 +637,21 @@ class _ComposerState extends State<_Composer> {
           padding: const EdgeInsets.fromLTRB(28, 8, 28, 20),
           child: CallbackShortcuts(
             bindings: {
+              const SingleActivator(LogicalKeyboardKey.enter, shift: true): _newline,
+              const SingleActivator(
+                LogicalKeyboardKey.enter,
+                includeRepeats: false,
+              ): () {
+                if (available) unawaited(_submit());
+              },
               const SingleActivator(LogicalKeyboardKey.enter, meta: true): () {
-                if (available && !running) unawaited(_submit());
+                if (available) unawaited(_submit());
               },
               const SingleActivator(
                 LogicalKeyboardKey.enter,
                 control: true,
               ): () {
-                if (available && !running) unawaited(_submit());
+                if (available) unawaited(_submit());
               },
             },
             child: DecoratedBox(
@@ -657,6 +666,7 @@ class _ComposerState extends State<_Composer> {
                   children: [
                     TextField(
                       controller: _text,
+                      autofocus: true,
                       enabled: session.connected,
                       minLines: 2,
                       maxLines: 8,
@@ -742,7 +752,7 @@ class _ComposerState extends State<_Composer> {
                         Expanded(
                           child: Text(
                             session.authenticated
-                                ? '⌘ Enter to send'
+                                ? 'Enter to send · Shift+Enter for a new line'
                                 : 'Sign in to the selected provider to send',
                             style: const TextStyle(
                               fontSize: 11,
@@ -750,15 +760,24 @@ class _ComposerState extends State<_Composer> {
                             ),
                           ),
                         ),
+                        if (running)
+                          IconButton(
+                            tooltip: 'Stop task and clear pending messages',
+                            onPressed: available ? _stop : null,
+                            icon: const Icon(Icons.stop_rounded, size: 20),
+                          ),
                         IconButton.filled(
-                          tooltip: running ? 'Stop task' : 'Send message',
-                          onPressed:
-                              available && (running || session.authenticated)
-                              ? (running ? _stop : _submit)
+                          tooltip: running
+                              ? (session.deliveryMode == 'steer'
+                                    ? 'Steer task'
+                                    : 'Queue message')
+                              : 'Send message',
+                          onPressed: available && session.authenticated
+                              ? _submit
                               : null,
                           icon: Icon(
-                            running
-                                ? Icons.stop_rounded
+                            running && session.deliveryMode == 'queue'
+                                ? Icons.playlist_add
                                 : Icons.arrow_upward_rounded,
                             size: 20,
                           ),

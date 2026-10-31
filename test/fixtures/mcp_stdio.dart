@@ -64,7 +64,7 @@ void main() {
                   'tools': [
                     {
                       'name': 'probe',
-                      'description': 'Probe process ownership',
+                      'description': Platform.environment['MCP_TOOL_DESCRIPTION'] ?? 'Probe process ownership',
                       'inputSchema': {
                         'type': 'object',
                         'properties': {

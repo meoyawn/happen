@@ -92,6 +92,8 @@ void _storeMain(List<Object?> args) async {
             metadata: jsonObject(params['metadata'] ?? {}),
           ),
           'metadata' => store!.metadata(params['key'] as String),
+          'archive' => store!.archive(params['archived'] as bool),
+          'maintain' => store!.maintain(),
           'context' => store!.modelContext(),
           'history' => store!.history(
             after: params['after'] as int? ?? 0,

@@ -7,7 +7,8 @@ import 'package:server/server.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('Console backend executes code mode through UDS and reports hosted denials', () async {
+  for (final providerId in ['deepseek', 'opencode']) {
+  test('$providerId Console backend executes code mode through UDS and reports hosted denials', () async {
     final root = await Directory.systemTemp.createTemp('console-agent-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     AgentServer? server;
@@ -20,10 +21,10 @@ void main() {
     });
     await File('${root.path}/config.json').writeAsString(
       jsonEncode({
-        'default_provider': 'deepseek',
+        'default_provider': providerId,
         'providers': {
-          'deepseek': {
-            'backend': 'opencode',
+          providerId: {
+            if (providerId == 'deepseek') 'backend': 'opencode',
             'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1',
             'settings': {'reasoning': 'low'},
           },
@@ -137,5 +138,10 @@ void main() {
     });
     expect(jsonEncode(history), isNot(contains('fixture-access')));
     expect(jsonEncode(history), isNot(contains('fixture-refresh')));
+    await client.request('auth.logout', {'provider': 'opencode'});
+    final catalog = jsonObject(await client.request('providers.list'));
+    expect((catalog['providers'] as List).singleWhere((provider) => provider['id'] == 'opencode')['status'], 'signed_out');
+    expect(await File('${root.path}/opencode-auth.json').exists(), isFalse);
   });
+  }
 }

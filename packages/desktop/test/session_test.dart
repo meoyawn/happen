@@ -122,7 +122,7 @@ void main() {
       await desktop.addProject(work.path);
       final path = await work.resolveSymbolicLinks();
       expect(desktop.project!.id, path);
-      desktop.chooseModel('gpt-6-luna');
+      desktop.chooseModel('gpt-6-astra');
       desktop.chooseReasoning('low');
       expect(await desktop.send('hello'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Hello');
@@ -142,20 +142,48 @@ void main() {
         ),
         isTrue,
       );
-      expect(requests.first['model'], 'gpt-6-luna');
+      expect(requests.first['model'], 'gpt-6-astra');
       expect(requests.first['reasoning']['effort'], 'low');
+      await desktop.chooseDeliveryMode('queue');
+      expect(await desktop.send('queued follow-up'), isTrue);
+      await desktop.chooseDeliveryMode('steer');
+      expect(await desktop.send('steer this turn'), isTrue);
+      expect(desktop.task!.pending.length, 2);
+      expect(conversation(desktop.task!).map((e) => e.role), containsAll(['Queued', 'Steer pending']));
+      final pendingTimes = {
+        for (final entry in conversation(desktop.task!).where((entry) => entry.role == 'Queued' || entry.role == 'Steer pending'))
+          entry.text: entry.timestamp,
+      };
+      expect(pendingTimes.keys, unorderedEquals(['queued follow-up', 'steer this turn']));
+      expect(pendingTimes.values, everyElement(isNotNull), reason: 'Pending messages show their actual send time');
+      expect(desktop.task!.events.values.where((e) => e['type'] == 'turn.started').length, 1);
       firstReply.complete();
-      await _until(desktop, () => !desktop.task!.running);
+      await _until(desktop, () => !desktop.task!.running && desktop.task!.pending.isEmpty);
       expect(
         conversation(desktop.task!)
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        ['Hello from the server.'],
+        List.filled(3, 'Hello from the server.'),
       );
+      final timeline = desktop.task!.events.values.toList();
+      final starts = timeline.where((e) => e['type'] == 'turn.started').toList();
+      expect(starts.length, 2);
+      final inputs = timeline.where((e) => e['type'] == 'input.committed').toList();
+      expect(inputs.length, 3);
+      final committedMessages = conversation(desktop.task!).where((entry) => pendingTimes.containsKey(entry.text)).toList();
+      expect(committedMessages, hasLength(2));
+      for (final entry in committedMessages) {
+        expect(entry.timestamp, pendingTimes[entry.text], reason: 'Processing a queued message must not change its send time');
+      }
+      expect(inputs[1]['turn_id'], starts[0]['turn_id']);
+      expect(inputs[2]['turn_id'], starts[1]['turn_id']);
+      expect((requests[2]['input'] as List).where((e) => e['role'] == 'user').last['content'], 'steer this turn');
+      expect((requests[2]['input'] as List).any((e) => e['content'] == 'queued follow-up'), isFalse);
+      expect((requests.last['input'] as List).where((e) => e['role'] == 'user').last['content'], 'queued follow-up');
       final taskId = desktop.task!.id;
 
       desktop.chooseReasoning('high');
-      expect(await desktop.send('hold'), isTrue);
+      expect(await desktop.send('hold'), isTrue, reason: desktop.error);
       await _until(desktop, () => desktop.task!.streamingText == 'Waiting');
       expect(
         (requests.last['input'] as List).any(
@@ -163,9 +191,20 @@ void main() {
         ),
         isTrue,
       );
+      await desktop.chooseDeliveryMode('queue');
+      expect(await desktop.send('must not run after stop'), isTrue);
+      expect(desktop.task!.pending.length, 1);
       await desktop.stop();
       await _until(desktop, () => !desktop.task!.running);
       expect(conversation(desktop.task!).last.text, 'Stopped');
+      expect(desktop.task!.pending, isEmpty);
+      await desktop.chooseProvider('deepseek');
+      expect(desktop.providerId, 'gpt');
+      expect(desktop.defaultProviderId, 'deepseek');
+      final archivedTask = desktop.task!;
+      await desktop.setArchived(archivedTask, true);
+      expect(desktop.task, isNull);
+      expect(archivedTask.archived, isTrue);
 
       for (final (url, expected) in [
         ('git@github.com:acme/project.git', 'https://github.com/acme/project'),
@@ -197,17 +236,33 @@ void main() {
       await server!.close();
       server = null;
       desktop = await open();
+      expect(desktop.defaultProviderId, 'deepseek');
+      expect(desktop.deliveryMode, 'queue');
       expect(desktop.project!.id, 'https://github.com/acme/again');
       expect(desktop.project!.tasks.single.id, taskId);
+      expect(desktop.project!.tasks.single.archived, isTrue);
       await desktop.select(desktop.project!, desktop.project!.tasks.single);
-      expect(desktop.task!.model, 'gpt-6-luna');
+      expect(await desktop.send('archived tasks are read-only'), isFalse);
+      await desktop.setArchived(desktop.task!, false);
+      expect(desktop.task!.model, 'gpt-6-astra');
       expect(desktop.task!.reasoning, 'high');
       final restored = conversation(desktop.task!);
+      final restoredMessages = restored.where((entry) => pendingTimes.containsKey(entry.text)).toList();
+      expect(restoredMessages, hasLength(2));
+      for (final entry in restoredMessages) {
+        expect(entry.timestamp, pendingTimes[entry.text], reason: 'Send times survive server and desktop restart');
+      }
+      final completedTurns = restored.where((entry) => entry.role == 'Status' && entry.text == 'Completed').toList();
+      expect(completedTurns.length, 2);
+      for (final entry in completedTurns) {
+        expect(entry.startedAt, isNotNull);
+        expect(entry.timestamp!.isAfter(entry.startedAt!), isTrue);
+      }
       expect(
         restored
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        ['Hello from the server.'],
+        List.filled(3, 'Hello from the server.'),
       );
       expect(
         restored
@@ -218,12 +273,61 @@ void main() {
         2,
       );
       expect(restored.last.text, 'Stopped');
+      await desktop.signOut('gpt');
+      expect(desktop.authenticated, isFalse);
+      expect(await File('${root.path}/auth.json').exists(), isFalse);
     } finally {
       if (!firstReply.isCompleted) firstReply.complete();
       if (!heldReply.isCompleted) heldReply.complete();
       await session?.close();
       await server?.close();
       await provider.close(force: true);
+      await root.delete(recursive: true);
+    }
+  });
+
+  test('desktop sign-in opens OAuth and releases it on cancel or denial', () async {
+    final root = await Directory.systemTemp.createTemp('desktop-login-');
+    await File('${root.path}/config.yaml').writeAsString('{}');
+    final server = await AgentServer.startEmbedded(
+      directory: root.path, configPath: '${root.path}/config.yaml',
+    );
+    final session = DesktopSession(
+      await AgentClient.connect(server.uri), await openDesktopDatabase(root.path),
+    );
+    final http = HttpClient();
+    try {
+      await session.load();
+      var opened = Completer<Uri>();
+      Future<void> open(String url) async { opened.complete(Uri.parse(url)); }
+      var signing = session.signIn('gpt', open);
+      final url = await opened.future.timeout(const Duration(seconds: 5));
+      expect(url.host, 'auth.openai.com');
+      expect(url.path, '/oauth/authorize');
+      expect(session.signingIn, isTrue);
+      await session.cancelLogin();
+      await signing;
+      expect(session.signingIn, isFalse);
+      expect(session.loginUrl, isNull);
+      expect(session.loginError, isNull);
+
+      // Reusing the fixed callback port proves cancellation released the listener.
+      opened = Completer<Uri>();
+      signing = session.signIn('gpt', open);
+      final retry = await opened.future.timeout(const Duration(seconds: 5));
+      final response = await (await http.getUrl(Uri(
+        scheme: 'http', host: '127.0.0.1', port: 1455, path: '/auth/callback',
+        queryParameters: {'state': retry.queryParameters['state']!, 'error': 'access_denied'},
+      ))).close();
+      await response.drain<void>();
+      await signing;
+      expect(session.loginError, contains('declined'));
+      expect(session.providers.first['status'], 'signed_out');
+      expect(await File('${root.path}/auth.json').exists(), isFalse);
+    } finally {
+      http.close(force: true);
+      await session.close();
+      await server.close();
       await root.delete(recursive: true);
     }
   });
