@@ -430,6 +430,7 @@ class AgentServer {
         'mcp.status',
         'mcp.reload',
         'mcp.auth.logout',
+        'mcp.auth.callback',
         'mcp.request',
         'mcp.events.subscribe',
         'mcp.events.unsubscribe',

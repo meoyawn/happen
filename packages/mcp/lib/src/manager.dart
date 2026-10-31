@@ -110,8 +110,25 @@ class McpManager {
     cancellation.throwIfCancelled();
     final server = _servers[name];
     if (server?.oauth == null) throw const McpFailure('OAuth sign-out is unavailable for this MCP server');
-    await server!.oauth!.logout();
+    await server!.oauth!.logout(cancellation.merge(lifetime));
     await _restart(name, server, cancellation);
+  }
+
+  void completeLogin(String name, String callbackUrl) {
+    final auth = _servers[name]?.oauth;
+    if (auth == null) throw const McpFailure('No MCP sign-in is waiting for a callback');
+    auth.completeLogin(callbackUrl);
+  }
+
+  Future<void> _refreshAuthentication(CancellationToken cancellation) async {
+    for (final entry in _servers.entries.toList()) {
+      cancellation.throwIfCancelled();
+      if (!_authenticating.contains(entry.key) && await entry.value.oauth?.credentialsChanged() == true) {
+        try { await _restart(entry.key, entry.value, cancellation); } on CancelledException {
+          cancellation.throwIfCancelled();
+        }
+      }
+    }
   }
 
   Future<void> _restart(String name, _Server previous, CancellationToken cancellation) {
@@ -139,6 +156,7 @@ class McpManager {
   /// Keep credentials, launch arguments, schemas and private metadata out of it.
   Future<Json> inventory(CancellationToken cancellation, {bool verbose = false, String? server}) async {
     cancellation.throwIfCancelled();
+    await _refreshAuthentication(cancellation);
     final names = _configured.keys.where((name) => server == null || name == server).toList()..sort();
     final rows = await Future.wait(names.map((name) async {
       final config = jsonObject(_configured[name]);
@@ -196,6 +214,7 @@ class McpManager {
 
   Future<Json> catalog(CancellationToken cancellation, {String? knownRevision}) async {
     cancellation.throwIfCancelled();
+    await _refreshAuthentication(cancellation);
     await Future.wait(_servers.values.map((s) => s.initial.future))
         .asCancellable(cancellation);
     // Tool maps are replaced atomically on discovery, notifications and
@@ -478,7 +497,7 @@ class _Server {
         if (!initial.isCompleted) initial.complete();
       }
       if (lifetime.isCancelled) break;
-      if (authenticationRequired) { state = 'failed'; break; }
+      if (authenticationRequired && oauth?.canRefresh != true) { state = 'failed'; break; }
       if (since.elapsed > const Duration(minutes: 1)) failures = 0;
       failures++;
       state = failures == 6 ? 'failed' : 'reconnecting';

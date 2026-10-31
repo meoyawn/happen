@@ -3,6 +3,21 @@ language: dart
 toolchains:
   default: system
 tasks:
+  build-cli:
+    description: Build the single-file macOS arm64 Happen AOT CLI with embedded native libraries
+    command: dart tool/build_cli.dart
+    preset: utility
+    inputs: []
+    outputs:
+      - build/cli/happen
+      - build/cli/build-report.json
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      outputStyle: stream
+      mutex: happen-cli-build
+
   dev:
     description: Run one Flutter desktop in the foreground with stateful hot reload
     command: python3 packages/desktop/tool/run_flutter.py

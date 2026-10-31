@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/dart-lang/sdk",
+  "revision": "3.13.7",
+  "sdk_version": "3.13.7",
+  "purpose": "Unmodified upstream Mach-O writer, downloaded into the build cache and verified before use; stock Dart AOT runtime.",
+  "files": {
+    "pkg/dart2native/lib/dart2native_macho.dart": "187b9cafe4c5e06eaaea3e18722cfd59b87b7f873a296b83224e28fbe2ace6c6",
+    "pkg/dart2native/lib/macho.dart": "dec07fcb9e7ce3c55a89074e5d3d59e8853621ac1ebfa9945a5f83a7f7667ff2",
+    "pkg/dart2native/lib/src/macho_utils.dart": "af9a0b46d0e5a98bd7c7fda17a8a30cc14d9be24bee21a2abd7e82252dfeba39",
+    "pkg/dart2native/lib/src/generate_utils.dart": "a5283f011e0093165d8d213a676bf285b93917b74c3d1a7fae501e962b8a5e0f",
+    "LICENSE": "2cfa3ee8e7512e6d44c854b986510810fadc815f93f890373b3a81c1b6ccd256"
+  }
+}

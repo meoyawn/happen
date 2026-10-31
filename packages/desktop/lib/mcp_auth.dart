@@ -53,7 +53,7 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
         await widget.client.mcpLogout(widget.server, cancellation: cancellation);
       } else {
         final result = await widget.client.mcpLogin(widget.server, id, cancellation: cancellation);
-        if (result['state'] != 'ready') throw StateError('MCP connection is unavailable');
+        if (result['state'] != 'ready') { throw StateError('MCP connection is unavailable'); }
       }
       if (mounted && !cancellation.isCancelled) {
         await _desktop.invokeMethod<void>('activate');
@@ -62,10 +62,12 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
     } on CancelledException {
       // Closing the dialog or its client cancels discovery and the callback.
     } catch (_) {
-      if (mounted && !cancellation.isCancelled) setState(() {
-        _working = false;
-        _error = widget.signOut ? 'Unable to sign out. Try again.' : 'Unable to sign in. Try again.';
-      });
+      if (mounted && !cancellation.isCancelled) {
+        setState(() {
+          _working = false;
+          _error = widget.signOut ? 'Unable to sign out. Try again.' : 'Unable to sign in. Try again.';
+        });
+      }
     }
   }
 

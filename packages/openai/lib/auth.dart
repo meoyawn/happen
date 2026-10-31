@@ -78,7 +78,7 @@ class AuthManager {
     cancellation.throwIfCancelled();
     if (!await _file.exists()) {
       throw StateError(
-        'Not signed in. Run "agent login" or "agent login --from-codex".',
+        'Not signed in. Run "happen login" or "happen login --from-codex".',
       );
     }
     var value = jsonObject(jsonDecode(await _file.readAsString()));
@@ -92,7 +92,7 @@ class AuthManager {
       final expires = (claims['exp'] as num?)?.toInt() ?? 0;
       if (expires <= DateTime.now().millisecondsSinceEpoch ~/ 1000 + 30) {
         throw StateError(
-          'The referenced Codex login expired. Refresh it with Codex, or run "agent login" for an independent login.',
+          'The referenced Codex login expired. Refresh it with Codex, or run "happen login" for an independent login.',
         );
       }
       return {

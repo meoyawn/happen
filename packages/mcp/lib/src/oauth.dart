@@ -26,6 +26,9 @@ class McpOAuth {
   Future<void>? _loading, _loggingIn;
   Future<String?>? _refreshing;
   bool _rejected = false, _needsLogin = false;
+  String? _diskStamp;
+  void Function(Uri)? _callback;
+  Uri? _redirect;
   String get _url => config['url'] as String;
   String get _key => sha256.convert(utf8.encode('$name\u0000$_url')).toString();
   Directory get _directory => Directory('$directory/mcp-auth');
@@ -33,6 +36,7 @@ class McpOAuth {
   Json get _options => jsonObject(config['oauth'] ?? {});
   bool get authenticated => _credentials != null && !_needsLogin;
   bool get signingIn => _loggingIn != null;
+  bool get canRefresh => !_needsLogin && (_credentials?['refresh_token'] as String? ?? '').isNotEmpty;
 
   void challenge(int status, List<String> headers, {required bool sentToken}) {
     if (status != 401 && status != 403) return;
@@ -46,7 +50,7 @@ class McpOAuth {
   Future<String?> authorization(CancellationToken cancellation) async {
     final token = cancellation.merge(lifetime);
     token.throwIfCancelled();
-    await (_loading ??= _load()).asCancellable(token);
+    try { await (_loading ??= _load()).asCancellable(token); } on McpFailure { _needsLogin = true; return null; }
     token.throwIfCancelled();
     final saved = _credentials;
     if (saved == null || _needsLogin) return null;
@@ -65,6 +69,7 @@ class McpOAuth {
   Future<void> _load() async {
     lifetime.throwIfCancelled();
     try {
+      _diskStamp = await _stamp();
       if (await FileSystemEntity.type(_file.path, followLinks: false) == FileSystemEntityType.notFound) return;
       if (await FileSystemEntity.type(_file.path, followLinks: false) != FileSystemEntityType.file ||
           (await _file.stat()).size > 65536) {
@@ -74,6 +79,7 @@ class McpOAuth {
       lifetime.throwIfCancelled();
       if (saved['server_url'] != _url || saved['server_name'] != name ||
           saved['access_token'] is! String || (saved['access_token'] as String).trim().isEmpty ||
+          RegExp(r'[\r\n]').hasMatch(saved['access_token'] as String) ||
           saved['client_id'] is! String || (saved['client_id'] as String).trim().isEmpty ||
           saved['expires_at'] != null && saved['expires_at'] is! num ||
           saved['refresh_token'] != null && saved['refresh_token'] is! String ||
@@ -90,8 +96,20 @@ class McpOAuth {
     }
   }
 
-  Future<String?> _refresh(Json saved) async {
+  Future<String?> _refresh(Json saved) => _withCredentialLock(lifetime, () async {
     try {
+      // A different process may already have rotated this credential while
+      // this owner waited for the file lock. Never refresh the stale copy.
+      _credentials = null;
+      await _load();
+      final current = _credentials;
+      if (current == null) { _needsLogin = true; return null; }
+      if (current['refresh_token'] != saved['refresh_token'] &&
+          (current['expires_at'] == null || current['expires_at'] > DateTime.now().millisecondsSinceEpoch + 60000)) {
+        _rejected = false;
+        return current['access_token'] as String;
+      }
+      saved = current;
       final info = await _discover(lifetime);
       if (saved['issuer'] == null || saved['issuer'] != info.metadata['issuer'] || saved['resource'] != info.resource) {
         _needsLogin = true;
@@ -114,7 +132,7 @@ class McpOAuth {
     } catch (_) {
       throw const McpFailure('Unable to refresh MCP sign-in');
     }
-  }
+  });
 
   Future<void> login(CancellationToken cancellation, void Function(String url) notify) {
     if (_loggingIn != null) throw const McpFailure('An MCP sign-in is already in progress');
@@ -126,7 +144,8 @@ class McpOAuth {
     StreamSubscription<HttpRequest>? subscription;
     try {
       token.throwIfCancelled();
-      await (_loading ??= _load()).asCancellable(token);
+      try { await (_loading ??= _load()).asCancellable(token); } on McpFailure { _credentials = null; }
+      await _refreshing?.asCancellable(token);
       final info = await _discover(token);
       final metadata = info.metadata;
       final issuerBound = metadata['authorization_response_iss_parameter_supported'] == true;
@@ -185,33 +204,34 @@ class McpOAuth {
       // Own completion before handing the browser URL to an asynchronous client.
       unawaited(result.future.then<void>((_) {}, onError: (Object _) {}));
       var received = false;
+      _redirect = Uri.parse(redirect);
+      _callback = (uri) {
+        final query = uri.queryParametersAll;
+        if (received || token.isCancelled || query['state']?.length != 1 || query['state']!.single != state) {
+          throw const McpFailure('Invalid or expired MCP sign-in callback');
+        }
+        received = true;
+        final issuer = query['iss'];
+        if (issuer != null && (issuer.length != 1 || issuer.single != metadata['issuer']) || issuerBound && issuer == null) {
+          result.completeError(const McpFailure('MCP sign-in issuer did not match; try again'));
+        } else if (query.containsKey('error')) {
+          result.completeError(const McpFailure('MCP sign-in was declined'));
+        } else if (query['code']?.length != 1 || query['code']!.single.isEmpty) {
+          result.completeError(const McpFailure('MCP sign-in callback did not contain a code'));
+        } else {
+          result.complete(query['code']!.single);
+        }
+      };
       subscription = listener.listen((request) async {
-        String? code;
-        Object? failure;
-        var accepted = false;
-        final query = request.uri.queryParametersAll;
         if (request.method != 'GET' || request.uri.path != path) {
           request.response.statusCode = 404;
-        } else if (query['state']?.length != 1 || query['state']!.single != state || received || token.isCancelled) {
-          request.response.statusCode = 400;
-          request.response.write('Invalid or expired sign-in callback.');
         } else {
-          received = accepted = true;
-          final issuer = query['iss'];
-          if (issuer != null && (issuer.length != 1 || issuer.single != metadata['issuer']) || issuerBound && issuer == null) {
-            failure = const McpFailure('MCP sign-in issuer did not match; try again');
-          } else if (query.containsKey('error')) {
-            failure = const McpFailure('MCP sign-in was declined');
-          } else if (query['code']?.length != 1 || query['code']!.single.isEmpty) {
-            failure = const McpFailure('MCP sign-in callback did not contain a code');
-          } else {
-            code = query['code']!.single;
-          }
-          request.response.statusCode = failure == null ? 200 : 400;
+          var accepted = false;
+          try { _callback!(request.uri); accepted = true; } on McpFailure { request.response.statusCode = 400; }
           request.response.headers.contentType = ContentType.html;
           request.response.headers.set('Cache-Control', 'no-store');
           request.response.headers.set('Referrer-Policy', 'no-referrer');
-          request.response.write(failure == null
+          request.response.write(accepted
             ? '<!doctype html><title>Happen</title><p>Authorization received. You can return to Happen.</p>'
             : '<!doctype html><title>Happen</title><p>Sign-in failed. Return to Happen and try again.</p>');
         }
@@ -219,9 +239,6 @@ class McpOAuth {
           await request.response.close();
         } on HttpException { /* A closed browser tab does not discard the callback. */
         } on SocketException { /* The callback is already validated. */ }
-        if (accepted && !result.isCompleted) {
-          if (failure != null) { result.completeError(failure); } else { result.complete(code!); }
-        }
       }, onError: (Object _) {
         if (!result.isCompleted) result.completeError(const McpFailure('MCP callback listener failed'));
       });
@@ -229,16 +246,18 @@ class McpOAuth {
       notify(url.toString());
       final code = await result.future;
       token.throwIfCancelled();
-      final response = await _exchange(metadata, client, {
-        'grant_type': 'authorization_code', 'code': code,
-        'code_verifier': verifier, 'redirect_uri': redirect, 'resource': info.resource,
-      }, token);
-      final saved = _tokens(response, {
-        ...client, 'issuer': metadata['issuer'], 'resource': info.resource, 'scope': scopes.join(' '),
+      await _withCredentialLock(token, () async {
+        final response = await _exchange(metadata, client, {
+          'grant_type': 'authorization_code', 'code': code,
+          'code_verifier': verifier, 'redirect_uri': redirect, 'resource': info.resource,
+        }, token);
+        final saved = _tokens(response, {
+          ...client, 'issuer': metadata['issuer'], 'resource': info.resource, 'scope': scopes.join(' '),
+        });
+        await _save(saved, token);
+        _credentials = saved;
+        _rejected = _needsLogin = false;
       });
-      await _save(saved, token);
-      _credentials = saved;
-      _rejected = _needsLogin = false;
     } on CancelledException {
       rethrow;
     } on McpFailure {
@@ -246,10 +265,28 @@ class McpOAuth {
     } catch (_) {
       throw const McpFailure('Unable to sign in to this MCP server');
     } finally {
+      _callback = null;
+      _redirect = null;
       await listener?.close(force: true);
       await subscription?.cancel();
     }
   }
+
+  void completeLogin(String value) {
+    final uri = value.length <= 16384 ? Uri.tryParse(value) : null;
+    if (uri == null || _redirect == null || _callback == null || uri.userInfo.isNotEmpty || uri.hasFragment ||
+        uri.origin != _redirect!.origin || uri.path != _redirect!.path) {
+      throw const McpFailure('Paste the complete callback URL from this sign-in');
+    }
+    _callback!(uri);
+  }
+
+  Future<String?> _stamp() async {
+    final stat = await _file.stat();
+    return stat.type == FileSystemEntityType.notFound ? null : '${stat.modified.microsecondsSinceEpoch}:${stat.size}';
+  }
+
+  Future<bool> credentialsChanged() async => !signingIn && _loading != null && await _stamp() != _diskStamp;
 
   Future<({Json metadata, String resource, List<String> scopes})> _discover(CancellationToken token) async {
     final resourceUri = _webUri(_url);
@@ -399,7 +436,10 @@ class McpOAuth {
       response.headers.forEach((name, values) => headers[name.toLowerCase()] = values);
       // A discovery probe can be an indefinitely open SSE response. Only its
       // status and challenge are needed; never wait for a successful stream.
-      if (resourceHeaders) return (status: response.statusCode, body: <String, dynamic>{}, headers: headers);
+      if (resourceHeaders) {
+        await response.listen((_) {}).cancel();
+        return (status: response.statusCode, body: <String, dynamic>{}, headers: headers);
+      }
       final bytes = <int>[];
       final input = StreamIterator(response);
       try {
@@ -429,12 +469,7 @@ class McpOAuth {
 
   Future<void> _save(Json saved, CancellationToken token) async {
     token.throwIfCancelled();
-    final type = await FileSystemEntity.type(_directory.path, followLinks: false);
-    if (type != FileSystemEntityType.notFound && type != FileSystemEntityType.directory) {
-      throw const McpFailure('MCP credential directory must not be a symbolic link');
-    }
-    await _directory.create(recursive: true);
-    await _private(_directory.path, '700');
+    await _prepareDirectory();
     final temporary = File('${_directory.path}/.$_key.${newId()}.tmp');
     try {
       await temporary.create();
@@ -443,15 +478,58 @@ class McpOAuth {
       await temporary.writeAsString(jsonEncode(saved), flush: true);
       token.throwIfCancelled();
       await temporary.rename(_file.path);
+      _diskStamp = await _stamp();
     } finally {
       if (await temporary.exists()) await temporary.delete();
     }
   }
 
-  Future<void> logout() async {
+  Future<T> _withCredentialLock<T>(CancellationToken token, Future<T> Function() action) async {
+    token.throwIfCancelled();
+    await _prepareDirectory();
+    final locks = Directory('${_directory.path}/locks');
+    if (FileSystemEntity.isLinkSync(locks.path)) throw const McpFailure('MCP credential lock directory must not be a symbolic link');
+    await locks.create();
+    await _private(locks.path, '700');
+    final path = '${locks.path}/$_key.lock';
+    if (FileSystemEntity.isLinkSync(path)) throw const McpFailure('MCP credential lock must not be a symbolic link');
+    final lock = await File(path).open(mode: FileMode.append);
+    var acquired = false;
+    try {
+      await _private(path, '600');
+      while (!acquired) {
+        token.throwIfCancelled();
+        try { await lock.lock(FileLock.exclusive); acquired = true; } on FileSystemException catch (error) {
+          if (![11, 13, 35].contains(error.osError?.errorCode)) rethrow;
+          await cancellableDelay(const Duration(milliseconds: 25), token);
+        }
+      }
+      token.throwIfCancelled();
+      return await action();
+    } on CancelledException { rethrow;
+    } on McpFailure { rethrow;
+    } catch (_) { throw const McpFailure('Unable to update MCP credentials');
+    } finally {
+      if (acquired) await lock.unlock();
+      await lock.close();
+    }
+  }
+
+  Future<void> _prepareDirectory() async {
+    final type = await FileSystemEntity.type(_directory.path, followLinks: false);
+    if (type != FileSystemEntityType.notFound && type != FileSystemEntityType.directory) {
+      throw const McpFailure('MCP credential directory must not be a symbolic link');
+    }
+    await _directory.create(recursive: true);
+    await _private(_directory.path, '700');
+  }
+
+  Future<void> logout(CancellationToken cancellation) async {
     await close();
     _credentials = null;
-    if (await FileSystemEntity.type(_file.path, followLinks: false) != FileSystemEntityType.notFound) await _file.delete();
+    await _withCredentialLock(cancellation, () async {
+      if (await FileSystemEntity.type(_file.path, followLinks: false) != FileSystemEntityType.notFound) await _file.delete();
+    });
   }
 
   Future<void> close() async {

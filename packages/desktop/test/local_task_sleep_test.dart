@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:desktop/local_task_sleep.dart';
+import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -17,6 +19,7 @@ void main() {
     final clients = <AgentClient>[];
     final owners = <LocalTaskSleepInhibitor>[];
     final errors = <Object>[];
+    final abandoned = <int>[];
     provider.listen((request) async {
       try {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
@@ -74,7 +77,14 @@ void main() {
       // A second server reached over TCP models another machine's task owner.
       final remote = await open('remote');
       final remoteTask = await start(remote.client, 'remote');
+      // Native assertions can survive a Dart hot restart in the same process.
+      abandoned.add(_createFixtureAssertion('Happen / Running local tasks'));
+      abandoned.add(_createFixtureAssertion('Happen / Unrelated operation'));
+      expect(await _assertions(), hasLength(1));
       final owner = watch(local.server);
+      await _until(() async => (await _assertions()).isEmpty);
+      expect(await _assertions('Happen / Unrelated operation'), hasLength(1),
+        reason: 'Startup recovery must leave unrelated power assertions alone');
       expect(await _assertions(), isEmpty, reason: 'An active remote task cannot hold local wake');
 
       final activity = <int>[];
@@ -136,6 +146,7 @@ void main() {
       for (final owner in owners) { await owner.close(); }
       for (final client in clients) { await client.close(); }
       for (final server in servers) { await server.close(); }
+      for (final id in abandoned) { _releaseFixtureAssertion(id); }
       release.complete();
       await provider.close(force: true);
       await root.delete(recursive: true);
@@ -143,15 +154,38 @@ void main() {
   }, skip: !Platform.isMacOS, timeout: const Timeout(Duration(minutes: 1)));
 }
 
-Future<List<String>> _assertions() async {
+Future<List<String>> _assertions([String name = 'Happen / Running local tasks']) async {
   final result = await Process.run('/usr/bin/pmset', ['-g', 'assertions']);
   expect(result.exitCode, 0);
   final lines = (result.stdout as String).split('\n').where((line) =>
-    line.contains('pid $pid(') && line.contains('named: "Happen / Running local tasks"'));
+    line.contains('pid $pid(') && line.contains('named: "$name"'));
   return lines.map((line) {
     expect(line, contains('PreventUserIdleSystemSleep'), reason: 'Task activity must not request display wake');
     return RegExp(r'\[([^\]]+)\]').firstMatch(line)!.group(1)!;
   }).toList();
+}
+
+// Inject an independent OS resource with no Dart owner, modeling lost VM state.
+int _createFixtureAssertion(String name) => using((arena) {
+  final cf = DynamicLibrary.open('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation');
+  final string = cf.lookupFunction<Pointer<Void> Function(Pointer<Void>, Pointer<Utf8>, Uint32), Pointer<Void> Function(Pointer<Void>, Pointer<Utf8>, int)>('CFStringCreateWithCString');
+  final release = cf.lookupFunction<Void Function(Pointer<Void>), void Function(Pointer<Void>)>('CFRelease');
+  Pointer<Void> value(String text) {
+    final result = string(nullptr, text.toNativeUtf8(allocator: arena), 0x08000100);
+    arena.onReleaseAll(() => release(result));
+    return result;
+  }
+  final io = DynamicLibrary.open('/System/Library/Frameworks/IOKit.framework/IOKit');
+  final create = io.lookupFunction<Int32 Function(Pointer<Void>, Uint32, Pointer<Void>, Pointer<Uint32>), int Function(Pointer<Void>, int, Pointer<Void>, Pointer<Uint32>)>('IOPMAssertionCreateWithName');
+  final result = arena<Uint32>();
+  expect(create(value('PreventUserIdleSystemSleep'), 255, value(name), result), 0);
+  return result.value;
+});
+
+void _releaseFixtureAssertion(int id) {
+  final io = DynamicLibrary.open('/System/Library/Frameworks/IOKit.framework/IOKit');
+  // Recovery may already have released it.
+  io.lookupFunction<Int32 Function(Uint32), int Function(int)>('IOPMAssertionRelease')(id);
 }
 
 Future<void> _until(FutureOr<bool> Function() condition) async {

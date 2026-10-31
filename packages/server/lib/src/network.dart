@@ -105,6 +105,7 @@ void _networkMain(List<Object?> args) async {
   final providers = <String, ModelProvider>{'openai': gpt, 'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
   final active = <String, Map<String, CancellationToken>>{};
   final operations = <String, CancellationToken>{};
+  final mcpLogins = <String, ({String owner, String id})>{};
   final repositoryInstructions = RepositoryInstructions();
   final skills = FilesystemSkills(homeDirectory: startup['skills_home'] as String?);
   String? loginId, loginOwner;
@@ -354,6 +355,8 @@ void _networkMain(List<Object?> args) async {
           case 'mcp.auth.login':
             final name = requiredString(params, 'server');
             final login = requiredString(params, 'login_id');
+            if (mcpLogins.containsKey(name)) throw StateError('An MCP sign-in is already in progress');
+            mcpLogins[name] = (owner: requiredString(params, 'owner'), id: login);
             try {
               final signingIn = mcp.login(name, cancellation, (url) => reply?.send({'event': {
                 'type': 'mcp.auth.login', 'server': name, 'login_id': login, 'url': url,
@@ -361,8 +364,17 @@ void _networkMain(List<Object?> args) async {
               configEvent('mcp.auth.changed', {'server': name});
               result = await signingIn;
             } finally {
+              mcpLogins.remove(name);
               configEvent('mcp.auth.changed', {'server': name});
             }
+          case 'mcp.auth.callback':
+            final name = requiredString(params, 'server');
+            final login = mcpLogins[name];
+            if (login == null || login.owner != params['owner'] || login.id != params['login_id']) {
+              throw StateError('No matching MCP sign-in is waiting for a callback');
+            }
+            mcp.completeLogin(name, requiredString(params, 'callback_url'));
+            result = null;
           case 'mcp.auth.logout':
             final name = requiredString(params, 'server');
             await mcp.logout(name, cancellation);

@@ -4136,3 +4136,179 @@ on their next turn. Host execution and request-level regressions establish
 availability and cwd behavior; they do not establish model-choice quality for
 every prompt. Complete upstream description bytes and runtime parity remain
 separate gaps in [`packages/openai/GAPS.md`](../packages/openai/GAPS.md).
+
+## 2026-10-31 — Fast conversation navigation from sidebar focus
+
+User requirement: Option+Up/Down must select adjacent conversations with the
+composer or sidebar focused, with switches below 100 ms and no jank. The user
+later asked to finish with the current improvements. This supersedes the focus
+ownership in the earlier Option-arrow decision; task order, endpoints, repeat,
+draft restoration, and Settings isolation retain the same behavior.
+
+Use a Flutter `FocusManager` early key handler owned by `DesktopView`, guarded
+by the current route. Sidebar clicks can move primary focus outside a descendant
+`CallbackShortcuts` widget, so shortcut ancestry alone is insufficient. Accept
+either Option key and key repeats, reject additional modifiers, and unregister
+on disposal. Rebind idempotently during hot reload. Keep the scaffold and focus
+scope above session notifications so selection does not recreate their widgets.
+The installed Flutter source at `737ba8f885dc774b53b442759999a312c9461e4e`,
+`packages/flutter/lib/src/widgets/focus_manager.dart`, documents this public early
+handler API and its dispatch before the focus tree. No native keyboard contract
+or provider interface changes are required.
+
+The accompanying performance changes start the reversed lazy transcript at its
+newest rows, without laying out the entire history and jumping afterward. Follow
+state uses `extentBefore`. Retain up to 16 recently visited transcript subtrees
+with their scroll and disclosure state; disable focus, tickers, and turn timers
+for hidden conversations. Reuse unchanged sidebar rows and cache conversation
+projections against event/pending record identities and transient state. Tool
+JSON formatting and disclosure contents are evaluated only when opened. These
+choices exchange bounded retained view memory for less parsing and layout on
+revisits; new history and invalidated projections still require work.
+
+Keep the composer mounted when changing drafts, swapping its controller and
+canceling attachment/dictation work belonging to the previous draft. Asynchronous
+copy, paste, drop, voice, and send completions retain their originating owner so
+they cannot update the newly selected task. A delayed-paste regression uses equal
+text in both drafts to establish ownership rather than relying on text equality.
+
+Evidence: Dart MCP against the native macOS arm64 debug app on Apple M1 Pro,
+Flutter 3.47.8 and Dart 3.13.7. Temporary service extensions dispatch Option-arrow
+events through Flutter's hardware-keyboard bookkeeping and focus key-message
+handler, release Option between samples, and collect `FrameTiming`. The probe
+waits for the selected transcript and loaded history, then matches its ready
+frame to raster completion. One-off probes and raw captures stay outside the
+repository. An initial trace contained a 403.590 ms UI build frame. The latest
+sidebar sample completed 23 switches across eight tasks, with ready-frame raster
+latency of 25.870–66.243 ms and a maximum UI build of 46.052 ms. Its observation
+window still contained 24 UI frames longer than 16.67 ms, including setup and
+background work. Thus the observed switch latency is below 100 ms; zero jank is
+not established. An earlier cold-history run exceeded 100 ms, so this is not an
+all-history-loading guarantee.
+
+The latest probe stopped at an unhandled shortcut. Subsequent Flutter keyboard
+inspection reported Meta Left held while CoreGraphics reported it released;
+the completed sample is not an exhaustive uninterrupted navigation run. A
+subsequent detailed timeline capture exceeded the tooling process's memory;
+profiling flags were explicitly disabled afterward. Neither observation is
+evidence that every possible focus or platform-keyboard condition is covered.
+
+Reproduce from `packages/desktop`:
+
+    flutter test --no-pub --reporter expanded
+    flutter test --no-pub test/view_test.dart --plain-name 'Option arrows' --reporter expanded
+    dart analyze lib/app.dart lib/conversation.dart lib/session.dart test/view_test.dart test/conversation_test.dart
+    git diff --check
+
+All 62 desktop tests passed in the final working-tree run, including the sidebar click/no-composer regression,
+which failed before the focus fix, both Option keys, repeated navigation,
+Settings isolation, first-frame long-history rendering, lazy tool formatting,
+scroll following, and delayed paste isolation. Scoped Dart MCP analysis reports
+no errors. The final Dart MCP hot reload succeeded with no runtime errors.
+No Dart formatter was run. Remaining uncertainty includes cold loading, cache
+eviction, retained-view memory under large workloads, and frame budgets under
+ongoing background streams; the user accepted finishing before further tuning.
+
+## 2026-10-31 — Desktop-owned sleep prevention for embedded tasks
+
+User requirement: keep this Mac awake while at least one task runs on the
+desktop's local in-process server. Tasks executing on another machine must
+never hold the desktop awake. All macOS behavior belongs in packages/desktop;
+packages/server remains responsible for task execution.
+
+AgentServer exposes an in-process activeTaskCount snapshot and activeTaskCounts
+broadcast stream, using the existing task.busy admission/cleanup state. This is
+an instance-local observation API, without OS dependencies or wire-protocol
+changes. It includes tasks admitted by any client, even without a desktop task
+subscription. Publish cleanup after queued-turn admission so a queued handoff
+does not advertise a false idle interval. Maintenance does not count as a task.
+
+The desktop application owns LocalTaskSleepInhibitor alongside its embedded
+server, independently of the selected conversation and window visibility. It
+subscribes only to that AgentServer instance and reads its initial snapshot.
+Remote AgentClient events and UI task.running values cannot acquire an assertion.
+Hot reload adopts the existing embedded server without restarting it. Server
+shutdown keeps wake until task cleanup finishes; desktop shutdown then drains
+and closes the sleep owner even when another owner's cleanup fails.
+
+On macOS, the desktop calls IOPMAssertionCreateWithName with
+PreventUserIdleSystemSleep and level 255, and releases the single owned ID with
+IOPMAssertionRelease. Synchronous native power IPC runs through short-lived
+Isolate.run calls with primitive inputs/results. There is no native runner
+change, persistent worker, polling timer, or caffeinate subprocess. The existing
+ffi 2.1.4 dependency is now declared directly by desktop. Other operating systems
+do not load the Apple frameworks or acquire assertions.
+
+Serialize native transitions and reconcile the latest required state after each
+call, including when close races acquisition. Close cancels the stream listener
+and waits for any created assertion to be released. Native errors reach the
+desktop error path; a failed release retains its ID rather than allowing a
+duplicate assertion. A later zero/nonzero transition can reconcile again; there
+is no repeated automatic retry after a native failure.
+
+Recover native assertions left behind by a Dart VM hot restart, which does not
+terminate the containing process. Before the first sleep owner in each Dart
+lifetime, IOPMCopyAssertionsByProcess finds only this PID's assertions with the
+exact Happen task name and releases them. Acquisition waits for that operation;
+subsequent owners share the completed startup future. Unrelated assertions are
+preserved. Existing hot-reloaded owners retain their IDs and are not reset.
+
+Native contract evidence: the installed macOS SDK's
+System/Library/Frameworks/IOKit.framework/Headers/pwr_mgt/IOPMLib.h declares
+unsigned 32-bit assertion IDs/levels, level 255, and the two functions. The
+[Apple assertion documentation](https://developer.apple.com/documentation/iokit/kiopmassertiontypepreventuseridlesystemsleep)
+allows display sleep and still permits lid-close, explicit Apple-menu sleep,
+low-battery and other forced sleep reasons. This is idle-system-sleep prevention,
+without changing user power settings. The existing Harness implementation at
+6b595ec8a160d7d0c0b5dae0a7352793944fe1d5 was inspected for native IPC ownership;
+Happen uses the current documented assertion type rather than its deprecated
+NoIdleSleepAssertion spelling.
+The recovery dictionary's AssertionId key was checked against Apple's
+[IOKitUser private-key declarations](https://github.com/apple-oss-distributions/IOKitUser/blob/323ead896d04424f87184d8f6ff0cce811aab106/pwr_mgt.subproj/IOPMLibPrivate.h)
+at 323ead896d04424f87184d8f6ff0cce811aab106 and exercised against the installed OS.
+IOPMCopyAssertionsByProcess and the CoreFoundation collection/number ABI were
+checked against the installed public SDK headers.
+
+Verification on macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
+
+    cd packages/desktop
+    flutter test --no-pub test/local_task_sleep_test.dart --reporter expanded
+    flutter test --no-pub test --reporter expanded
+    cd ../..
+    ulimit -n 4096
+    dart test --reporter expanded
+    dart analyze packages/desktop/lib/main.dart packages/desktop/lib/local_task_sleep.dart packages/desktop/test/local_task_sleep_test.dart packages/server/lib/server.dart
+    git diff --check
+    pmset -g assertions
+
+The native regression queries pmset for this test process's named assertion,
+using real embedded UDS and separate TCP server/provider fixtures. It checks
+remote-only activity, two simultaneous local tasks sharing one ID, cancellation
+of one task, queued handoff retaining that ID, completion/failure/archive release,
+attachment to an already-busy server, disposal during native transition, and
+server shutdown. Disabling acquisition reproduced the missing-assertion failure;
+restoring acquisition passed. The complete desktop suite passed. All 343
+repository tests passed with a 4096-descriptor test-process limit. An earlier run
+at the shell's default 256 descriptors failed the 100-task stress check; the
+isolated run confirmed EMFILE. A concurrent skill-context failure passed on its
+isolated repeat and in the final full run. Changed-file analysis has no issues;
+broader desktop analysis retains six unrelated informational diagnostics.
+The restart-state fixture also injects an abandoned named native assertion and
+an unrelated assertion in the test process before attaching the desktop owner.
+Recovery removes the abandoned one and preserves the unrelated one. Disabling
+startup cleanup reproduced that failure, and the corrected regression and all
+62 desktop tests passed in the final run.
+
+The running desktop accepted hot reload without runtime errors. Its existing
+local task acquired exactly one named assertion under the Happen process; after
+that task finished, the authoritative count became zero, the sleep owner was
+inactive without errors, and pmset no longer listed the assertion. No live task
+was submitted, stopped, or restarted for this observation. No formatter was run.
+
+Remaining limits: the separate TCP fixture models a different task owner rather
+than a physical second machine. Actual lid closure, forced sleep, battery drain,
+and long-duration native failures were not exercised. Native assertions are
+process-owned; the regression injects the native state left after VM restart,
+while actual Flutter hot restart was not performed on the user's process. The
+recovery ID property uses a key from Apple's private header, so future OS changes
+remain a compatibility risk covered by the native regression.

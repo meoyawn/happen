@@ -12,6 +12,7 @@ import 'package:server/server.dart';
 ArgParser parser() {
   final parser = ArgParser()
     ..addFlag('help', abbr: 'h', negatable: false)
+    ..addFlag('version', negatable: false)
     ..addOption('data-dir', defaultsTo: defaultDataDirectory())
     ..addOption(
       'config',
@@ -55,6 +56,13 @@ ArgParser parser() {
       ..addOption('url', defaultsTo: 'ws://127.0.0.1:8765/ws')
       ..addOption('token'),
   );
+  final mcp = parser.addCommand('mcp', ArgParser()
+    ..addOption('url', help: 'Use a running Happen server instead of a temporary local server')
+    ..addOption('token'));
+  mcp.addCommand('list', ArgParser()..addFlag('verbose', negatable: false)..addFlag('json', negatable: false));
+  mcp.addCommand('login', ArgParser()..addFlag('no-browser', negatable: false,
+    help: 'Print the sign-in link and accept the final callback URL without opening a browser'));
+  mcp.addCommand('logout', ArgParser());
   return parser;
 }
 
@@ -71,14 +79,21 @@ Future<void> run(List<String> arguments) async {
   final options = parser();
   final parsed = options.parse(arguments);
   final command = parsed.command;
+  if (parsed['version'] == true) {
+    stdout.writeln('happen 0.1.0');
+    return;
+  }
   if (parsed['help'] == true || command == null) {
     stdout.writeln(
-      'Agent server\n\n  agent login [--device | --from-codex | --provider opencode]\n  agent serve [--port 8765]\n  agent exec [--url ws://127.0.0.1:8765/ws] "task"\n  agent request METHOD \'{"parameter":"value"}\'\n  agent config-schema\n\n${options.usage}',
+      'Happen\n\n  happen login [--device | --from-codex | --provider opencode]\n  happen serve [--port 8765]\n  happen exec [--url ws://127.0.0.1:8765/ws] "task"\n  happen mcp list [--verbose | --json]\n  happen mcp login SERVER [--no-browser]\n  happen mcp logout SERVER\n  happen request METHOD \'{"parameter":"value"}\'\n  happen config-schema\n\n${options.usage}',
     );
     return;
   }
   final directory = Directory(parsed['data-dir'] as String).absolute.path;
   switch (command.name) {
+    case 'mcp':
+      await _mcp(command, directory, parsed['config'] as String?);
+      return;
     case 'config-schema':
       stdout.writeln(
         const JsonEncoder.withIndent('  ').convert(globalConfigSchema),
@@ -265,4 +280,128 @@ Future<void> run(List<String> arguments) async {
     default:
       throw ArgumentError('Unknown command');
   }
+}
+
+Future<void> _mcp(ArgResults command, String directory, String? configPath) async {
+  final operation = command.command;
+  if (operation == null) {
+    stdout.writeln('Usage: happen mcp list [--verbose | --json]\n       happen mcp login SERVER [--no-browser]\n       happen mcp logout SERVER');
+    return;
+  }
+  if (operation.name == 'list' ? operation.rest.isNotEmpty : operation.rest.length != 1) {
+    throw ArgumentError(operation.name == 'list' ? 'mcp list takes no server name' : 'Provide exactly one configured MCP server name');
+  }
+  final cancellation = CancellationToken();
+  final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
+    .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
+  AgentServer? embedded;
+  AgentClient? client;
+  StreamSubscription<Json>? events;
+  Future<void>? browser;
+  Object? browserError;
+  try {
+    final url = command['url'] as String?;
+    if (url == null) embedded = await AgentServer.startEmbedded(directory: directory, configPath: configPath);
+    cancellation.throwIfCancelled();
+    final connected = client = await AgentClient.connect(url == null ? embedded!.uri : Uri.parse(url),
+      token: url == null ? embedded!.token : command['token'] as String?, cancellation: cancellation);
+    if (operation.name == 'list') {
+      final inventory = await connected.mcpInventory(verbose: operation['verbose'] as bool, cancellation: cancellation);
+      if (operation['json'] == true || operation['verbose'] == true) {
+        stdout.writeln(const JsonEncoder.withIndent('  ').convert(inventory));
+      } else {
+        for (final row in (inventory['servers'] as List).map(jsonObject)) {
+          stdout.writeln('${row['name']}\t${row['state']}\t${row['auth_status']}\t${row['tool_count']} tools');
+        }
+        if ((inventory['servers'] as List).isEmpty) stdout.writeln('No MCP servers configured.');
+      }
+      return;
+    }
+    final server = operation.rest.single;
+    if (operation.name == 'logout') {
+      await connected.mcpLogout(server, cancellation: cancellation);
+      stdout.writeln('Signed out of $server.');
+      return;
+    }
+    final inventory = await connected.mcpInventory(server: server, cancellation: cancellation);
+    final rows = (inventory['servers'] as List).map(jsonObject).toList();
+    if (rows.isEmpty) throw StateError('Unknown configured MCP server: $server');
+    if (rows.single['oauth_supported'] != true) {
+      throw StateError('Browser sign-in is unavailable for $server. Local servers use their configured environment; HTTP Authorization headers take precedence over OAuth.');
+    }
+    final loginId = newId();
+    events = connected.events.stream.listen((event) {
+      if (event['type'] != 'mcp.auth.login' || event['server'] != server || event['login_id'] != loginId || browser != null) return;
+      browser = () async {
+        try {
+          final authorizationUrl = requiredString(event, 'url');
+          stdout.writeln('Authorize $server:\n$authorizationUrl');
+          if (operation['no-browser'] == true) {
+            final callback = await _readMcpCallback(cancellation);
+            cancellation.throwIfCancelled();
+            await connected.request('mcp.auth.callback', {
+              'server': server, 'login_id': loginId, 'callback_url': callback,
+            }).asCancellable(cancellation);
+          } else {
+            await _openMcpBrowser(authorizationUrl, cancellation);
+          }
+        } on CancelledException { /* The command owns this operation. */
+        } catch (_) {
+          browserError = StateError(operation['no-browser'] == true
+            ? 'MCP callback input failed; retry sign-in.'
+            : 'Could not open the browser. Retry with --no-browser.');
+          cancellation.cancel();
+        }
+      }();
+    });
+    final result = await connected.mcpLogin(server, loginId, cancellation: cancellation);
+    if (result['state'] != 'ready') throw StateError('Sign-in completed, but $server is unavailable. Check mcp list.');
+    stdout.writeln('Connected to $server (${result['tool_count']} tools).');
+  } on CancelledException {
+    if (browserError != null) throw browserError!;
+    stdout.writeln('MCP authentication cancelled.');
+    exitCode = 130;
+  } finally {
+    cancellation.cancel();
+    await browser;
+    await events?.cancel();
+    await client?.close();
+    await embedded?.close();
+    for (final signal in signals) { await signal.cancel(); }
+  }
+}
+
+Future<String> _readMcpCallback(CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  stdout.write('Paste the complete callback URL from your browser (input hidden): ');
+  final echo = stdin.hasTerminal ? stdin.echoMode : null;
+  final lines = StreamIterator(boundedLines(stdin, maxBytes: 16384));
+  try {
+    if (echo != null) stdin.echoMode = false;
+    if (!await lines.moveNext().asCancellable(cancellation, onCancel: () => unawaited(lines.cancel()))) {
+      throw StateError('No callback URL was supplied');
+    }
+    return lines.current.trim();
+  } finally {
+    if (echo != null) stdin.echoMode = echo;
+    stdout.writeln();
+    await lines.cancel();
+  }
+}
+
+Future<void> _openMcpBrowser(String value, CancellationToken cancellation) async {
+  final url = Uri.parse(value);
+  if (url.userInfo.isNotEmpty || url.host.isEmpty || url.hasFragment ||
+      url.scheme != 'https' && !(url.scheme == 'http' &&
+        (url.host == 'localhost' || (InternetAddress.tryParse(url.host)?.isLoopback ?? false)))) {
+    throw StateError('Invalid MCP sign-in URL');
+  }
+  cancellation.throwIfCancelled();
+  final process = await Process.start(Platform.isMacOS ? 'open' : Platform.isWindows ? 'rundll32.exe' : 'xdg-open',
+    [if (Platform.isWindows) 'url.dll,FileProtocolHandler', value]);
+  final hook = CancellationHook(cancellation, () => process.kill());
+  try {
+    await Future.wait([process.stdout.drain<void>(), process.stderr.drain<void>()]).asCancellable(cancellation);
+    if (await process.exitCode.asCancellable(cancellation) != 0) throw StateError('Browser launch failed');
+  } finally { hook.dispose(); }
 }
