@@ -573,7 +573,8 @@ class OpenCodeProvider implements ModelProvider {
         } on FormatException {
           /* HTTP status remains authoritative. */
         }
-        throw _providerFailure(error, response.statusCode);
+        throw _providerFailure(error, response.statusCode,
+          retryAfter: response.headers[HttpHeaders.retryAfterHeader]);
       }
       var chatDone = false;
       var tail = '';
@@ -1237,12 +1238,23 @@ void _mergeDetail(List<Json> details, Json fragment) {
   }
 }
 
-ModelFailure _providerFailure(Json raw, int? status) {
+ModelFailure _providerFailure(Json raw, int? status, {String? retryAfter}) {
   final error = raw['error'] is Map ? jsonObject(raw['error']) : raw;
   if (error['type'] == 'FreeUsageLimitError') {
-    return const ModelFailure(
+    DateTime? reset;
+    if (retryAfter != null) {
+      final seconds = int.tryParse(retryAfter.trim());
+      try {
+        reset = seconds == null ? HttpDate.parse(retryAfter)
+          : seconds > 0 && seconds <= 365 * 24 * 60 * 60
+            ? DateTime.now().add(Duration(seconds: seconds)) : null;
+      } on HttpException { /* Invalid timing must not hide the quota failure or expose header contents. */ }
+    }
+    if (reset != null && !reset.isAfter(DateTime.now())) reset = null;
+    return ModelFailure(
       'free_usage_limit',
-      'OpenCode Console rejected free-model access for this client (HTTP 429)',
+      'OpenCode free usage limit reached${status == null ? '' : ' (HTTP $status)'}. '
+      '${reset == null ? 'Try again after the limit resets.' : 'Try again after ${HttpDate.format(reset)}.'}',
     );
   }
   final detail =

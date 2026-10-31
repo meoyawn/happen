@@ -4564,3 +4564,65 @@ to their isolate/desktop owner rather than shared across isolates or processes.
 HTTP/1.1-only origins cannot multiplex, and explicit native HTTP overrides choose
 their own transport policy. HTTP/3 and guaranteed model latency are not
 implemented capabilities.
+
+## 2026-10-31 — OpenCode free-limit errors after completed tool calls
+
+User report: an OpenCode Max task completed its first model response and a Code
+Mode/MCP call, then failed on its next model request. Investigate tool-result
+replay and session identity rather than assuming that every hosted 429 has the
+same cause. The later user-provided OpenCode screenshot confirms that a fresh
+greeting in the reference client also hit its free-message allowance, with a
+displayed reset of November 1 at 03:03 local time.
+
+The saved Happen history contains the completed assistant call and a matching
+durable tool result. A direct replay of just the saved follow-up, with the same
+provider-owned session identity, returned HTTP 429/FreeUsageLimitError and
+Retry-After: 21111. It did not re-execute MCP. The request was 69,551 bytes,
+including a roughly 40 KB result; its call/result IDs remain paired. No inference
+probes followed the rejection. These observations plus the reference client's
+failure establish a quota failure for this incident; the error type alone does
+not prove the cause of every historical Console rejection.
+
+Happen incorrectly rendered this as a rejection of client access and discarded
+the reset time. Follow pinned OpenCode e8238bae9b807b72ecfc75afd3a9fe2e6b07b944:
+packages/core/src/session/to-session-error.ts maps FreeUsageLimitError to
+provider.free-limit and preserves retryAfterMs; packages/core/src/model-retry.ts
+and test/session-error.test.ts do not retry this quota error. The reference
+[free-limit UI release](https://opencode.ai/changelog#v2.1.2) also displays reset
+timing. Keep Happen's existing free_usage_limit code and sanitized errors, describe
+the free usage limit, and include a reset time from Retry-After when present.
+
+Support both delta-seconds and HTTP-date headers. Reject invalid, expired or
+implausible delta values without echoing raw headers/body text. Format the
+absolute reset in GMT so persisted history and remote CLI clients have an
+unambiguous timestamp. Keep quota failures non-retryable; do not sleep for hours,
+change models, modify sign-in, replace session IDs, or re-run completed tools.
+Continuing the task after the allowance resets retains its existing checkpoint.
+No provider inference or tool serialization was changed for this incident.
+
+[Sanitized diagnosis](evidence/opencode-followup-quota.json) records the original
+turn and isolated replay without credentials, prompts or tool-result content.
+Temporary replay tooling and captured bodies remain outside the repository.
+No historical task data was rewritten.
+
+Verification on macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
+
+    ulimit -n 4096
+    dart test test/deepseek_auth_test.dart test/deepseek_server_test.dart --concurrency=1 --reporter expanded
+    dart analyze packages/opencode/lib/src/provider.dart test/deepseek_auth_test.dart test/deepseek_server_test.dart
+    git diff --check
+
+The owner tests cover numeric reset timing, malformed private-looking timing,
+HTTP-date timing, and a real UDS Code Mode/MCP call followed by a quota denial.
+Resuming that task includes the identical saved result and produces no new host
+tool call. The quota/reset assertion failed against the original implementation
+and passes after the repair. All 11 focused tests passed. One initial integration
+run hit an existing concurrent-history-import SQLite lock before the quota stage;
+the focused repeat passed. Changed-file analysis has no errors or warnings and
+retains one existing informational brace lint. The running desktop accepted hot
+reload without runtime errors. No formatter was run.
+
+Remaining limit: actual model continuation after the remote reset has not been
+performed; the quota boundary and safe continuation are verified with local
+provider/MCP fixtures. Existing history preserves the message recorded before
+this repair; new failures use the corrected message and available reset timing.

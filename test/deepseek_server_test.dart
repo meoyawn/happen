@@ -51,6 +51,7 @@ void main() {
     );
     final requests = <Json>[];
     final sessions = <String?>[];
+    final resetAt = HttpDate.format(DateTime.now().add(const Duration(hours: 1)));
     var denied = false;
     provider.listen((request) async {
       final body = jsonObject(
@@ -66,10 +67,14 @@ void main() {
       sessions.add(request.headers.value('x-opencode-session'));
       expect(body['model'], 'deepseek-v4.1-flash-free');
       expect(body['reasoning_effort'], 'low');
-      if (denied) {
+      final messages = (body['messages'] as List).map(jsonObject).toList();
+      final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');
+      final results = messages.skip(lastUser + 1).where((message) => message['role'] == 'tool').length;
+      if (denied && results > 0) {
         denialStarted.complete();
         await releaseDenial.future;
         request.response.statusCode = 429;
+        request.response.headers.set(HttpHeaders.retryAfterHeader, resetAt);
         request.response.write(
           jsonEncode({
             'error': {
@@ -79,10 +84,7 @@ void main() {
           }),
         );
       } else {
-        final messages = (body['messages'] as List).map(jsonObject).toList();
-        final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');
         final discover = messages[lastUser]['content'] == 'discover';
-        final results = messages.skip(lastUser + 1).where((message) => message['role'] == 'tool').length;
         final hasResult = (body['messages'] as List).any(
           (m) => m['role'] == 'tool',
         );
@@ -90,7 +92,15 @@ void main() {
           'text',
           'event-stream',
         );
-        final delta = discover && results < 2 ? {
+        final delta = denied ? {
+          'tool_calls': [{
+            'index': 0, 'id': 'quota-call', 'type': 'function',
+            'function': {
+              'name': 'execute',
+              'arguments': jsonEncode({'code': 'return await tools.archive.probe({action: "inspect"});'}),
+            },
+          }],
+        } : discover && results < 2 ? {
           'tool_calls': [{
             'index': 0, 'id': 'discovery-$results', 'type': 'function',
             'function': {
@@ -262,11 +272,24 @@ void main() {
     final failed = await failure;
     expect(failed['type'], 'turn.failed');
     expect(failed['data']['error'], contains('free_usage_limit'));
-    expect(requests.length, beforeDenial + 1);
+    expect(failed['data']['error'], contains(resetAt));
+    expect(requests.length, beforeDenial + 2, reason: 'One model call runs the tool; its follow-up reports quota without retries');
     expect(sessions.where((session) => session != legacyId), everyElement(first['task_id']));
     final history = await client.request('history.page', {
       'task_id': first['task_id'],
-    });
+    }) as List;
+    final savedResult = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool');
+    expect(savedResult['tool_call_id'], 'quota-call');
+    expect(jsonDecode(savedResult['content'] as String)['pid'], isPositive);
+    final hostCalls = history.where((event) => event['type'] == 'host_tool.started').length;
+    denied = false;
+    final resumed = await turn('task.send', {'task_id': first['task_id'], 'prompt': 'Continue from the saved result.'});
+    expect(resumed['type'], 'turn.completed', reason: resumed.toString());
+    expect(requests.length, beforeDenial + 3);
+    expect((requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool'), savedResult);
+    final resumedHistory = await client.request('history.page', {'task_id': first['task_id']}) as List;
+    expect(resumedHistory.where((event) => event['type'] == 'host_tool.started'), hasLength(hostCalls),
+      reason: 'Resuming a quota-interrupted turn must reuse the durable MCP result');
     expect(jsonEncode(history), isNot(contains('fixture-access')));
     expect(jsonEncode(history), isNot(contains('fixture-refresh')));
     await client.request('auth.logout', {'provider': 'opencode'});

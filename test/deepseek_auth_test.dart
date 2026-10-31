@@ -147,8 +147,10 @@ void main() {
       reason: 'The pinned OpenAI-compatible OpenCode variant sends effort without the native DeepSeek thinking override');
     expect(jsonEncode(reply.toJson()), isNot(contains('fixture-access')));
     var denied = 0;
+    var retryAfter = '3600';
     handler = (http, _) async {
       denied++;
+      http.response.headers.set(HttpHeaders.retryAfterHeader, retryAfter);
       await _reply(http, {
         'error': {'type': 'FreeUsageLimitError', 'message': 'fixture-access-1'},
       }, status: 429);
@@ -158,6 +160,11 @@ void main() {
       throwsA(
         isA<ModelFailure>()
             .having((e) => e.code, 'code', 'free_usage_limit')
+            .having((e) => e.message, 'quota description', contains('OpenCode free usage limit reached'))
+            .having((e) {
+              final value = RegExp(r'Try again after (.+)\.$').firstMatch(e.message)?.group(1);
+              return value == null ? null : HttpDate.parse(value).difference(DateTime.now()).inSeconds;
+            }, 'reset delay', inInclusiveRange(3595, 3600))
             .having(
               (e) => e.toString(),
               'message',
@@ -166,6 +173,14 @@ void main() {
       ),
     );
     expect(denied, 1);
+    retryAfter = 'fixture-access-1';
+    await expectLater(provider.respond(request, cancellation: CancellationToken()), throwsA(
+      isA<ModelFailure>()
+        .having((e) => e.code, 'code', 'free_usage_limit')
+        .having((e) => e.message, 'missing reset time', contains('Try again after the limit resets.'))
+        .having((e) => e.message, 'private response and header', isNot(contains('fixture-access'))),
+    ));
+    expect(denied, 2);
   });
 
   test('device polling selects the authorized organization and privately persists coalesced refreshes', () async {

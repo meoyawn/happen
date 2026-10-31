@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-31",
+  "environment": "macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8",
+  "happen_base_revision": "cddad22",
+  "opencode_revision": "e8238bae9b807b72ecfc75afd3a9fe2e6b07b944",
+  "model": "deepseek-v4.1-flash-free",
+  "reasoning": "max",
+  "credentials_recorded": false,
+  "prompts_or_tool_results_recorded": false,
+  "original_turn": {
+    "model_responses_completed": 1,
+    "model_input_tokens": 5971,
+    "model_cached_input_tokens": 2048,
+    "model_output_tokens": 62,
+    "model_us": 3435453,
+    "code_cells_completed": 1,
+    "mcp_calls_completed": 1,
+    "followup_error_code": "free_usage_limit",
+    "turn_us": 7502169
+  },
+  "saved_followup": {
+    "serialized_request_bytes": 69551,
+    "serialized_tool_result_record_bytes": 40110,
+    "message_roles": ["system", "system", "system", "user", "system", "assistant", "tool"],
+    "tool_declarations": 11,
+    "tool_calls": 1,
+    "matching_tool_results": 1,
+    "same_provider_owned_session_id": true
+  },
+  "isolated_followup_replay": {
+    "reran_mcp": false,
+    "status": 429,
+    "http_version": "1.1",
+    "error_type": "FreeUsageLimitError",
+    "retry_after_seconds": 21111,
+    "elapsed_ms": 2193,
+    "response_bytes": 208,
+    "further_inference_probes_stopped": true
+  },
+  "opencode_control": {
+    "source": "User-provided screenshot of a fresh OpenCode greeting after the Happen failure",
+    "outcome": "Free limit reached",
+    "displayed_local_reset": "Nov 1, 2026, 3:03 AM"
+  },
+  "repair": {
+    "error_code_preserved": "free_usage_limit",
+    "message": "Identify the free usage limit without claiming client identity rejection",
+    "reset_timing": "Parse Retry-After delta-seconds or HTTP-date; ignore invalid, past or implausible timing without exposing raw headers",
+    "automatic_quota_retries": false,
+    "signin_or_wire_format_changes": false
+  },
+  "verification": {
+    "owner_tests_passed": 11,
+    "negative_control": "The existing adapter failed the new quota/reset-time assertion before the repair",
+    "integration": "A real UDS task executes Code Mode/MCP, receives quota on its next model call, and resumes using the same durable tool result without another host call",
+    "hot_reload": "Succeeded; no runtime errors",
+    "remaining_limit": "Live model continuation after the provider reset was not attempted"
+  }
+}
