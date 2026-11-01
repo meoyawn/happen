@@ -230,8 +230,8 @@ void main() {
       item['native']?['harness']?['context'] == 'agents_md',
     ).toList();
     expect(restored, hasLength(1));
-    expect(jsonEncode(restored.single), contains('use maple'));
-    expect(jsonEncode(restored.single), isNot(contains('use cedar')));
+    expect(jsonEncode(restored.single), contains('use cedar'));
+    expect(jsonEncode(restored.single), isNot(contains('use maple')));
     await subscription.cancel();
     await client.close();
     await server.close();
@@ -256,11 +256,10 @@ void main() {
       item['role'] == 'user' && item['content'] is String &&
       (item['content'] as String).startsWith('# AGENTS.md instructions'),
     ).toList();
-    expect(instructionItems, hasLength(2));
-    expect(instructionItems.first['content'], contains('use maple'));
-    expect(instructionItems.last['content'], contains('use cedar'));
-    expect(instructionItems.last['content'], isNot(contains('use maple')));
-    expect(instructionItems.last['content'], contains('replace all previously provided AGENTS.md instructions'));
+    expect(instructionItems, hasLength(1));
+    expect(instructionItems.single['content'], contains('use cedar'));
+    expect(instructionItems.single['content'], isNot(contains('use maple')));
+    expect(instructionItems.single['content'], isNot(contains('replace all previously provided AGENTS.md instructions')));
     expect(jsonEncode(continuation['input']), contains('retain the newline'));
     expect(continuation['reasoning']['effort'], 'low');
     expect(

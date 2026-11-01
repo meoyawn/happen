@@ -1,54 +1,13 @@
-import 'dart:convert';
-
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
-/// Converts both provider output and the prototype's historical input items.
-ConversationItem gptItemFromNative(Json wire, {String? id}) {
+/// Converts provider output into durable conversation items.
+ConversationItem gptItemFromNative(Json wire) {
   final type = wire['type'];
   final state = {...wire};
   switch (type) {
-    case 'configuration_update':
-      return ConversationItem(
-        id: id,
-        kind: 'configuration',
-        settings: {'reasoning': jsonObject(wire['reasoning'])['effort']},
-      );
-    case 'additional_tools':
-      return ConversationItem(
-        id: id,
-        kind: 'tools',
-        tools: gptToolsFromNative((wire['tools'] as List).map(jsonObject)),
-      );
-    case 'tool_search_call':
-      if (wire['execution'] != 'client') {
-        throw const ModelFailure('unsupported_item', 'Only client-executed tool search is supported');
-      }
-      return ConversationItem(
-        id: id,
-        role: 'assistant',
-        content: [ToolCall(
-          id: requiredString(wire, 'call_id'),
-          name: 'tool_search',
-          input: jsonEncode(jsonObject(wire['arguments'])),
-          format: 'search',
-          native: {'gpt': {...state..remove('call_id')..remove('arguments')}},
-        ).toJson()],
-      );
-    case 'tool_search_output':
-      return ConversationItem(
-        id: id,
-        role: 'tool',
-        tools: gptToolsFromNative((wire['tools'] as List).map(jsonObject)),
-        content: [{
-          'type': 'tool_result', 'call_id': requiredString(wire, 'call_id'),
-          'name': 'tool_search', 'format': 'search', 'output': '{}',
-          'native': {'gpt': {...state..remove('call_id')..remove('tools')}},
-        }],
-      );
     case 'compaction':
       return ConversationItem(
-        id: id,
         kind: 'compaction',
         native: {'gpt': state},
       );
@@ -60,7 +19,6 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
           .map(jsonObject)
           .toList();
       return ConversationItem(
-        id: id,
         role: 'assistant',
         native: {'gpt': state},
         content: [
@@ -105,44 +63,14 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
         },
       );
       return ConversationItem(
-        id: id,
         role: 'assistant',
         content: [call.toJson()],
       );
-    case 'function_call_output':
-    case 'custom_tool_call_output':
-      return ConversationItem(
-        id: id,
-        role: 'tool',
-        content: [
-          {
-            'type': 'tool_result',
-            'call_id': requiredString(wire, 'call_id'),
-            'format': type == 'custom_tool_call_output' ? 'text' : 'json',
-            'output': wire['output'] is List
-                ? (wire['output'] as List).map(jsonObject).where((part) => part['type'] == 'input_text').map((part) => part['text']).join('\n')
-                : wire['output'] as String? ?? '',
-            if (wire['output'] is List) 'images': inputAttachments([
-              for (final part in (wire['output'] as List).map(jsonObject))
-                if (part['type'] == 'input_image') toolImage(part),
-            ]),
-            'native': {
-              'gpt': {
-                ...state
-                  ..remove('call_id')
-                  ..remove('output'),
-              },
-            },
-          },
-        ],
-      );
-    case null:
     case 'message':
       final role = requiredString(wire, 'role');
       state.remove('role');
       final source = state.remove('content');
       return ConversationItem(
-        id: id,
         role: role,
         native: state.isEmpty ? {} : {'gpt': state},
         content: source is String
@@ -151,18 +79,6 @@ ConversationItem gptItemFromNative(Json wire, {String? id}) {
               ]
             : (source as List? ?? []).map((value) {
                 final part = jsonObject(value);
-                if (part['type'] == 'input_image') {
-                  final uri = Uri.tryParse(part['image_url'] as String? ?? '');
-                  final data = uri?.scheme == 'data' ? uri!.data : null;
-                  if (data == null || !imageMimeTypes.contains(data.mimeType)) {
-                    throw const ModelFailure('unsupported_content', 'GPT image requires inline image bytes');
-                  }
-                  return inputAttachments([{
-                    'type': 'image', 'name': 'Image', 'mime_type': data.mimeType,
-                    'data': base64Encode(data.contentAsBytes()),
-                    'detail': part['detail'] ?? 'high',
-                  }]).single;
-                }
                 final text = part.remove(
                   part['type'] == 'refusal' ? 'refusal' : 'text',
                 );
@@ -255,13 +171,6 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
         textParts.add({'type': 'input_text', 'text': attachedFileText(part)});
       case 'tool_call':
         final call = ToolCall.fromJson(part);
-        if (call.format == 'search') {
-          output.add({
-            ...meta, 'type': 'tool_search_call', 'execution': 'client',
-            'call_id': call.id, 'arguments': jsonDecode(call.input),
-          });
-          continue;
-        }
         output.add({
           ...meta,
           'type': call.format == 'text' ? 'custom_tool_call' : 'function_call',
@@ -274,17 +183,6 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
             'arguments': call.input,
         });
       case 'tool_result':
-        if (part['format'] == 'search') {
-          output.add({
-            ...meta, 'type': 'tool_search_output', 'execution': 'client',
-            'status': 'completed', 'call_id': part['call_id'],
-            'tools': gptTools(item.tools, deferLoading: true),
-          });
-          if (part['is_error'] == true) {
-            output.add({'role': 'developer', 'content': 'Tool search failed: ${part['output']}'});
-          }
-          continue;
-        }
         output.add({
           ...meta,
           'type': part['format'] == 'text'
@@ -316,18 +214,11 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
   return output;
 }).toList();
 
-List<Json> gptTools(Iterable<ToolDefinition> tools, {bool deferLoading = false}) {
+List<Json> gptTools(Iterable<ToolDefinition> tools) {
   final result = <Json>[];
   final namespaces = <String, List<Json>>{};
   final descriptions = <String, String>{};
   for (final tool in tools) {
-    if (tool.format == 'search') {
-      result.add({
-        'type': 'tool_search', 'execution': 'client',
-        'description': tool.description, 'parameters': tool.parameters,
-      });
-      continue;
-    }
     final spec = <String, dynamic>{
       'type': tool.format == 'text' ? 'custom' : 'function',
       'name': tool.name,
@@ -339,7 +230,6 @@ List<Json> gptTools(Iterable<ToolDefinition> tools, {bool deferLoading = false})
       else
         'parameters': tool.parameters,
       if (tool.format != 'text') 'strict': false,
-      if (deferLoading) 'defer_loading': true,
     };
     if (tool.namespace == null) {
       result.add(spec);
@@ -354,36 +244,9 @@ List<Json> gptTools(Iterable<ToolDefinition> tools, {bool deferLoading = false})
     result.add({
       'type': 'namespace',
       'name': entry.key,
-      'description': descriptions[entry.key] ?? (deferLoading ? 'Tools in the ${entry.key} namespace.' : ''),
+      'description': descriptions[entry.key] ?? '',
       'tools': entry.value,
     });
   }
   return result;
 }
-
-List<ToolDefinition> gptToolsFromNative(
-  Iterable<Json> tools, {
-  String? namespace,
-  String? namespaceDescription,
-}) => tools.expand((tool) {
-  if (tool['type'] == 'namespace') {
-    return gptToolsFromNative(
-      (tool['tools'] as List).map(jsonObject),
-      namespace: tool['name'] as String,
-      namespaceDescription: tool['description'] as String?,
-    );
-  }
-  return [
-    ToolDefinition(
-      name: tool['type'] == 'tool_search' ? 'tool_search' : requiredString(tool, 'name'),
-      description: tool['description'] as String? ?? '',
-      namespace: namespace,
-      namespaceDescription: namespaceDescription,
-      format: tool['type'] == 'tool_search' ? 'search' : tool['type'] == 'custom' ? 'text' : 'json',
-      parameters: jsonObject(tool['parameters'] ?? {}),
-      grammar: tool['format'] is Map
-          ? tool['format']['definition'] as String?
-          : null,
-    ),
-  ];
-}).toList();

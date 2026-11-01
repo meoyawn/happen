@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:fake_async/fake_async.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -173,6 +172,75 @@ void main() {
       return completion.timeout(const Duration(seconds: 15));
     }
 
+    test('OpenCode session events over WebSocket match the SQLite read model and expose context', () async {
+      final events = <Json>[], messages = <String, Json>{}, state = <String, dynamic>{};
+      final subscription = client.events.stream.listen((event) {
+        events.add(event);
+        applySessionEvent(messages, event, state);
+      });
+      addTearDown(subscription.cancel);
+      final finished = client.events.stream.firstWhere((event) => event['type'] == 'session.execution.succeeded');
+      final admitted = jsonObject(await client.request('session.create', {
+        'cwd': work.path, 'prompt': 'recover', 'instructions': 'Session-specific instruction',
+        'settings': {'context_limit': 100000},
+      }));
+      final id = admitted['sessionID'] as String;
+      await finished.timeout(const Duration(seconds: 15));
+      expect(events.every((event) => event['type'].toString().startsWith('session.') && event['data']['sessionID'] == id), isTrue);
+      final page = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect({for (final message in page['data']) message['id'] as String: message}, messages);
+      expect(page['running'], false);
+      final replay = jsonObject(await client.request('session.event.list', {'sessionID': id, 'limit': 500}));
+      expect(replay['data'], events.where((event) => event['durable'] != null).toList());
+      final context = jsonObject(await client.request('session.context', {'sessionID': id}));
+      expect(requests.last['instructions'], '');
+      expect(requests.last['tools'], isEmpty);
+      expect(context['system'], requests.last['input'][1]['content']);
+      expect((context['data'] as List).where((message) => message['type'] == 'system'), isEmpty);
+      expect((context['data'] as List).where((message) => message['context'] == 'model'), hasLength(1));
+      expect((context['data'] as List).where((message) => message['type'] == 'synthetic')
+        .any((message) => message['text'].toString().contains('Session-specific instruction')), true);
+      expect(context['tools'], isNotEmpty);
+      expect(context['limit'], 100000);
+      expect(context['tokens'], {'input': 10, 'output': 5, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}});
+      expect((page['data'] as List).where((message) => message['type'] == 'assistant'), hasLength(2));
+      final archived = client.events.stream.firstWhere((event) => event['type'] == 'session.archived');
+      await client.request('session.archive', {'sessionID': id});
+      expect((await archived)['durable']['seq'], greaterThan(page['through'] as int));
+      expect((await client.request('session.message.list', {'sessionID': id}) as Map)['archived'], true);
+    });
+
+    test('session reconnect status preserves retry messages and deadlines', () async {
+      final statuses = <Json>[];
+      final subscription = client.events.stream.where((event) => event['type'] == 'session.status')
+        .listen((event) => statuses.add(jsonObject(event['data']['status'])));
+      addTearDown(subscription.cancel);
+      final finished = client.events.stream.firstWhere((event) => event['type'] == 'session.execution.succeeded');
+      await client.request('session.create', {'cwd': work.path, 'prompt': 'recover'});
+      await finished.timeout(const Duration(seconds: 15));
+      final retries = statuses.where((status) => status['type'] == 'retry').toList();
+      expect(retries.map((status) => status['message']), ['Reconnecting… 1/5', 'Reconnecting… 2/5']);
+      expect(retries.every((status) => status['next'] is int && status['next'] > 0), isTrue);
+    });
+
+    test('archiving cancels the durable inbox through the session writer', () async {
+      final admitted = jsonObject(await client.request('session.create', {'cwd': work.path, 'prompt': 'stream'}));
+      final id = admitted['sessionID'] as String;
+      await (() async {
+        while (streaming.isEmpty) { await Future<void>.delayed(const Duration(milliseconds: 10)); }
+      })().timeout(const Duration(seconds: 10));
+      final queued = client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.enqueued' && event['data']['item']['text'] == 'Later');
+      final reply = jsonObject(await client.request('session.prompt', {'sessionID': id, 'prompt': 'Later', 'delivery': 'queue'}));
+      expect((await queued)['data']['inboxID'], reply['inboxID']);
+      final cancelled = client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.cancelled');
+      await client.request('session.archive', {'sessionID': id});
+      expect((await cancelled)['data']['inboxID'], reply['inboxID']);
+      final snapshot = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect(snapshot['pending'], isEmpty);
+      expect(snapshot['state'], isEmpty);
+      expect(snapshot['running'], false);
+    });
+
     test('live task notifications include the frozen context limit and task identity', () async {
       final events = <Json>[];
       final subscription = client.events.stream.listen(events.add);
@@ -192,26 +260,6 @@ void main() {
       expect(created['seq'], history.first['seq']);
       expect(created['data'], history.first['data']);
 
-      final legacyId = newId();
-      final legacy = TaskStore(root.path, legacyId);
-      try {
-        final config = {
-          'cwd': work.path, 'model': 'gpt-6.1-sol', 'reasoning': 'low',
-          'instructions': 'Follow the user request.', 'tools': <Json>[],
-        };
-        legacy.append('task.created', config, metadata: {'config': config});
-      } finally {
-        legacy.close();
-      }
-      events.clear();
-      final resumed = await turn('task.send', {'task_id': legacyId, 'prompt': 'continue'});
-      expect(resumed['type'], 'turn.completed', reason: resumed.toString());
-      final migrated = events.where((event) => event['type'] == 'task.configuration_migrated').toList();
-      expect(migrated, hasLength(1), reason: 'Resolved settings must reach already subscribed clients');
-      expect(migrated.single['task_id'], legacyId);
-      expect(migrated.single['data']['provider_settings']['context_limit'], 272000);
-      final replay = await client.request('history.page', {'task_id': legacyId}) as List;
-      expect(migrated.single['data'], replay.singleWhere((event) => event['type'] == 'task.configuration_migrated')['data']);
     });
 
     test('turns stay active after 24, 48 and 72 hours and still stop explicitly', () async {
@@ -262,17 +310,10 @@ void main() {
       expect(jsonObject(await client.request('task.subscribe', {'task_id': id}))['running'], isFalse);
     });
 
-    test('turns have no step limit, including resumed tasks with legacy limits', () async {
+    test('turns have no step limit, including resumed tasks', () async {
       final first = await turn('task.start', {'cwd': work.path, 'prompt': 'long'});
       expect(first['type'], 'turn.completed', reason: first.toString());
       final id = first['task_id'] as String;
-      final store = TaskStore(root.path, id, create: false);
-      try {
-        final config = {...jsonObject(store.metadata('config')), 'max_steps': 1};
-        store.append('task.configuration_migrated', config, metadata: {'config': config});
-      } finally {
-        store.close();
-      }
       final resumed = await turn('task.send', {'task_id': id, 'prompt': 'long'});
       expect(resumed['type'], 'turn.completed', reason: resumed.toString());
       expect(requests.length, 142);

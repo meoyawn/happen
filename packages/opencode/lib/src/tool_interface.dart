@@ -17,8 +17,6 @@ class OpenCodeToolInterface extends ToolInterface {
   @override
   String get id => 'opencode';
   @override
-  bool get replacesLegacyCatalog => true;
-  @override
   String baseInstructions(String model, String supplied) => openCodeInstructions;
   @override
   ConversationItem instructionContext(Json current, Json? previous) => renderInstructions(current, previous);

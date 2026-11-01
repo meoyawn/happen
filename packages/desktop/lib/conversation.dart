@@ -1,130 +1,78 @@
-import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/rendering.dart';
 import 'package:protocol/protocol.dart';
 
 import 'conversation_markdown.dart';
+import 'conversation_data.dart';
 import 'session.dart';
 import 'composer_attachments.dart';
 import 'appearance.dart';
 import 'conversation_activity.dart';
+import 'conversation_streaming.dart';
+import 'opencode_activity.dart';
+import 'opencode_execute.dart';
+import 'opencode_response.dart';
 
 typedef _TranscriptRow = ({String id, ChatEntry? entry, List<ChatEntry> activity, ChatEntry? status});
 
-List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, bool codex) {
+bool _isJavaScriptCell(ToolActivity tool) => {'exec', 'functions.exec'}.contains(tool.name);
+
+List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
   final rows = <_TranscriptRow>[];
-  var segment = <ChatEntry>[];
-  void add(ChatEntry entry) => rows.add((id: entry.id, entry: entry, activity: const [], status: null));
-  void flush([ChatEntry? status]) {
-    if (codex && status != null && segment.any((entry) => entry.tool != null || entry.role == 'Reasoning')) {
-      final finalMessage = status.text == 'Completed' ? segment.lastIndexWhere((entry) => entry.role == 'Happen') : -1;
-      final activity = finalMessage < 0 ? segment : segment.sublist(0, finalMessage);
-      if (activity.isNotEmpty) rows.add((id: 'activity:${activity.first.id}', entry: null, activity: activity, status: status));
-      if (finalMessage >= 0) for (final entry in segment.skip(finalMessage)) { add(entry); }
-    } else {
-      var activity = <ChatEntry>[];
-      void flushActivity() {
-        if (activity.isEmpty) return;
-        rows.add((id: 'activity:${activity.first.id}', entry: null, activity: activity, status: null));
-        activity = [];
-      }
-      for (final entry in segment) {
-        if (entry.tool != null || entry.role == 'Reasoning') {
-          activity.add(entry);
-        } else {
-          flushActivity();
-          add(entry);
-        }
-      }
-      flushActivity();
-      if (status != null && status.text != 'Completed') add(status);
-    }
-    segment = [];
+  var activity = <ChatEntry>[];
+  void flush() {
+    if (activity.isEmpty) return;
+    rows.add((id: 'activity:${activity.first.id}', entry: null, activity: activity, status: null));
+    activity = [];
   }
   for (final entry in entries) {
-    if ({'You', 'Queued', 'Steer pending'}.contains(entry.role)) {
-      flush();
-      add(entry);
-    } else if (entry.role == 'Status') {
-      flush(entry);
-    } else if (entry.role == 'Error' || entry.role == 'Compaction') {
-      flush();
-      add(entry);
-    } else {
-      segment.add(entry);
-    }
+    if (entry.tool != null || entry.role == 'Reasoning') { activity.add(entry); continue; }
+    flush();
+    if (entry.role == 'Status' && entry.text == 'Completed') continue;
+    rows.add((id: entry.id, entry: entry, activity: const [], status: null));
   }
   flush();
   return rows;
 }
 
-Iterable<ToolActivity> _visibleTools(ToolActivity tool, bool codex) sync* {
-  if (codex && {'exec', 'functions.exec'}.contains(tool.name) && tool.children.isNotEmpty) {
-    for (final child in tool.children) { yield* _visibleTools(child, codex); }
-  } else {
-    yield tool;
-  }
-}
-
-/// Retain a small working set of laid-out transcripts during sidebar navigation.
+/// Task data is cached by the session; only the selected transcript is mounted.
 class ConversationDeck extends StatefulWidget {
   const ConversationDeck({super.key, required this.task, required this.tasks,
-    required this.directory, required this.empty, required this.onRetry});
+    required this.directory, required this.empty, required this.onRetry, this.onLoadEarlier});
   final DesktopTask? task;
   final Set<DesktopTask> tasks;
   final String directory;
   final Widget empty;
   final ValueChanged<DesktopTask> onRetry;
+  final ValueChanged<DesktopTask>? onLoadEarlier;
 
   @override
   State<ConversationDeck> createState() => _ConversationDeckState();
 }
 
 class _ConversationDeckState extends State<ConversationDeck> {
-  final _retained = LinkedHashMap<DesktopTask, ({Object state, Widget view})>();
-
   @override
   Widget build(BuildContext context) {
-    _retained.removeWhere((task, _) => !widget.tasks.contains(task));
     final selected = widget.task;
-    if (selected != null) {
-      final previous = _retained.remove(selected);
-      final state = (conversation(selected), selected.loading, selected.loadError,
-        selected.retryStatus, widget.directory);
-      _retained[selected] = previous?.state == state ? previous! : (
-        state: state,
-        view: ConversationTranscript(
-          task: selected, directory: widget.directory,
-          onRetry: () => widget.onRetry(selected),
-        ),
-      );
-      while (_retained.length > 16) { _retained.remove(_retained.keys.first); }
-    }
-    return Stack(fit: StackFit.expand, children: [
-      for (final entry in _retained.entries) Offstage(
-        key: ValueKey(entry.key.id),
-        offstage: entry.key != selected,
-        child: TickerMode(
-          enabled: entry.key == selected,
-          child: ExcludeFocus(
-            excluding: entry.key != selected,
-            child: RepaintBoundary(child: entry.value.view),
-          ),
-        ),
-      ),
-      if (selected == null) widget.empty,
-    ]);
+    if (selected == null) return widget.empty;
+    return ConversationTranscript(
+      key: ValueKey(selected.id),
+      task: selected, directory: widget.directory,
+      onRetry: () => widget.onRetry(selected),
+      onLoadEarlier: widget.onLoadEarlier == null ? null : () => widget.onLoadEarlier!(selected),
+    );
   }
 }
 
 class ConversationTranscript extends StatefulWidget {
-  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry});
+  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onLoadEarlier});
   final DesktopTask task;
   final String directory;
   final VoidCallback onRetry;
+  final VoidCallback? onLoadEarlier;
 
   @override
   State<ConversationTranscript> createState() => _ConversationTranscriptState();
@@ -132,7 +80,11 @@ class ConversationTranscript extends StatefulWidget {
 
 class _ConversationTranscriptState extends State<ConversationTranscript> {
   final _scroll = ScrollController();
-  bool _following = true, _scheduled = false, _showLatest = false, _jumping = false;
+  bool _following = true, _scheduled = false, _showLatest = false, _jumping = false, _userScrolling = false;
+  bool _pagingScheduled = false, _latestScheduled = false;
+  bool _autofillBlocked = false;
+  int _visibleRows = 0;
+  ({double pixels, double extent, int rows, bool fill})? _pagingPosition;
 
   @override
   void initState() {
@@ -143,6 +95,19 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   @override
   void didUpdateWidget(ConversationTranscript oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!widget.task.loadingEarlier && _pagingPosition != null) {
+      final previous = _pagingPosition!;
+      _pagingPosition = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scroll.hasClients) return;
+        final position = _scroll.position;
+        final added = position.maxScrollExtent - previous.extent;
+        // Collapsed activity can absorb a page without adding visible rows.
+        // Resume on the next scroll gesture rather than draining all history.
+        if (_visibleRows <= previous.rows && added <= 1) _autofillBlocked = true;
+        _loadEarlier(position);
+      });
+    }
     _follow();
   }
 
@@ -161,19 +126,59 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         }
       }
     });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   bool _onScroll(ScrollNotification notification) {
     if (notification.depth != 0) return false;
-    if (notification is ScrollStartNotification && !_jumping) _following = false;
+    if (notification is ScrollStartNotification && !_jumping && notification.dragDetails != null) {
+      _following = false;
+      _autofillBlocked = false;
+      _userScrolling = true;
+    }
     if (notification is UserScrollNotification) {
+      if (notification.direction != ScrollDirection.idle) {
+        _userScrolling = true;
+        _autofillBlocked = false;
+      }
       if (notification.direction == ScrollDirection.reverse) _following = false;
       if (notification.direction == ScrollDirection.forward && notification.metrics.extentBefore < 80) _following = true;
     }
-    if (notification is ScrollEndNotification && notification.metrics.extentBefore < 1) _following = true;
+    if (notification is ScrollEndNotification) {
+      if (_userScrolling && notification.metrics.extentBefore < 1) _following = true;
+      _userScrolling = false;
+    }
     final showLatest = notification.metrics.extentBefore > 100;
-    if (showLatest != _showLatest) setState(() => _showLatest = showLatest);
+    if (showLatest != _showLatest && !_latestScheduled) {
+      _latestScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _latestScheduled = false;
+        if (!mounted || !_scroll.hasClients) return;
+        final show = _scroll.position.extentBefore > 100;
+        if (show != _showLatest) setState(() => _showLatest = show);
+      });
+      WidgetsBinding.instance.ensureVisualUpdate();
+    }
+    _loadEarlier(notification.metrics);
     return false;
+  }
+
+  void _loadEarlier(ScrollMetrics metrics) {
+    final task = widget.task;
+    final fill = metrics.maxScrollExtent <= metrics.minScrollExtent + 1;
+    if (_following && !fill || _autofillBlocked || _jumping || _pagingScheduled || metrics.extentAfter > 400 ||
+        task.historyBefore == null || task.loadingEarlier || task.loadError != null || widget.onLoadEarlier == null) {
+      return;
+    }
+    _pagingScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _pagingScheduled = false;
+      if (mounted && (fill || !_following) && _scroll.hasClients) {
+        _pagingPosition = (pixels: _scroll.position.pixels, extent: _scroll.position.maxScrollExtent, rows: _visibleRows, fill: fill);
+        widget.onLoadEarlier?.call();
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _latest() {
@@ -191,9 +196,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
-    if (task.loading) return const Center(child: CircularProgressIndicator());
-    if (task.loadError case final error?) {
+    if (task.loading && !task.loaded) return const Center(child: CircularProgressIndicator());
+    if (!task.loaded && task.loadError != null) {
+      final error = task.loadError!;
       return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
         Padding(padding: const EdgeInsets.all(24), child: SelectableText(error)),
         TextButton(onPressed: widget.onRetry, child: const Text('Retry loading conversation')),
@@ -201,24 +206,37 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     }
     final entries = conversation(task);
     final compacting = entries.any((entry) => entry.compaction?.status == 'running');
-    final rows = _transcriptRows(entries, harness);
+    final rows = _transcriptRows(entries);
     final latest = entries.where((entry) => !{'Queued', 'Steer pending'}.contains(entry.role)).lastOrNull;
     final activeGroup = task.running && rows.isNotEmpty && rows.last.activity.isNotEmpty &&
       identical(rows.last.activity.last, latest);
-    final thinking = task.running && !compacting && !activeGroup && (task.streamingText.isEmpty || task.retryStatus != null);
-    final count = rows.length + (thinking ? 1 : 0);
-    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: count - 1 - i};
-    final starts = task.events.values.where((event) => event['type'] == 'turn.started').toList()
-      ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-    final startedAt = DateTime.tryParse(starts.lastOrNull?['created_at'] as String? ?? '');
+    final thinkingGroup = activeGroup && rows.last.activity.every((entry) => entry.role == 'Reasoning');
+    final thinking = task.running && !compacting && !thinkingGroup;
+    final count = rows.length + 1;
+    _visibleRows = count;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _scroll.hasClients) _loadEarlier(_scroll.position);
+    });
+    final historyOffset = task.historyBefore != null ? 1 : 0;
+    final itemCount = count + historyOffset;
+    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: itemCount - 1 - (i + historyOffset),
+      'working': 0};
+    final activeMessages = task.messages.values.where((message) => message['type'] == 'assistant' || message['type'] == 'idle').toList()
+      ..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
+    final lastIdle = activeMessages.lastIndexWhere((message) => message['type'] == 'idle');
+    final started = activeMessages.skip(lastIdle + 1).firstOrNull?['time']?['created'] as int?;
+    final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
     return Stack(children: [
       Align(
         alignment: Alignment.topCenter,
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: harness ? 768 : 800),
+          constraints: BoxConstraints(maxWidth: opencodeSessionWidth),
           child: NotificationListener<ScrollMetricsNotification>(
             onNotification: (notification) {
-              if (notification.depth == 0) _follow();
+              if (notification.depth == 0) {
+                _follow();
+                _loadEarlier(notification.metrics);
+              }
               return false;
             },
             child: NotificationListener<ScrollNotification>(
@@ -228,20 +246,33 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                 child: ListView.builder(
                   key: PageStorageKey('transcript:${task.id}'),
                   controller: _scroll,
-                  // Start at the newest row without laying out the entire history.
                   reverse: true,
                   cacheExtent: 0,
-                  padding: EdgeInsets.fromLTRB(harness ? 16 : 24, 16, harness ? 16 : 24, 20),
-                  itemCount: count,
+                  padding: EdgeInsets.fromLTRB(24, 16, 24, 20),
+                  itemCount: itemCount,
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
-                    index = count - 1 - index;
-                    if (index == rows.length) return _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus);
+                    index = itemCount - 1 - index;
+                    if (historyOffset == 1 && index == 0) return Column(
+                      key: const ValueKey('transcript-history'),
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (task.loadError != null) TextButton(
+                          onPressed: widget.onLoadEarlier, child: const Text('Could not load earlier messages. Retry'))
+                        else if (task.loadingEarlier) const Padding(padding: EdgeInsets.all(16),
+                          child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5)))
+                        else const SizedBox(height: 1),
+                      ],
+                    );
+                    index -= historyOffset;
+                    if (index == rows.length) return thinking
+                      ? _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus)
+                      : const SizedBox(key: ValueKey('working'), height: 36);
                     final row = rows[index];
                     final entry = row.entry;
                     return Padding(
                       key: ValueKey(row.id),
-                      padding: EdgeInsets.only(bottom: index == rows.length - 1 && !thinking ? 0 : 16),
+                      padding: EdgeInsets.only(top: index == 0 ? 0 : row.activity.isNotEmpty || entry?.tool != null || entry?.role == 'Reasoning' ? 8 : 16),
                       child: entry == null ? _ActivityGroup(
                         key: PageStorageKey(row.id), entries: row.activity, status: row.status,
                         active: activeGroup && index == rows.length - 1,
@@ -256,7 +287,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         'Reasoning' => _ReasoningRow(entry: entry, directory: widget.directory, onExpand: () => _following = false),
                         'Status' => _TurnStatus(entry: entry),
                         'Error' => _ErrorMessage(entry: entry),
-                        _ => _Message(entry: entry, directory: widget.directory),
+                        _ => _Message(entry: entry, directory: widget.directory,
+                          liveText: entry.streaming ? task.liveText : null),
                       },
                     );
                   },
@@ -290,37 +322,38 @@ class _ActivityGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final codex = ConversationAppearance.of(context) == ConversationStyle.harness;
-    final tools = [for (final entry in entries) if (entry.tool case final tool?) ..._visibleTools(tool, codex)];
+    final tools = [for (final entry in entries) if (entry.tool != null) entry.tool!];
     final running = tools.where((tool) => tool.status == 'running').lastOrNull;
-    final elapsed = status?.startedAt != null && status?.timestamp != null
-      ? _duration(status!.startedAt!, status!.timestamp!) : null;
-    final label = status != null
-      ? status!.text == 'Completed' ? elapsed == null ? 'Worked' : 'Worked for $elapsed' : status!.text
-      : codex
-        ? active ? running == null ? 'Thinking' : _toolLabel(running, true)
-          : tools.isEmpty ? 'Thought' : tools.length == 1 ? _toolLabel(tools.single, true) : 'Called ${tools.length} tools'
-        : tools.isEmpty ? 'Thought' : 'Used ${tools.length} ${tools.map((tool) => _toolLabel(tool, false)).toSet().length == 1
-            ? _toolLabel(tools.first, false) : 'tools'}';
+    final thinking = active && tools.isEmpty;
+    final names = tools.map(_toolLabel).toSet().join(', ');
+    final label = thinking ? 'Thinking' : tools.isEmpty ? 'Thought' : 'Used ${tools.length} $names';
     return ConversationDisclosure(
       key: PageStorageKey('disclosure:${entries.first.id}'),
-      label: label, shimmer: codex && active,
-      fontSize: codex ? 14 : 13, ruled: codex && status != null,
-      onExpand: onExpand, maxHeight: codex && status == null ? 224 : null,
+      label: label, shimmer: thinking,
+      icon: active || running != null ? const OpenCodeActivityIndicator() : null,
+      labelContent: tools.isNotEmpty ? Text.rich(TextSpan(
+        style: const TextStyle(fontSize: 13, height: 16 / 13, letterSpacing: -.04,
+          color: opencodeInk, fontVariations: [FontVariation('wght', 440)]),
+        children: [const TextSpan(text: 'Used ', style: TextStyle(color: opencodeMuted)),
+          TextSpan(text: '${tools.length}', style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()])),
+          TextSpan(text: ' $names')]), maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+      fontSize: 13,
+      onExpand: onExpand,
       builder: (context) => Padding(
-        padding: EdgeInsets.only(left: codex ? 0 : 12),
+        padding: const EdgeInsets.only(top: 4),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           for (var i = 0; i < entries.length; i++) Padding(
             key: ValueKey(entries[i].id),
             padding: EdgeInsets.only(top: i == 0 ? 0 : entries[i].tool != null || entries[i].role == 'Reasoning' ? 8 : 16),
             child: entries[i].tool != null
               ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  for (final tool in _visibleTools(entries[i].tool!, codex))
+                  for (final tool in [entries[i].tool!])
                     Padding(padding: const EdgeInsets.only(bottom: 4),
                       child: _ToolRow(key: ValueKey(tool.id), tool: tool, directory: directory, onExpand: onExpand)),
                 ])
               : entries[i].role == 'Reasoning'
-                ? _ReasoningRow(entry: entries[i], directory: directory, onExpand: onExpand)
+                ? thinking ? ConversationMarkdown(text: entries[i].text, directory: directory)
+                  : _ReasoningRow(entry: entries[i], directory: directory, onExpand: onExpand)
                 : entries[i].role == 'Image'
                   ? _ImageViewRow(entry: entries[i], directory: directory, onExpand: onExpand)
                   : _Message(entry: entries[i], directory: directory),
@@ -346,19 +379,16 @@ class _ReasoningRow extends StatelessWidget {
   );
 }
 
-String _toolLabel(ToolActivity tool, bool codex) {
-  final name = tool.name.split('.').last;
-  final running = tool.status == 'running';
-  return switch (name) {
-    'shell_command' || 'exec_command' || 'bash' => codex ? running ? 'Running command' : 'Ran command' : 'Shell',
-    'read' || 'read_file' => codex ? running ? 'Reading file' : 'Read file' : 'Read',
-    'write' || 'write_file' || 'apply_patch' || 'edit' => codex ? running ? 'Editing files' : 'Edited files' : 'Edit',
-    'exec' => codex ? running ? 'Running code' : 'Ran code' : 'JavaScript',
-    _ => tool.name,
-  };
-}
+String _toolLabel(ToolActivity tool) => switch (tool.name.split('.').last) {
+  'shell_command' || 'exec_command' || 'bash' => 'Shell',
+  'read' || 'read_file' => 'Read',
+  'write' || 'write_file' || 'apply_patch' || 'edit' => 'Edit',
+  'exec' => 'JavaScript',
+  _ => tool.name,
+};
 
 String? _toolPreview(ToolActivity tool) {
+  if (tool.preview != null) return tool.preview;
   final name = tool.name.split('.').last;
   if (!{'shell_command', 'exec_command', 'bash', 'read', 'read_file', 'write', 'write_file', 'edit'}.contains(name)) return null;
   try {
@@ -369,9 +399,10 @@ String? _toolPreview(ToolActivity tool) {
 }
 
 class _Message extends StatefulWidget {
-  const _Message({required this.entry, required this.directory});
+  const _Message({required this.entry, required this.directory, this.liveText});
   final ChatEntry entry;
   final String directory;
+  final ValueListenable<String>? liveText;
 
   @override
   State<_Message> createState() => _MessageState();
@@ -383,10 +414,10 @@ class _MessageState extends State<_Message> {
   @override
   Widget build(BuildContext context) {
     final entry = widget.entry;
-    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
     final user = {'You', 'Queued', 'Steer pending'}.contains(entry.role);
     final pending = entry.role == 'Queued' || entry.role == 'Steer pending';
-    final body = ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: user);
+    final body = user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
+      : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText);
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -398,12 +429,12 @@ class _MessageState extends State<_Message> {
             alignment: Alignment.centerRight,
             child: Container(
               key: ValueKey('message-bubble:${entry.id}'),
-              constraints: BoxConstraints(maxWidth: constraints.maxWidth * (harness ? .7 : .82)),
-              padding: EdgeInsets.symmetric(horizontal: harness ? 16 : 12, vertical: harness ? 10 : 8),
+              constraints: BoxConstraints(maxWidth: constraints.maxWidth * (.82)),
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: pending ? const Color(0xfffafafa) : const Color(0xfff3f3f4),
+                color: pending ? const Color(0xfffafafa) : opencodeLayer,
                 border: pending ? Border.all(color: conversationBorder) : null,
-                borderRadius: BorderRadius.circular(harness ? 22 : 10),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
                 if (entry.attachments.isNotEmpty) AttachmentRail(attachments: entry.attachments, directory: widget.directory),
@@ -414,8 +445,12 @@ class _MessageState extends State<_Message> {
           ))
         else
           body,
-        const SizedBox(height: 4),
-        Opacity(opacity: _hovered || _focused || pending ? 1 : 0, alwaysIncludeSemantics: true, child: Wrap(
+        if (!user) ...[
+          if (entry.response != null) OpenCodeResponseFooter(entry: entry, visible: _hovered || _focused),
+        ] else ...[
+        SizedBox(height: 8),
+        SizedBox(height: 20, child: Opacity(opacity: _hovered || _focused || pending ? 1 : 0,
+          alwaysIncludeSemantics: true, child: Wrap(
           spacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           alignment: user ? WrapAlignment.end : WrapAlignment.start,
@@ -423,10 +458,11 @@ class _MessageState extends State<_Message> {
             if (pending) const Icon(Icons.schedule_rounded, size: 13, color: conversationMuted),
             if (pending) Text(entry.role, style: const TextStyle(fontSize: 11, color: conversationMuted)),
             if (entry.timestamp case final at?) _Timestamp(at: at),
-            if (!entry.streaming) SizedBox(height: 24,
-              child: ConversationCopyButton(text: entry.text, label: user ? 'Copy message' : 'Copy response')),
+            if (!entry.streaming) SizedBox(height: 20,
+              child: ConversationCopyButton(text: entry.text, label: user ? 'Copy message' : 'Copy response', compact: true)),
           ],
-        )),
+        ))),
+        ],
       ],
     )));
   }
@@ -444,7 +480,8 @@ class _Timestamp extends StatelessWidget {
     return Tooltip(
       message: '${local.toIso8601String()} ${local.timeZoneName}',
       child: Text('${labels.formatShortDate(local)} · $time',
-        style: const TextStyle(fontSize: 11, color: conversationMuted)),
+        style: TextStyle(fontSize: 12, height: 18 / 12,
+          color: opencodeFaint)),
     );
   }
 }
@@ -464,16 +501,12 @@ class _TurnStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final elapsed = entry.startedAt != null && entry.timestamp != null
-        ? _duration(entry.startedAt!, entry.timestamp!) : null;
-    final codex = ConversationAppearance.of(context) == ConversationStyle.harness;
-    final label = entry.text == 'Completed' && codex ? elapsed == null ? 'Worked' : 'Worked for $elapsed'
-      : entry.text == 'Stopped' && !codex ? 'Interrupted' : entry.text;
+    final label = entry.text == 'Stopped' ? 'Interrupted' : entry.text;
     return Row(children: [
-      if (!codex) ...[const Expanded(child: Divider(height: 1)), const SizedBox(width: 12)],
+      const Expanded(child: Divider(height: 1)), const SizedBox(width: 12),
       if (icon != null) ...[Icon(icon, size: 14, color: conversationMuted), const SizedBox(width: 6)],
       Text(label, style: const TextStyle(fontSize: 13, height: 20 / 13, color: conversationMuted)),
-      if (!codex) ...[const SizedBox(width: 12), const Expanded(child: Divider(height: 1))],
+      const SizedBox(width: 12), const Expanded(child: Divider(height: 1)),
     ]);
   }
 }
@@ -529,8 +562,12 @@ class _TurnClock extends StatefulWidget {
 
 class _TurnClockState extends State<_TurnClock> {
   @override
-  Widget build(BuildContext context) => Semantics(liveRegion: true,
-    child: ThinkingLabel(label: widget.status ?? 'Thinking'));
+  Widget build(BuildContext context) {
+    return Semantics(liveRegion: true,
+      child: SizedBox(height: 36, child: Padding(padding: const EdgeInsets.only(top: 12),
+        child: Align(alignment: Alignment.topLeft,
+          child: ThinkingLabel(label: widget.status ?? 'Working', fontSize: 13)))));
+  }
 }
 
 class _ErrorMessage extends StatelessWidget {
@@ -589,21 +626,25 @@ class _ImageViewRowState extends State<_ImageViewRow> {
         borderRadius: BorderRadius.circular(6), onTap: _toggle,
         onHover: (value) => setState(() => _hovered = value),
         onFocusChange: (value) => setState(() => _focused = value),
-        child: Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Row(mainAxisSize: MainAxisSize.min, children: [
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.photo_library_outlined, size: 16, color: conversationMuted),
           const SizedBox(width: 4),
           Flexible(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, height: 1.625, color: color))),
+            style: TextStyle(fontSize: 14, height: 1.625, color: color))),
           const SizedBox(width: 4),
           Icon(_expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded, size: 16, color: color),
-        ])),
+        ]),
       )),
       if (_expanded) Padding(padding: const EdgeInsets.only(top: 8, bottom: 4), child: SizedBox(height: 80, child: ListView.separated(
+        key: PageStorageKey('viewed-image-rail:${widget.entry.id}'),
+        primary: false, padding: EdgeInsets.zero,
         scrollDirection: Axis.horizontal, itemCount: images.length,
+        physics: const ClampingScrollPhysics(),
         separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (context, index) => SizedBox(width: 106, child: ConversationImage(
-          source: attachmentDataUrl(images[index]), label: 'Inspected image', directory: widget.directory, thumbnail: true,
-        )),
+        itemBuilder: (context, index) => SizedBox(width: 106, height: 80,
+          child: ConversationData(value: images[index], builder: (context, value) => ConversationImage(
+            source: attachmentDataUrl(jsonObject(value)), label: 'Inspected image', directory: widget.directory, thumbnail: true,
+          ))),
       ))),
     ]);
   }
@@ -620,28 +661,32 @@ class _ToolRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final running = tool.status == 'running';
     final failed = tool.status == 'failed';
-    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
+    if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, onExpand: onExpand);
     final color = failed ? Theme.of(context).colorScheme.error : conversationMuted;
     final elapsed = tool.startedAt != null && tool.endedAt != null
         ? _duration(tool.startedAt!, tool.endedAt!) : null;
     final preview = _toolPreview(tool);
     return ConversationDisclosure(
       key: PageStorageKey('tool:${tool.id}'),
-      label: _toolLabel(tool, harness), fontSize: harness ? 14 : 13,
-      color: failed ? color : harness ? null : conversationInk,
-      shimmer: harness && running,
+      label: _toolLabel(tool), fontSize: 13,
+      color: failed ? color : conversationInk,
+      shimmer: running,
       onExpand: onExpand,
-      icon: harness ? Icon(failed ? Icons.error_outline_rounded
-        : _toolLabel(tool, false) == 'Shell' ? Icons.terminal_rounded : Icons.extension_outlined, size: 16, color: color) : null,
+      icon: running ? const OpenCodeActivityIndicator() : null,
       summary: preview != null ? Text('${elapsed == null ? '' : '$elapsed  '}$preview', maxLines: 1, overflow: TextOverflow.ellipsis,
         style: TextStyle(fontFamily: 'monospace', fontSize: 12, height: 20 / 12, color: color))
-        : elapsed == null || harness ? null : Text(elapsed, style: TextStyle(fontSize: 12, color: color)),
-      builder: (context) => Padding(padding: EdgeInsets.only(left: nested ? 8 : harness ? 20 : 12, bottom: 8),
+        : elapsed == null ? null : Text(elapsed, style: TextStyle(fontSize: 12, color: color)),
+      builder: (context) => Padding(padding: EdgeInsets.only(left: nested ? 8 : 12, bottom: 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (tool.startedAt case final at?) Align(alignment: Alignment.centerLeft,
           child: Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: _Timestamp(at: at))),
-        Builder(builder: (context) => _ToolImages(output: tool.rawOutput, directory: directory)),
-        _details(),
+        ConversationData(value: tool.rawOutput, builder: (context, output) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _ToolImages(output: output, directory: directory),
+            _details(identical(output, tool.rawOutput) ? tool.output : conversationDataText(output)),
+          ],
+        )),
         for (final child in tool.children)
           Padding(padding: const EdgeInsets.only(top: 8), child: _ToolRow(
             key: ValueKey(child.id), tool: child, directory: directory, nested: true, onExpand: onExpand)),
@@ -649,11 +694,11 @@ class _ToolRow extends StatelessWidget {
     );
   }
 
-  Widget _details() => ConversationCode(
-    source: tool.input,
+  Widget _details(String? output) => ConversationData(value: tool.rawInput, builder: (context, input) => ConversationCode(
+    source: identical(input, tool.rawInput) ? tool.input : conversationDataText(input),
     language: tool.name == 'functions.exec' || tool.name == 'exec' ? 'javascript' : 'json',
-    output: tool.output,
-  );
+    output: output,
+  ));
 }
 
 class _ToolImages extends StatelessWidget {

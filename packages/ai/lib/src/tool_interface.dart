@@ -17,8 +17,8 @@ abstract class ToolInterface {
   ConversationItem environmentContext(String cwd, {bool replacement = false});
   List<ToolDefinition> get definitions;
   List<Json> get hostCatalog;
-  ToolDefinition? get discovery => null;
-  bool get replacesLegacyCatalog => false;
+  bool get toolsInHistory => false;
+  ToolDefinition? get nestedDiscovery => null;
   String? catalogContext(List<Json> current, List<Json>? previous);
   Map<String, String> get services => const {};
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation);
@@ -26,14 +26,8 @@ abstract class ToolInterface {
   Future<List<Json>> prepareImages(List<Json> images, {required CancellationToken cancellation}) =>
       prepareInputAttachments(images, cancellation: cancellation);
   List<Json> externalCatalog(List<Json> catalog) => catalog;
-  ToolDiscovery search(List<Json> catalog, Json arguments, {bool nested = false}) =>
+  Json search(List<Json> catalog, Json arguments) =>
       throw UnsupportedError('This provider discovers tools inside code mode');
-}
-
-class ToolDiscovery {
-  const ToolDiscovery(this.tools, this.output);
-  final List<Json> tools;
-  final Json output;
 }
 
 abstract class ToolRuntime {

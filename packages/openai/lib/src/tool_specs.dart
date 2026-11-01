@@ -15,7 +15,6 @@ ToolDefinition get codeDefinition => ToolDefinition(
 
 const toolSearchDefinition = ToolDefinition(
   name: 'tool_search',
-  format: 'search',
   description: '# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.',
   parameters: {
     'type': 'object',
@@ -146,4 +145,3 @@ const hostCatalog = <Json>[
     'description': 'Apply a patch. Takes the raw patch STRING, not JSON. Format: *** Begin Patch, then *** Add File: path with +lines; *** Update File: path with @@ context hunks and space/-/+ lines; *** Delete File: path; optional *** Move to: path; then *** End Patch.',
   },
 ];
-

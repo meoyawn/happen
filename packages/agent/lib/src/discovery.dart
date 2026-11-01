@@ -18,15 +18,3 @@ List<Json> deferredCatalog(Json mcp, Json client) => [
   for (final raw in client['tools'] as List? ?? [])
     {...jsonObject(raw), 'tool_name': raw['name'], 'name': 'client__${raw['name']}'},
 ];
-
-ToolDefinition catalogDefinition(Json tool, {Json? mcp}) {
-  final guidance = [
-    for (final server in (mcp?['instructions'] as List? ?? []).map(jsonObject))
-      if (tool['namespace'] == (server['namespace'] ?? 'mcp__${server['server']}'))
-        server['text'] as String,
-  ];
-  return ToolDefinition.fromJson({
-    ...tool, 'name': tool['tool_name'],
-    if (guidance.isNotEmpty) 'namespace_description': guidance.join('\n'),
-  });
-}

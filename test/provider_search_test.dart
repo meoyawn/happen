@@ -73,8 +73,10 @@ void main() {
       final current = tools(openaiFixture, fixture['catalog'] as int);
       expect(current.map(codex.toolSearchText).toList(), fixture['documents']);
       final found = codex.discoverTools(current, {'query': fixture['query'], if (fixture.containsKey('limit')) 'limit': fixture['limit']});
-      expect(found.tools.map((tool) => tool['name']).toList(), fixture['names']);
-      expect(found.output, {'tools': fixture['names']});
+      final expected = [for (final name in fixture['names'] as List)
+        openai.describeTool(current.singleWhere((tool) => tool['name'] == name))];
+      expect(found, {'tools': [for (final tool in expected)
+        {'name': tool['name'], 'description': tool['description']}]});
     });
   }
   for (final (index, raw) in (openaiFixture['schemas'] as List).indexed) {
@@ -99,7 +101,7 @@ void main() {
     test('Codex upstream declaration and callable name: ${fixture['name']}', () {
       final described = openai.describeTool(tool);
       expect({'name': described['name'], 'description': described['description']}, fixture['expected']);
-      expect(codex.discoverTools([tool], {'query': 'archived'}, nested: true).output,
+      expect(codex.discoverTools([tool], {'query': 'archived'}),
         {'tools': [fixture['expected']]});
     });
   }

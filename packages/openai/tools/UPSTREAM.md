@@ -22,11 +22,32 @@ corpus fitting, and float32 BM25 scoring in Dart, using the pinned pure Dart
 or search build hook. The existing shared JavaScript engine is separate from
 search.
 
-Model system instructions and persistent instructions are copied unchanged from
-the model catalog, whose separate pin is in `../catalog/UPSTREAM.md`. They were
-compared to this tool revision and are byte-identical for every supported model.
+Model instruction templates are copied unchanged from the model catalog, whose
+separate pin is in `../catalog/UPSTREAM.md`. They were compared to this tool
+revision and are byte-identical for every supported model. Persistent-mode text
+is catalog data, not part of ordinary base instructions: Codex enables its separate
+developer fragment only for persistent reasoning, which Happen does not offer.
 The provider owns Codex's AGENTS.md wrapper, replacement/removal text, project-doc
 separator, and environment rendering. The agent adds no shared instruction prose.
+
+OpenAI sessions use Codex's default incremental-tools contract:
+
+- `core/src/session/{step_context,turn}.rs`: Responses Lite windows put tool
+  declarations and base instructions in history, leaving the request's top-level
+  `tools` and `instructions` empty.
+- `core/src/context/world_state/{top_level_tools,model}.rs`: one ordered
+  `additional_tools` item followed by a dedicated developer base-instructions
+  item. Unchanged context does not append another baseline.
+- `core/src/compact.rs` and `context/world_state/mod.rs`: restore that prefix at
+  the front, before retained user messages and refreshed ordinary context.
+- `core/src/context/world_state/persistent_mode.rs`: persistent-mode instructions
+  are conditional and independent of the base prompt.
+
+This is the only supported OpenAI window contract. There is no compatibility
+flag, old-envelope branch, native discovery route, or prototype history decoder.
+Context tests exercise the actual request envelopes, prefix multiplicity/order,
+repeated compaction, and resume.
+This does not establish parity for all world-state sections; see `../GAPS.md`.
 
 Captured upstream executions and source SHA-256 hashes live in
 `test/fixtures/tool_search/` at the workspace root. See that directory's README
@@ -42,6 +63,8 @@ The code-mode-only description contract also follows
 (`build_exec_tool_description`): eager nested tool declarations belong in the
 exec description; ranked search receives the deferred catalog. Happen renders
 its implemented shell, patch, history, resource, and search tools there, with
-ALL_TOOLS and nested-search guidance. Web retains its separate eager definition.
+ALL_TOOLS and nested-search guidance. OpenAI uses CodeModeOnly for all supported
+GPT-6 models, as selected by the pinned model catalog. Tool search is callable
+only through exec; web retains its separate eager definition.
 Runtime helpers and shell options are described only where implemented; the
 upstream V8, yield/wait, media, and PTY capabilities are not claimed.

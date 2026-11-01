@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:ai/ai.dart';
@@ -133,7 +132,7 @@ class _Agent {
     _accepting = !compact;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
-    final interface = toolInterface(config['tool_interface'] as String? ?? config['provider'] as String);
+    final interface = toolInterface(config['tool_interface'] as String);
     ToolRuntime? host;
     final turnId = newId();
     void event(Json value) =>
@@ -214,6 +213,18 @@ class _Agent {
         }
       }
 
+      // Codex's incremental-tools windows own one ordered tools/base prefix.
+      final incrementalTools = interface.toolsInHistory;
+      final prefixContext = <ConversationItem>[
+        if (incrementalTools) ...[
+          ConversationItem(kind: 'tools', tools: interface.definitions,
+            native: {'harness': {'context': 'top_level_tools'}}),
+          if ((config['instructions'] as String).isNotEmpty) ConversationItem(
+            role: 'developer', content: [{'type': 'text', 'text': config['instructions']}],
+            native: {'harness': {'context': 'model'}},
+          ),
+        ],
+      ];
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
       var skillsCatalog = <String, dynamic>{'skills': []};
       Future<void> refreshSkills() async {
@@ -233,14 +244,13 @@ class _Agent {
         if (item != null) input.add(item);
       }
 
-      final repository = jsonObject(await callIsolate(network, 'agents.repository', {
-        'task_id': taskId, 'cwd': cwd,
-      }, cancellation: cancellation));
-      final snapshot = await loadAgentsMd(
-        repository,
-        config['global_directory'] as String,
-        cancellation,
+      Future<Json> readInstructions() async => loadAgentsMd(
+        jsonObject(await callIsolate(network, 'agents.repository', {
+          'task_id': taskId, 'cwd': cwd,
+        }, cancellation: cancellation)),
+        config['global_directory'] as String, cancellation,
       );
+      var snapshot = await readInstructions();
       final previousSnapshot = await _metadata('agents_snapshot');
       final updates = <Json>[];
       void update(String type, ConversationItem item, [Json data = const {}]) =>
@@ -248,15 +258,14 @@ class _Agent {
             'type': type,
             'data': {...data, 'item': item.toJson()},
           });
-      final hadInstructions = previousSnapshot is Map &&
-          (previousSnapshot['files'] as List).isNotEmpty;
-      if (jsonEncode(previousSnapshot) != jsonEncode(snapshot) &&
-          (hadInstructions || (snapshot['files'] as List).isNotEmpty)) {
-        update(
-          'agents.updated',
-          interface.instructionContext(snapshot, previousSnapshot is Map ? jsonObject(previousSnapshot) : null),
-          {'snapshot': snapshot},
-        );
+      for (final item in prefixContext) {
+        if (!input.any((previous) => previous.native['harness']?['context'] == item.native['harness']['context'])) {
+          update(item.kind == 'tools' ? 'tools.updated' : 'instructions.updated', item);
+        }
+      }
+      if (instructionUpdate(interface, snapshot, previousSnapshot is Map ? jsonObject(previousSnapshot) : null)
+          case final ConversationItem item) {
+        update('agents.updated', item, {'snapshot': snapshot});
       }
       if (savedCwd == null || previousCwd != cwd) {
         update('environment.updated', interface.environmentContext(cwd, replacement: savedCwd != null), {'cwd': cwd});
@@ -312,6 +321,22 @@ class _Agent {
             ConversationItem.fromJson(jsonObject(entry['data']['item'])),
           );
         }
+      }
+
+      Future<void> refreshInstructions() async {
+        final current = await readInstructions();
+        if (contextFingerprint(current) == contextFingerprint(snapshot)) return;
+        final item = instructionUpdate(interface, current, snapshot);
+        cancellation.throwIfCancelled();
+        final entries = await callIsolate(writer, 'append_batch', {
+          'events': [if (item != null) {
+            'type': 'agents.updated', 'data': {'snapshot': current, 'item': item.toJson()},
+          }],
+          'metadata': {'agents_snapshot': current},
+        }) as List;
+        for (final raw in entries) { event(jsonObject(raw)); }
+        if (item != null) input.add(item);
+        snapshot = current;
       }
 
       var usageTokens = await _metadata('context_usage') as int? ?? 0;
@@ -371,43 +396,18 @@ class _Agent {
         await _metadata('client_tools_snapshot') ?? {'tools': []},
       );
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
-      final legacyInterface = config['tool_interface'] == null && interface.replacesLegacyCatalog;
-      final initialTools = legacyInterface ? interface.definitions : (config['tools'] as List)
-          .map((v) => ToolDefinition.fromJson(jsonObject(v)))
-          .toList();
-      final providerContext = <ConversationItem>[
-        if (legacyInterface) ConversationItem(
-          role: 'developer', tools: interface.definitions,
-          content: [{'type': 'text', 'text': interface.baseInstructions(config['model'] as String, config['base_instructions'] as String)}],
-          native: {'harness': {'context': 'provider_tools', 'interface': interface.id}},
-        ),
-      ];
-      if (providerContext.isNotEmpty && !input.any((item) => item.native['harness']?['context'] == 'provider_tools')) {
-        final item = providerContext.single;
-        event(await _append('tools.updated', {'item': item.toJson()}));
-        input.add(item);
-      }
-      Map<String, ToolDefinition> loaded() => {
-        for (final tool in initialTools) toolKey(tool): tool,
-        ...loadedTools(input),
-      };
-      final additions = interface.definitions.where((tool) =>
-        (interface.discovery == null || toolKey(tool) != toolKey(interface.discovery!)) &&
-        !initialTools.any((initial) => toolKey(initial) == toolKey(tool) &&
-          contextFingerprint(initial.toJson()) == contextFingerprint(tool.toJson()))).toList();
-      if (additions.isNotEmpty) {
-        final item = ConversationItem(kind: 'tools', tools: additions,
-          native: {'harness': {'context': 'provider_additions'}});
-        providerContext.add(item);
-        final known = loaded();
-        final missing = additions.where((tool) => !known.containsKey(toolKey(tool)) ||
+      if (incrementalTools) {
+        final known = loadedTools(input);
+        final changed = interface.definitions.where((tool) => !known.containsKey(toolKey(tool)) ||
           contextFingerprint(known[toolKey(tool)]!.toJson()) != contextFingerprint(tool.toJson())).toList();
-        if (missing.isNotEmpty) {
-          final update = ConversationItem(kind: 'tools', tools: missing, native: item.native);
+        if (changed.isNotEmpty) {
+          final update = ConversationItem(kind: 'tools', tools: changed,
+            native: {'harness': {'context': 'top_level_tools'}});
           event(await _append('tools.updated', {'item': update.toJson()}));
           input.add(update);
         }
       }
+      final nestedDiscovery = interface.nestedDiscovery;
       final clientTools = config['client_tools'] as SendPort?;
       var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
       Future<Json> readMcpCatalog([CancellationToken? token]) async {
@@ -435,16 +435,9 @@ class _Agent {
         final clientChanged = contextFingerprint(clientCatalog) != contextFingerprint(clientSnapshot);
         final hasContext = input.any((item) => ['mcp', 'client_tools', 'tool_catalog'].contains(item.native['harness']?['context']));
         if (!mcpChanged && !clientChanged && hasContext) return;
-        final known = loaded();
-        final definitions = [...mcpToolDefinitions(mcpCatalog).tools, ...clientToolDefinitions(clientCatalog).tools];
-        final changed = interface.discovery == null ? <ToolDefinition>[] : definitions.where((tool) => known.containsKey(toolKey(tool)) &&
-          contextFingerprint(known[toolKey(tool)]!.toJson()) != contextFingerprint(tool.toJson()),
-        ).toList();
         final text = interface.catalogContext(deferredCatalog(mcpCatalog, clientCatalog),
           hasContext ? deferredCatalog(mcpSnapshot, clientSnapshot) : null);
         final updates = <ConversationItem>[
-          if (changed.isNotEmpty) ConversationItem(kind: 'tools', tools: changed,
-            native: {'harness': {'context': mcpChanged ? 'mcp' : 'client_tools'}}),
           if (text != null) ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
             native: {'harness': {'context': 'tool_catalog'}}),
         ];
@@ -464,36 +457,37 @@ class _Agent {
         mcpSnapshot = mcpCatalog; clientSnapshot = clientCatalog;
       }
 
-      // Older tasks retain their frozen prefix; introduce discovery as an
-      // ordered declaration instead of rewriting their original configuration.
-      final discovery = interface.discovery;
-      if (discovery != null && !loaded().containsKey(toolKey(discovery))) {
-        final item = ConversationItem(
-          kind: 'tools', tools: [discovery],
-          native: {'harness': {'context': 'discovery'}},
-        );
-        event(await _append('tools.updated', {'item': item.toJson()}));
-        input.add(item);
-      }
       ModelRequest request() => ModelRequest(
         taskId: taskId,
         model: config['model'] as String,
-        instructions: interface.baseInstructions(config['model'] as String, config['instructions'] as String),
+        instructions: incrementalTools ? '' : config['instructions'] as String,
         input: input,
-        tools: initialTools,
+        tools: incrementalTools ? [] : interface.definitions,
         settings: baseline,
         effectiveReasoning: effort,
       );
+      String? assistantMessageID;
       Future<Json> networkCall(String method, [CancellationToken? token]) async {
         final active = token ?? cancellation;
         active.throwIfCancelled();
+        if (method == 'respond') {
+          assistantMessageID = 'msg_${newId()}';
+          event(await _append('model.started', {
+            'assistantMessageID': assistantMessageID,
+            'instructions': request().instructions,
+            'tools': request().tools.map((tool) => tool.toJson()).toList(),
+          }));
+        }
         return jsonObject(
           await callIsolate(
             network,
             method,
             {'provider': config['provider'], ...request().toJson()},
             onEvent: (value) {
-              if (!active.isCancelled) event(value);
+              if (!active.isCancelled) event({...value,
+                if (method == 'respond') 'assistantMessageID': assistantMessageID,
+                if (method == 'compact' && value['type'] == 'text.delta') 'type': 'compaction.delta',
+              });
             },
             timeout: null,
             cancellation: active,
@@ -551,17 +545,15 @@ class _Agent {
           config['reasoning_updates'] == true,
           mcpSnapshot: mcpSnapshot,
           clientSnapshot: clientSnapshot,
-          initialTools: initialTools,
-          discovery: discovery,
           catalogContext: interface.catalogContext,
           instructionContext: interface.instructionContext,
           environmentContext: interface.environmentContext,
-          providerContext: providerContext,
+          prefixContext: prefixContext,
           skills: freshSkills.item,
         );
         final size =
             estimateTokens(restored) +
-            (config['instructions'] as String).length ~/ 3;
+            request().instructions.length ~/ 3;
         final entry = await _append(
           'context.compacted',
           {
@@ -629,12 +621,13 @@ class _Agent {
         cancellation.throwIfCancelled();
         await takeSteering();
         await takeNotifications();
+        await refreshInstructions();
         await refreshSkills();
         await refreshTools();
         final estimate = usageTokens > 0 && usageItems <= input.length
             ? usageTokens + estimateTokens(input.skip(usageItems))
             : estimateTokens(input) +
-                  (config['instructions'] as String).length ~/ 3;
+                  request().instructions.length ~/ 3;
         if (estimate >=
             (baseline['context_limit'] as int) -
                 (baseline['compaction_headroom'] as int)) {
@@ -663,7 +656,7 @@ class _Agent {
         event(
           await _append(
             'model.completed',
-            reply.toJson(),
+            {...reply.toJson(), 'assistantMessageID': assistantMessageID},
             metadata: {
               'context_usage': usageTokens,
               'context_usage_items': usageItems,
@@ -689,137 +682,104 @@ class _Agent {
           final watch = Stopwatch()..start();
           Json result;
           var images = <Json>[];
-          var selectedTools = <ToolDefinition>[];
           final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
           _toolCancellation = cellCancellation;
           final preemption = _toolPreemption = Completer<void>();
           final link = CancellationHook(cancellation, cellCancellation.cancel);
           try {
             if (_steering.isNotEmpty) throw const CancelledException();
-            if (discovery != null && call.name == discovery.name && call.namespace == discovery.namespace) {
-              final found = interface.search(await currentDeferredCatalog(cellCancellation), jsonObject(jsonDecode(call.input)));
-              final selected = found.tools;
-              selectedTools = selected.map((tool) => catalogDefinition(tool, mcp: mcpCatalog)).toList();
-              result = {'output': found.output};
-            } else if (call.namespace == 'client') {
-              if (clientTools == null) {
-                throw StateError('Client tools are unavailable');
-              }
-              final output = jsonObject(
-                await callIsolate(clientTools, 'call', {
-                  'task_id': taskId,
-                  'name': call.name,
-                  'arguments': jsonObject(jsonDecode(call.input)),
-                }, cancellation: cellCancellation),
-              );
-              result = output['success'] == true
-                  ? {'output': output}
-                  : {'error': output};
-            } else if (call.namespace?.startsWith('mcp__') == true) {
-              final output = jsonObject(
-                await callIsolate(network, 'mcp.call', {
-                  'task_id': taskId,
-                  'name': '${call.namespace}__${call.name}',
-                  'arguments': jsonObject(jsonDecode(call.input)),
-                }, cancellation: cellCancellation),
-              )..remove('_meta');
-              result = output['isError'] == true
-                  ? {'error': output}
-                  : {'output': output};
-            } else {
-              result = await host.execute(call, ToolExecution(
-                catalog: (cancellation) async => [
-                  ...interface.hostCatalog,
-                  ...interface.externalCatalog(await currentDeferredCatalog(cancellation)),
-                ],
-                cancellation: cellCancellation,
-                values: values,
-                call: (name, arguments, {required cancellation}) async {
+            result = await host.execute(call, ToolExecution(
+              catalog: (cancellation) async => [
+                ...interface.hostCatalog,
+                ...interface.externalCatalog(await currentDeferredCatalog(cancellation)),
+              ],
+              cancellation: cellCancellation,
+              values: values,
+              call: (name, arguments, {required cancellation}) async {
+                cancellation.throwIfCancelled();
+                final id = newId();
+                event(
+                  await _append('host_tool.started', {
+                    'id': id,
+                    'parent_call_id': call.id,
+                    'name': name,
+                    'arguments': arguments,
+                  }),
+                );
+                try {
                   cancellation.throwIfCancelled();
-                  final id = newId();
+                  final Object? output;
+                  final service = interface.services[name];
+                  if (nestedDiscovery != null && name == nestedDiscovery.name) {
+                    output = interface.search(
+                      await currentDeferredCatalog(cancellation), jsonObject(arguments),
+                    );
+                  } else if (service == 'skills.read') {
+                    output = await callIsolate(network, 'skills.read', {
+                      ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
+                    }, cancellation: cancellation);
+                  } else if (service == 'web.search') {
+                    output = await searchWeb(arguments, cancellation);
+                  } else if (service?.startsWith('history.') == true) {
+                    output = await callIsolate(
+                      writer,
+                      service!,
+                      jsonObject(arguments),
+                      cancellation: cancellation,
+                    );
+                  } else if (name.startsWith('client__')) {
+                    if (clientTools == null) {
+                      throw StateError('Client tools are unavailable');
+                    }
+                    output = await callIsolate(clientTools, 'call', {
+                      'task_id': taskId,
+                      'name': name.substring(8),
+                      'arguments': arguments,
+                    }, cancellation: cancellation);
+                  } else if (name.startsWith('mcp__')) {
+                    output = jsonObject(
+                      await callIsolate(network, 'mcp.call', {
+                        'task_id': taskId,
+                        'name': name,
+                        'arguments': arguments,
+                      }, cancellation: cancellation),
+                    )..remove('_meta');
+                  } else if (service != null) {
+                    output = await callIsolate(network, 'mcp.resources', {
+                      'task_id': taskId,
+                      'method': service,
+                      'arguments': arguments,
+                    }, cancellation: cancellation);
+                  } else {
+                    output = await callIsolate(config['task_tools'] as SendPort, 'call', {
+                      'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
+                      'name': name, 'arguments': arguments,
+                    }, timeout: null, cancellation: cancellation);
+                  }
                   event(
-                    await _append('host_tool.started', {
+                    await _append('host_tool.completed', {
                       'id': id,
                       'parent_call_id': call.id,
                       'name': name,
-                      'arguments': arguments,
+                      'output': output,
                     }),
                   );
-                  try {
-                    cancellation.throwIfCancelled();
-                    final Object? output;
-                    final service = interface.services[name];
-                    if (discovery != null && name == discovery.name) {
-                      output = interface.search(
-                        await currentDeferredCatalog(cancellation), jsonObject(arguments), nested: true,
-                      ).output;
-                    } else if (service == 'skills.read') {
-                      output = await callIsolate(network, 'skills.read', {
-                        ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
-                      }, cancellation: cancellation);
-                    } else if (service == 'web.search') {
-                      output = await searchWeb(arguments, cancellation);
-                    } else if (service?.startsWith('history.') == true) {
-                      output = await callIsolate(
-                        writer,
-                        service!,
-                        jsonObject(arguments),
-                        cancellation: cancellation,
-                      );
-                    } else if (name.startsWith('client__')) {
-                      if (clientTools == null) {
-                        throw StateError('Client tools are unavailable');
-                      }
-                      output = await callIsolate(clientTools, 'call', {
-                        'task_id': taskId,
-                        'name': name.substring(8),
-                        'arguments': arguments,
-                      }, cancellation: cancellation);
-                    } else if (name.startsWith('mcp__')) {
-                      output = jsonObject(
-                        await callIsolate(network, 'mcp.call', {
-                          'task_id': taskId,
-                          'name': name,
-                          'arguments': arguments,
-                        }, cancellation: cancellation),
-                      )..remove('_meta');
-                    } else if (service != null) {
-                      output = await callIsolate(network, 'mcp.resources', {
-                        'task_id': taskId,
-                        'method': service,
-                        'arguments': arguments,
-                      }, cancellation: cancellation);
-                    } else {
-                      output = await callIsolate(config['task_tools'] as SendPort, 'call', {
-                        'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
-                        'name': name, 'arguments': arguments,
-                      }, timeout: null, cancellation: cancellation);
-                    }
-                    event(
-                      await _append('host_tool.completed', {
-                        'id': id,
-                        'parent_call_id': call.id,
-                        'name': name,
-                        'output': output,
-                      }),
-                    );
-                    return output;
-                  } catch (error) {
-                    event(
-                      await _append('host_tool.completed', {
-                        'id': id,
-                        'parent_call_id': call.id,
-                        'name': name,
-                        if (error is CancelledException) 'cancelled': true,
-                        'error': error.toString(),
-                      }),
-                    );
-                    rethrow;
-                  }
-                },
-              ));
-              if (result['values'] != null) values = jsonObject(result['values']);
-            }
+                  return output;
+                } catch (error) {
+                  event(
+                    await _append('host_tool.completed', {
+                      'id': id,
+                      'parent_call_id': call.id,
+                      'name': name,
+                      if (error is CancelledException) 'cancelled': true,
+                      'error': error.toString(),
+                    }),
+                  );
+                  rethrow;
+                }
+              },
+            ));
+            if (result['values'] != null) values = jsonObject(result['values']);
             final separated = separateToolImages(result);
             result = separated.$1;
             if (separated.$2.isNotEmpty) {
@@ -858,11 +818,8 @@ class _Agent {
           final output = interface.formatResult(call, result);
           final item = ConversationItem.toolResult(
             call,
-            call.namespace?.startsWith('mcp__') == true
-                ? truncateTextOutput(output)
-                : output,
+            output,
             isError: result.containsKey('error'),
-            tools: selectedTools,
             images: images,
           );
           event(

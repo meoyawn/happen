@@ -2,14 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('discovery bounds context and restores only selected native tools', () async {
+  test('code-mode-only discovery stays nested across catalog edits and compaction', () async {
     final root = await Directory.systemTemp.createTemp('deferred-context-');
     final config = File('${root.path}/config.yaml');
     const guidance = 'This server inspects process ownership and returns a process identifier. '
@@ -44,7 +42,7 @@ void main() {
       final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
       final prompt = input[lastUser]['content'];
       final results = input.skip(lastUser + 1).where((item) =>
-        ['tool_search_output', 'custom_tool_call_output', 'function_call_output'].contains(item['type']),
+        ['custom_tool_call_output', 'function_call_output'].contains(item['type']),
       ).toList();
       final output = <Json>[];
       if (input.last['type'] == 'compaction_trigger') {
@@ -68,16 +66,12 @@ void main() {
             text({before:before.output, after:after.output});
           ''',
         });
-      } else if ((prompt == 'native' || prompt == 'again') && results.isEmpty) {
+      } else if (prompt == 'nested' && results.isEmpty) {
         output.add({
-          'type': 'tool_search_call', 'execution': 'client', 'status': 'completed',
-          'id': 'ts_${++sequence}', 'call_id': 'call_$sequence',
-          'arguments': {'query': 'mcp__archive__probe', 'limit': 1},
-        });
-      } else if (prompt == 'native' && results.length == 1 || prompt == 'direct' && results.isEmpty) {
-        output.add({
-          'type': 'function_call', 'namespace': 'mcp__archive', 'name': 'probe',
-          'call_id': 'call_${++sequence}', 'arguments': '{"action":"inspect"}',
+          'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
+          'call_id': 'call_${++sequence}',
+          'input': 'text(await tools.tool_search({query:"mcp__archive__probe",limit:1})); '
+            'text(await tools.mcp__archive__probe({action:"inspect"}));',
         });
       } else {
         output.add({'type': 'message', 'role': 'assistant', 'content': [
@@ -111,9 +105,10 @@ void main() {
     }
     List<Json> definitions(Json request) => [
       for (final item in (request['input'] as List).map(jsonObject))
-        if (['additional_tools', 'tool_search_output'].contains(item['type']))
+        if (item['type'] == 'additional_tools')
           for (final namespace in item['tools'] as List)
-            ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
+            if (!{'functions', 'web'}.contains(namespace['name']))
+              ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
     ];
 
     final started = await turn('task.start', {
@@ -125,7 +120,10 @@ void main() {
     });
     final id = started['task_id'];
     final prefix = requests.single['input'] as List;
-    final initialTools = requests.single['tools'];
+    expect(requests.single['instructions'], '');
+    expect(requests.single['tools'], isEmpty);
+    final initialTools = prefix.first['tools'];
+    expect((initialTools as List).where((tool) => tool['type'] == 'tool_search'), isEmpty);
     final exec = (initialTools as List).singleWhere((tool) => tool['name'] == 'functions')['tools']
         .singleWhere((tool) => tool['name'] == 'exec');
     final description = exec['description'] as String;
@@ -138,7 +136,7 @@ void main() {
     expect(jsonEncode(prefix), isNot(contains('unused_schema_')));
     expect(jsonEncode(prefix), isNot(contains('client_schema_')));
     expect(jsonEncode(prefix), isNot(contains('Original guidance tail.')));
-    expect(utf8.encode(jsonEncode(prefix)).length, lessThan(5000));
+    expect(utf8.encode(jsonEncode(prefix.skip(2).toList())).length, lessThan(5000));
 
     await turn('task.send', {'task_id': id, 'prompt': 'code'});
     expect(definitions(requests.last), isEmpty, reason: 'Code-mode discovery must not load native schemas');
@@ -161,67 +159,17 @@ void main() {
     expect(jsonDecode(printed.last as String), {'before': 'before\n', 'after': 'after\n'});
     expect(await File('${root.path}/note.txt').readAsString(), 'after\n');
 
-    await turn('task.send', {'task_id': id, 'prompt': 'native'});
-    expect(definitions(requests.last).map((tool) => tool['name']), ['probe']);
-    final nativeResult = (requests.last['input'] as List).singleWhere((item) => item['type'] == 'tool_search_output');
-    expect(nativeResult['execution'], 'client');
-    expect(nativeResult['status'], 'completed');
-    expect(nativeResult['tools'][0]['name'], 'mcp__archive');
-    expect(nativeResult['tools'][0]['tools'][0]['parameters']['properties']['action']['type'], 'string');
-    await turn('task.send', {'task_id': id, 'prompt': 'again'});
-    expect(definitions(requests.last).map((tool) => tool['name']), ['probe', 'probe'],
-      reason: 'Codex returns selected schemas in every native search result');
-
-    await client.close();
-    await server.close();
-    await configure('Updated process inspection', instructions: null);
-    server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path, endpoint: endpoint);
-    client = await AgentClient.connect(server.uri);
-    await turn('task.send', {'task_id': id, 'prompt': 'direct'});
-    expect(definitions(requests.last).map((tool) => tool['name']), ['probe', 'probe', 'probe']);
-    expect(definitions(requests.last).last['description'], 'Updated process inspection');
-    expect(jsonEncode(requests.last), isNot(contains('unused_schema_')));
     for (var i = 0; i < 2; i++) {
       await turn('task.compact', {'task_id': id});
-      await turn('task.send', {'task_id': id, 'prompt': 'direct'});
-      expect(definitions(requests.last).map((tool) => tool['name']), ['probe']);
-      expect(definitions(requests.last).single['description'], 'Updated process inspection');
-      expect(jsonEncode(requests.last), isNot(contains('unused_schema_')));
+      await turn('task.send', {'task_id': id, 'prompt': 'nested'});
+      expect(definitions(requests.last), isEmpty);
+      final result = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
+      final output = jsonDecode(result['output'] as String)['output'] as List;
+      expect(jsonDecode(output.first as String)['tools'].single['name'], 'mcp__archive__probe');
+      expect(jsonDecode(jsonDecode(output.last as String)['content'][0]['text'])['pid'], isPositive);
     }
-    expect(requests.every((request) => jsonEncode(request['tools']) == jsonEncode(initialTools)), isTrue);
+    expect(requests.every((request) => (request['tools'] as List).isEmpty && request['instructions'] == ''), isTrue);
+    expect(requests.every((request) => jsonEncode(request['input'][0]['tools']) == jsonEncode(initialTools)), isTrue);
 
-    // An on-disk task created before discovery has a frozen eager prefix.
-    // Seed the public storage format, then resume through the normal server.
-    final history = await client.request('history.page', {'task_id': id, 'limit': 500}) as List;
-    final legacyConfig = jsonObject(history.firstWhere((event) => event['type'] == 'task.created')['data']);
-    legacyConfig['tools'] = (legacyConfig['tools'] as List).where((tool) => tool['name'] != 'tool_search').toList();
-    (legacyConfig['tools'] as List).singleWhere((tool) => tool['name'] == 'exec')['description'] = 'Run JavaScript code.';
-    legacyConfig['instructions'] = 'Legacy frozen instructions.';
-    final legacyId = newId();
-    final store = TaskStore(root.path, legacyId);
-    try {
-      store.append('task.created', legacyConfig, metadata: {'config': legacyConfig, 'status': 'idle'});
-      store.append('input.committed', {'item': ConversationItem.text('user', 'Earlier question').toJson()});
-      store.append('model.completed', ModelReply([
-        ConversationItem.text('assistant', 'Earlier answer'),
-      ], const ModelUsage()).toJson());
-    } finally {
-      store.close();
-    }
-    final beforeLegacy = requests.length;
-    await turn('task.send', {'task_id': legacyId, 'prompt': 'seed'});
-    final legacyPrefix = requests[beforeLegacy];
-    expect((legacyPrefix['input'] as List).first['content'], 'Earlier question');
-    expect(legacyPrefix['input'][1]['content'][0]['text'], 'Earlier answer');
-    expect(definitions(legacyPrefix).map((tool) => tool['type']), ['custom', 'tool_search']);
-    expect(definitions(legacyPrefix).singleWhere((tool) => tool['name'] == 'exec')['description'], description);
-    await turn('task.send', {'task_id': legacyId, 'prompt': 'seed'});
-    expect(definitions(requests.last).map((tool) => tool['type']), ['custom', 'tool_search']);
-    await turn('task.compact', {'task_id': legacyId});
-    await turn('task.send', {'task_id': legacyId, 'prompt': 'seed'});
-    expect(definitions(requests.last).map((tool) => tool['type']), ['custom', 'tool_search']);
-    expect(definitions(requests.last).singleWhere((tool) => tool['name'] == 'exec')['description'], description);
-    expect(requests.skip(beforeLegacy).every((request) => request['instructions'] == 'Legacy frozen instructions.'), isTrue);
-    expect(requests.skip(beforeLegacy).every((request) => jsonEncode(request['tools']) == jsonEncode(legacyPrefix['tools'])), isTrue);
   });
 }

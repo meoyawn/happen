@@ -340,11 +340,6 @@ so a search after an in-cell config edit sees the current tools. `ALL_TOOLS`
 remains the cell's starting snapshot. Use search to retrieve server guidance
 before calling an MCP tool found through that snapshot.
 
-Calling OpenAI's `tool_search` directly returns matching native schemas in every
-client-executed `tool_search_output`, including repeated searches. Loaded schemas
-survive restart and compaction. Earlier OpenAI tasks acquire discovery through an
-ordered declaration while retaining their frozen prefix.
-
 OpenCode follows its own runtime: inside `execute({code})`, call
 `await search({query, namespace, limit, offset})`. Query and namespace are optional;
 the default page size is 10. Results contain `items` with exact callable `path`,
@@ -413,11 +408,13 @@ Repository contents share a 32 KiB UTF-8 byte budget. Global instructions in the
 32 KiB budget. These are fixed limits; configurable fallback names and project
 trust/sandbox policies are not implemented.
 
-Repository snapshots stay cached across turns at the same working directory.
-Editing a file alone does not refresh a warm task. Changing `cwd`, restarting
-the server, or restoring an archived task loads the current chain. The server
-retains at most 256 lightweight snapshots in least-recently-used order; an evicted
-task also resumes cold. Idle agent isolates and database owners are still released.
+Repository and global instructions are refreshed before each model step, including
+after tools run within a turn. Repository snapshots stay cached while candidate
+file metadata is unchanged; checks include missing override files, symlink targets,
+and the current ancestor chain. Edits, additions, deletions, and editor rename saves
+are picked up without restarting or changing `cwd`. No idle filesystem watchers or
+extra model turns are started. The server retains at most 256 lightweight snapshots
+in least-recently-used order. Idle agent isolates and database owners are still released.
 
 OpenAI renders Codex's user-role AGENTS.md wrapper and full replacement/removal
 messages. OpenCode renders its developer-role `Instructions from: PATH` blocks
@@ -479,6 +476,40 @@ through this route is still unverified. See the [evidence](evidence/deepseek-con
 
 Requests are JSON objects with `id`, `method`, and `params`. Replies contain the
 same `id` and either `result` or `error`. Notifications use `{"event": {...}}`.
+The desktop uses OpenCode's shared session/message/part model over this WebSocket
+transport. `session.*` methods take `sessionID`; admission returns `sessionID`
+(and `inboxID` for queued inputs). Notifications carry `id`, millisecond `created`,
+`type`, and `data.sessionID`. Durable events also carry
+`durable: {aggregateID, seq, version}`. Execution ends with
+`session.execution.succeeded`, `.failed`, or `.interrupted`.
+
+`session.create`, `.prompt`, `.interrupt`, `.compact`, `.hibernate`, `.archive`,
+`.unarchive`, `.subscribe`, and `.fork` expose the corresponding task operations
+below. Existing `task.*` clients retain their event contract.
+
+| Session read | Parameters and behavior |
+| --- | --- |
+| `session.message.list` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Returns chronological `data` from the newest page, `cursor.next` for earlier messages, and a durable `through` fence. Includes configuration, effective reasoning, running/pending state, and archive state. Subscribes before taking the snapshot. |
+| `session.event.list` | `sessionID`, optional `after` durable sequence, `limit` (1–500). Returns persisted OpenCode events, `through`, and `cursor.next` for replay. |
+| `session.context` | `sessionID`, optional message `cursor` and `limit`. Returns the latest base prompt (system or classified developer context), tools, effective model settings, counts, context limit, token/cache usage, and projected session messages after the latest completed compaction. Messages paginate like `session.message.list`; this is not a complete provider request dump. |
+| `session.read.cancel` | `request_id` of a pending session read on this connection. Cancels snapshot/replay work without interrupting the session writer or execution. |
+
+Each session stores its event log, normalized messages/parts, and durable inbox in
+one `tasks/<sessionID>/history.sqlite`. Its writer updates them in one transaction.
+Independent read-only connections take WAL snapshots without acquiring a writer.
+Existing execution histories project in bounded transactions on their owning
+writer; live events and reopened history use the same reducer in `protocol`.
+
+OpenAI sessions follow Codex's incremental-tools layout: declarations and
+the developer base prompt appear once at the front of model history. The
+top-level request `tools` and `instructions` are empty. Compaction restores one
+current prefix. This is the only supported OpenAI envelope; obsolete formats
+are not migrated or preserved through compatibility paths.
+Synthetic messages preserve their model role and harness context classification.
+The desktop JSON export stores message bodies only in `messages`; `context`
+contains metadata and `systemMessageID`, without repeating its message page or
+prompt text.
+
 Task operations acknowledge admission before emitting their durable events;
 wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outcome.
 
@@ -490,8 +521,7 @@ optional `operation_id` is a separate retry key: concurrent or later retries,
 including after a server restart, return the same imported task ID.
 
 Turns and model/compaction calls have no cumulative wall-clock deadline or model
-step limit. Legacy `max_steps` fields in existing task configurations are ignored;
-the CLI no longer accepts `--max-steps`. Stop cancels turn-owned work; hibernation,
+step limit. Stop cancels turn-owned work; hibernation,
 archive, and server shutdown also close task-owned sessions. Quitting the desktop
 stops its embedded server. GPT HTTP/SSE and WebSocket
 responses have a five-minute idle limit between provider events; each event
@@ -543,6 +573,8 @@ shown as interrupted rather than left spinning.
 | `task.subscribe` | `task_id`. Subscribes this connection to future task events and returns `running` and pending inputs. |
 | `task.fork` | `task_id`, optional `through` event sequence. Copies an independent committed prefix; returns a new `task_id`. |
 | `history.page` | `task_id`, optional `after` sequence and `limit` (1–500). |
+| `history.list` | `task_id`, optional `before` sequence and `limit` (1–500). Subscribes to live events before reading newest-first display `data` with `next_cursor` for earlier events. The first page also includes `running`/`pending`, configuration, summaries of the latest five turns (start, first user input, latest model output, terminal event), effective reasoning, archive state, and a `through` sequence fence. Images and large tool results use `$part` references, loaded only when displayed. |
+| `history.part` | `task_id`, `id` from a `$part` reference. Returns the original display content; canonical records remain available through `history.page`. |
 | `history.export` | `task_id`, `path` on the server. Requires an idle task. |
 | `history.import` | `path` on the server, optional `operation_id` for idempotent retries. Validates the bundle before publishing a task. |
 | `tools.register` | `task_id`, `tools`. Replaces the caller's client tool catalog. |
@@ -553,6 +585,11 @@ shown as interrupted rather than left spinning.
 | `auth.logout` | `provider` (`openai` or `opencode`; legacy `gpt` accepted). Cancels credential operations and removes Happen's login. |
 | `auth.desktop` | Local Unix sockets only. Optional `refresh` boolean; returns `access_token` and `account_id` for the desktop's direct OpenAI requests. Never returns a refresh token. TCP listeners reject it. |
 | `maintenance.run` | Runs the same coalesced maintenance sweep used at startup and every 24 hours. |
+
+Saved events and task metadata commit before the display cache is updated.
+Cache updates use a separate transaction; failures are logged without failing
+the event write. `history.list` rebuilds missing display records and their
+`$part` payloads from saved history when read.
 
 Steer messages cancel active inference, cells, and caller-owned tools, then join
 the same turn before its next model request. Task-owned sessions survive. Queue messages

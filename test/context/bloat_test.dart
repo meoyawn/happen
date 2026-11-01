@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -29,16 +30,17 @@ void main() {
       final input = (body['input'] as List).map(jsonObject).toList();
       final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
       final hasResult = input.skip(lastUser + 1).any((item) =>
-        item['type'] == 'custom_tool_call_output' || item['type'] == 'tool_search_output',
+        item['type'] == 'custom_tool_call_output',
       );
       final output = input.last['type'] == 'compaction_trigger' ? <Json>[
         {'type': 'compaction', 'encrypted_content': 'checkpoint-${++sequence}'},
       ] : hasResult ? <Json>[
         {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]},
-      ] : input[lastUser]['content'] == 'catalog baseline' ? <Json>[
+      ] : ['catalog baseline', 'one changed tool'].contains(input[lastUser]['content']) ? <Json>[
         {
-          'type': 'tool_search_call', 'execution': 'client',
-          'call_id': 'context_${++sequence}', 'arguments': {'query': 'client', 'limit': 2},
+          'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
+          'call_id': 'context_${++sequence}',
+          'input': 'text(await tools.tool_search({query:"client",limit:2}));',
         },
       ] : <Json>[
         {
@@ -62,6 +64,7 @@ void main() {
     final endpoint = 'http://127.0.0.1:${provider.port}/responses';
     var server = await AgentServer.startEmbedded(
       directory: root.path, configPath: '${root.path}/config.yaml', endpoint: endpoint,
+      skillsHome: root.path,
     );
     var client = await AgentClient.connect(server.uri);
     addTearDown(() async {
@@ -96,9 +99,11 @@ void main() {
       final completed = requests[before + 1];
       final input = initial['input'] as List;
       if (previousInput == null) {
-        // The only automatic context needed without instruction files or extra tools.
-        expect(input, hasLength(2));
-        expect(input.first['content'], '<environment_context>\n  <cwd>${work.path}</cwd>\n'
+        // Codex Responses Lite: one declarations/base prefix, then context and input.
+        expect(input, hasLength(4));
+        expect(input[0]['type'], 'additional_tools');
+        expect(input[1], {'role': 'developer', 'content': GptModel('gpt-6.1-sol').instructions});
+        expect(input[2]['content'], '<environment_context>\n  <cwd>${work.path}</cwd>\n'
           '  <shell>${Platform.environment['SHELL']!.split('/').last}</shell>\n</environment_context>');
         expect(input.last, {'role': 'user', 'content': 'turn-0'});
       } else {
@@ -113,8 +118,11 @@ void main() {
       expect(outputs.map((item) => item['call_id']).toList(), calls.map((item) => item['call_id']).toList());
       expect(outputs.map((item) => item['output']).toSet(), {jsonEncode({'output': ['visible-tool-result']})});
       expect(jsonEncode(completed['input']), isNot(contains(privateReceipt)));
-      expect(initial['tools'], requests.first['tools']);
-      expect(initial['instructions'], requests.first['instructions']);
+      expect(initial['tools'], isEmpty);
+      expect(initial['instructions'], '');
+      expect(input.take(2).toList(), (requests.first['input'] as List).take(2).toList());
+      expect(input.where((item) => item['type'] == 'additional_tools'), hasLength(1));
+      expect(input.where((item) => item['content'] == GptModel('gpt-6.1-sol').instructions), hasLength(1));
       expect(initial['reasoning']['effort'], 'low');
       expect((completed['input'] as List).where((item) => item['type'] == 'configuration_update'),
         hasLength(i == 0 ? 0 : 1));
@@ -150,11 +158,12 @@ void main() {
     final beforeChange = requests.length;
     await turn('task.send', {'task_id': id, 'prompt': 'one changed tool'});
     final changed = (requests[beforeChange]['input'] as List).skip(previousInput.length).toList();
-    final declaration = changed.singleWhere((item) => item['type'] == 'additional_tools');
-    expect((declaration['tools'] as List).single['tools'], hasLength(1));
-    expect(jsonEncode(changed), contains('browser_title'));
+    expect(changed.where((item) => item['type'] == 'additional_tools'), isEmpty);
+    expect(jsonEncode(changed), isNot(contains('browser_title')));
     expect(jsonEncode(changed), isNot(contains('stable_lookup')));
     expect(jsonEncode(changed), isNot(contains('Unchanged catalog guidance')));
+    final discovery = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
+    expect(discovery['output'], contains('Changed title guidance'));
 
     await client.request('tools.register', {'task_id': id, 'tools': []});
     final beforeRemoval = requests.length;
@@ -168,6 +177,7 @@ void main() {
     await server.close();
     server = await AgentServer.startEmbedded(
       directory: root.path, configPath: '${root.path}/config.yaml', endpoint: endpoint,
+      skillsHome: root.path,
     );
     client = await AgentClient.connect(server.uri);
     final beforeResume = requests.length;
@@ -183,7 +193,11 @@ void main() {
       final context = checkpoint['data']['input'] as List;
       expect(context.where((item) => item['native']?['harness']?['context'] == 'environment'), hasLength(1));
       expect(context.where((item) => ['agents_md', 'mcp', 'client_tools'].contains(item['native']?['harness']?['context'])), isEmpty);
-      expect(context.where((item) => item['role'] == 'developer'), hasLength(1));
+      expect(context.where((item) => item['role'] == 'developer'), hasLength(2));
+      expect(context[0]['native']['harness']['context'], 'top_level_tools');
+      expect(context[1]['native']['harness']['context'], 'model');
+      expect(context.where((item) => item['kind'] == 'tools'), hasLength(1));
+      expect(context.where((item) => item['native']?['harness']?['context'] == 'model'), hasLength(1));
       expect(jsonEncode(context), contains('Keep responses short.'));
       expect(context.where((item) => item['kind'] == 'compaction'), hasLength(1));
       expect(context.where((item) => item['kind'] == 'configuration'), hasLength(1));
@@ -192,6 +206,7 @@ void main() {
       final stored = history.lastWhere((event) => event['type'] == 'tool.completed');
       expect(stored['data']['values']['unprinted'], privateReceipt);
       await turn('task.send', {'task_id': id, 'prompt': 'after compact-$i'});
+      expect((requests.last['input'] as List).take(2).toList(), (requests.first['input'] as List).take(2).toList());
       expect(jsonEncode(requests.last['input']), isNot(contains(privateReceipt)));
     }
   });

@@ -94,8 +94,9 @@ checkout. See [api.md](api.md) for configuration and the public API.
 - Run `dart test test/context test/deepseek_server_test.dart -r expanded` for
   repository discovery and multi-turn context growth. Inspect actual provider
   requests: unchanged turns preserve their prefix and add only new messages,
-  calls/results and intentional updates. Cover warm caches, cwd changes, cold
-  resumes, overrides, worktree markers, symlinks, UTF-8 budgets, one-time
+  calls/results and intentional updates. Cover mid-turn instruction edits through
+  actual tools, warm-cache invalidation, cwd changes, cold resumes, overrides,
+  worktree markers, symlinks, same-size edits with preserved mtime, UTF-8 budgets, one-time
   replacement/removal messages, and repeated compaction. Nested host output and
   unprinted cell values must remain available in history without entering model
   input; empty instruction/tool baselines must not produce context notices.

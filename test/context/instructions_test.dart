@@ -82,7 +82,7 @@ void main() {
       (await client.request('history.page', {'task_id': id, 'limit': 500}) as List)
           .map(jsonObject).where((event) => event['type'] == 'agents.updated').toList();
 
-  test('multi-turn repository context stays deduplicated and reloads on cwd changes and cold resumes', () async {
+  test('repository edits refresh on warm turns and stay deduplicated across cwd changes and cold resumes', () async {
     final work = await Directory('${root.path}/repo/sub/deeper').create(recursive: true);
     final repo = work.parent.parent;
     final cwd = work.parent.path;
@@ -108,10 +108,17 @@ void main() {
 
     await parent.writeAsString('parent cedar');
     await override.delete();
-    var previousInput = prefix;
+    await turn('task.send', {'task_id': id});
+    expect(instructions(), hasLength(2));
+    expect(instructions().last, contains('parent cedar'));
+    expect(instructions().last, contains('nested regular'));
+    expect(instructions().last, isNot(contains('parent maple')));
+    expect(instructions().last, isNot(contains('nested override')));
+    expect((requests.last['input'] as List).take(prefix.length).toList(), prefix);
+    var previousInput = requests.last['input'] as List;
     for (var i = 0; i < 4; i++) {
       await turn('task.send', {'task_id': id});
-      expect(instructions(), [initial]);
+      expect(instructions(), hasLength(2));
       final input = requests.last['input'] as List;
       expect(input.take(previousInput.length).toList(), previousInput);
       // This fixture adds only the previous assistant reply and the new user input.
@@ -120,7 +127,7 @@ void main() {
       expect(requests.last['tools'], requests.first['tools']);
       previousInput = input;
     }
-    expect((await updates(id)).length, 1);
+    expect((await updates(id)).length, 2);
 
     await turn('task.start', {'cwd': cwd});
     expect(instructions().single, contains('parent cedar'));
@@ -151,17 +158,18 @@ void main() {
     expect(instructions(), beforeColdResume);
     await parent.delete();
     await regular.delete();
-    final beforeRestart = instructions();
+    final beforeRemoval = instructions();
     await turn('task.send', {'task_id': id});
-    expect(instructions(), beforeRestart);
+    expect(instructions().take(beforeRemoval.length).toList(), beforeRemoval);
+    expect(instructions().last,
+      contains('The previously provided AGENTS.md instructions no longer apply.'));
+    final afterRemoval = instructions();
 
     await client.close();
     await server.close();
     await start();
     await turn('task.send', {'task_id': id});
-    expect(instructions().take(beforeRestart.length).toList(), beforeRestart);
-    expect(instructions().last,
-      contains('The previously provided AGENTS.md instructions no longer apply.'));
+    expect(instructions(), afterRemoval);
     final removals = (await updates(id)).length;
     for (var i = 0; i < 3; i++) {
       await turn('task.send', {'task_id': id});
@@ -198,20 +206,27 @@ void main() {
     await File(overridePath).writeAsString(' \n');
     await File('${work.path}/AGENTS.md').writeAsString('child instruction');
 
-    await turn('task.start', {'cwd': work.path});
+    final id = await turn('task.start', {'cwd': work.path});
     expect(instructions().single, contains('child instruction'));
     expect(instructions().single, isNot(contains('suppressed regular instruction')));
     await File(overridePath).delete();
     await Directory(overridePath).create();
-    await turn('task.start', {'cwd': work.path});
-    expect(instructions().single, contains('suppressed regular instruction'));
+    await turn('task.send', {'task_id': id});
+    expect(instructions().last, contains('suppressed regular instruction'));
 
     await Directory(overridePath).delete();
     final target = File('${root.path}/linked.md');
     await target.writeAsString('linked instruction');
     await Link(overridePath).create(target.path);
-    await turn('task.start', {'cwd': work.path});
-    expect(instructions().single, contains('linked instruction'));
-    expect(instructions().single, isNot(contains('suppressed regular instruction')));
+    await turn('task.send', {'task_id': id});
+    expect(instructions().last, contains('linked instruction'));
+    expect(instructions().last, isNot(contains('suppressed regular instruction')));
+
+    final modified = await target.lastModified();
+    await target.writeAsString('edited instruction');
+    await target.setLastModified(modified);
+    await turn('task.send', {'task_id': id});
+    expect(instructions().last, contains('edited instruction'));
+    expect(instructions().last, isNot(contains('linked instruction')));
   });
 }

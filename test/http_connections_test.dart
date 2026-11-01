@@ -259,7 +259,8 @@ void main() {
       final count = failure == 'disconnect' ? 1 : 6;
       final replies = await Future.wait(List.generate(count, (_) => send())).timeout(const Duration(seconds: 10));
       expect(replies.map((reply) => reply.text), everyElement('READY'));
-      expect(events.where((event) => event['type'] == 'model.retrying'), hasLength(1));
+      expect(events.where((event) => event['type'] == 'model.retrying'),
+        hasLength(failure == 'reset before headers' ? 0 : 1));
       expect(requests, count + 1);
       expect(sockets, hasLength(2));
       expect((await send()).text, 'READY');

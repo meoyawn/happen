@@ -1,4 +1,3 @@
-import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
 import 'declarations.dart';
@@ -11,7 +10,7 @@ Json _object(Object? value) => value is Map ? jsonObject(value) : const {};
 List<String> _documents = const [];
 BM25Index? _index;
 
-ToolDiscovery discoverTools(List<Json> catalog, Json arguments, {bool nested = false}) {
+Json discoverTools(List<Json> catalog, Json arguments) {
   final query = requiredString(arguments, 'query').trim();
   final limit = arguments['limit'] ?? 8;
   if (query.isEmpty) throw const FormatException('query must not be empty');
@@ -24,10 +23,8 @@ ToolDiscovery discoverTools(List<Json> catalog, Json arguments, {bool nested = f
     _index = BM25Index(documents);
   }
   final selected = [for (final row in _index!.search(query, limit)) catalog[row.index]];
-  return ToolDiscovery(selected, {'tools': [for (final tool in selected)
-    if (nested) {'name': describeTool(tool)['name'], 'description': describeTool(tool)['description']}
-    else tool['name'],
-  ]});
+  return {'tools': [for (final tool in selected.map(describeTool))
+    {'name': tool['name'], 'description': tool['description']}]};
 }
 
 // MCP search indexes only the top-level parameter names. Dynamic client tools

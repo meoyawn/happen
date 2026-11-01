@@ -9,12 +9,10 @@ Future<IsolateOwner> startStore(
   String directory,
   String id, {
   bool create = true,
-  LegacyRecordDecoder? legacyDecoder,
 }) => IsolateOwner.start(_storeMain, {
   'directory': directory,
   'task_id': id,
   'create': create,
-  'legacy_decoder': legacyDecoder,
 });
 
 Future<String> importHistory(
@@ -46,7 +44,6 @@ void _storeMain(List<Object?> args) async {
           config['directory'] as String,
           config['task_id'] as String,
           create: config['create'] as bool,
-          legacyDecoder: config['legacy_decoder'] as LegacyRecordDecoder?,
         );
   final port = ReceivePort(), queue = StreamController<Json>();
   final operations = <String, CancellationToken>{};
@@ -83,7 +80,12 @@ void _storeMain(List<Object?> args) async {
       final cancellation = operations[id]!;
       try {
         cancellation.throwIfCancelled();
+        if (store != null && {'append', 'append_batch', 'archive', 'session.prepare', 'session.inbox.cancel'}.contains(request['method'])) {
+          await store.prepareSession(cancellation: cancellation);
+        }
         final Object? result = switch (request['method']) {
+          'session.prepare' => null,
+          'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
           'append' => store!.append(
             params['type'] as String,
             jsonObject(params['data']),
@@ -101,6 +103,11 @@ void _storeMain(List<Object?> args) async {
             after: params['after'] as int? ?? 0,
             limit: params['limit'] as int? ?? 100,
           ),
+          'history.list' => store!.historyPage(
+            before: params['before'] as int?,
+            limit: params['limit'] as int? ?? 100,
+          ),
+          'history.part' => store!.conversationPart(requiredString(params, 'id')),
           'history.list_windows' => store!.listWindows(params),
           'history.list_items' => await store!.listItems(
             params,

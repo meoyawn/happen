@@ -563,18 +563,15 @@ void _networkMain(List<Object?> args) async {
         };
         final settings = provider.resolveSettings(selected, model: model);
         final info = lab == 'openai' ? GptModel(model) : null;
-        final base = info == null
-            ? deepseekInstructions(model)
-            : [
-                info.instructions,
-                info.persistentInstructions,
-              ].where((s) => s.isNotEmpty).join('\n\n');
+        // PersistentModeState is separate developer context in Codex, enabled
+        // only for persistent reasoning. This runtime does not offer that mode.
+        final base = info?.instructions ?? deepseekInstructions(model);
         reply?.send({
           'result': {
             'provider': lab,
             'model': model,
             'provider_settings': settings,
-            'base_instructions': base,
+            'instructions': base,
             'reasoning_updates': info?.reasoningUpdates ?? false,
             'catalog_revision': lab == 'openai'
                 ? gptCatalogRevision

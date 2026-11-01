@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'session.dart';
+import 'appearance.dart';
 
 String _modelLabel(String model) {
   if (!model.startsWith('gpt-')) return model;
@@ -42,7 +43,7 @@ class ComposerModelPicker extends StatelessWidget {
     final effort = session.reasoning;
     const muted = Color(0xff626862);
     const heading = TextStyle(fontSize: 10, letterSpacing: 1, color: muted);
-    return LayoutBuilder(builder: (context, constraints) => PopupMenuButton<String>(
+    final combined = LayoutBuilder(builder: (context, constraints) => PopupMenuButton<String>(
       tooltip: 'Model and reasoning effort',
       enabled: enabled,
       borderRadius: BorderRadius.circular(8),
@@ -82,6 +83,34 @@ class ComposerModelPicker extends StatelessWidget {
           ])),
         ),
       )),
+    ));
+    const labelStyle = TextStyle(fontSize: 13, height: 20 / 13, letterSpacing: -.04,
+      color: opencodeMuted, fontVariations: [FontVariation('wght', 440)]);
+    Widget control(String label) => SizedBox(height: 28, child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle)),
+        const SizedBox(width: 6), const Icon(Icons.keyboard_arrow_down_rounded, size: 12, color: opencodeFaint),
+      ])));
+    return LayoutBuilder(builder: (context, constraints) => constraints.maxWidth < 140 ? combined : Row(
+      mainAxisSize: MainAxisSize.min, children: [
+        Flexible(child: PopupMenuButton<String>(tooltip: 'Model', enabled: enabled,
+          onSelected: session.chooseModel,
+          itemBuilder: (_) => [
+            for (final model in session.models) _option(model['id'] as String, model['id'] as String,
+              model['provider'] == session.providerId && model['id'] == session.modelId, canChangeModel),
+            if (session.task != null) const PopupMenuItem<String>(enabled: false,
+              child: Text('Start a new task to change models.')),
+          ], child: control(_modelLabel(model)))),
+        if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(tooltip: 'Reasoning effort', enabled: enabled,
+          onSelected: session.chooseReasoning,
+          itemBuilder: (_) => [
+            for (final effort in efforts.cast<String>()) _option(effort, _effortLabel(effort),
+              effort == session.reasoning, canChangeEffort),
+            if (!canChangeEffort) const PopupMenuItem<String>(enabled: false,
+              child: Text('Reasoning effort is fixed for this task.')),
+          ], child: control(_effortLabel(effort))),
+      ],
     ));
   }
 }

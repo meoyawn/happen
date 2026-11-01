@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
 
-import 'inline_reference.dart';
-
-/// A file or skill occupies one UTF-16 position, like Harness's mention atoms.
+/// A reference is stored as one position and expanded by the virtual editor.
 @immutable
 class ComposerFileReference {
-  const ComposerFileReference(this.offset, this.path, {this.skillName});
+  const ComposerFileReference(this.offset, this.path, {this.skillName, this.title, this.prompt});
   final int offset;
   final String path;
   final String? skillName;
+  final String? title, prompt;
   bool get folder => path.endsWith('/');
-  String get label => skillName ?? path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).last;
+  String get label => (title ?? skillName ?? path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).lastOrNull ?? path)
+    .replaceAll(RegExp(r'[\r\n\t]'), ' ');
   String get markdown {
     final title = (skillName == null ? label : '\$$label').replaceAll('\\', '\\\\').replaceAll('[', r'\[').replaceAll('](', r']\(').replaceAll(']', r'\]');
     final destination = path.replaceAll('\\', '\\\\').replaceAll(')', r'\)');
     return '[$title]($destination)';
   }
-  ComposerFileReference shifted(int delta) => ComposerFileReference(offset + delta, path, skillName: skillName);
+  ComposerFileReference shifted(int delta) => ComposerFileReference(offset + delta, path,
+    skillName: skillName, title: title, prompt: prompt);
 }
 
 /// Keeps reference identity out of editable text and serializes it at the edge.
@@ -25,16 +26,21 @@ class ComposerTextController extends TextEditingController {
     _files.addAll(files.where(_valid));
     _remember();
   }
-  ComposerTextController.fromValue(super.value) : super.fromValue();
-
   static const marker = '\uFFFC';
   final _files = <ComposerFileReference>[];
-  // Flutter's desktop UndoHistory retains these exact editing values. Weak
-  // snapshots keep metadata alive for the same lifetime as its undo entries.
+  // Programmatic restoration retains reference metadata with its editing value.
+  // The virtual editor owns native undo history and its own weak snapshots.
   final _snapshots = Expando<List<ComposerFileReference>>();
   List<ComposerFileReference> get files => List.unmodifiable(_files.where(_valid));
   bool _valid(ComposerFileReference file) => file.offset >= 0 && file.offset < text.length && text[file.offset] == marker;
   void _remember() => _snapshots[super.value] = files;
+
+  /// The editor already knows its reference ranges; avoid rediscovering an edit.
+  void applyEditorValue(TextEditingValue next, List<ComposerFileReference> references) {
+    _files..clear()..addAll(references);
+    super.value = next;
+    if (_files.isNotEmpty) _remember();
+  }
 
   void restoreFiles(int start, List<ComposerFileReference> references) {
     for (final reference in references) {
@@ -52,7 +58,7 @@ class ComposerTextController extends TextEditingController {
     for (final file in _files.where(_valid)) {
       if (file.offset < start || file.offset >= end) continue;
       output.write(text.substring(offset, file.offset));
-      output.write(file.markdown);
+      output.write(file.prompt ?? file.markdown);
       offset = file.offset + 1;
     }
     output.write(text.substring(offset, end));
@@ -61,12 +67,12 @@ class ComposerTextController extends TextEditingController {
 
   String serializePrompt() => serializeRange(0, text.length);
 
-  void insertFile(TextRange range, String path, {String? skillName}) {
+  void insertFile(TextRange range, String path, {String? skillName, String? title, String? prompt}) {
     final followingSpace = range.end < text.length && RegExp(r'\s').hasMatch(text[range.end]);
     final replacement = '$marker${followingSpace ? '' : ' '}';
     final result = text.replaceRange(range.start, range.end, replacement);
     _replaceFiles(range.start, range.end, replacement.length);
-    _files.add(ComposerFileReference(range.start, path, skillName: skillName));
+    _files.add(ComposerFileReference(range.start, path, skillName: skillName, title: title, prompt: prompt));
     _files.sort((a, b) => a.offset.compareTo(b.offset));
     super.value = TextEditingValue(text: result,
       selection: TextSelection.collapsed(offset: range.start + 2));
@@ -89,36 +95,12 @@ class ComposerTextController extends TextEditingController {
       return;
     }
     final previous = super.value;
-    if (previous.text != next.text) {
-      var start = 0;
-      while (start < previous.text.length && start < next.text.length && previous.text[start] == next.text[start]) {
-        start++;
-      }
-      var oldEnd = previous.text.length, newEnd = next.text.length;
-      while (oldEnd > start && newEnd > start && previous.text[oldEnd - 1] == next.text[newEnd - 1]) {
-        oldEnd--;
-        newEnd--;
-      }
-      // Identical adjacent markers still have different paths. Prefer the
-      // actual selection over a common-prefix diff for replacement/deletion.
-      final selection = previous.selection;
-      if (selection.isValid && next.selection.isValid && next.selection.isCollapsed) {
-        final delta = next.text.length - previous.text.length;
-        final from = selection.isCollapsed && delta < 0 ? next.selection.start : selection.start;
-        final end = selection.isCollapsed && delta < 0 ? from - delta : selection.end;
-        final to = end + delta;
-        if (from >= 0 && end <= previous.text.length && to >= from && to <= next.text.length &&
-            previous.text.substring(0, from) == next.text.substring(0, from) &&
-            previous.text.substring(end) == next.text.substring(to)) {
-          start = from;
-          oldEnd = end;
-          newEnd = to;
-        }
-      }
-      _replaceFiles(start, oldEnd, newEnd - start);
+    if (_files.isNotEmpty && previous.text != next.text) {
+      final edit = composerReplacement(previous, next);
+      _replaceFiles(edit.start, edit.end, edit.inserted);
     }
     super.value = next;
-    _remember();
+    if (_files.isNotEmpty) _remember();
   }
 
   void _replaceFiles(int start, int end, int insertedLength) {
@@ -131,38 +113,24 @@ class ComposerTextController extends TextEditingController {
     _files..clear()..addAll(retained);
   }
 
-  @override
-  TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
-    if (_files.isEmpty) return super.buildTextSpan(context: context, style: style, withComposing: withComposing);
-    final spans = <InlineSpan>[];
-    final composing = value.composing;
-    void plain(int start, int end) {
-      if (start >= end) return;
-      if (!withComposing || !composing.isValid || composing.isCollapsed || composing.end <= start || composing.start >= end) {
-        spans.add(TextSpan(text: text.substring(start, end)));
-        return;
-      }
-      final from = composing.start.clamp(start, end), to = composing.end.clamp(start, end);
-      if (start < from) spans.add(TextSpan(text: text.substring(start, from)));
-      spans.add(TextSpan(text: text.substring(from, to), style: const TextStyle(decoration: TextDecoration.underline)));
-      if (to < end) spans.add(TextSpan(text: text.substring(to, end)));
+}
+
+/// Prefer the actual edit selection, including adjacent identical references.
+/// The fallback is only needed for programmatic replacements and composition.
+({int start, int end, int inserted}) composerReplacement(TextEditingValue before, TextEditingValue after) {
+  final delta = after.text.length - before.text.length;
+  if (before.selection.isValid && after.selection.isValid && after.selection.isCollapsed) {
+    final from = before.selection.isCollapsed && delta < 0 ? after.selection.start : before.selection.start;
+    final end = before.selection.isCollapsed && delta < 0 ? from - delta : before.selection.end;
+    final to = end + delta;
+    if (from >= 0 && end <= before.text.length && to >= from && to <= after.text.length &&
+        before.text.substring(0, from) == after.text.substring(0, from) &&
+        before.text.substring(end) == after.text.substring(to)) {
+      return (start: from, end: end, inserted: to - from);
     }
-    var offset = 0;
-    for (final file in _files.where(_valid)) {
-      plain(offset, file.offset);
-      spans.add(WidgetSpan(alignment: PlaceholderAlignment.middle,
-        child: Semantics(label: file.label, excludeSemantics: true,
-          child: Tooltip(message: file.path, child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (file.skillName != null) const SkillIcon()
-            else Icon(file.folder ? Icons.folder_outlined : Icons.insert_drive_file_outlined, size: 16, color: inlineReferenceAccent),
-            const SizedBox(width: 3),
-            Flexible(child: Text(file.label, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w500, color: inlineReferenceAccent))),
-          ])),
-        )));
-      offset = file.offset + 1;
-    }
-    plain(offset, text.length);
-    return TextSpan(style: style, children: spans);
   }
+  var start = 0, end = before.text.length, to = after.text.length;
+  while (start < end && start < to && before.text.codeUnitAt(start) == after.text.codeUnitAt(start)) { start++; }
+  while (end > start && to > start && before.text.codeUnitAt(end - 1) == after.text.codeUnitAt(to - 1)) { end--; to--; }
+  return (start: start, end: end, inserted: to - start);
 }

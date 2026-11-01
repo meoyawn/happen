@@ -5,32 +5,41 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 
 /// Lightweight warm task snapshots, independent of agent and SQLite owners.
-/// Like Codex, file edits alone do not invalidate a repository snapshot.
+/// Revalidate all candidate files at model boundaries, including missing overrides.
 class RepositoryInstructions {
   final _snapshots = <String, Json>{};
+  final _signatures = <String, String>{};
 
   Future<Json> load(String taskId, String cwd, CancellationToken cancellation) async {
     cancellation.throwIfCancelled();
     final previous = _snapshots.remove(taskId);
-    if (previous != null && previous['cwd'] == cwd) {
+    final previousSignature = _signatures.remove(taskId);
+    final directories = await _directories(cwd, cancellation);
+    final signature = await _signature(directories, cancellation);
+    if (previous != null && previous['cwd'] == cwd && previousSignature == signature) {
       _snapshots[taskId] = previous;
+      _signatures[taskId] = signature;
       return previous;
     }
     // Discard the old selection before discovery, including on cancellation.
-    final current = await _discover(cwd, cancellation);
+    final current = await _discover(cwd, directories, cancellation);
     cancellation.throwIfCancelled();
     _snapshots[taskId] = current;
+    _signatures[taskId] = signature;
     // Evicted tasks resume cold. Idle snapshots never retain execution owners.
     while (_snapshots.length > 256) {
-      _snapshots.remove(_snapshots.keys.first);
+      forget(_snapshots.keys.first);
     }
     return current;
   }
 
-  void forget(String taskId) => _snapshots.remove(taskId);
+  void forget(String taskId) {
+    _snapshots.remove(taskId);
+    _signatures.remove(taskId);
+  }
 }
 
-Future<Json> _discover(String cwd, CancellationToken cancellation) async {
+Future<List<Directory>> _directories(String cwd, CancellationToken cancellation) async {
   final current = Directory(cwd);
   final chain = <Directory>[];
   var cursor = current;
@@ -47,11 +56,31 @@ Future<Json> _discover(String cwd, CancellationToken cancellation) async {
     if (cursor.parent.path == cursor.path) break;
     cursor = cursor.parent;
   }
+  return foundRoot ? chain.reversed.toList() : [current];
+}
 
+Future<String> _signature(List<Directory> directories, CancellationToken cancellation) async {
+  final files = <Object?>[];
+  for (final directory in directories) {
+    for (final name in ['AGENTS.override.md', 'AGENTS.md']) {
+      cancellation.throwIfCancelled();
+      final path = '${directory.path}/$name';
+      // stat follows symlinks. ctime detects replacements and same-size edits
+      // even when an editor preserves mtime; missing files detect later additions.
+      final stat = await FileStat.stat(path);
+      files.add([path, stat.type.toString(), stat.size, stat.mode,
+        stat.modified.microsecondsSinceEpoch, stat.changed.microsecondsSinceEpoch]);
+    }
+  }
+  cancellation.throwIfCancelled();
+  return jsonEncode(files);
+}
+
+Future<Json> _discover(String cwd, List<Directory> directories, CancellationToken cancellation) async {
   final files = <Json>[];
   var remaining = 32768;
   var truncated = false;
-  for (final directory in foundRoot ? chain.reversed : [current]) {
+  for (final directory in directories) {
     cancellation.throwIfCancelled();
     for (final name in ['AGENTS.override.md', 'AGENTS.md']) {
       final file = File('${directory.path}/$name');

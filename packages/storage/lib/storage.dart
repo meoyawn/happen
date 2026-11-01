@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' show log;
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -6,12 +7,12 @@ import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-export 'src/owner.dart' show startStore, importHistory;
+import 'src/model_context.dart';
 
-typedef LegacyRecordDecoder = ConversationItem Function(
-  Json wire, {
-  String? id,
-});
+export 'src/owner.dart' show startStore, importHistory;
+export 'src/session_reader.dart' show readSession;
+
+part 'src/session.dart';
 
 /// Access this object only from its dedicated SQLite owner isolate.
 class TaskStore {
@@ -19,7 +20,6 @@ class TaskStore {
     this.directory,
     this.taskId, {
     bool create = true,
-    this.legacyDecoder,
   }) {
     validateTaskId(taskId);
     final folder = Directory('$directory/tasks/$taskId');
@@ -33,40 +33,29 @@ class TaskStore {
     db.execute('PRAGMA foreign_keys = ON');
     db.execute('PRAGMA cache_size = -512');
     db.execute('PRAGMA busy_timeout = 0');
+    // Schema initialization must outlive failed event transactions.
     db.execute('''
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY, type TEXT NOT NULL,
-        created_at TEXT NOT NULL, data TEXT NOT NULL
+        created_at TEXT NOT NULL, data TEXT NOT NULL,
+        id TEXT NOT NULL UNIQUE, window_id TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
+      CREATE INDEX IF NOT EXISTS events_window ON events(window_id, seq);
       CREATE TABLE IF NOT EXISTS metadata (
         key TEXT PRIMARY KEY, value TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS conversation_events (
+        seq INTEGER PRIMARY KEY REFERENCES events(seq) ON DELETE CASCADE,
+        data TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS conversation_parts (
+        id TEXT PRIMARY KEY, data TEXT NOT NULL
+      ) STRICT;
     ''');
-    final columns = db
-        .select('PRAGMA table_info(events)')
-        .map((row) => row['name'])
-        .toSet();
-    if (!columns.contains('id')) {
-      db.execute('ALTER TABLE events ADD COLUMN id TEXT');
-    }
-    if (!columns.contains('window_id')) {
-      db.execute('ALTER TABLE events ADD COLUMN window_id TEXT');
-    }
-    db.execute('UPDATE events SET id = ? || seq WHERE id IS NULL', [
-      '$taskId:',
-    ]);
-    db.execute('UPDATE events SET window_id = ? WHERE window_id IS NULL', [
-      '$taskId:0',
-    ]);
-    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS events_id ON events(id)');
-    db.execute(
-      'CREATE INDEX IF NOT EXISTS events_window ON events(window_id, seq)',
-    );
-    db.execute('PRAGMA user_version = 2');
+    _sessionSchema();
   }
   final String directory, taskId;
-  final LegacyRecordDecoder? legacyDecoder;
   late final Database db;
   int get lastSequence =>
       db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').first['seq']
@@ -81,10 +70,10 @@ class TaskStore {
     if (events.isEmpty) {
       throw const FormatException('Empty history transaction');
     }
+    final committed = <Json>[];
     db.execute('BEGIN');
     try {
       final now = DateTime.now().toUtc().toIso8601String();
-      final committed = <Json>[];
       var window = metadataValue('current_window') as String? ?? '$taskId:0';
       for (final event in events) {
         if (event['type'] == 'context.compacted') window = newId();
@@ -99,14 +88,15 @@ class TaskStore {
             jsonEncode(jsonObject(event['data'])),
           ],
         );
-        committed.add({
+        final committedEvent = <String, dynamic>{
           'seq': db.lastInsertRowId,
           'id': id,
           'window_id': window,
           'type': event['type'],
           'created_at': now,
           'data': event['data'],
-        });
+        };
+        committed.add(committedEvent);
       }
       for (final entry in {...metadata, 'current_window': window}.entries) {
         db.execute(
@@ -114,12 +104,17 @@ class TaskStore {
           [entry.key, jsonEncode(entry.value)],
         );
       }
+      // The OpenCode read model and its source facts become visible together.
+      // Existing histories catch up through prepareSession before being read.
+      final projected = db.select('SELECT through_seq FROM session_projection').single['through_seq'] as int;
+      if (projected == (committed.first['seq'] as int) - 1) _projectSession(committed);
       db.execute('COMMIT');
-      return committed;
     } catch (_) {
       db.execute('ROLLBACK');
       rethrow;
     }
+    _projectConversation(committed);
+    return committed;
   }
 
   Object? metadata(String key) {
@@ -149,102 +144,192 @@ class TaskStore {
     return result.isEmpty ? null : jsonDecode(result.first['value'] as String);
   }
 
-  List<Json> history({int after = 0, int limit = 100, int? through}) {
+  List<Json> history({int after = 0, int limit = 100, int? through,
+    bool recentFirst = false, int maxBytes = maxClientFrameBytes, bool conversationView = false}) {
     if (limit < 1 || limit > 500) {
       throw const FormatException('History limit must be 1..500');
     }
-    final query = db.prepare(
-      'SELECT seq, id, window_id, type, created_at, data FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?',
-    );
+    final query = db.prepare(conversationView ? '''
+      SELECT e.seq, e.id, e.window_id, e.type, e.created_at, p.seq AS projected,
+        coalesce(p.data, CASE
+          WHEN e.type IS 'tool.completed' THEN json_object('item', json_extract(e.data, '\$.item'))
+          WHEN e.type IS 'context.compacted' THEN json_object('summary', json_extract(e.data, '\$.summary'))
+          WHEN e.type IN ('agents.updated', 'skills.updated', 'mcp.updated', 'environment.updated', 'instructions.updated', 'tools.updated') THEN '{}'
+          ELSE e.data END) AS data
+      FROM events e LEFT JOIN conversation_events p ON p.seq IS e.seq
+      WHERE e.seq > ? AND e.seq <= ? ORDER BY e.seq ${recentFirst ? 'DESC' : 'ASC'} LIMIT ?
+    ''' : 'SELECT seq, id, window_id, type, created_at, data FROM events WHERE seq > ? AND seq <= ? ORDER BY seq ${recentFirst ? 'DESC' : 'ASC'} LIMIT ?');
+    final result = <Json>[];
+    final missing = <int>[];
     try {
       final rows = query.selectCursor([after, through ?? lastSequence, limit]);
-      final result = <Json>[];
       var bytes = 0;
       while (rows.moveNext()) {
         final row = rows.current;
         final encoded = row['data'] as String;
         bytes += utf8.encode(encoded).length + 512;
         // A compaction checkpoint may itself fill a page. Never split a record.
-        if (result.isNotEmpty && bytes > maxClientFrameBytes) break;
-        result.add({
+        if (result.isNotEmpty && bytes > maxBytes) break;
+        final event = <String, dynamic>{
             'seq': row['seq'],
             'id': row['id'],
             'window_id': row['window_id'],
             'type': row['type'],
             'created_at': row['created_at'],
             'data': jsonDecode(encoded),
-        });
+        };
+        final stale = conversationView && (row['projected'] == null || (event['data'] as Json).remove(r'$view') != 1);
+        if (stale) missing.add(result.length);
+        result.add(conversationView && !stale ? _conversationEvent(event) : event);
       }
-      return result;
     } finally {
       query.close();
     }
-  }
-
-  List<Json> modelContext({int maxBytes = maxContextBytes}) {
-    final compacted = db.select(
-      "SELECT seq, id, data FROM events WHERE type IS 'context.compacted' ORDER BY seq DESC LIMIT 1",
-    );
-    var after = 0, bytes = 0;
-    final result = <Json>[];
-    Json decode(Json item, String id) => item['version'] == 1
-        ? ConversationItem.fromJson(item).toJson()
-        : (legacyDecoder ??
-                  (throw const FormatException(
-                    'Legacy GPT history needs its provider decoder',
-                  )))(item, id: id)
-              .toJson();
-    if (compacted.isNotEmpty) {
-      after = compacted.first['seq'] as int;
-      final data = jsonObject(jsonDecode(compacted.first['data'] as String));
-      var index = 0;
-      result.addAll(
-        (data['input'] as List).map(
-          (raw) =>
-              decode(jsonObject(raw), '${compacted.first['id']}:${index++}'),
-        ),
-      );
-      bytes += (compacted.first['data'] as String).length;
-      if (bytes > maxBytes) {
-        throw StateError('Compacted context exceeds the byte budget');
-      }
-    }
-    while (true) {
-      final page = history(after: after);
-      if (page.isEmpty) break;
-      for (final event in page) {
-        after = event['seq'] as int;
-        final data = jsonObject(event['data']);
-        final items = switch (event['type']) {
-          'input.committed' ||
-          'configuration.updated' ||
-          'instructions.updated' ||
-          'environment.updated' ||
-          'tools.updated' ||
-          'agents.updated' ||
-          'mcp.updated' ||
-          'client_tools.updated' => [jsonObject(data['item'])],
-          'skills.updated' => [if (data['item'] != null) jsonObject(data['item'])],
-          'model.completed' =>
-            (data['output'] as List).map(jsonObject).toList(),
-          'tool.completed' => [jsonObject(data['item'])],
-          _ => <Json>[],
-        };
-        var index = 0;
-        for (final raw in items) {
-          final item = decode(raw, '${event['id']}:${index++}');
-          bytes += utf8.encode(jsonEncode(item)).length;
-          if (bytes > maxBytes) {
-            throw StateError(
-              'Active context exceeds the byte budget; compact before continuing.',
-            );
-          }
-          result.add(item);
-        }
+    if (missing.isNotEmpty) {
+      // Materialize only this page for older databases, never scan a transcript
+      // during startup. Failed cache writes are retried from saved events here.
+      final projected = _materializeConversation([
+        for (final index in missing) result[index],
+      ]);
+      for (var index = 0; index < missing.length; index++) {
+        result[missing[index]] = projected[index];
       }
     }
     return result;
   }
+
+  void _projectConversation(List<Json> events) {
+    try {
+      _materializeConversation(events);
+    } catch (error, stackTrace) {
+      log('Failed to update the conversation cache for $taskId; saved events are intact.',
+        name: 'happen.storage', level: 900, error: error, stackTrace: stackTrace);
+    }
+  }
+
+  List<Json> _materializeConversation(List<Json> events) {
+    // Display records and their payload references commit together, after the
+    // original events. A failed cache update cannot undo a saved tool result.
+    db.execute('BEGIN IMMEDIATE');
+    try {
+      final result = <Json>[];
+      final insert = db.prepare('INSERT OR REPLACE INTO conversation_events(seq, data) VALUES (?, ?)');
+      try {
+        for (final event in events) {
+          final display = _projectEvent(event);
+          insert.execute([event['seq'], jsonEncode({...jsonObject(display['data']), r'$view': 1})]);
+          result.add(display);
+        }
+      } finally { insert.close(); }
+      db.execute('COMMIT');
+      return result;
+    } catch (_) {
+      db.execute('ROLLBACK');
+      rethrow;
+    }
+  }
+
+  Json _projectEvent(Json event) {
+    final display = _conversationEvent(event);
+    Object? part(Object? value, {Json fields = const {}}) {
+      final encoded = jsonEncode(value);
+      if (encoded.length <= 1024) return value;
+      final id = sha256.convert(utf8.encode(encoded)).toString();
+      db.execute('INSERT OR IGNORE INTO conversation_parts(id, data) VALUES (?, ?)', [id, encoded]);
+      return {...fields, r'$part': '$taskId/$id'};
+    }
+    Json image(Json value) => jsonObject(part(value, fields: {
+      'type': value['type'], 'name': value['name'],
+    }));
+    final data = {...jsonObject(display['data'])};
+    if (event['type'] == 'host_tool.started' || event['type'] == 'tool.started') {
+      final key = event['type'] == 'tool.started' ? 'input' : 'arguments';
+      final input = data[key];
+      if (input is Map || input is String) {
+        Object? decoded = input;
+        if (input is String) {
+          try { decoded = jsonDecode(input); } on FormatException { /* Code is already text. */ }
+        }
+        if (decoded is Map) {
+          final preview = decoded['command'] ?? decoded['cmd'] ?? decoded['filePath'] ?? decoded['path'];
+          if (preview is String) {
+            final line = preview.split('\n').first;
+            data['preview'] = line.length > 240 ? '${line.substring(0, 240)}…' : line;
+          }
+        }
+        data[key] = part(input);
+      }
+    } else if (event['type'] == 'host_tool.completed') {
+      for (final key in ['output', 'error']) {
+        if (data.containsKey(key)) data[key] = part(data[key]);
+      }
+    } else if (event['type'] == 'input.committed' || event['type'] == 'tool.completed') {
+      final item = jsonObject(data['item']);
+      data['item'] = {...item, 'content': [
+        for (final raw in item['content'] as List? ?? [])
+          if (raw['type'] == 'image') image(jsonObject(raw))
+          else if (event['type'] == 'tool.completed') {
+            ...jsonObject(raw),
+            if (raw.containsKey('output')) 'output': part(raw['output']),
+            if (raw['images'] is List) 'images': [for (final value in raw['images']) image(jsonObject(value))],
+          } else raw,
+      ]};
+    }
+    return {...display, 'data': data};
+  }
+
+  Object? conversationPart(String id) {
+    final rows = db.select('SELECT data FROM conversation_parts WHERE id IS ?', [id]);
+    if (rows.isEmpty) throw StateError('Conversation content not found');
+    return jsonDecode(rows.single['data'] as String);
+  }
+
+  /// One newest-first page. Opening a transcript never requires replaying it.
+  Json historyPage({int? before, int limit = 100}) {
+    if (before != null && before < 1) throw const FormatException('Invalid history cursor');
+    final through = before == null ? lastSequence : before - 1;
+    Json? configuration;
+    final summary = <Json>[];
+    if (before == null) {
+      final rows = db.select("SELECT max(seq) AS seq FROM events WHERE type = 'task.created'");
+      final sequence = rows.single['seq'] as int?;
+      if (sequence != null) configuration = history(after: sequence - 1, limit: 1, conversationView: true).single;
+      // Codex's turn summaries include the first user item independently of
+      // the newest item page. A long tool run must not hide its opening prompt.
+      final turns = db.select("SELECT seq FROM events WHERE type IS 'turn.started' AND seq <= ? ORDER BY seq DESC LIMIT 5", [through]);
+      var end = through;
+      for (final turn in turns) {
+        final start = turn['seq'] as int;
+        summary.add(history(after: start - 1, limit: 1, conversationView: true).single);
+        final inputs = db.select("SELECT seq FROM events WHERE type IS 'input.committed' AND seq > ? AND seq <= ? ORDER BY seq LIMIT 1", [start, end]);
+        final firstInput = inputs.firstOrNull?['seq'] as int?;
+        if (firstInput != null) summary.add(history(after: firstInput - 1, limit: 1, conversationView: true).single);
+        final outputs = db.select("SELECT seq FROM events WHERE type IS 'model.completed' AND seq > ? AND seq <= ? ORDER BY seq DESC LIMIT 1", [start, end]);
+        final lastOutput = outputs.firstOrNull?['seq'] as int?;
+        if (lastOutput != null) summary.add(history(after: lastOutput - 1, limit: 1, conversationView: true).single);
+        final terminals = db.select("SELECT max(seq) AS seq FROM events WHERE type IN ('turn.completed', 'turn.failed', 'turn.cancelled') AND seq > ? AND seq <= ?", [start, end]);
+        final terminal = terminals.single['seq'] as int?;
+        if (terminal != null) summary.add(history(after: terminal - 1, limit: 1, conversationView: true).single);
+        end = start - 1;
+      }
+    }
+    final data = history(through: through, limit: limit, recentFirst: true,
+      maxBytes: maxClientFrameBytes - utf8.encode(jsonEncode([configuration, summary])).length - 1024, conversationView: true);
+    final oldest = data.lastOrNull?['seq'] as int?;
+    return {
+      'data': data,
+      'next_cursor': oldest != null && db.select('SELECT 1 FROM events WHERE seq < ? LIMIT 1', [oldest]).isNotEmpty ? oldest : null,
+      if (before == null) ...{
+        'through': through,
+        'configuration': configuration,
+        'summary': summary,
+        'reasoning': metadataValue('effective_reasoning'),
+        'archived': metadataValue('archived_at') != null,
+      },
+    };
+  }
+
+  List<Json> modelContext({int maxBytes = maxContextBytes}) => readModelContext(db, maxBytes: maxBytes);
 
   void _validateHistoryAgent(Json params) {
     final name = params['agent_name'];
@@ -376,15 +461,7 @@ class TaskStore {
     String? role;
     final content = <String>[];
     void record(Json raw) {
-      final ConversationItem item;
-      if (raw['version'] == 1) {
-        item = ConversationItem.fromJson(raw);
-      } else if (legacyDecoder != null) {
-        item = legacyDecoder!(raw);
-      } else {
-        content.add(jsonEncode(raw));
-        return;
-      }
+      final item = ConversationItem.fromJson(raw);
       role ??= item.role ?? 'developer';
       for (final part in item.content) {
         switch (part['type']) {
@@ -472,7 +549,7 @@ class TaskStore {
     }
     final stage = Directory('$directory/staging/${newId()}')
       ..createSync(recursive: true);
-    final child = TaskStore(stage.path, childId, legacyDecoder: legacyDecoder);
+    final child = TaskStore(stage.path, childId);
     try {
       var after = 0;
       while (after < cutoff) {
@@ -519,12 +596,12 @@ class TaskStore {
       db.execute('ROLLBACK');
       rethrow;
     }
+    _projectConversation(events);
   }
 
   void _rebuildMetadata() {
     for (final pair in [
       ('task.created', 'config', null),
-      ('task.configuration_migrated', 'config', null),
       ('tool.completed', 'values', 'values'),
       ('configuration.updated', 'effective_reasoning', 'effort'),
       ('environment.updated', 'current_cwd', 'cwd'),
@@ -658,7 +735,7 @@ class TaskStore {
           final item = jsonObject(jsonDecode(line));
           if (header == null) {
             if (item['format'] != 'agent.history' ||
-                ![1, 2].contains(item['version'])) {
+                item['version'] != 2) {
               throw const FormatException('Unsupported history format');
             }
             header = item;
@@ -675,10 +752,6 @@ class TaskStore {
               throw const FormatException('Invalid history record');
             }
             count++;
-            if (header['version'] == 1) {
-              item['id'] = '${header['source_task']}:$count';
-              item['window_id'] = '${header['source_task']}:0';
-            }
             requiredString(item, 'id');
             requiredString(item, 'window_id');
             batch.add(item);
@@ -728,6 +801,41 @@ class TaskStore {
       db.close();
     }
   }
+}
+
+/// Display history excludes execution checkpoints. Canonical history.page,
+/// recall, forks and exports retain every field in the original event.
+Json _conversationEvent(Json event) {
+  final data = jsonObject(event['data']);
+  final display = switch (event['type']) {
+    'model.completed' => <String, dynamic>{
+      'usage': data['usage'],
+      'output': [
+        for (final raw in data['output'] as List? ?? []) {
+          'content': [
+            for (final part in raw['content'] as List? ?? [])
+              if ((part['type'] == 'text' || part['type'] == 'reasoning') && part['text'] is String)
+                {'type': part['type'], 'text': part['text']},
+          ],
+        },
+      ],
+    },
+    'tool.completed' => <String, dynamic>{'item': data['item']},
+    'context.compacted' => <String, dynamic>{'summary': data['summary']},
+    'task.created' => <String, dynamic>{
+      for (final key in ['provider', 'model', 'reasoning', 'reasoning_updates'])
+        if (data.containsKey(key)) key: data[key],
+      'provider_settings': {
+        for (final key in ['reasoning', 'context_limit'])
+          if ((data['provider_settings'] as Map?)?.containsKey(key) == true)
+            key: data['provider_settings'][key],
+      },
+    },
+    'agents.updated' || 'skills.updated' || 'mcp.updated' ||
+    'environment.updated' || 'instructions.updated' || 'tools.updated' => <String, dynamic>{},
+    _ => data,
+  };
+  return {...event, 'data': display};
 }
 
 class _DigestSink implements Sink<Digest> {

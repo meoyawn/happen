@@ -16,14 +16,15 @@ const conversationMuted = Color(0xff8b8e95);
 const conversationBorder = Color(0xffe8e9eb);
 
 class ConversationMarkdown extends StatelessWidget {
-  const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false});
+  const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false, this.fontSize = 14});
   final String text, directory;
   final bool fitContent;
+  final double fontSize;
 
   @override
   Widget build(BuildContext context) {
-    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
-    final body = TextStyle(fontSize: 14, height: harness ? 1.625 : 1.5, letterSpacing: 0, color: conversationInk);
+    final body = TextStyle(fontSize: fontSize, height: fitContent ? 1.5 : 1.6,
+      letterSpacing: 0, color: opencodeInk);
     return SelectionArea(
       child: MarkdownBody(
         data: text,
@@ -33,19 +34,22 @@ class ConversationMarkdown extends StatelessWidget {
         softLineBreak: fitContent,
         styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
           p: body,
-          a: body.copyWith(color: const Color(0xff0085ff), decoration: TextDecoration.none),
-          h1: body.copyWith(fontSize: 26, height: 1.3, fontWeight: FontWeight.w600),
-          h2: body.copyWith(fontSize: 22, height: 1.35, fontWeight: FontWeight.w600),
-          h3: body.copyWith(fontSize: 18, height: 1.4, fontWeight: FontWeight.w600),
-          h4: body.copyWith(fontWeight: FontWeight.w600),
-          h5: body.copyWith(fontWeight: FontWeight.w600),
-          h6: body.copyWith(fontWeight: FontWeight.w600, color: conversationMuted),
-          h1Padding: const EdgeInsets.only(top: 8, bottom: 8),
-          h2Padding: const EdgeInsets.only(top: 8, bottom: 4),
-          h3Padding: const EdgeInsets.only(top: 6),
-          code: const TextStyle(fontFamily: 'monospace', fontSize: 13,
-            color: conversationInk, backgroundColor: Color(0xfff1f1f3)),
-          blockSpacing: harness ? 12 : 10,
+          a: body.copyWith(color: const Color(0xff3b5cf6), decoration: TextDecoration.none),
+          h1: body.copyWith(fontSize: fontSize + 3, height: 20 / 17, fontWeight: FontWeight.w600),
+          h2: body.copyWith(fontSize: fontSize + 1, height: 20 / 15, fontWeight: FontWeight.w600),
+          h3: body.copyWith(fontSize: fontSize, height: 20 / 14,
+            fontWeight: FontWeight.w600, fontVariations: const [FontVariation('wght', 670)]),
+          h4: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
+          h5: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
+          h6: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
+          h1Padding: EdgeInsets.only(top: 28, bottom: 12),
+          h2Padding: EdgeInsets.only(top: 24, bottom: 10),
+          h3Padding: EdgeInsets.only(top: 20, bottom: 8),
+          code: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
+            color: opencodeInk, backgroundColor: opencodeLayer),
+          strong: body.copyWith(fontWeight: FontWeight.w600,
+            fontVariations: const [FontVariation('wght', 670)]),
+          blockSpacing: 12,
           listBullet: body,
           listIndent: 24,
           blockquote: body.copyWith(color: conversationMuted),
@@ -90,17 +94,26 @@ class _SkillInvocationSyntax extends md.InlineSyntax {
   _SkillInvocationSyntax() : super(r'\[(\$(?:\\.|[^\\\]\r\n])*)\]\(((?:\\.|[^\\)\r\n])+)\)');
 
   @override
-  bool onMatch(md.InlineParser parser, Match match) {
+  bool tryMatch(md.InlineParser parser, [int? startMatchPos]) {
+    final match = pattern.matchAsPrefix(parser.source, startMatchPos ?? parser.pos);
+    if (match == null) return false;
     final destination = match[2]!;
     // Leave ordinary link destinations and optional titles to Markdown.
     if (!RegExp(r'(?:/|\\\\)SKILL\.md$', caseSensitive: false).hasMatch(destination)) return false;
-    final node = _SkillLinkSyntax().createNode(destination, null,
-      getChildren: () => parser.document.parseInline(match[1]!));
-    if (node is! md.Element || node.tag != 'skill-reference') return false;
-    parser.addNode(node);
+    if (!_localSkillUri(Uri.tryParse(destination))) return false;
+    return super.tryMatch(parser, startMatchPos);
+  }
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(_SkillLinkSyntax().createNode(match[2]!, null,
+      getChildren: () => parser.document.parseInline(match[1]!)));
     return true;
   }
 }
+
+bool _localSkillUri(Uri? uri) => uri != null && {'', 'file'}.contains(uri.scheme) &&
+    (!uri.hasAuthority || uri.scheme == 'file' && (uri.host.isEmpty || uri.host == 'localhost'));
 
 /// Keep Markdown's link parsing and escaping, decorating only local skill links.
 class _SkillLinkSyntax extends md.LinkSyntax {
@@ -108,11 +121,8 @@ class _SkillLinkSyntax extends md.LinkSyntax {
   md.Node createNode(String destination, String? title, {required List<md.Node> Function() getChildren}) {
     final node = super.createNode(destination, title, getChildren: getChildren) as md.Element;
     final uri = Uri.tryParse(node.attributes['href']!);
-    if (uri == null || !{'', 'file'}.contains(uri.scheme) ||
-        uri.hasAuthority && !(uri.scheme == 'file' && (uri.host.isEmpty || uri.host == 'localhost'))) {
-      return node;
-    }
-    if (!node.textContent.trim().startsWith(r'$') && uri.path.split('/').last.toLowerCase() != 'skill.md') return node;
+    if (!_localSkillUri(uri)) return node;
+    if (!node.textContent.trim().startsWith(r'$') && uri!.path.split('/').last.toLowerCase() != 'skill.md') return node;
     return md.Element('skill-reference', node.children)..attributes.addAll(node.attributes);
   }
 }
@@ -176,9 +186,9 @@ class _ConversationCodeState extends State<ConversationCode> {
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: const Color(0xfff8f8fa),
-        border: Border.all(color: conversationBorder),
-        borderRadius: BorderRadius.circular(ConversationAppearance.of(context) == ConversationStyle.harness ? 12 : 6),
+        color: opencodeLayer,
+        border: Border.all(color: opencodeBorder, width: .5),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
@@ -205,8 +215,9 @@ class _ConversationCodeState extends State<ConversationCode> {
             ]),
             // ExpansionTile saves a bool; this text saves its own scroll offset.
             key: const PageStorageKey('code-selection'),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12.5,
-              height: 1.6, color: conversationInk),
+            style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
+              height: 20 / 13, letterSpacing: -.04,
+              color: opencodeInk),
           );
           return Scrollbar(
             controller: _scroll,
@@ -227,8 +238,9 @@ class _ConversationCodeState extends State<ConversationCode> {
 }
 
 class ConversationCopyButton extends StatefulWidget {
-  const ConversationCopyButton({super.key, required this.text, required this.label});
+  const ConversationCopyButton({super.key, required this.text, required this.label, this.compact = false});
   final String text, label;
+  final bool compact;
 
   @override
   State<ConversationCopyButton> createState() => _ConversationCopyButtonState();
@@ -265,9 +277,12 @@ class _ConversationCopyButtonState extends State<ConversationCopyButton> {
   @override
   Widget build(BuildContext context) => IconButton(
     tooltip: _copied ? 'Copied' : widget.label,
+    style: widget.compact ? IconButton.styleFrom(
+      minimumSize: const Size.square(20), maximumSize: const Size.square(20),
+      padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap) : null,
     visualDensity: VisualDensity.compact,
     icon: Icon(_copied ? Icons.check_rounded : Icons.content_copy_rounded,
-      size: 15, color: conversationMuted),
+      size: widget.compact ? 14 : 15, color: widget.compact ? opencodeFaint : conversationMuted),
     onPressed: _copy,
   );
 }
@@ -355,7 +370,7 @@ class _ConversationImageState extends State<ConversationImage> {
   Widget _placeholder({bool failed = false}) => Container(
     height: widget.thumbnail ? 78 : 150,
     alignment: Alignment.center,
-    color: const Color(0xfff0f2ed),
+    color: const Color(0xfff3f3f3),
     child: widget.thumbnail ? Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
       color: conversationMuted, size: 24) : Column(mainAxisSize: MainAxisSize.min, children: [
       Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
@@ -376,6 +391,9 @@ class _ConversationImageState extends State<ConversationImage> {
     return Image(
       image: widget.thumbnail && !preview ? ResizeImage(provider, width: 212, height: 156, policy: ResizeImagePolicy.fit) : provider,
       fit: BoxFit.contain,
+      width: widget.thumbnail && !preview ? 106 : null,
+      height: widget.thumbnail && !preview ? 78 : null,
+      gaplessPlayback: true,
       semanticLabel: widget.label,
       frameBuilder: (_, child, frame, synchronous) =>
           synchronous || frame != null ? child : _placeholder(),
@@ -411,7 +429,7 @@ class _ConversationImageState extends State<ConversationImage> {
   @override
   Widget build(BuildContext context) {
     final image = Material(
-        color: const Color(0xfff5f6f2),
+        color: const Color(0xfff5f5f5),
         clipBehavior: Clip.antiAlias,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(

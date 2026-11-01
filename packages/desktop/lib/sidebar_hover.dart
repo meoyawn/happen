@@ -21,7 +21,7 @@ class _SidebarHoverState extends State<SidebarHover> {
   );
 }
 
-/// Codex sidebar rows are exactly 30 logical pixels, including the hit area.
+/// Sidebar rows include a 30 logical pixel hit area.
 class SidebarItem extends StatelessWidget {
   const SidebarItem({super.key, required this.child, this.onTap, this.selected = false,
     this.padding = const EdgeInsets.symmetric(horizontal: 8)});

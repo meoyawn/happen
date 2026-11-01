@@ -115,7 +115,7 @@ void main() {
         sockets.addAll([incoming, outgoing]);
         incoming.listen((raw) {
           final message = jsonObject(jsonDecode(raw as String));
-          if (message['method'] == 'task.start' || message['method'] == 'task.send') sent.add(message);
+          if (message['method'] == 'session.create' || message['method'] == 'session.prompt') sent.add(message);
           outgoing.add(raw);
         }, onDone: outgoing.close);
         outgoing.listen(incoming.add, onDone: incoming.close);
@@ -299,9 +299,7 @@ void main() {
       expect(await desktop.send('hello'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Hello');
       expect(desktop.task!.running, isTrue);
-      final configuration = desktop.task!.events.values.where((event) => event['type'] == 'task.created').toList();
-      expect(configuration, hasLength(1), reason: 'A fresh task needs its context limit before history replay');
-      expect(configuration.single['data']['provider_settings']['context_limit'], 272000);
+      expect(desktop.task!.contextLimit, 272000, reason: 'Admission exposes the frozen context limit before history replay');
       final streamed = conversation(desktop.task!);
       expect(streamed.last.text, 'Hello');
       final cell = streamed.singleWhere((entry) => entry.tool != null).tool!;
@@ -329,9 +327,9 @@ void main() {
       await desktop.chooseDeliveryMode('steer');
       desktop.chooseReasoning('high');
       expect(desktop.reasoning, 'high');
-      final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'input.pending' && event['data']['prompt'] == 'steer this turn');
+      final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.enqueued' && event['data']['item']['text'] == 'steer this turn');
       expect(await desktop.send('steer this turn'), isTrue, reason: desktop.error);
-      pendingTimes['steer this turn'] = DateTime.parse((await steeredPending)['data']['created_at'] as String);
+      pendingTimes['steer this turn'] = DateTime.fromMillisecondsSinceEpoch((await steeredPending)['created'] as int);
       await _until(desktop, () => desktop.task!.pending.length == 1);
       expect(desktop.task!.streamingText, isEmpty, reason: 'Interrupted inference must not leave abandoned partial text visible');
       expect(desktop.task!.retryStatus, isNull, reason: 'Steering is an input change, not stream recovery');
@@ -345,7 +343,7 @@ void main() {
       expect(conversation(desktop.task!).map((e) => e.role), contains('Queued'));
       expect(pendingTimes.keys, unorderedEquals(['queued follow-up', 'steer this turn']));
       expect(pendingTimes.values, everyElement(isNotNull), reason: 'Pending messages show their actual send time');
-      expect(desktop.task!.events.values.where((e) => e['type'] == 'turn.started').length, 1);
+      expect(desktop.task!.messages.values.where((e) => e['type'] == 'idle'), isEmpty);
       desktop.chooseReasoning('medium');
       firstReply.complete();
       await _until(desktop, () => !desktop.task!.running && desktop.task!.pending.isEmpty);
@@ -355,18 +353,18 @@ void main() {
             .map((entry) => entry.text),
         List.filled(2, 'Hello from the server.'),
       );
-      final timeline = desktop.task!.events.values.toList();
-      final starts = timeline.where((e) => e['type'] == 'turn.started').toList();
-      expect(starts.length, 2);
-      final inputs = timeline.where((e) => e['type'] == 'input.committed').toList();
+      final timeline = desktop.task!.messages.values.toList()..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
+      final finishes = timeline.where((e) => e['type'] == 'idle').toList();
+      expect(finishes.length, 2);
+      final inputs = timeline.where((e) => e['type'] == 'user').toList();
       expect(inputs.length, 3);
       final committedMessages = conversation(desktop.task!).where((entry) => pendingTimes.containsKey(entry.text)).toList();
       expect(committedMessages, hasLength(2));
       for (final entry in committedMessages) {
         expect(entry.timestamp, pendingTimes[entry.text], reason: 'Processing a queued message must not change its send time');
       }
-      expect(inputs[1]['turn_id'], starts[0]['turn_id']);
-      expect(inputs[2]['turn_id'], starts[1]['turn_id']);
+      expect(inputs[1]['metadata']['seq'], lessThan(finishes[0]['metadata']['seq'] as int));
+      expect(inputs[2]['metadata']['seq'], greaterThan(finishes[0]['metadata']['seq'] as int));
       expect((requests[2]['input'] as List).where((e) => e['role'] == 'user').last['content'], 'steer this turn');
       expect((requests[2]['input'] as List).any((e) => e['content'] == 'queued follow-up'), isFalse);
       expect((requests.last['input'] as List).where((e) => e['role'] == 'user').last['content'], 'queued follow-up');
@@ -387,15 +385,15 @@ void main() {
       final taskId = desktop.task!.id;
 
       final cached = desktop.task!;
-      final createdId = cached.events.remove(1)!['id'];
-      final eventCount = cached.events.length;
+      final messageCount = cached.messages.length;
+      cached.provider = null;
+      cached.loaded = false;
       desktop.drafts[taskId] = 'Keep this draft';
-      expect(cached.loaded, isTrue);
+      expect(cached.loaded, isFalse);
       await desktop.select(desktop.project!, cached);
-      expect(cached.events[1]?['data']['provider_settings']['context_limit'], 272000,
+      expect(cached.contextLimit, 272000,
         reason: 'A live-only cache missing admission must recover the frozen context limit');
-      expect(cached.events[1]?['id'], createdId);
-      expect(cached.events.length, eventCount + 1, reason: 'History replay must not duplicate live token usage');
+      expect(cached.messages.length, messageCount, reason: 'History replay must not duplicate live messages');
       expect(desktop.drafts[taskId], 'Keep this draft');
       expect(desktop.reasoning, 'medium');
 
@@ -498,7 +496,7 @@ void main() {
       expect(await desktop.send('hold'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Waiting');
       final historyBefore = await desktop.client.request('history.page', {'task_id': taskId, 'limit': 100}) as List;
-      final stopped = desktop.client.events.stream.firstWhere((event) => event['task_id'] == taskId && event['type'] == 'turn.cancelled');
+      final stopped = desktop.client.events.stream.firstWhere((event) => event['data']?['sessionID'] == taskId && event['type'] == 'session.execution.interrupted');
       await desktop.removeProject(desktop.project!);
       await stopped.timeout(const Duration(seconds: 5));
       expect(desktop.projects, isEmpty);
@@ -589,11 +587,11 @@ Future<void> _until(DesktopSession session, bool Function() condition) async {
   final done = Completer<void>();
   void listener() {
     if (done.isCompleted) return;
-    final failures = session.task?.events.values.where(
-      (e) => e['type'] == 'turn.failed',
+    final failures = session.task?.messages.values.where(
+      (e) => e['type'] == 'idle' && e['outcome'] == 'failed',
     );
     if (failures?.isNotEmpty == true) {
-      done.completeError(StateError('${failures!.last['data']['error']}'));
+      done.completeError(StateError('${failures!.last['error']}'));
     } else if (condition()) {
       done.complete();
     }
@@ -605,7 +603,7 @@ Future<void> _until(DesktopSession session, bool Function() condition) async {
       const Duration(seconds: 20),
       onTimeout: () {
         throw StateError(
-          'Desktop did not update: ${session.error}; events: ${session.task?.events.values.map((e) => e['type']).toList()}',
+          'Desktop did not update: ${session.error}; messages: ${session.task?.messages.values.map((e) => e['type']).toList()}',
         );
       },
     );

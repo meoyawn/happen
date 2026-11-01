@@ -1,4 +1,4 @@
-"""Launch or reuse one Happen debug desktop instance."""
+"""Launch or reuse one Happen desktop instance."""
 import argparse
 import fcntl
 import json
@@ -8,12 +8,14 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN = ROOT.parent.parent / '.local/run'
 APP = 'Happen.app'
 BUNDLE_ID = 'com.adelnz.happen'
+SHARED_LOCK = Path(tempfile.gettempdir()) / f'{BUNDLE_ID}.{os.getuid()}.{APP}.launch.lock'
 
 
 def processes(columns):
@@ -26,41 +28,61 @@ def processes(columns):
     return rows
 
 
-def app_pids(mode):
+def app_pids(mode=None):
     found = []
-    debug = ROOT / 'build/macos/Build/Products/Debug' / APP / 'Contents/MacOS/Happen'
+    name = Path(APP).stem
+    debug = ROOT / 'build/macos/Build/Products/Debug' / APP / 'Contents/MacOS' / name
     for pid, command in processes('pid=,comm='):
         executable = Path(command)
-        if executable.name != 'Happen':
+        if executable.parts[-4:] != (APP, 'Contents', 'MacOS', name):
             continue
-        if mode == 'debug' and executable == debug:
+        if mode is None or mode == 'debug' and executable == debug:
             found.append(pid)
         elif mode == 'release' and not any(command.endswith(
-            f'/Build/Products/{configuration}/{APP}/Contents/MacOS/Happen')
+            f'/Build/Products/{configuration}/{APP}/Contents/MacOS/{name}')
             for configuration in ('Debug', 'Profile')):
             found.append(pid)
     return found
 
 
-def flutter_pids(mode):
+def is_happen_checkout(directory):
+    for desktop in (directory, directory / 'packages/desktop'):
+        try:
+            config = (desktop / 'macos/Runner/Configs/AppInfo.xcconfig').read_text()
+        except OSError:
+            continue
+        values = {}
+        for line in config.splitlines():
+            key, separator, value = line.partition('=')
+            if separator:
+                values[key.strip()] = value.strip()
+        if values.get('PRODUCT_NAME') == Path(APP).stem and values.get('PRODUCT_BUNDLE_IDENTIFIER') == BUNDLE_ID:
+            return True
+    return False
+
+
+def flutter_pids(mode=None):
     found = []
     for pid, command in processes('pid=,command='):
         try:
             arguments = shlex.split(command)
         except ValueError:
-            continue
+            # ps does not shell-quote executable paths containing apostrophes.
+            arguments = command.split()
         # Include Flutter's shell entrypoint while it is still starting, before
         # it execs the snapshot. A second launch must also reuse that process.
         entry = next((index for index, argument in enumerate(arguments)
             if Path(argument).name in ('flutter', 'flutter_tools.snapshot', 'flutter_tools.dart')), None)
         if entry is None or 'run' not in arguments[entry + 1:]:
             continue
-        selected = 'release' if '--release' in arguments else 'debug'
-        if selected != mode:
+        selected = next((value for value in ('release', 'profile') if '--' + value in arguments), 'debug')
+        if mode is not None and selected != mode:
             continue
         cwd = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'],
             capture_output=True, text=True)
-        if any(f'n{directory}' in cwd.stdout.splitlines() for directory in (ROOT, ROOT.parent.parent)):
+        directories = [Path(line[1:]) for line in cwd.stdout.splitlines() if line.startswith('n')]
+        if any(directory in (ROOT, ROOT.parent.parent) or mode is None and is_happen_checkout(directory)
+            for directory in directories):
             found.append(pid)
     return found
 
@@ -80,9 +102,14 @@ def main():
     mode = 'debug'
     RUN.mkdir(parents=True, exist_ok=True)
     lock = os.open(RUN / 'launch.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    shared_lock = os.open(SHARED_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
+        # Checkouts must serialize startup before a Happen app process exists.
+        fcntl.flock(shared_lock, fcntl.LOCK_EX)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        apps, supervisors = app_pids(mode), flutter_pids(mode)
+        # An installed release or another checkout's app also occupies the slot.
+        # Keep mode filters available for release installation tooling only.
+        apps, supervisors = app_pids(), flutter_pids()
         if len(apps) > 1 or len(supervisors) > 1:
             print(json.dumps({'error': 'Multiple existing instances; stop extras before continuing',
                 'mode': mode, 'app_pids': apps, 'flutter_pids': supervisors}))
@@ -112,14 +139,15 @@ def main():
             print(json.dumps(value), flush=True)
             os.chdir(ROOT)
             # exec preserves the terminal and exit status. The non-inheritable
-            # lock closes only once Flutter's discoverable entrypoint replaces us.
+            # locks close once Flutter's discoverable entrypoint replaces us.
             os.execv(flutter, [flutter, 'run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'])
     finally:
         os.close(lock)
+        os.close(shared_lock)
 
     # Reusing a session must also keep the Moon task open. Its original terminal
     # retains Flutter's input and output; --status remains a one-shot inspection.
-    existing = set(supervisors or apps)
+    existing = set(supervisors) | set(apps)
     try:
         while any(pid in existing and not state.startswith('Z') for pid, state in processes('pid=,stat=')):
             time.sleep(0.25)

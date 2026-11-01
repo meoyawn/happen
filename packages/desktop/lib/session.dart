@@ -12,12 +12,15 @@ import 'dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance.dart';
+import 'terminal.dart';
+import 'panel_state.dart';
 
 class Project {
   Project(this.checkoutKey, this.id, this.path, [List<DesktopTask>? tasks])
     : tasks = tasks ?? [];
   final String checkoutKey, path;
   String id;
+  String? branch;
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
   String get name => path.split(Platform.pathSeparator).last;
@@ -27,17 +30,24 @@ class DesktopTask {
   DesktopTask(this.id, this.title);
   final String id, title;
   final events = <int, Json>{};
+  final messages = <String, Json>{};
+  final projectionState = <String, dynamic>{};
+  final liveEvents = <Json>[];
+  int through = 0;
   final pending = <String, Json>{};
   bool running = false, loaded = false, loading = false, archived = false, archiving = false;
+  bool loadingEarlier = false;
+  String? historyBefore;
   String streamingText = '';
+  late final liveText = ValueNotifier<String>(streamingText);
   String? retryStatus;
-  Json? transientTerminal;
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
+  num? contextLimit;
   int lastActivity = 0;
   List<ChatEntry>? _conversation;
-  List<Json>? _conversationEvents, _conversationPending;
+  List<Json>? _conversationEvents, _conversationPending, _legacyRecords;
   Object? _conversationState;
 }
 
@@ -61,6 +71,10 @@ class DesktopSession extends ChangeNotifier {
   final AgentClient client;
   final IsolateOwner database;
   final projects = <Project>[];
+  final terminals = DesktopTerminals();
+  final panelLayouts = <String, SessionPanelState>{};
+  final _changedPanelLayouts = <String>{};
+  bool _panelsLoaded = false;
   final drafts = <String, String>{};
   late final fileDrafts = <String, List<ComposerFileReference>>{};
   final String attachmentDirectory;
@@ -79,8 +93,14 @@ class DesktopSession extends ChangeNotifier {
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
-  ConversationStyle conversationStyle = ConversationStyle.harness;
+  OpenCodeLayout openCodeLayout = OpenCodeLayout.top;
+  bool sidebarOpen = true, inboxWorkingExpanded = true;
+  bool viewingConversation = true;
+  int? inboxSince;
+  final openTaskIds = <String>[];
+  final viewedTasks = <String, int>{};
   double sidebarWidth = 248;
+  double openCodeSidebarWidth = 276;
   final collapsedSidebarSections = <String>{};
   final pinnedTaskIds = <String>[];
   final pinnedProjectKeys = <String>[];
@@ -164,17 +184,189 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> chooseConversationStyle(ConversationStyle style) async {
-    await _setting('conversation_view', style == ConversationStyle.harness ? 'codex' : 'opencode');
-    conversationStyle = style;
+  Future<void> chooseSidebarWidth(double width) async {
+    if (!width.isFinite || width <= 0) throw ArgumentError('Invalid sidebar width');
+    openCodeSidebarWidth = width;
+    notifyListeners();
+    await _setting('opencode_sidebar_width', width.toString());
+  }
+
+  Future<void> chooseSidebarOpen(bool open) async {
+    sidebarOpen = open;
+    notifyListeners();
+    await _setting('sidebar_open', open.toString());
+  }
+
+  SessionPanelState panelsFor(DesktopTask target) => panelLayouts.putIfAbsent(target.id, SessionPanelState.new);
+
+  Future<void> loadPanelLayouts(CancellationToken cancellation) async {
+    if (_panelsLoaded) return;
+    final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: cancellation));
+    try {
+      final decoded = jsonDecode(saved['settings']?['session_panels'] as String? ?? '{}');
+      if (decoded is Map) {
+        for (final entry in jsonObject(decoded).entries) {
+          if (entry.value is Map && !_changedPanelLayouts.contains(entry.key)) {
+            panelLayouts[entry.key] = readSessionPanels(jsonObject(entry.value));
+          }
+        }
+      }
+    } on FormatException { /* Optional presentation preferences. */ }
+    _panelsLoaded = true;
     notifyListeners();
   }
 
-  Future<void> chooseSidebarWidth(double width) async {
-    if (!width.isFinite || width <= 0) throw ArgumentError('Invalid sidebar width');
-    sidebarWidth = width;
+  void _savePanels(DesktopTask target) {
+    _changedPanelLayouts.add(target.id);
     notifyListeners();
-    await _setting('sidebar_width', width.toString());
+    unawaited(loadPanelLayouts(_lifetime).then((_) {
+      _saveNavigation('session_panels', jsonEncode({
+        for (final entry in panelLayouts.entries) entry.key: writeSessionPanels(entry.value),
+      }));
+    }).catchError((Object failure) {
+      if (!_lifetime.isCancelled) showError(failure);
+    }));
+  }
+
+  void toggleSidePanel(DesktopTask target) {
+    final state = panelsFor(target);
+    state.opened = !state.opened;
+    if (state.opened && state.tabs.isEmpty) {
+      state.tabs.add('new:${newId()}');
+      state.active = state.tabs.single;
+    }
+    _savePanels(target);
+  }
+
+  void openSessionPanel(DesktopTask target, String tab, {bool toggle = false}) {
+    final state = panelsFor(target);
+    if (toggle && state.opened && state.active == tab) {
+      state.opened = false;
+    } else {
+      final launcher = state.active;
+      if (launcher?.startsWith('new:') == true) state.tabs.remove(launcher);
+      if (!state.tabs.contains(tab)) state.tabs.insert(0, tab);
+      state.closed.remove(tab);
+      state.active = tab;
+      state.opened = true;
+    }
+    _savePanels(target);
+  }
+
+  void newSessionPanelTab(DesktopTask target) {
+    final state = panelsFor(target);
+    final tab = 'new:${newId()}';
+    state.tabs.add(tab);
+    state.active = tab;
+    state.opened = true;
+    _savePanels(target);
+  }
+
+  void selectSessionPanel(DesktopTask target, String tab) {
+    final state = panelsFor(target);
+    if (!state.tabs.contains(tab)) return;
+    state.active = tab;
+    _savePanels(target);
+  }
+
+  void closeSessionPanel(DesktopTask target, String tab) {
+    final state = panelsFor(target);
+    final index = state.tabs.indexOf(tab);
+    if (index < 0) return;
+    state.tabs.removeAt(index);
+    if (!tab.startsWith('new:')) { state.closed..remove(tab)..insert(0, tab); }
+    if (state.active == tab) state.active = state.tabs.isEmpty ? null : state.tabs[index.clamp(0, state.tabs.length - 1)];
+    if (state.tabs.isEmpty) state.opened = false;
+    _savePanels(target);
+  }
+
+  void resizeSessionPanel(DesktopTask target, double width) {
+    if (!width.isFinite) return;
+    panelsFor(target).sessionWidth = width.clamp(400, double.infinity);
+    _savePanels(target);
+  }
+
+  Future<void> chooseOpenCodeLayout(OpenCodeLayout layout) async {
+    if (layout == OpenCodeLayout.inbox && inboxSince == null) {
+      inboxSince = DateTime.now().millisecondsSinceEpoch;
+      _saveNavigation('inbox_since', inboxSince.toString());
+    }
+    openCodeLayout = layout;
+    notifyListeners();
+    await _setting('opencode_layout', layout.name);
+    await loadNavigationTasks();
+  }
+
+  Future<void> loadNavigationTasks() async {
+    if (task case final target?) _rememberTab(target);
+    final targets = openCodeLayout == OpenCodeLayout.inbox
+        ? projects.expand((project) => project.tasks).toList()
+        : openTasks.map((entry) => entry.$2).toList();
+    for (var index = 0; index < targets.length; index += 4) {
+      _lifetime.throwIfCancelled();
+      await Future.wait([
+        for (final target in targets.skip(index).take(4))
+          if (!target.loaded && !target.loading) loadHistory(target),
+      ]);
+    }
+  }
+
+  Future<void> chooseInboxWorkingExpanded(bool expanded) async {
+    inboxWorkingExpanded = expanded;
+    notifyListeners();
+    await _setting('inbox_working_expanded', expanded.toString());
+  }
+
+  List<(Project, DesktopTask)> get openTasks => [
+    for (final id in openTaskIds)
+      for (final project in projects)
+        if (!project.removing)
+          for (final task in project.tasks)
+            if (task.id == id && !task.archived) (project, task),
+  ];
+
+  void _rememberTab(DesktopTask target) {
+    if (target.archived || openTaskIds.contains(target.id)) { return; }
+    openTaskIds.add(target.id);
+    _saveNavigation('open_tabs', jsonEncode(openTaskIds));
+  }
+
+  void _saveNavigation(String key, String value) {
+    unawaited(_setting(key, value).catchError((Object failure) {
+      if (failure is! CancelledException) showError(failure);
+    }));
+  }
+
+  void _markViewed(DesktopTask target) {
+    if (!viewingConversation) return;
+    if ((viewedTasks[target.id] ?? -1) >= target.lastActivity) return;
+    viewedTasks[target.id] = target.lastActivity;
+    _saveNavigation('viewed_tasks', jsonEncode(viewedTasks));
+  }
+
+  Future<void> reorderTabs(List<String> ids) async {
+    if (ids.length != openTaskIds.length || ids.toSet().length != ids.length ||
+        !ids.every(openTaskIds.contains)) return;
+    openTaskIds..clear()..addAll(ids);
+    notifyListeners();
+    await _setting('open_tabs', jsonEncode(openTaskIds));
+  }
+
+  Future<void> closeTab(DesktopTask target) async {
+    final index = openTaskIds.indexOf(target.id);
+    if (index == -1) return;
+    openTaskIds.removeAt(index);
+    final tabs = openTasks;
+    if (task == target) {
+      if (tabs.isNotEmpty) {
+        final next = tabs[index.clamp(0, tabs.length - 1)];
+        await select(next.$1, next.$2);
+      } else if (project case final owner?) {
+        await select(owner);
+      }
+    }
+    notifyListeners();
+    await _setting('open_tabs', jsonEncode(openTaskIds));
   }
 
   Future<void> chooseSidebarSection(String section, bool collapsed) async {
@@ -342,6 +534,18 @@ class DesktopSession extends ChangeNotifier {
 
   Future<Object?> _request(String method, [Json params = const {}]) {
     _lifetime.throwIfCancelled();
+    method = const {
+      'task.start': 'session.create', 'task.send': 'session.prompt',
+      'task.cancel': 'session.interrupt', 'task.compact': 'session.compact',
+      'task.archive': 'session.archive', 'task.unarchive': 'session.unarchive',
+      'task.fork': 'session.fork',
+    }[method] ?? method;
+    if (method.startsWith('session.') && params['task_id'] != null) {
+      params = {...params, 'sessionID': params['task_id']}..remove('task_id');
+    }
+    if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+      return client.sessionRead(method, params, cancellation: _lifetime);
+    }
     return client.request(method, params).asCancellable(_lifetime);
   }
 
@@ -363,9 +567,23 @@ class DesktopSession extends ChangeNotifier {
     }
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
-    conversationStyle = settings['conversation_view'] == 'opencode' ? ConversationStyle.opencode : ConversationStyle.harness;
+    openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == settings['opencode_layout']).firstOrNull ?? OpenCodeLayout.top;
+    sidebarOpen = settings['sidebar_open'] != 'false';
+    inboxWorkingExpanded = settings['inbox_working_expanded'] != 'false';
+    inboxSince = int.tryParse(settings['inbox_since'] as String? ?? '');
+    try {
+      final viewed = jsonDecode(settings['viewed_tasks'] as String? ?? '{}');
+      if (viewed is Map) {
+        viewedTasks.addAll({for (final entry in viewed.entries)
+          if (entry.key is String && entry.value is int) entry.key as String: entry.value as int});
+      }
+    } on FormatException {
+      // Read markers are optional presentation state.
+    }
     final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
     sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
+    final savedOpenCodeWidth = double.tryParse(settings['opencode_sidebar_width'] as String? ?? '');
+    openCodeSidebarWidth = savedOpenCodeWidth != null && savedOpenCodeWidth.isFinite && savedOpenCodeWidth > 0 ? savedOpenCodeWidth : 276;
     List<String> savedIds(String key) {
       final value = settings[key];
       if (value is! String) return const [];
@@ -400,9 +618,23 @@ class DesktopSession extends ChangeNotifier {
       );
     }
     project = projects.firstOrNull;
+    final visible = projects.expand((project) => project.tasks).where((task) => !task.archived).map((task) => task.id).toSet();
+    openTaskIds.addAll(savedIds('open_tabs').where(visible.contains));
+    final active = settings['active_tab'];
+    for (final (owner, target) in openTasks) {
+      if (target.id != active) continue;
+      project = owner;
+      task = target;
+      break;
+    }
     await refreshProviders();
     await _checkProjectAvailability();
     await refreshProjects();
+    if (openCodeLayout == OpenCodeLayout.inbox && inboxSince == null) {
+      inboxSince = DateTime.now().millisecondsSinceEpoch;
+      await _setting('inbox_since', inboxSince.toString());
+    }
+    await loadNavigationTasks();
     notifyListeners();
   }
 
@@ -436,7 +668,14 @@ class DesktopSession extends ChangeNotifier {
   Future<void> _refreshIdentity(Project target) async {
     // An unavailable checkout must not silently erase its last known remote.
     if (!await Directory(target.path).exists()) return;
-    final id = await projectIdentity(target.path, _lifetime);
+    final identity = await Future.wait<String?>([
+      projectIdentity(target.path, _lifetime), projectBranch(target.path, _lifetime),
+    ]);
+    if (target.branch != identity[1]) {
+      target.branch = identity[1];
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+    final id = identity[0]!;
     if (id == target.id) return;
     await callIsolate(database.port, 'project.identify', {
       'checkout_key': target.checkoutKey,
@@ -471,8 +710,10 @@ class DesktopSession extends ChangeNotifier {
       throw StateError('Wait for the current action to finish before removing this project');
     }
     target.removing = true;
+    final closingTerminals = terminals.removeProject(target.checkoutKey);
     notifyListeners();
     try {
+      await closingTerminals;
       if (project == target) await _dictation?.cancel();
       for (final task in target.tasks.where((task) => task.running).toList()) {
         await _request('task.cancel', {'task_id': task.id});
@@ -481,6 +722,11 @@ class DesktopSession extends ChangeNotifier {
         'checkout_key': target.checkoutKey,
       }, cancellation: _lifetime);
       projects.remove(target);
+      final removedIds = target.tasks.map((task) => task.id).toSet();
+      if (openTaskIds.any(removedIds.contains)) {
+        openTaskIds.removeWhere(removedIds.contains);
+        _saveNavigation('open_tabs', jsonEncode(openTaskIds));
+      }
       if (_projectModels.remove(target.checkoutKey) != null) _saveProjectModels();
       if (project == target) {
         project = projects.where((project) => project.available && !project.removing).firstOrNull ?? projects.firstOrNull;
@@ -506,62 +752,98 @@ class DesktopSession extends ChangeNotifier {
     project = nextProject;
     task = nextTask;
     error = null;
-    if (nextTask != null) conversation(nextTask);
-    notifyListeners();
-    await _refreshIdentity(nextProject);
-    // Live events can leave a cached task without its initial configuration.
-    // Recover that prefix before treating the transcript as fully loaded.
-    if (nextTask != null && !nextTask.loading &&
-        (!nextTask.loaded || nextTask.events.isNotEmpty && !nextTask.events.containsKey(1))) {
-      await loadHistory(nextTask);
+    if (nextTask != null) {
+      _rememberTab(nextTask);
+      _markViewed(nextTask);
+      conversation(nextTask);
     }
+    _saveNavigation('active_tab', nextTask?.id ?? '');
+    notifyListeners();
+    // Live events can leave a cached task without its initial configuration.
+    // History and checkout identity are independent reads.
+    await Future.wait([
+      if (nextTask != null && !nextTask.loading &&
+          (!nextTask.loaded || nextTask.events.isNotEmpty && nextTask.provider == null))
+        loadHistory(nextTask),
+      _refreshIdentity(nextProject),
+    ]);
   }
 
   Future<void> loadHistory(DesktopTask target) async {
+    if (target.loading) return;
     target.loading = true;
     target.loadError = null;
     notifyListeners();
     try {
-      // Subscribe before paging, then merge by durable sequence number. A live
-      // event may also be in a page; it must appear only once in the transcript.
-      final status = jsonObject(
-        await _request('task.subscribe', {'task_id': target.id}),
-      );
-      target.running = status['running'] == true;
+      target.liveEvents.clear();
+      final page = jsonObject(await _request('session.message.list', {'sessionID': target.id, 'limit': 100}));
+      target.running = page['running'] == true;
       target.pending
         ..clear()
-        ..addEntries(
-          (status['pending'] as List? ?? []).map((raw) {
-            final message = jsonObject(raw);
-            return MapEntry(message['id'] as String, message);
-          }),
-        );
-      var after = 0;
-      while (true) {
-        final page = (await _request('history.page', {
-          'task_id': target.id,
-          'after': after,
-          'limit': 100,
-        }) as List).map(jsonObject).toList();
-        for (final event in page) {
-          target.events[event['seq'] as int] = event;
+        ..addEntries((page['pending'] as List? ?? []).map((raw) {
+          final item = jsonObject(raw);
+          return MapEntry('msg_${item['id']}', item);
+        }));
+      final config = jsonObject(page['configuration'] ?? {});
+      target.provider = config['provider'] as String?;
+      target.model = config['model'] as String?;
+      target.reasoning = page['reasoning'] as String? ?? config['provider_settings']?['reasoning'] as String?;
+      target.reasoningUpdates = config['reasoning_updates'] == true;
+      target.contextLimit = config['provider_settings']?['context_limit'] as num?;
+      target.archived = page['archived'] == true;
+      if (target.archived) await terminals.removeTask(target.id);
+      target.through = page['through'] as int;
+      target.messages.clear();
+      target.events.clear();
+      target.projectionState
+        ..clear()
+        ..addAll(jsonObject(page['state'] ?? {}));
+      _mergeHistory(target, page);
+      final live = target.liveEvents.toList();
+      target.liveEvents.clear();
+      target.streamingText = '';
+      for (final event in live) {
+        if (event['durable'] == null || (event['durable']['seq'] as int) > target.through) {
+          _applySessionEvent(target, event);
         }
-        if (page.isEmpty) break;
-        after = page.last['seq'] as int;
       }
       target.loaded = true;
-      final ordered = target.events.values.toList()
-        ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-      for (final event in ordered) {
-        _settings(target, event);
-      }
-      _observeActivity(target, ordered);
+      if (task == target) _markViewed(target);
     } on CancelledException {
       rethrow;
     } catch (failure) {
       target.loadError = failure.toString();
     } finally {
       target.loading = false;
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+  }
+
+  void _mergeHistory(DesktopTask target, Json page) {
+    for (final raw in page['data'] as List) {
+      final message = jsonObject(raw);
+      target.messages.putIfAbsent(message['id'] as String, () => message);
+    }
+    target.historyBefore = page['cursor']?['next'] as String?;
+  }
+
+  Future<void> loadEarlier(DesktopTask target) async {
+    final before = target.historyBefore;
+    if (before == null || target.loadingEarlier || target.loading) return;
+    target.loadingEarlier = true;
+    target.loadError = null;
+    notifyListeners();
+    try {
+      final page = jsonObject(await _request('session.message.list', {
+        'sessionID': target.id, 'cursor': before, 'limit': 100,
+      }));
+      _mergeHistory(target, page);
+    } on CancelledException {
+      rethrow;
+    } catch (failure) {
+      target.loadError = failure.toString();
+    } finally {
+      target.loadingEarlier = false;
       if (!_lifetime.isCancelled) notifyListeners();
     }
   }
@@ -642,7 +924,7 @@ class DesktopSession extends ChangeNotifier {
         );
         final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
         final created = DesktopTask(
-          requiredString(reply, 'task_id'),
+          requiredString(reply, 'sessionID'),
           title.length > 72 ? '${title.substring(0, 72)}…' : title,
         )..running = true
           ..lastActivity = DateTime.now().millisecondsSinceEpoch;
@@ -652,9 +934,18 @@ class DesktopSession extends ChangeNotifier {
         created.reasoning = effort;
         created.reasoningUpdates = modelInfo?['reasoning_updates'] == true;
         owner.tasks.insert(0, created);
-        if (project == owner && task == null) task = created;
+        _rememberTab(created);
+        terminals.adoptDraft(owner.checkoutKey, created.id);
+        if (project == owner && task == null) {
+          task = created;
+          _saveNavigation('active_tab', created.id);
+        }
         for (final event in _earlyEvents) {
-          if (event['task_id'] == created.id) _applyEvent(created, event);
+          if ((event['data']?['sessionID'] ?? event['task_id']) == created.id) _applyEvent(created, event);
+        }
+        if (created.archived) {
+          await terminals.removeTask(created.id);
+          if (task == created) task = null;
         }
         try {
           await callIsolate(database.port, 'task.add', {
@@ -711,10 +1002,13 @@ class DesktopSession extends ChangeNotifier {
     final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
     if (target.archiving || owner == null || owner.removing) return;
     target.archiving = true;
+    final closingTerminals = archived ? terminals.removeTask(target.id) : Future<void>.value();
     notifyListeners();
     try {
+      await closingTerminals;
       await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
       target.archived = archived;
+      if (archived && openTaskIds.remove(target.id)) _saveNavigation('open_tabs', jsonEncode(openTaskIds));
       if (archived && task == target) task = null;
       await _saveArchived(target);
     } finally {
@@ -736,6 +1030,10 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (event['type'] == 'session.archived' || event['type'] == 'task.archived') {
+      final id = event['data']?['sessionID'] ?? event['task_id'];
+      if (id is String) unawaited(terminals.removeTask(id));
+    }
     if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
       unawaited(_dictation?.cancel());
       return;
@@ -752,21 +1050,24 @@ class DesktopSession extends ChangeNotifier {
     }
     final target = projects
         .expand((p) => p.tasks)
-        .where((t) => t.id == event['task_id'])
+        .where((t) => t.id == (event['data']?['sessionID'] ?? event['task_id']))
         .firstOrNull;
     if (target == null) {
       if (submitting && _earlyEvents.length < 256) _earlyEvents.add(event);
       return;
     }
+    final appendingText = event['type'] == 'session.text.delta' && target.streamingText.isNotEmpty;
     _applyEvent(target, event);
     _observeActivity(target, [event]);
-    if (event['type'] == 'task.archived' || event['type'] == 'task.unarchived') {
+    if (task == target) _markViewed(target);
+    if ({'session.archived', 'session.unarchived', 'task.archived', 'task.unarchived'}.contains(event['type'])) {
+      if (target.archived && openTaskIds.remove(target.id)) _saveNavigation('open_tabs', jsonEncode(openTaskIds));
       if (target.archived && task == target) task = null;
       unawaited(_saveArchived(target).catchError((Object failure) {
         if (failure is! CancelledException) showError(failure);
       }));
     }
-    notifyListeners();
+    if (!appendingText) notifyListeners();
   }
 
   void _observeActivity(DesktopTask target, Iterable<Json> events) {
@@ -792,76 +1093,86 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _applyEvent(DesktopTask target, Json event) {
-    _settings(target, event);
-    final sequence = event['seq'] as int?;
-    if (sequence != null) target.events[sequence] = event;
-    if ({'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) {
-      target.transientTerminal = sequence == null ? event : null;
+    if (event['type'].toString().startsWith('session.')) {
+      if (target.loading) target.liveEvents.add(event);
+      _applySessionEvent(target, event);
+      return;
     }
+    final state = jsonObject(target.projectionState['execution'] ?? {});
+    for (final native in sessionEvents(target.id, event, state)) { _applySessionEvent(target, native); }
+    target.projectionState['execution'] = state;
+  }
+
+  void _applySessionEvent(DesktopTask target, Json event) {
+    final data = jsonObject(event['data'] ?? {});
+    final sequence = event['durable']?['seq'] as int?;
+    if (sequence != null && sequence <= target.through) return;
+    if (sequence != null) target.through = sequence;
+    applySessionEvent(target.messages, event, target.projectionState);
     switch (event['type']) {
-      case 'input.pending':
-        final message = jsonObject(event['data']);
-        target.pending[message['id'] as String] = message;
-      case 'input.committed':
-        target.pending.remove(event['data']?['message_id']);
-        if (event['data']?['delivery'] == 'steer') {
-          target.streamingText = '';
-          target.retryStatus = null;
-        }
-      case 'input.discarded':
-        for (final id in event['data']['ids'] as List) {
-          target.pending.remove(id);
-        }
-      case 'turn.started':
+      case 'session.created':
+        target.provider = data['model']?['providerID'] as String?;
+        target.model = data['model']?['id'] as String?;
+        target.contextLimit = data['metadata']?['providerSettings']?['context_limit'] as num?;
+        target.reasoning = data['metadata']?['providerSettings']?['reasoning'] as String?;
+        target.reasoningUpdates = data['metadata']?['reasoningUpdates'] == true;
+      case 'session.execution.started':
+      case 'session.step.started':
         target.running = true;
-        target.transientTerminal = null;
-        target.retryStatus = null;
-      case 'model.retrying':
-        target.streamingText = '';
-        target.retryStatus = 'Reconnecting… ${event['attempt']}/${event['max_retries']}';
-      case 'model.connected':
-        target.retryStatus = null;
-      case 'text.delta':
-        target.streamingText += event['delta'] as String;
-        target.retryStatus = null;
-      case 'compaction.started':
-      case 'context.compacted':
-      case 'model.completed':
         target.streamingText = '';
         target.retryStatus = null;
-      case 'turn.completed':
-      case 'turn.cancelled':
-      case 'turn.failed':
+      case 'session.text.delta':
+        final message = target.messages[data['assistantMessageID']];
+        if (message?['time']?['streamed'] != null) break;
+        final parts = message?['content'] as List? ?? [];
+        final ordinal = data['ordinal'] as int;
+        target.streamingText = ordinal < parts.length ? parts[ordinal]['text'] as String? ?? '' : '';
+        target.retryStatus = null;
+      case 'session.text.ended':
+      case 'session.step.streamed':
+        target.streamingText = '';
+        target.retryStatus = null;
+      case 'session.status':
+        target.running = data['status']['type'] != 'idle';
+        target.retryStatus = data['status']['type'] == 'retry' ? data['status']['message'] as String? : null;
+        if (target.retryStatus != null) target.streamingText = '';
+      case 'session.model.selected':
+        target.reasoning = data['model']['variant'] as String?;
+        if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
+      case 'session.inbox.enqueued':
+        final item = jsonObject(data['item']);
+        target.pending[data['inboxID'] as String] = {
+          'prompt': item['text'] ?? '', 'delivery': item['delivery'], 'attachments': item['files'] ?? [],
+          'created_at': DateTime.fromMillisecondsSinceEpoch(event['created'] as int).toIso8601String(),
+        };
+      case 'session.inbox.delivered':
+        target.pending.remove(data['inboxID']);
+        target.streamingText = '';
+      case 'session.inbox.cancelled':
+        for (final id in data['ids'] as List? ?? [data['inboxID']]) { target.pending.remove(id); }
+      case 'session.archived':
+        target.archived = true;
+      case 'session.unarchived':
+        target.archived = false;
+      case 'session.execution.succeeded':
+      case 'session.execution.failed':
+      case 'session.execution.interrupted':
         target.running = false;
         target.streamingText = '';
         target.retryStatus = null;
-        if (sequence == null && event['type'] == 'turn.failed') {
-          error = event['data']?['error'] as String? ?? 'Task failed to start';
-        }
     }
-  }
-
-  void _settings(DesktopTask target, Json event) {
-    final data = jsonObject(event['data'] ?? {});
-    if (event['type'] == 'task.archived') target.archived = true;
-    if ({'task.unarchived', 'task.imported', 'task.forked'}.contains(event['type'])) target.archived = false;
-    if (event['type'] == 'task.created' ||
-        event['type'] == 'task.configuration_migrated') {
-      target.provider = data['provider'] as String? ?? 'openai';
-      target.model = data['model'] as String?;
-      target.reasoning =
-          data['provider_settings']?['reasoning'] as String? ??
-          data['reasoning'] as String?;
-      target.reasoningUpdates = data['reasoning_updates'] == true;
-    } else if (event['type'] == 'configuration.updated') {
-      target.reasoning =
-          data['effort'] as String? ??
-          data['item']?['settings']?['reasoning'] as String?;
-      if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
+    target.liveText.value = target.streamingText;
+    final activity = event['created'] as int?;
+    if (activity != null && activity > target.lastActivity &&
+        {'session.inbox.delivered', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'}.contains(event['type'])) {
+      target.lastActivity = activity;
+      unawaited(_saveActivity(target).catchError((Object failure) { if (failure is! CancelledException) showError(failure); }));
     }
   }
 
   Future<void> close() async {
+    await terminals.close();
+    terminals.dispose();
     _submission?.cancel();
     await _dictation?.cancel();
     _dictation?.dispose();
@@ -880,15 +1191,17 @@ class DesktopSession extends ChangeNotifier {
 }
 
 class ToolActivity {
-  ToolActivity(this.id, this.name, Object? input, {this.startedAt, bool formatInput = false})
-    : _rawInput = input, _input = formatInput ? null : input as String;
+  ToolActivity(this.id, this.name, Object? input, {this.startedAt, this.preview, bool formatInput = false})
+    : _rawInput = input, _input = formatInput || input is! String ? null : input;
   final String id, name;
+  final String? preview;
   final Object? _rawInput;
   String? _input, _output;
   Object? _rawOutput;
   bool _hasOutput = false;
   // Collapsed tools should not parse and re-encode their potentially large JSON.
   String get input => _input ??= _pretty(_rawInput);
+  Object? get rawInput => _rawInput;
   String? get output => _hasOutput ? _output ??= _pretty(_rawOutput) : null;
   Object? get rawOutput => _rawOutput;
   set output(Object? value) {
@@ -903,9 +1216,12 @@ class ToolActivity {
 }
 
 /// A visible transcript row. Provider replay state never enters this projection.
+typedef ChatResponse = ({String? provider, String? model, String? reasoning, Duration? duration, bool interrupted});
+
 class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
     this.tool, this.compaction, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
+    this.response,
   });
   final String id, role, text;
   final ToolActivity? tool;
@@ -913,6 +1229,7 @@ class ChatEntry {
   final DateTime? timestamp, startedAt;
   final bool streaming;
   final List<Json> attachments;
+  final ChatResponse? response;
 }
 
 class CompactionActivity {
@@ -932,188 +1249,108 @@ bool _sameRecords(Iterable<Json> records, List<Json>? previous) {
 }
 
 List<ChatEntry> conversation(DesktopTask task) {
-  final state = (task.running, task.streamingText, task.transientTerminal);
-  // Durable records are immutable. Compare identities so replay/replacement of
-  // an existing sequence invalidates the cache as well as newly appended events.
+  if (task.events.isNotEmpty && !_sameRecords(task.events.values, task._legacyRecords)) {
+    task._legacyRecords = task.events.values.toList(growable: false);
+    task.messages.clear();
+    final state = <String, dynamic>{}, inbox = <String, dynamic>{};
+    final records = task.events.values.toList()..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+    for (final record in records) {
+      for (final event in sessionEvents(task.id, record, state)) { applySessionEvent(task.messages, event, inbox); }
+    }
+  }
+  final state = (task.running, task.streamingText);
   if (task._conversation != null && task._conversationState == state &&
-      _sameRecords(task.events.values, task._conversationEvents) &&
+      _sameRecords(task.messages.values, task._conversationEvents) &&
       _sameRecords(task.pending.values, task._conversationPending)) return task._conversation!;
   final result = <ChatEntry>[];
-  final events = task.events.values.toList()
-    ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-  if (task.transientTerminal case final terminal?) events.add(terminal);
+  final messages = task.messages.values.toList()..sort((a, b) =>
+    (a['metadata']?['seq'] as int? ?? 0).compareTo(b['metadata']?['seq'] as int? ?? 0));
+  DateTime? at(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value) : null;
   final tools = <String, ToolActivity>{};
-  ToolActivity? activeCell;
-  CompactionActivity? activeCompaction;
-  DateTime? turnStartedAt;
-  String turnId = task.id;
-  void finishTools(String status, [DateTime? at]) {
-    for (final tool in tools.values) {
-      if (tool.status == 'running') {
-        tool.status = status;
-        tool.endedAt = at;
-      }
+  DateTime? started;
+  String? activeAssistant;
+  var turnFirstRow = 0;
+  var liveTextPart = false;
+  for (final message in messages) {
+    final id = message['id'] as String, created = at(message['time']['created']);
+    switch (message['type']) {
+      case 'user':
+        started ??= created;
+        result.add(ChatEntry(id, 'You', message['text'] as String? ?? '',
+          attachments: (message['files'] as List? ?? []).map(jsonObject).toList(), timestamp: created));
+      case 'assistant':
+        started ??= created;
+        activeAssistant = id;
+        var ordinal = 0;
+        for (final part in (message['content'] as List? ?? []).map(jsonObject)) {
+          final partID = '$id:${ordinal++}';
+          if (part['type'] == 'tool') {
+            final status = jsonObject(part['state']);
+            final tool = ToolActivity(part['id'] as String, part['name'] as String,
+              status['input'], formatInput: true, startedAt: at(part['time']?['created']));
+            tool.status = switch (status['status']) {'completed' => 'done', 'error' => 'failed', _ => task.running ? 'running' : 'interrupted'};
+            tool.endedAt = at(part['time']?['completed']);
+            if (status['content'] is List) {
+              final content = status['content'] as List;
+              tool.output = content.length == 1 && content.first['type'] == 'text' ? content.first['text'] : {'content': content};
+            } else if (status['error'] != null) { tool.output = status['error']; }
+            tools[tool.id] = tool;
+            final parent = tools[part['native']?['parentCallID']];
+            if (parent != null) { parent.children.add(tool); }
+            else { result.add(ChatEntry(partID, 'Tool', tool.name, tool: tool, timestamp: created)); }
+            final images = (status['content'] as List? ?? []).where((part) => part['type'] == 'image').map(jsonObject).toList();
+            if (images.isNotEmpty) result.add(ChatEntry('$partID:images', 'Image', '', attachments: images, timestamp: created));
+          } else if (part['type'] == 'text' || part['type'] == 'reasoning') {
+            if ((part['text'] as String? ?? '').isEmpty) continue;
+            final streaming = task.running && part['type'] == 'text' && message['time']?['streamed'] == null;
+            liveTextPart |= streaming;
+            result.add(ChatEntry(partID, part['type'] == 'text' ? 'Happen' : 'Reasoning', part['text'] as String,
+              timestamp: created, streaming: streaming));
+          }
+        }
+      case 'compaction':
+        final activity = CompactionActivity(startedAt: created)
+          ..status = switch (message['status']) {'completed' => 'done',
+            'failed' => switch (message['outcome']) {'interrupted' => 'stopped', 'succeeded' => 'interrupted', _ => 'failed'},
+            _ => task.running ? 'running' : 'interrupted'}
+          ..endedAt = at(message['time']?['completed'])
+          ..summary = message['summary'] as String? ?? '';
+        result.add(ChatEntry(id, 'Compaction', '', compaction: activity));
+      case 'idle':
+        final interrupted = message['outcome'] == 'interrupted';
+        final index = result.lastIndexWhere((entry) => entry.role == 'Happen');
+        if (index >= turnFirstRow) {
+          final entry = result[index];
+          final model = messages.where((m) => m['type'] == 'assistant' && m['id'] == activeAssistant).firstOrNull?['model'];
+          result[index] = ChatEntry(entry.id, entry.role, entry.text, timestamp: entry.timestamp,
+            response: (provider: model?['providerID'] as String?, model: model?['id'] as String?,
+              reasoning: model?['variant'] as String?, duration: created != null && started != null ? created.difference(started) : null,
+              interrupted: interrupted));
+        }
+        result.add(ChatEntry(id, message['outcome'] == 'failed' ? 'Error' : 'Status',
+          message['outcome'] == 'failed' ? (message['error']?['message'] as String? ?? 'Task failed') : interrupted ? 'Stopped' : 'Completed',
+          timestamp: created, startedAt: started));
+        started = null;
+        turnFirstRow = result.length;
+        activeAssistant = null;
     }
   }
-  void finishCompaction(String status, [DateTime? at]) {
-    final compaction = activeCompaction;
-    if (compaction == null) return;
-    compaction.status = status;
-    compaction.endedAt = at;
-    activeCompaction = null;
+  if (task.streamingText.isNotEmpty && !liveTextPart && !result.any((entry) => entry.compaction?.status == 'running')) {
+    result.add(ChatEntry('${activeAssistant ?? task.id}:streaming', 'Happen', task.streamingText, streaming: true));
   }
-
-  for (final event in events) {
-    final data = jsonObject(event['data']);
-    final at = DateTime.tryParse(event['created_at'] as String? ?? '');
-    final id = event['id'] as String? ?? '${task.id}:${event['seq']}';
-    switch (event['type']) {
-      case 'turn.started':
-        finishCompaction('interrupted', at);
-        turnStartedAt = at;
-        turnId = id;
-      case 'input.committed':
-        final item = jsonObject(data['item']);
-        if (item['role'] == 'user') {
-          result.add(ChatEntry(id, 'You', _text(item),
-            attachments: (item['content'] as List? ?? []).where((part) => part['type'] == 'image' || part['type'] == 'file').map(jsonObject).toList(),
-            timestamp: DateTime.tryParse(data['sent_at'] as String? ?? '') ?? at));
-        }
-      case 'model.completed':
-        var index = 0;
-        for (final raw in data['output'] as List? ?? []) {
-          final item = jsonObject(raw);
-          // Group adjacent text parts, preserving reasoning/text order. Never
-          // expose opaque native reasoning or tool-call serialization as prose.
-          String? role;
-          final text = StringBuffer();
-          void flush() {
-            if (text.isEmpty) return;
-            result.add(ChatEntry('$id:${index++}', role!, text.toString(), timestamp: at));
-            text.clear();
-          }
-          for (final part in (item['content'] as List? ?? []).map(jsonObject)) {
-            final nextRole = switch (part['type']) {
-              'text' => 'Happen',
-              'reasoning' => 'Reasoning',
-              _ => null,
-            };
-            if (nextRole == null || part['text'] is! String || (part['text'] as String).isEmpty) continue;
-            if (role != nextRole) flush();
-            role = nextRole;
-            if (text.isNotEmpty) text.writeln();
-            text.write(part['text']);
-          }
-          flush();
-        }
-      case 'tool.started':
-        final name = data['name'] as String;
-        final namespace = data['namespace'] as String?;
-        final tool = ToolActivity(
-          data['call_id'] as String,
-          namespace == null ? name : '$namespace.$name',
-          data['input'] as String,
-          startedAt: at,
-        );
-        tools[tool.id] = tool;
-        activeCell =
-            name == 'exec' && (namespace == null || namespace == 'functions')
-            ? tool
-            : null;
-        result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: at));
-      case 'host_tool.started':
-        final tool = ToolActivity(
-          data['id'] as String,
-          data['name'] as String,
-          data['arguments'],
-          formatInput: true,
-          startedAt: at,
-        );
-        tools[tool.id] = tool;
-        // Old history predates parent_call_id. Cells execute sequentially, so
-        // its active code-mode call is unambiguous; new events carry the ID.
-        final parent = data['parent_call_id'] == null
-            ? activeCell
-            : tools[data['parent_call_id']];
-        if (parent != null) {
-          parent.children.add(tool);
-        } else {
-          result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: at));
-        }
-      case 'host_tool.completed':
-        final tool = tools[data['id']];
-        if (tool == null) continue;
-        tool.status = data['cancelled'] == true
-            ? 'stopped'
-            : data.containsKey('error')
-            ? 'failed'
-            : 'done';
-        tool.output = data['error'] ?? data['output'];
-        tool.endedAt = at;
-      case 'tool.completed':
-        final item = jsonObject(data['item']);
-        for (final raw in item['content'] as List? ?? []) {
-          final part = jsonObject(raw);
-          final tool = tools[part['call_id']];
-          if (tool == null) continue;
-          tool.status = part['is_error'] == true ? 'failed' : 'done';
-          tool.output = part['output'];
-          tool.endedAt = at;
-          final images = (part['images'] as List? ?? []).map(jsonObject).toList();
-          if (images.isNotEmpty) {
-            result.add(ChatEntry('$id:images:${tool.id}', 'Image', '', attachments: images, timestamp: at));
-          }
-          if (tool == activeCell) activeCell = null;
-        }
-      case 'turn.failed':
-        finishTools('failed', at);
-        finishCompaction('failed', at);
-        result.add(ChatEntry(id, 'Error', '${data['error']}', timestamp: at, startedAt: turnStartedAt));
-        turnStartedAt = null;
-      case 'turn.cancelled':
-        finishTools('stopped', at);
-        finishCompaction('stopped', at);
-        result.add(ChatEntry(id, 'Status', 'Stopped', timestamp: at, startedAt: turnStartedAt));
-        turnStartedAt = null;
-      case 'turn.completed':
-        finishTools('interrupted', at);
-        finishCompaction('interrupted', at);
-        result.add(ChatEntry(id, 'Status', 'Completed', timestamp: at, startedAt: turnStartedAt));
-        turnStartedAt = null;
-      case 'compaction.started':
-        finishCompaction('interrupted', at);
-        final compaction = activeCompaction = CompactionActivity(startedAt: at);
-        result.add(ChatEntry(id, 'Compaction', '', compaction: compaction));
-      case 'context.compacted':
-        final compaction = activeCompaction ?? CompactionActivity();
-        if (activeCompaction == null) {
-          result.add(ChatEntry(id, 'Compaction', '', compaction: compaction));
-        }
-        compaction
-          ..status = 'done'
-          ..endedAt = at
-          ..summary = data['summary'] as String? ?? '';
-        activeCompaction = null;
-    }
+  for (final entry in task.pending.entries) {
+    final item = entry.value;
+    result.add(ChatEntry('pending:${entry.key}', item['delivery'] == 'steer' ? 'Steer pending' : 'Queued', item['prompt'] as String? ?? '',
+      attachments: (item['attachments'] as List? ?? []).map(jsonObject).toList(),
+      timestamp: DateTime.tryParse(item['created_at'] as String? ?? '')));
   }
-  if (task.streamingText.isNotEmpty && activeCompaction == null) {
-    result.add(ChatEntry('$turnId:streaming', 'Happen', task.streamingText, streaming: true));
-  }
-  for (final message in task.pending.values) {
-    result.add(ChatEntry('pending:${message['id']}',
-      message['delivery'] == 'steer' ? 'Steer pending' : 'Queued',
-      message['prompt'] as String,
-      attachments: (message['attachments'] as List? ?? []).map(jsonObject).toList(),
-      timestamp: DateTime.tryParse(message['created_at'] as String? ?? ''),
-    ));
-  }
-  if (!task.running) finishTools('interrupted');
-  if (!task.running) finishCompaction('interrupted');
   task._conversationState = state;
-  task._conversationEvents = task.events.values.toList(growable: false);
+  task._conversationEvents = task.messages.values.toList(growable: false);
   task._conversationPending = task.pending.values.toList(growable: false);
   return task._conversation = result;
 }
+
+String conversationDataText(Object? value) => _pretty(value);
 
 String _pretty(Object? value) {
   if (value is String) {
@@ -1125,9 +1362,3 @@ String _pretty(Object? value) {
   }
   return const JsonEncoder.withIndent('  ').convert(value);
 }
-
-String _text(Json item) => (item['content'] as List? ?? [])
-    .map(jsonObject)
-    .where((part) => part['type'] == 'text')
-    .map((part) => part['text'] as String)
-    .join('\n');

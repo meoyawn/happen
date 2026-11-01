@@ -4,6 +4,31 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
+Future<String?> projectBranch(String path, CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  final deadline = TimeoutCancellationToken(const Duration(seconds: 3));
+  final token = cancellation.merge(deadline);
+  Process? process;
+  CancellationHook? hook;
+  try {
+    process = await Process.start('git', ['-C', path, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+    hook = CancellationHook(token, () => process?.kill(ProcessSignal.sigkill));
+    final output = utf8.decoder.bind(process.stdout).join();
+    final errors = process.stderr.drain<void>();
+    final code = await process.exitCode;
+    final branch = (await output).trim();
+    await errors;
+    cancellation.throwIfCancelled();
+    return !deadline.isCancelled && code == 0 && branch.isNotEmpty ? branch : null;
+  } on ProcessException {
+    return null;
+  } finally {
+    hook?.dispose();
+    deadline.cancel();
+    process?.kill();
+  }
+}
+
 /// Identity is refreshed when a checkout is opened, selected, or the app resumes.
 /// The database's stable checkout key keeps its tasks through identity changes.
 Future<String> projectIdentity(

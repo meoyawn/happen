@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'conversation_markdown.dart';
+import 'conversation_data.dart';
+import 'file_icon.dart';
 
 class ComposerAttachment {
   ComposerAttachment({required this.name, required this.path, required this.image, this.ownedDirectory}) : id = newId();
@@ -29,6 +31,9 @@ String _name(String name) {
 
 bool _isImage(String name, [String? mime]) => mime?.startsWith('image/') == true && mime != 'image/svg+xml' ||
     {'png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'ico', 'heic', 'heif'}.contains(name.split('.').last.toLowerCase());
+
+ComposerAttachment composerAttachmentForFile(String path) =>
+    ComposerAttachment(name: _name(path), path: path, image: _isImage(path));
 
 class ComposerClipboardSnapshot {
   const ComposerClipboardSnapshot(this.text, this.attachments);
@@ -162,8 +167,12 @@ class AttachmentRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Wrap(spacing: 8, runSpacing: 8, children: [
     for (var index = 0; index < attachments.length; index++)
-      _AttachmentTile(attachment: attachments[index], directory: directory,
-        onRemove: onRemove == null ? null : () => onRemove!(index)),
+      SizedBox(key: ValueKey((index, attachments[index][r'$part'], attachments[index]['path'])),
+        width: attachments[index]['type'] == 'image' ? 120 : null,
+        height: attachments[index]['type'] == 'image' ? 116 : null,
+        child: ConversationData(value: attachments[index], builder: (context, value) =>
+        _AttachmentTile(attachment: jsonObject(value), directory: directory,
+          onRemove: onRemove == null ? null : () => onRemove!(index)))),
   ]);
 }
 
@@ -181,14 +190,14 @@ class _AttachmentTile extends StatelessWidget {
       width: isImage ? 120 : null,
       constraints: const BoxConstraints(maxWidth: 240),
       padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(color: const Color(0xfff4f5f0), borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xffdaddd5))),
+      decoration: BoxDecoration(color: const Color(0xfff7f7f8), borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xffe8e9eb))),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         if (isImage) SizedBox(height: 78, width: 106, child: ConversationImage(
           source: attachment['data'] is String ? attachmentDataUrl(attachment) : attachment['path'] as String,
           label: name, directory: directory, thumbnail: true)),
         Row(mainAxisSize: MainAxisSize.min, children: [
-          if (!isImage) const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.insert_drive_file_outlined, size: 16)),
+          if (!isImage) Padding(padding: const EdgeInsets.only(right: 6), child: FileIcon(name)),
           Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12))),
           if (onRemove != null) IconButton(tooltip: 'Remove $name', onPressed: onRemove,
             constraints: const BoxConstraints.tightFor(width: 24, height: 24), padding: EdgeInsets.zero,

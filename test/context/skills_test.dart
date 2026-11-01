@@ -2,10 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -190,30 +188,6 @@ void main() {
         expect(bodyCount(), 1);
       }
 
-      if (openCode) {
-        // Old tasks keep their frozen prefix but gain the newly implemented
-        // native loader. The addition must survive checkpoint restoration.
-        final history = await client!.request('history.page', {'task_id': id, 'limit': 500}) as List;
-        final config = jsonObject(history.firstWhere((event) => event['type'] == 'task.created')['data']);
-        config['tools'] = (config['tools'] as List).where((tool) => tool['name'] != 'skill').toList();
-        final legacyId = newId();
-        final legacy = TaskStore(data.path, legacyId);
-        try {
-          legacy.append('task.created', config, metadata: {'config': config, 'status': 'idle'});
-          legacy.append('input.committed', {'item': ConversationItem.text('user', 'Earlier question').toJson()});
-          legacy.append('model.completed', ModelReply([
-            ConversationItem.text('assistant', 'Earlier detailed answer. ' * 100),
-          ], const ModelUsage()).toJson());
-        } finally { legacy.close(); }
-        await send(legacyId, 'load omitted skill');
-        expect(bodyCount(), 1);
-        await send(legacyId);
-        await send(legacyId);
-        await turn('task.compact', {'task_id': legacyId});
-        await send(legacyId, 'load omitted skill');
-        expect(bodyCount(), 1);
-        expect((requests.last['tools'] as List).where((tool) => tool['function']['name'] == 'skill'), hasLength(1));
-      }
     });
   }
 }

@@ -246,7 +246,8 @@ class AgentServer {
       await request.response.close();
       return;
     }
-    final socket = await WebSocketTransformer.upgrade(request);
+    final socket = await WebSocketTransformer.upgrade(request,
+      compression: CompressionOptions.compressionOff);
     socket.pingInterval = const Duration(seconds: 30);
     final client = _Client(socket, directory);
     _clients.add(client);
@@ -385,7 +386,23 @@ class AgentServer {
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId) async {
     _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
+    if (method == 'session.read.cancel') {
+      client.sessionReads[params['request_id']]?.cancel();
+      return null;
+    }
     final receivedAt = DateTime.now().toUtc().toIso8601String();
+    final identityKey = method.startsWith('session.') ? 'sessionID' : 'task_id';
+    if (method.startsWith('session.') && params['sessionID'] is String) {
+      params = {...params, 'task_id': params['sessionID']}..remove('sessionID');
+    }
+    if (method.startsWith('session.')) client.sessionProtocol = true;
+    method = const {
+      'session.create': 'task.start', 'session.prompt': 'task.send',
+      'session.interrupt': 'task.cancel', 'session.compact': 'task.compact',
+      'session.archive': 'task.archive', 'session.unarchive': 'task.unarchive',
+      'session.fork': 'task.fork',
+      'session.hibernate': 'task.hibernate', 'session.subscribe': 'task.subscribe',
+    }[method] ?? method;
     if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
     if (method == 'task.start' || method == 'task.send') {
       final claimed = await client.attachments.claim(params['attachments']);
@@ -400,17 +417,24 @@ class AgentServer {
       validateUserInput(prompt, attachments);
       params = {...params, 'prompt': prompt, if (attachments.isNotEmpty) 'attachments': attachments};
       client.cancellation.throwIfCancelled();
-      final result = await _dispatchPrepared(method, params, client, requestId, receivedAt);
+      final result = await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey);
       committed = true;
       return result;
       } finally {
         await client.attachments.release(claimed.ids, committed: committed);
       }
     }
-    return _dispatchPrepared(method, params, client, requestId, receivedAt);
+    if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+      final operation = CancellationToken();
+      client.sessionReads[requestId] = operation;
+      try { return await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey); }
+      finally { client.sessionReads.remove(requestId); operation.cancel(); }
+    }
+    return _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey);
   }
 
-  Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt) async {
+  Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt, String identityKey) async {
+    final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
     if (method == 'mcp.auth.login' || method == 'mcp.auth.logout') {
       final deadline = TimeoutCancellationToken(const Duration(minutes: 5));
       client.mcpLogins[requestId] = deadline;
@@ -531,12 +555,13 @@ class AgentServer {
         }
         final task = _Task(id, config);
         client.subscriptions.add(id);
+        if (client.sessionProtocol) client.sessionSubscriptions.add(id);
         _begin(
           task,
           params['prompt'] as String,
           settings: {...params, 'sent_at': receivedAt}..remove('settings'),
         );
-        return {'task_id': id};
+        return {identityKey: id};
       case 'history.import':
         final targetDirectory = directory;
         final source = requiredString(params, 'path');
@@ -557,11 +582,38 @@ class AgentServer {
         final id = requiredString(params, 'task_id');
         validateTaskId(id);
         client.subscriptions.add(id);
+        if (client.sessionProtocol) client.sessionSubscriptions.add(id);
         var task = _tasks[id] ?? _Task(id, null);
         if (task.backgroundMaintenance case final maintenance?) {
-          await maintenance.future;
+          await maintenance.future.asCancellable(cancellation);
           _lifetime.throwIfCancelled();
           task = _tasks[id] ?? _Task(id, null);
+        }
+        // Lazy image/tool reads can arrive together. Queue behind the current
+        // SQLite owner instead of rejecting a second reader during its close.
+        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+          while (task.maintenance) {
+            await task.maintenanceDone!.future.asCancellable(cancellation);
+            task = _tasks[id] ?? _Task(id, null);
+          }
+        }
+        if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+          client.sessionSubscriptions.add(id);
+          if (task.busy && task.writer == null) await task.ready?.future.asCancellable(cancellation);
+          var page = File('$directory/tasks/$id/history.sqlite').existsSync()
+            ? await readSession(directory, id, method, params, cancellation: cancellation)
+            : <String, dynamic>{'needsProjection': true};
+          if (page['needsProjection'] == true) {
+            task = _tasks[id] ?? task;
+            while (task.maintenance) {
+              await task.maintenanceDone!.future.asCancellable(cancellation);
+              task = _tasks[id] ?? task;
+            }
+            await _withWriter(task, (writer) => callIsolate(writer.port, 'session.prepare', {}, cancellation: cancellation));
+            page = await readSession(directory, id, method, params, cancellation: cancellation);
+          }
+          final current = _tasks[id] ?? task;
+          return {...page, 'running': current.busy, 'pending': current.pending};
         }
         if (method == 'tools.register') {
           return _clientTools.register(
@@ -572,15 +624,17 @@ class AgentServer {
           );
         }
         if (method == 'task.subscribe') {
-          return {'task_id': id, 'running': task.busy, 'pending': task.pending};
+          return {identityKey: id, 'running': task.busy, 'pending': task.pending};
         }
         if (method == 'task.archive' || method == 'task.unarchive') {
           await _archive(task, method == 'task.archive');
-          return {'task_id': id, 'archived': method == 'task.archive'};
+          return {identityKey: id, 'archived': method == 'task.archive'};
         }
         if (method == 'task.cancel') {
           task.cancelled = true;
-          _discardPending(task, 'cancelled');
+          if (task.busy && task.writer == null) await task.ready?.future.asCancellable(client.cancellation);
+          if (task.finishing) await task.running;
+          await _discardPending(task, 'cancelled');
           final agent = task.agent;
           task.codeInterrupt?.interrupt();
           if (agent != null) await callIsolate(agent.port, 'cancel', {});
@@ -588,7 +642,7 @@ class AgentServer {
         }
         if (method == 'task.hibernate') {
           await _hibernate(task);
-          return {'task_id': id};
+          return {identityKey: id};
         }
         if (method == 'task.send' || method == 'task.compact') {
           final mode = params['delivery'] as String? ?? 'queue';
@@ -638,16 +692,19 @@ class AgentServer {
             if (utf8.encode(jsonEncode([...task.pending, message])).length > maxClientFrameBytes - 1024) {
               throw StateError('Pending messages exceed the 64 MiB transport budget');
             }
-            task.pending.add(message);
-            _broadcast(id, {
-              'task_id': id,
-              'type': 'input.pending',
-              'data': message,
+            await task.ready?.future.asCancellable(client.cancellation);
+            await _withWriter(task, (writer) async {
+              final admitted = jsonObject(await callIsolate(writer.port, 'append', {
+                'type': 'input.pending', 'data': message,
+              }, cancellation: client.cancellation));
+              task.pending.add(message);
+              _broadcast(id, admitted);
+              _offerSteering(task, message);
+              return null;
             });
-            _offerSteering(task, message);
             return {
-              'task_id': id,
-              'message_id': message['id'],
+              identityKey: id,
+              if (identityKey == 'sessionID') 'inboxID': 'msg_${message['id']}' else 'message_id': message['id'],
               'delivery': mode,
             };
           }
@@ -657,7 +714,25 @@ class AgentServer {
             compact: method == 'task.compact',
             settings: {...params, 'sent_at': receivedAt},
           );
-          return {'task_id': id};
+          return {identityKey: id};
+        }
+        if (method == 'history.part') {
+          return _withWriter(task, (writer) => callIsolate(writer.port, 'history.part', {
+            'id': requiredString(params, 'id'),
+          }, cancellation: client.cancellation));
+        }
+        if (method == 'history.list') {
+          final page = jsonObject(await _withWriter(
+            task,
+            (writer) => callIsolate(writer.port, 'history.list', {
+              'before': params['before'],
+              'limit': params['limit'] ?? 100,
+            }, cancellation: client.cancellation),
+          ));
+          final current = _tasks[id] ?? task;
+          return {...page, if (params['before'] == null) ...{
+            'running': current.busy, 'pending': current.pending,
+          }};
         }
         if (method == 'history.page') {
           return _withWriter(
@@ -692,7 +767,7 @@ class AgentServer {
                 return child;
               },
             );
-            return {'task_id': child};
+            return {identityKey: child};
           } finally {
             _transfers--;
           }
@@ -760,22 +835,20 @@ class AgentServer {
     try {
       if (task.busy) {
         task.cancelled = true;
-        _discardPending(task, 'archived');
         task.codeInterrupt?.interrupt();
         if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
         await task.running;
       }
       _lifetime.throwIfCancelled();
-      writer = await startStore(directory, task.id, create: false, legacyDecoder: gptItemFromNative);
+      writer = await startStore(directory, task.id, create: false);
+      if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       if (archived) {
         await _taskTools.release(task.id);
         _clientTools.archive(task.id);
         await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
       }
-      for (final client in _clients.toList()) {
-        client.event({'task_id': task.id, ...event});
-      }
+      _broadcast(task.id, event);
     } finally {
       try { await writer?.close(); }
       finally {
@@ -792,15 +865,18 @@ class AgentServer {
     task.maintenance = true;
     final settled = task.maintenanceDone = Completer<void>();
     _tasks[task.id] = task;
+    IsolateOwner? writer;
     try {
       task.cancelled = true;
-      _discardPending(task, 'hibernated');
       task.codeInterrupt?.interrupt();
       if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
       await task.running;
+      writer = await startStore(directory, task.id, create: false);
+      await _discardPending(task, 'hibernated', writer: writer);
       await _taskTools.release(task.id);
       await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
     } finally {
+      await writer?.close();
       task.maintenance = false;
       task.maintenanceDone = null;
       settled.complete();
@@ -876,16 +952,13 @@ class AgentServer {
     task.agent!.port.send({'method': 'steer', 'params': message});
   }
 
-  void _discardPending(_Task task, String reason) {
-    if (task.pending.isEmpty) return;
-    final ids = task.pending.map((message) => message['id']).toList();
+  Future<void> _discardPending(_Task task, String reason, {IsolateOwner? writer}) async {
+    Future<Object?> discard(IsolateOwner owner) => callIsolate(owner.port, 'session.inbox.cancel',
+      {'reason': reason}, cancellation: _lifetime);
+    final discarded = writer == null ? await _withWriter(task, discard) : await discard(writer);
     task.pending.clear();
     task.offered.clear();
-    _broadcast(task.id, {
-      'task_id': task.id,
-      'type': 'input.discarded',
-      'data': {'ids': ids, 'reason': reason},
-    });
+    if (discarded != null) _broadcast(task.id, jsonObject(discarded));
   }
 
   Future<String> _newTaskId(Json config, CancellationToken cancellation) async =>
@@ -961,7 +1034,6 @@ class AgentServer {
         directory,
         task.id,
         create: task.config != null,
-        legacyDecoder: gptItemFromNative,
       );
       if (task.config != null && await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}) == null) {
         // Commit admission before cancellation can stop the agent's first turn.
@@ -980,30 +1052,10 @@ class AgentServer {
       task.config ??= jsonObject(
         await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}),
       );
-      if (task.config!['provider_settings'] == null) {
-        final legacy = task.config!;
-        final selected = jsonObject(
-          await callIsolate(network.port, 'configure', {
-            'provider': 'gpt',
-            'model': legacy['model'],
-            'reasoning': legacy['reasoning'],
-          }),
-        );
-        task.config = {
-          ...legacy,
-          ...selected,
-          'instructions': legacy['instructions'],
-          'tools': gptToolsFromNative((legacy['tools'] as List).map(jsonObject))
-              .map((v) => v.toJson())
-              .toList(),
-          'global_directory': directory,
-        };
-        final migrated = jsonObject(await callIsolate(task.writer!.port, 'append', {
-          'type': 'task.configuration_migrated',
-          'data': task.config,
-          'metadata': {'config': task.config},
-        }));
-        _broadcast(task.id, migrated);
+      if (task.pending.isEmpty) {
+        await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: turnLifetime);
+        final inbox = await readSession(directory, task.id, 'session.inbox', {}, cancellation: turnLifetime);
+        task.pending.addAll((inbox['data'] as List).map(jsonObject));
       }
       task.ready!.complete();
       task.codeInterrupt = CodeInterrupt();
@@ -1054,6 +1106,13 @@ class AgentServer {
         'type': 'turn.failed',
         'data': {'error': error.toString()},
       };
+      if (!_closing && task.writer != null) {
+        try {
+          terminal = jsonObject(await callIsolate(task.writer!.port, 'append', {
+            'type': 'turn.failed', 'data': terminal!['data'],
+          }, cancellation: turnLifetime));
+        } catch (_) { /* A failed persistence owner still permits a live terminal notification. */ }
+      }
     } finally {
       task.finishing = true;
       turnLifetime.cancel();
@@ -1065,6 +1124,9 @@ class AgentServer {
       if (task.writerRequests > 0) {
         await (task.writerDrained ??= Completer<void>()).future;
       }
+      if (!_closing && task.writer != null && (task.cancelled || terminal?['type'] != 'turn.completed')) {
+        await _discardPending(task, 'stopped', writer: task.writer);
+      }
       await task.writer?.close();
       task.agent = null;
       task.writer = null;
@@ -1075,9 +1137,9 @@ class AgentServer {
         telemetry.add(terminal!['type'] as String);
         _broadcast(task.id, terminal!);
       }
-      if (_closing || task.cancelled || terminal?['type'] != 'turn.completed') {
-        _discardPending(task, 'stopped');
-      } else if (task.pending.isNotEmpty) {
+      if (_closing) {
+        // The durable inbox remains available when this session resumes.
+      } else if (!task.cancelled && terminal?['type'] == 'turn.completed' && task.pending.isNotEmpty) {
         final next = task.pending.first;
         try {
           _begin(
@@ -1090,7 +1152,7 @@ class AgentServer {
             },
           );
         } catch (_) {
-          _discardPending(task, 'could_not_start');
+          await _discardPending(task, 'could_not_start');
         }
       }
       _forgetIdle(task);
@@ -1130,7 +1192,6 @@ class AgentServer {
         directory,
         task.id,
         create: false,
-        legacyDecoder: gptItemFromNative,
       );
       return await operation(writer);
     } finally {
@@ -1145,9 +1206,56 @@ class AgentServer {
   }
 
   void _broadcast(String taskId, Json event) {
-    for (final client in _clients.toList()) {
-      if (client.subscriptions.contains(taskId)) client.event({...event, 'task_id': taskId});
+    final task = _tasks[taskId];
+    if (event['type'] == 'model.started' || event['type'] == 'model.retrying') {
+      task?.streamOrdinal = 0;
+      task?.streamPartType = null;
     }
+    if (event['type'] == 'text.delta' || event['type'] == 'reasoning.delta') {
+      if (task?.streamPartType != null && task?.streamPartType != event['type']) task!.streamOrdinal++;
+      task?.streamPartType = event['type'] as String;
+    }
+    for (final client in _clients.toList()) {
+      if (!client.subscriptions.contains(taskId)) continue;
+      if (!client.sessionSubscriptions.contains(taskId)) {
+        client.event({...event, 'task_id': taskId});
+      } else if (event['session_events'] is List) {
+        for (final native in event['session_events']) { client.event(jsonObject(native)); }
+      } else {
+        final assistant = event['assistantMessageID'] ?? _tasks[taskId]?.assistantMessageID;
+        final payload = jsonObject(event['data'] ?? {});
+        final type = switch (event['type']) {
+          'text.delta' => 'session.text.delta',
+          'reasoning.delta' => 'session.reasoning.delta',
+          'compaction.delta' => 'session.compaction.delta',
+          'model.retrying' || 'model.connected' || 'turn.started' => 'session.status',
+          'input.pending' => 'session.inbox.enqueued',
+          'input.discarded' => 'session.inbox.cancelled',
+          'task.archived' => 'session.archived',
+          'task.unarchived' => 'session.unarchived',
+          'turn.failed' => 'session.execution.failed',
+          'turn.cancelled' => 'session.execution.interrupted',
+          'turn.completed' => 'session.execution.succeeded',
+          _ => null,
+        };
+        if (type == null) continue;
+        client.event({'id': 'evt_${newId()}', 'created': DateTime.now().millisecondsSinceEpoch,
+          'type': type, 'data': {'sessionID': taskId,
+            if (assistant != null) 'assistantMessageID': assistant,
+            if (type == 'session.text.delta' || type == 'session.reasoning.delta') ...{'ordinal': task?.streamOrdinal ?? 0, 'delta': event['delta']},
+            if (type == 'session.compaction.delta') 'text': event['delta'],
+            if (type == 'session.status') 'status': event['type'] == 'model.retrying'
+              ? {'type': 'retry', 'attempt': event['attempt'], 'message': event['message'],
+                'next': DateTime.now().millisecondsSinceEpoch + (event['delay_ms'] as int? ?? 0)} : {'type': 'busy'},
+            if (type == 'session.inbox.enqueued') ...{'inboxID': 'msg_${payload['id']}', 'item': {
+              'type': 'user', 'delivery': payload['delivery'], 'text': payload['prompt'], 'files': payload['attachments'] ?? []}},
+            if (type == 'session.inbox.cancelled') 'ids': [for (final id in payload['ids'] as List? ?? []) 'msg_$id'],
+            if (type == 'session.execution.failed') 'error': {'type': 'unknown', 'message': payload['error'].toString()},
+            if (type == 'session.execution.interrupted') 'reason': 'user',
+          }});
+      }
+    }
+    if (event['type'] == 'model.started') _tasks[taskId]?.assistantMessageID = event['data']['assistantMessageID'] as String?;
   }
 
   Future<void> close() async {
@@ -1201,6 +1309,9 @@ class _Task {
   _Task(this.id, this.config);
   final String id;
   Json? config;
+  String? assistantMessageID;
+  int streamOrdinal = 0;
+  String? streamPartType;
   bool busy = false, maintenance = false, cancelled = false, finishing = false;
   IsolateOwner? writer, agent;
   CodeInterrupt? codeInterrupt;
@@ -1225,9 +1336,12 @@ class _Client {
   CancellationToken? skillSearch;
   final mcpInventories = <Object, CancellationToken>{};
   final mcpLogins = <Object, CancellationToken>{};
+  final sessionReads = <Object, CancellationToken>{};
   Object? fileSearchId;
   Object? skillSearchId;
   final subscriptions = <String>{};
+  final sessionSubscriptions = <String>{};
+  bool sessionProtocol = false;
   final _events = Queue<({String frame, int bytes})>();
   int _queuedBytes = 0;
   int credits = 256, inFlight = 0;
@@ -1327,6 +1441,7 @@ class AgentClient {
       }
       final socket = await WebSocket.connect(
         uri.scheme == 'unix' ? 'ws://localhost/ws' : uri.toString(),
+        compression: CompressionOptions.compressionOff,
         customClient: http,
         headers: token == null ? null : {'Authorization': 'Bearer $token'},
       ).asCancellable(lifetime);
@@ -1343,6 +1458,21 @@ class AgentClient {
   }
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
+
+  Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!{'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+      throw ArgumentError('Unknown session read');
+    }
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
+  Future<Object?> conversationPart(String reference, {required CancellationToken cancellation}) {
+    final split = reference.lastIndexOf('/');
+    if (split < 1) throw const FormatException('Invalid conversation content reference');
+    return _request('history.part', {
+      'task_id': reference.substring(0, split), 'id': reference.substring(split + 1),
+    }, cancellation: cancellation);
+  }
 
   Future<Json> uploadAttachment(String path, {required String name, required String type,
     required CancellationToken cancellation, void Function(int sent, int total)? onProgress}) async {
@@ -1427,6 +1557,9 @@ class AgentClient {
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
+      if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method) && socket.readyState == WebSocket.open) {
+        socket.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
+      }
       if (method == 'files.search' && socket.readyState == WebSocket.open) {
         socket.add(jsonEncode({'method': 'files.cancel', 'params': {'request_id': id}}));
       }

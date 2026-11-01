@@ -18,13 +18,16 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   String get id => 'openai';
   @override
+  bool get toolsInHistory => true;
+  @override
   ConversationItem instructionContext(Json current, Json? previous) => renderInstructions(current, previous);
   @override
   ConversationItem environmentContext(String cwd, {bool replacement = false}) => renderEnvironment(cwd);
   @override
-  List<ToolDefinition> get definitions => [specs.codeDefinition, webSearchDefinition, specs.toolSearchDefinition];
+  // CodeModeOnly exposes discovery through exec; web keeps its hosted surface.
+  List<ToolDefinition> get definitions => [specs.codeDefinition, webSearchDefinition];
   @override
-  ToolDefinition get discovery => specs.toolSearchDefinition;
+  ToolDefinition get nestedDiscovery => specs.toolSearchDefinition;
   @override
   String? catalogContext(List<Json> current, List<Json>? previous) => renderDeferredNamespaces(current, previous);
   @override
@@ -32,8 +35,7 @@ class OpenAIToolInterface extends ToolInterface {
     ...describeTool(tool), 'host_name': tool['name'],
   }];
   @override
-  ToolDiscovery search(List<Json> catalog, Json arguments, {bool nested = false}) =>
-      discoverTools(catalog, arguments, nested: nested);
+  Json search(List<Json> catalog, Json arguments) => discoverTools(catalog, arguments);
   @override
   Map<String, String> get services => {
     'web__run': 'web.search',

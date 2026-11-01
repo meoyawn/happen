@@ -51,7 +51,6 @@ void main() {
             (item) => item['role'] == 'user',
           );
           final prompt = input[lastUser]['content'];
-          final searched = input.skip(lastUser + 1).any((item) => item['type'] == 'tool_search_output');
           final outputs = input
               .skip(lastUser + 1)
               .where(
@@ -71,21 +70,12 @@ void main() {
                     ],
                   },
                 ]
-              : prompt == 'direct' && !searched
-              ? <Json>[
-                  {
-                    'type': 'tool_search_call', 'execution': 'client',
-                    'arguments': {'query': 'browser_title', 'limit': 1},
-                    'call_id': 'call_${++call}',
-                  },
-                ]
               : prompt == 'direct'
               ? <Json>[
                   {
-                    'type': 'function_call',
-                    'namespace': 'client',
-                    'name': 'browser_title',
-                    'arguments': '{"tab":3}',
+                    'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
+                    'input': 'text(await tools.tool_search({query:"browser_title",limit:1})); '
+                      'text(await tools.client__browser_title({tab:3}));',
                     'call_id': 'call_${++call}',
                   },
                 ]
@@ -201,11 +191,11 @@ void main() {
         expect(answer, isNot(contains('forged')));
         expect((requests.first['tools'] as List).any((tool) => tool['name'] == 'client'), isFalse);
         final declarations = (requests.first['input'] as List).where(
-          (v) => v['type'] == 'additional_tools',
+          (v) => v['type'] == 'additional_tools' && (v['tools'] as List).any((tool) => tool['name'] == 'client'),
         );
         expect(declarations, isEmpty, reason: 'Code-mode calls do not load client schemas');
 
-        // A direct model call uses the same bridge; no code-mode-only shortcut.
+        // A discovered client tool keeps the same ownership and disconnect rules.
         final direct = owner.incoming.stream.firstWhere(
           (v) => v['method'] == 'tools.call',
         );
@@ -215,10 +205,10 @@ void main() {
         expect(pending['params']['arguments'], {'tab': 3});
         expect(
           (requests.last['input'] as List).any(
-            (v) => v['type'] == 'tool_search_output' && (v['tools'] as List).isNotEmpty,
+            (v) => v['type'] == 'additional_tools' && (v['tools'] as List).any((tool) => tool['name'] == 'client'),
           ),
-          isTrue,
-          reason: 'Direct calls must first select the client tool schema',
+          isFalse,
+          reason: 'Nested discovery must not load native client schemas',
         );
         await owner.close();
         final terminal = await disconnected;

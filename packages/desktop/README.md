@@ -2,20 +2,47 @@
 
 Happen desktop client
 
+The conversation uses OpenCode's message model and presentation, with Inter and
+IBM Plex Mono fonts, compact spacing, and its working indicator. Nested tool calls
+appear inline; **View code** opens the JavaScript source.
+Hover a finished OpenCode response to copy it or see its model, reasoning level,
+and turn duration, rounded to seconds (or minutes and seconds for longer turns).
+
+**Settings → Interface** offers **Top tabs**, **Side
+tabs**, and **Inbox**, using OpenCode's layout previews. Top and side tabs can
+be dragged to reorder or closed without archiving their sessions. **Home** and
+**Search sessions** reopen them. Inbox groups recent results and sessions that
+need attention, with a collapsible **Working** section below. Tab order, layout,
+read markers, and sidebar choices are saved.
+
+The macOS window uses its full content area. The native traffic lights sit in
+the sidebar header in Side tabs and Inbox, or beside the top tabs. Drag empty
+header space to move the window; double-click follows the macOS title bar setting.
+Click the sidebar icon or press **⌘⇧B** to collapse or reopen the sidebar. While
+collapsed, hover the window's left edge or rest on the icon to preview it over
+the conversation. On Windows/Linux, use **Ctrl+Shift+B**.
+
+Live responses reveal incoming text on display frames, updating only the
+streaming message. Images reserve their thumbnail space before loading, and
+each horizontal image rail retains its own scroll position.
+
 Drag the sidebar's right edge to resize it. The chosen width is saved between
 launches and adjusts to keep room for the conversation in a smaller window.
+The edge has OpenCode's delayed pill on hover and a darker pill while dragging.
 
-The sidebar lists **Pinned**, **Projects**, then **Recents**. Click a section
-heading to collapse it; section choices and pins are saved between launches.
-Use a task or project's **… → Pin** menu to keep it in Pinned. Recents shows
-unpinned tasks across projects by latest activity, with **Show more** after the
-first ten. Archived tasks stay in Settings.
-Older entries start in creation order until Happen observes their activity.
+**⌘J** opens and focuses the integrated terminal in the current project's folder.
+Repeated presses focus the same shell. The panel retains shells separately for
+each chat or project draft; hiding it or switching chats keeps them running.
+Use **+** for another shell, **×** to stop one, and the down arrow to hide the
+panel. Drag its top edge to resize it. Archiving immediately stops all of that
+chat's terminals, including hidden tabs and background jobs; restoring the chat
+starts fresh shells.
+A draft's terminals follow its first submitted task. Hibernating the agent leaves
+the terminal alone. Removing a project or quitting closes its shells and drains
+native resources. On Windows/Linux, use **Ctrl+J**.
 
-**Option+Up/Down** follows the section of the last task row you clicked. Recents
-uses activity order, Pinned uses pin order, and Projects follows project order.
-Traversal stays stable through activity updates and stops at either end. Clicking
-a row chooses its section again; conversation drafts are retained while navigating.
+**Option+Up/Down** moves between sessions in the current navigation view.
+Conversation drafts are retained while navigating.
 
 Use a project's **… → Remove project** menu to remove it and its task entries
 from Happen. Confirming stops running tasks and clears drafts; the project folder
@@ -24,11 +51,24 @@ launches, with new tasks and messages disabled while existing conversations rema
 readable. Availability is checked at launch, without polling or a refresh button.
 Open a restored folder again to make its existing project available.
 
-The composer's right side groups the context ring, one model/reasoning menu,
-microphone and Send/Stop. Hover or click the ring for used/available tokens and
-prompt-cache hit rates for the latest response and the conversation. Missing
-measurements show **Usage unavailable**, including after compaction until a new
-response measures the replacement context. Existing chats need no migration.
+The header's context ring opens **Context** in OpenCode's full-height right panel,
+beside the conversation and composer. **⌘B** (or **Ctrl+B**) toggles the panel;
+drag the divider to resize it. The tab strip supports closing, adding, and
+reopening tabs, and **⌘W** closes the focused panel tab. Open tabs, selection,
+visibility, and the divider width are saved per session. Hiding the panel keeps
+its content and scroll position; closing its last tab hides it.
+
+**Context** shows the actual saved system prompt,
+provider/model, context limit, token and cache counts, tools, model settings, and
+expandable projected session messages. For OpenAI sessions the base prompt
+is a developer context item, as in Codex, rather than a second system copy.
+Earlier context pages load on demand. **Export session JSON** saves a JSON file
+to Downloads with a unique title-based filename. It exports each message body once;
+context metadata references its base prompt
+by message ID instead of embedding the message page and prompt again.
+Usage becomes available after a
+response measures the current context, including after compaction.
+The composer groups the model/reasoning menu, microphone, and Send/Stop.
 The model/reasoning menu keeps models fixed for existing tasks; supported reasoning
 changes apply to the next message.
 One action button sends messages, or stops a running task when the draft is empty.
@@ -62,6 +102,14 @@ the window underneath. The tray's Quit action quits directly.
 The server stays in the desktop process on every platform. macOS/Linux use
 private UDS WebSockets; Windows uses an ephemeral authenticated loopback port.
 Native tray changes require a rebuild and relaunch.
+
+Session events and message parts use the OpenCode schema shared by the server,
+SQLite projection, and Flutter renderer. Every session keeps one `history.sqlite`
+file with a single writer isolate and independent read-only WAL snapshots.
+The durable inbox is in that same database. Existing histories are projected by
+their session writer when first opened; live notifications use the same events
+as replay. WebSocket RPC, event acknowledgements, and backpressure remain the
+transport. Provider inference and credentials still support ChatGPT and OpenCode.
 
 Paste images with Command+V or Paste in the composer, or drag images and files
 onto it. Preview or remove attachments before sending; image-only messages work.
@@ -127,9 +175,10 @@ moon run dev -- --status
 moon run dev
 ```
 
-The guarded launcher reuses the running debug app or its Flutter supervisor,
-including while Flutter is still building. Concurrent launcher calls share a
-local lock. If several instances already exist, it reports their PIDs and exits
+The guarded launcher reuses any running Happen app, including installed releases,
+or a Flutter supervisor for a Happen checkout in any build mode. This also covers
+Flutter while it is still building. Concurrent launcher calls share a lock across
+checkouts. If several instances already exist, it reports their PIDs and exits
 without starting another. Use this launcher for development launches.
 
 `dev` is a persistent, interactive Moon server task. New sessions run Flutter in
@@ -138,8 +187,9 @@ or `q` to quit. Ctrl+C stops the session. The command stays open until Flutter
 exits and returns its exit status.
 Reusing an existing session waits for it to exit and keeps its original
 terminal/VM controls. `moon run dev -- --status` only inspects and exits.
-Locks and supervisor metadata stay in the checkout's ignored `.local/run/`;
-they are never added to the app bundle.
+Checkout locks and supervisor metadata stay in the ignored `.local/run/`;
+the shared launch lock stays in the system temporary directory. They are never
+added to the app bundle.
 
 ```sh
 moon run release
@@ -154,17 +204,30 @@ It stops the installed release before replacing the bundle and leaves it
 stopped. Failed replacement validation restores the previous bundle and leaves
 it stopped too. `reinstall-release` is an alias.
 
-Debug and release have separate instance checks, so one of each can run.
-Reinstallation preserves the debug app and checks the release executable's full
-path immediately before signalling it. For a different installation directory,
-use `moon run release-reinstall -- --applications-dir /path/to/Applications`.
+The development launcher also reuses a running release instead of starting a
+debug app alongside it. Reinstallation preserves the debug app and checks the
+release executable's full path immediately before signalling it. For a different
+installation directory, use
+`moon run release-reinstall -- --applications-dir /path/to/Applications`.
 The guard applies to these local launch/install commands; launching the app
 directly bypasses it.
 
-Type `@` in a new or existing task's composer to search files in the selected
-project on the server. Use Up/Down and Enter or Tab, or click/tap a result; Escape
-dismisses suggestions. Paths containing spaces are quoted. Selecting a file
-inserts its relative path into the draft; it does not upload its contents.
+The composer uses a virtual line editor with a bounded viewport for large
+drafts. Its completion popover follows OpenCode, including file and folder icons
+for each language and special filename. Up/Down changes the selected suggestion
+without moving the caret; Enter or Tab accepts it, and Escape closes the popover.
+
+Type `@` to find project files and folders, projects, other sessions, MCP resources,
+and MCP tools. Quoted queries support paths containing spaces. File references
+retain their full path and serialize as Markdown links; they do not upload file
+contents. Session references include the text from up to 20 recent messages.
+The **+** menu opens context search, commands, prompt history, or attachments.
+**Shift+Up** opens searchable prompt history for the current session.
+
+Type `/` for local commands, model choices, reasoning levels, and skills. Model
+and reasoning choices follow the same availability rules as their picker.
+`/new`, `/context`, `/terminal`, `/history`, and `/attach` open their respective
+actions; `/mcp` and `/mcp verbose` show server status and inventory.
 
 Type `$` to search skills, or find them alongside files with `@` and commands
 with `/`. Skills come from the server's project and user `.agents/skills/`
@@ -172,11 +235,11 @@ directories. Suggestions show the name, description, and Project or Global
 scope. Select one with Up/Down and Enter or Tab, or click it, to insert an inline
 skill reference. Escape dismisses suggestions. Selection preserves the full
 `SKILL.md` path through editing, undo, copying, and draft navigation; sending
-serializes it as `[$name](/path/to/SKILL.md)`. The composer and conversation use
-Harness's blue skill glyph and label. Discovery returns metadata only; the agent
+serializes it as `[$name](/path/to/SKILL.md)`. References appear as blue labels in
+the editor, with a skill glyph in suggestions. Discovery returns metadata only; the agent
 loads the skill instructions when needed.
 
-Search waits for a 200 ms typing pause, caches up to 20 recent queries for ten
+Mention search waits for a 120 ms typing pause, caches up to 20 recent queries for ten
 seconds, and cancels superseded requests. Late replies cannot change a newer
 draft or another task's composer. File search shares the task WebSocket and
 remains available while other tasks are streaming.

@@ -55,9 +55,9 @@ wait
           ? ['custom_tool_call_output', 'function_call_output'].contains(item['type']) : item['role'] == 'tool');
         String? name;
         Object? arguments;
-        if (!called && ['mcp', 'mcp-direct'].contains(prompt)) {
-          name = lab == 'openai' ? (prompt == 'mcp-direct' ? 'probe' : 'exec') : 'execute';
-          arguments = prompt == 'mcp-direct' ? {'action': 'wait'} : lab == 'openai'
+        if (!called && prompt == 'mcp') {
+          name = lab == 'openai' ? 'exec' : 'execute';
+          arguments = lab == 'openai'
             ? 'await Promise.all([tools.mcp__local__probe({action: "wait"}), tools.mcp__local__probe({action: "wait"})]);'
             : {'code': 'return await Promise.all([tools.local.probe({action: "wait"}), tools.local.probe({action: "wait"})]);'};
         } else if (!called && ['spin', 'start-wait'].contains(prompt)) {
@@ -87,10 +87,7 @@ wait
           request.response.write('data: ${jsonEncode({
             'type': 'response.completed', 'response': {
               'status': 'completed', 'usage': {'input_tokens': 100, 'output_tokens': 10},
-              'output': [if (name == 'probe') {
-                'type': 'function_call', 'namespace': 'mcp__local', 'name': name,
-                'arguments': jsonEncode(arguments), 'call_id': newId(),
-              } else if (name != null) {
+              'output': [if (name != null) {
                 'type': 'custom_tool_call', 'namespace': 'functions', 'name': name, 'input': arguments, 'call_id': newId(),
               } else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'ready'}]}],
             },
@@ -143,21 +140,19 @@ wait
         'task_id': second['task_id'], 'name': 'mcp__local__probe', 'arguments': {'action': 'wait'},
       }, cancellation: siblingToken), throwsA(isA<CancelledException>()));
       await _until(() async => (await probe())['waiting'] == 1);
-      for (final prompt in ['mcp', if (lab == 'openai') 'mcp-direct']) {
-        for (final steer in [true, false]) {
-          final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-            ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-          await client.request('task.send', {'task_id': id, 'prompt': prompt});
-          await _until(() async => (await probe())['waiting'] == (prompt == 'mcp' ? 3 : 2));
-          if (steer) {
-            await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
-          } else {
-            await client.request('task.cancel', {'task_id': id});
-          }
-          expect((await terminal.timeout(const Duration(seconds: 5)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
-          await _until(() async => (await probe())['waiting'] == 1);
-          expect((await probe())['pid'], process, reason: 'Cancellation must preserve the shared MCP server and sibling call');
+      for (final steer in [true, false]) {
+        final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
+          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
+        await client.request('task.send', {'task_id': id, 'prompt': 'mcp'});
+        await _until(() async => (await probe())['waiting'] == 3);
+        if (steer) {
+          await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+        } else {
+          await client.request('task.cancel', {'task_id': id});
         }
+        expect((await terminal.timeout(const Duration(seconds: 5)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
+        await _until(() async => (await probe())['waiting'] == 1);
+        expect((await probe())['pid'], process, reason: 'Cancellation must preserve the shared MCP server and sibling call');
       }
       siblingToken.cancel(); await sibling;
       await _until(() async => (await probe())['waiting'] == 0);

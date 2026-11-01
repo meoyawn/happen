@@ -14,7 +14,7 @@ import 'package:test/test.dart';
 void main() {
   // Captured from SessionSystemPrompt.make and Codex's model_messages at the
   // revisions recorded alongside the search fixtures. No Happen prose is added.
-  test('provider system instructions match the upstream bytes', () {
+  test('catalog text matches upstream and persistent mode stays outside base instructions', () {
     String digest(String text) => sha256.convert(utf8.encode(text)).toString();
     expect(digest(opencode.openCodeInstructions), '1ffd1d46e14c2699759ad6671aa13aae9d41d31391cdc24b32b97d2007a01cdf');
     const hashes = {
@@ -29,14 +29,16 @@ void main() {
       final instructions = [model.instructions, model.persistentInstructions].where((value) => value.isNotEmpty).join('\n\n');
       expect(digest(instructions), entry.value, reason: entry.key);
       final config = initialConfiguration({
-        'provider': 'openai', 'model': entry.key, 'base_instructions': instructions,
+        'provider': 'openai', 'model': entry.key, 'instructions': model.instructions,
         'provider_settings': {'reasoning': 'low'},
       }, '/repo', false);
-      expect(config['instructions'], instructions);
+      expect(config['instructions'], model.instructions);
+      expect(const OpenAIToolInterface().toolsInHistory, true);
+      expect(config['instructions'], isNot(contains('You are now in persistent mode')));
       expect(config['tool_interface'], 'openai');
     }
     final config = initialConfiguration({
-      'provider': 'opencode', 'model': openCodeDeepSeekModel, 'base_instructions': 'obsolete shared instructions',
+      'provider': 'opencode', 'model': openCodeDeepSeekModel, 'instructions': 'supplied instructions',
       'provider_settings': {'reasoning': 'high'},
     }, '/repo', false);
     expect(config['instructions'], opencode.openCodeInstructions);

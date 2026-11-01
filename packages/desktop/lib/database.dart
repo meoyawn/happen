@@ -19,7 +19,7 @@ void _databaseMain(List<Object?> args) async {
     db.execute('PRAGMA foreign_keys=ON');
     final version =
         db.select('PRAGMA user_version').single.values.single as int;
-    if (version > 4) {
+    if (version > 5) {
       throw StateError('Desktop database is from a newer version');
     }
     db.execute('''
@@ -52,7 +52,8 @@ void _databaseMain(List<Object?> args) async {
       // adding the column, without loading every server transcript for Recents.
       db.execute('UPDATE tasks SET last_activity = rowid WHERE last_activity = 0');
     }
-    db.execute('PRAGMA user_version=4');
+    db.execute("DELETE FROM settings WHERE key = 'conversation_view'");
+    db.execute('PRAGMA user_version=5');
     (args[0] as SendPort).send(port.sendPort);
     await for (final raw in port) {
       final request = jsonObject(raw);

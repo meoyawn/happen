@@ -6,6 +6,7 @@ import 'dart:isolate';
 import 'package:cancellation_token/cancellation_token.dart';
 export 'package:cancellation_token/cancellation_token.dart';
 export 'src/attachments.dart';
+export 'src/session.dart';
 
 typedef Json = Map<String, dynamic>;
 

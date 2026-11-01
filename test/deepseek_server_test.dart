@@ -2,11 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ai/ai.dart';
 import 'package:opencode/src/instructions.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -140,6 +138,7 @@ void main() {
     server = await AgentServer.startEmbedded(
       directory: root.path,
       configPath: '${root.path}/config.yaml',
+      skillsHome: root.path,
     );
     client = await AgentClient.connect(server.uri);
     Future<Json> turn(String method, Json params) async {
@@ -216,50 +215,11 @@ void main() {
     expect(loaded, isEmpty, reason: 'OpenCode tools stay in Code Mode instead of loading native schemas');
     final probe = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool');
     expect(jsonDecode(probe['content'] as String)['pid'], isPositive);
-    String? legacyId;
-    if (providerId == 'opencode') {
-      final history = await client.request('history.page', {'task_id': first['task_id'], 'limit': 500}) as List;
-      final legacyConfig = jsonObject(history.firstWhere((event) => event['type'] == 'task.created')['data'])
-        ..remove('tool_interface');
-      legacyConfig['instructions'] = 'Obsolete shared Codex instructions.';
-      legacyConfig['tools'] = [const ToolDefinition(name: 'exec', namespace: 'functions', format: 'text', description: 'Earlier shared tool').toJson()];
-      legacyId = newId();
-      final store = TaskStore(root.path, legacyId);
-      final call = ToolCall(id: 'legacy-call', name: 'exec', namespace: 'functions', format: 'text',
-        input: 'text("Earlier work")', native: {'wire_name': 'functions__exec'});
-      try {
-        store.append('task.created', legacyConfig, metadata: {
-          'config': legacyConfig, 'status': 'idle', 'import_operation': legacyId,
-        });
-        store.append('input.committed', {'item': ConversationItem.text('user', 'Earlier question').toJson()});
-        store.append('model.completed', ModelReply([ConversationItem(role: 'assistant', content: [call.toJson()])], const ModelUsage()).toJson());
-        store.append('tool.completed', {'item': ConversationItem.toolResult(call, 'Earlier work').toJson()});
-        store.append('model.completed', ModelReply([ConversationItem.text('assistant', 'Earlier answer')], const ModelUsage()).toJson());
-      } finally { store.close(); }
-      await client.close();
-      await server.close();
-      server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml');
-      client = await AgentClient.connect(server.uri);
-      expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
-      expect(await client.request('history.import', {'path': bundle, 'operation_id': legacyId}), {'task_id': legacyId});
-      for (var pass = 0; pass < 2; pass++) {
-        if (pass > 0) {
-          final compacted = await turn('task.compact', {'task_id': legacyId});
-          expect(compacted['type'], 'turn.completed', reason: compacted.toString());
-        }
-        final resumed = await turn('task.send', {'task_id': legacyId, 'prompt': 'discover'});
-        expect(resumed['type'], 'turn.completed', reason: resumed.toString());
-        final body = requests.last;
-        expect((body['messages'] as List).first['content'], startsWith(openCodeInstructions));
-        expect((body['tools'] as List).map((tool) => tool['function']['name']), contains('execute'));
-        expect((body['tools'] as List).map((tool) => tool['function']['name']), isNot(contains('functions__exec')));
-        expect(jsonEncode(body['tools']), isNot(contains('unused_schema_')));
-        expect(jsonEncode(body['messages']), contains('The catalog is partial.'));
-        expect(jsonEncode(body), isNot(contains('Obsolete shared Codex instructions.')));
-        final result = (body['messages'] as List).lastWhere((message) => message['role'] == 'tool');
-        expect(jsonDecode(result['content'] as String)['pid'], isPositive);
-      }
-    }
+    await client.close();
+    await server.close();
+    server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml', skillsHome: root.path);
+    client = await AgentClient.connect(server.uri);
+    expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
     final beforeDenial = requests.length;
     denied = true;
     final failure = turn('task.send', {
@@ -277,7 +237,7 @@ void main() {
     expect(failed['data']['error'], contains('free_usage_limit'));
     expect(failed['data']['error'], contains(resetAt));
     expect(requests.length, beforeDenial + 2, reason: 'One model call runs the tool; its follow-up reports quota without retries');
-    expect(sessions.where((session) => session != legacyId), everyElement(first['task_id']));
+    expect(sessions, everyElement(first['task_id']));
     final history = await client.request('history.page', {
       'task_id': first['task_id'],
     }) as List;

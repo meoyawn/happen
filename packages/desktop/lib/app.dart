@@ -8,18 +8,27 @@ import 'package:protocol/protocol.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import 'conversation.dart';
+import 'conversation_data.dart';
 import 'appearance.dart';
 import 'composer_dictation.dart';
 import 'composer_attachments.dart';
+import 'composer_editor.dart';
 import 'composer_text_controller.dart';
 import 'context_usage.dart';
+import 'panel_state.dart';
+import 'session_panels.dart';
 import 'dictation.dart';
 import 'dictation_controls.dart';
 import 'file_autocomplete.dart';
 import 'model_picker.dart';
 import 'mcp_conversation.dart';
 import 'session.dart';
-import 'sidebar_hover.dart';
+import 'sidebar_frame.dart';
+import 'sidebar_resizer.dart';
+import 'interface_mode.dart';
+import 'opencode_navigation.dart';
+import 'window_chrome.dart';
+import 'terminal.dart';
 
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session});
@@ -33,30 +42,63 @@ class _DesktopViewState extends State<DesktopView> {
   static const _desktop = MethodChannel('happen/desktop');
   DesktopSession get session => widget.session;
   bool _picking = false, _settingsOpen = false;
+  bool _homeOpen = false;
+  final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
+  String? _nativeLayout;
+  final _sessionSearchFocus = FocusNode();
   double? _dragSidebarWidth;
-  bool _sidebarHovered = false;
-  final _collapsedProjects = <String>{};
   final _composer = GlobalKey<_ComposerState>();
-  int _recentLimit = 10;
-  String? _navigationSection;
-  DesktopTask? _navigationTask;
-  List<(Project, DesktopTask)>? _navigationTasks;
-  final _taskRowKeys = <(String, DesktopTask), GlobalKey>{};
-  final _taskTiles = <(String, DesktopTask), ({Object state, Widget tile})>{};
+  final _conversationPaneKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
     _bindNavigation();
+    session.addListener(_syncWindowChrome);
     _desktop.setMethodCallHandler((call) async {
       if (call.method == 'showSettings') await _settings();
+      if (call.method == 'windowChromeChanged') _applyWindowChrome(call.arguments);
     });
+    _syncWindowChrome();
+  }
+
+  Listenable get _viewChanges => Listenable.merge([session, _windowChrome]);
+  double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
+
+  void _applyWindowChrome(Object? value) {
+    if (!mounted || value is! Map) return;
+    final end = value['trafficLightsEnd'];
+    _windowChrome.value = (fullscreen: value['fullscreen'] == true,
+      trafficLightsEnd: end is num ? end.toDouble() : _windowChrome.value.trafficLightsEnd);
+  }
+
+  void _syncWindowChrome() {
+    if (defaultTargetPlatform != TargetPlatform.macOS) return;
+    final layout = _hasSidebar ? 'side' : 'top';
+    if (layout == _nativeLayout) return;
+    _nativeLayout = layout;
+    unawaited(_run(() async {
+      final result = await _desktop.invokeMethod<Object?>('setWindowLayout', {'layout': layout});
+      _applyWindowChrome(result);
+    }));
+  }
+
+  @override
+  void didUpdateWidget(DesktopView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session == session) return;
+    oldWidget.session.removeListener(_syncWindowChrome);
+    session.addListener(_syncWindowChrome);
+    _syncWindowChrome();
   }
 
   @override
   void dispose() {
     FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
+    session.removeListener(_syncWindowChrome);
     _desktop.setMethodCallHandler(null);
+    _sessionSearchFocus.dispose();
+    _windowChrome.dispose();
     super.dispose();
   }
 
@@ -68,9 +110,14 @@ class _DesktopViewState extends State<DesktopView> {
       if (!mounted) return;
       await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (context) => ListenableBuilder(
-          listenable: session,
+          listenable: _viewChanges,
           builder: (context, _) => Scaffold(
-            appBar: AppBar(title: const Text('Settings')),
+            appBar: AppBar(automaticallyImplyLeading: false, titleSpacing: 0,
+              toolbarHeight: _hasSidebar ? 64 : 44,
+              title: DesktopWindowDragRegion(child: Row(children: [
+                SizedBox(width: _trafficInset == 0 ? 8 : _trafficInset),
+                const BackButton(), const SizedBox(width: 8), const Text('Settings'),
+              ]))),
             body: Align(alignment: Alignment.topCenter, child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(32, 20, 32, 40),
               child: SizedBox(
@@ -91,10 +138,8 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                     const SizedBox(height: 20),
                   ],
-                  ConversationStylePicker(
-                    selected: session.conversationStyle,
-                    onSelected: (style) => unawaited(_run(() => session.chooseConversationStyle(style))),
-                  ),
+                  OpenCodeInterfacePicker(selected: session.openCodeLayout,
+                    onSelected: (layout) => unawaited(_run(() => session.chooseOpenCodeLayout(layout)))),
                   const Padding(padding: EdgeInsets.symmetric(vertical: 28), child: Divider(height: 1)),
                   const Text('Accounts', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 12),
@@ -310,7 +355,6 @@ class _DesktopViewState extends State<DesktopView> {
   @override
   void reassemble() {
     super.reassemble();
-    _taskTiles.clear();
     _bindNavigation();
   }
 
@@ -318,10 +362,27 @@ class _DesktopViewState extends State<DesktopView> {
     // Sidebar clicks can leave focus outside the workspace's shortcut ancestry.
     // Handle navigation before the focus tree, only while this route is current.
     if (!mounted || ModalRoute.of(context)?.isCurrent != true ||
-        event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+        event is! KeyDownEvent && event is! KeyRepeatEvent) { return KeyEventResult.ignored; }
     final keyboard = HardwareKeyboard.instance;
+    final primary = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isMetaPressed : keyboard.isControlPressed;
+    final other = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isControlPressed : keyboard.isMetaPressed;
+    if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
+        keyboard.isShiftPressed && !keyboard.isAltPressed && _hasSidebar) {
+      if (event is KeyDownEvent) unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)));
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.keyJ && primary && !other &&
+        !keyboard.isAltPressed && !keyboard.isShiftPressed && _canOpenTerminal) {
+      if (event is KeyDownEvent) { _openTerminal(); }
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
+        !keyboard.isShiftPressed && !keyboard.isAltPressed && session.task != null && !_homeOpen) {
+      if (event is KeyDownEvent) _toggleSidePanel();
+      return KeyEventResult.handled;
+    }
     if (!keyboard.isAltPressed || keyboard.isMetaPressed ||
-        keyboard.isControlPressed || keyboard.isShiftPressed) return KeyEventResult.ignored;
+        keyboard.isControlPressed || keyboard.isShiftPressed) { return KeyEventResult.ignored; }
     final offset = switch (event.logicalKey) {
       LogicalKeyboardKey.arrowUp => -1,
       LogicalKeyboardKey.arrowDown => 1,
@@ -332,81 +393,73 @@ class _DesktopViewState extends State<DesktopView> {
     return KeyEventResult.handled;
   }
 
-  List<(Project, DesktopTask)> _sectionTasks(String section) {
-    if (section == 'recents') return session.recentTasks;
-    final pinned = {
-      for (final project in session.projects)
-        if (!project.removing)
-          for (final task in project.tasks) task.id: (project, task),
-    };
-    return [
-      if (section == 'pinned')
-        for (final id in session.pinnedTaskIds)
-          if (pinned[id] case final entry? when !entry.$2.archived) entry,
-      for (final project in section == 'pinned'
-          ? [for (final key in session.pinnedProjectKeys)
-              ...session.projects.where((project) => project.checkoutKey == key)]
-          : session.projects.where((project) => !session.pinnedProjectKeys.contains(project.checkoutKey)))
-        if (!project.removing)
-          for (final task in project.tasks)
-            if (!task.archived && !session.pinnedTaskIds.contains(task.id)) (project, task),
-    ];
-  }
-
-  List<(Project, DesktopTask)> _orderedSectionTasks(String section) {
-    final tasks = _sectionTasks(section);
-    final retained = _navigationTasks;
-    final live = tasks.map((entry) => entry.$2).toSet();
-    return section == _navigationSection && _navigationTask == session.task &&
-        retained != null && retained.length == tasks.length && retained.every((entry) => live.contains(entry.$2))
-        ? retained : tasks;
-  }
-
   void _selectAdjacentTask(int offset) {
-    var section = _navigationSection;
-    if (section == null || session.collapsedSidebarSections.contains(section) ||
-        session.task != null && !_sectionTasks(section).any((entry) => entry.$2 == session.task)) {
-      final expanded = ['pinned', 'projects', 'recents'].where((id) => !session.collapsedSidebarSections.contains(id)).toList();
-      section = expanded.where((id) => _sectionTasks(id).any((entry) => entry.$2 == session.task)).firstOrNull ??
-          expanded.where((id) => _sectionTasks(id).isNotEmpty).firstOrNull;
-      _navigationTasks = null;
-    }
-    if (section == null) return;
-    if (_navigationTask != session.task) _navigationTasks = null;
-    final tasks = _orderedSectionTasks(section);
-    if (tasks.isEmpty) return;
-    final current = tasks.indexWhere((entry) => entry.$2 == session.task);
-    final next = current < 0 ? (offset > 0 ? 0 : tasks.length - 1) : current + offset;
-    if (next < 0 || next >= tasks.length) return;
-    final (project, task) = tasks[next];
-    _navigationSection = section;
-    _navigationTask = task;
-    _navigationTasks = tasks;
-    if (section == 'recents' && next >= _recentLimit) _recentLimit = next + 1;
-    final grouped = section == 'projects' || section == 'pinned' &&
-        session.pinnedProjectKeys.contains(project.checkoutKey) && !session.pinnedTaskIds.contains(task.id);
-    unawaited(_run(() => grouped
-        ? _selectProject(project, task) : session.select(project, task)));
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && session.task == task && ModalRoute.of(context)?.isCurrent == true) {
-        _composer.currentState?._focus.requestFocus();
-        final row = _taskRowKeys[(section, task)]?.currentContext;
-        if (row != null) unawaited(Scrollable.ensureVisible(row, alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd));
-      }
-    });
+    final tasks = session.openCodeLayout == OpenCodeLayout.inbox
+      ? [for (final project in session.projects) if (!project.removing)
+          for (final task in project.tasks) if (!task.archived) (project, task)]
+      : session.openTasks;
+    final index = tasks.indexWhere((entry) => entry.$2 == session.task);
+    final next = index < 0 ? (offset > 0 ? 0 : tasks.length - 1) : index + offset;
+    if (next >= 0 && next < tasks.length) _openTask(tasks[next].$1, tasks[next].$2);
   }
-
-  void _toggleProject(Project project) => setState(() {
-    if (!_collapsedProjects.add(project.checkoutKey)) {
-      _collapsedProjects.remove(project.checkoutKey);
-    }
-  });
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
-    if (_collapsedProjects.contains(project.checkoutKey)) {
-      setState(() => _collapsedProjects.remove(project.checkoutKey));
-    }
+    if (_homeOpen) setState(() => _homeOpen = false);
+    session.viewingConversation = true;
     return session.select(project, task);
+  }
+
+  Future<void> _newChat() async {
+    if (_homeOpen) setState(() => _homeOpen = false);
+    final project = session.project;
+    if (project == null || !project.available || project.removing) { await _addProject(); return; }
+    await _selectProject(project);
+    if (mounted && session.project == project && session.task == null) _composer.currentState?._focus.requestFocus();
+  }
+
+  bool get _hasSidebar => session.openCodeLayout != OpenCodeLayout.top;
+
+  void _showHome({bool search = false}) {
+    session.viewingConversation = false;
+    setState(() => _homeOpen = true);
+    if (search) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _homeOpen) _sessionSearchFocus.requestFocus();
+      });
+    }
+  }
+
+  void _openTask(Project project, DesktopTask task) {
+    session.viewingConversation = true;
+    setState(() => _homeOpen = false);
+    unawaited(_run(() => session.select(project, task)));
+  }
+
+  void _openDraft(Project project) {
+    setState(() => _homeOpen = false);
+    unawaited(_run(() async {
+      await _selectProject(project);
+      if (mounted) _composer.currentState?._focus.requestFocus();
+    }));
+  }
+
+  bool get _canOpenTerminal => session.project?.available == true && session.project?.removing != true &&
+      session.task?.archived != true && session.task?.archiving != true;
+
+  (String, String?)? get _terminalScope => _canOpenTerminal ? (session.project!.checkoutKey, session.task?.id) : null;
+
+  void _openTerminal() {
+    final project = session.project;
+    if (!_canOpenTerminal || project == null) return;
+    if (_homeOpen) setState(() => _homeOpen = false);
+    session.terminals.open(_terminalScope!, project.path);
+  }
+
+  void _toggleSidePanel() {
+    if (session.task case final task?) {
+      session.toggleSidePanel(task);
+      if (!session.panelsFor(task).opened) _composer.currentState?._focus.requestFocus();
+    }
   }
 
   @override
@@ -414,7 +467,7 @@ class _DesktopViewState extends State<DesktopView> {
     autofocus: true,
     child: Scaffold(
       body: LayoutBuilder(builder: (context, constraints) => ListenableBuilder(
-        listenable: session,
+        listenable: _viewChanges,
         builder: (context, _) => _workspace(context, constraints),
       )),
     ),
@@ -422,62 +475,65 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
-    _taskTiles.removeWhere((entry, _) => !tasks.contains(entry.$2));
-    _taskRowKeys.removeWhere((entry, _) => !tasks.contains(entry.$2));
-    _collapsedProjects.retainAll(session.projects.map((project) => project.checkoutKey));
-    final maxSidebarWidth = (constraints.maxWidth - 488).clamp(200.0, 480.0).toDouble();
-    final sidebarWidth = (_dragSidebarWidth ?? session.sidebarWidth).clamp(200.0, maxSidebarWidth).toDouble();
-    return Row(
-        children: [
-          _sidebar(context, sidebarWidth),
-          Semantics(
-            label: 'Resize sidebar',
-            child: MouseRegion(
-              cursor: SystemMouseCursors.resizeColumn,
-              onEnter: (_) => setState(() => _sidebarHovered = true),
-              onExit: (_) => setState(() => _sidebarHovered = false),
-              child: GestureDetector(
-                key: const ValueKey('sidebar-resizer'),
-                behavior: HitTestBehavior.opaque,
-                onHorizontalDragStart: (_) => setState(() => _dragSidebarWidth = sidebarWidth),
-                onHorizontalDragUpdate: (details) {
-                  final delta = Directionality.of(context) == TextDirection.rtl ? -details.delta.dx : details.delta.dx;
-                  setState(() => _dragSidebarWidth = ((_dragSidebarWidth ?? sidebarWidth) + delta).clamp(200.0, maxSidebarWidth).toDouble());
-                },
-                onHorizontalDragEnd: (_) {
-                  final width = _dragSidebarWidth ?? sidebarWidth;
-                  unawaited(_run(() => session.chooseSidebarWidth(width)));
-                  setState(() => _dragSidebarWidth = null);
-                },
-                onHorizontalDragCancel: () => setState(() => _dragSidebarWidth = null),
-                child: SizedBox(
-                  width: 8,
-                  height: double.infinity,
-                  child: ColoredBox(color: const Color(0xfff9f9f9), child: Center(child: Container(
-                    width: _sidebarHovered || _dragSidebarWidth != null ? 2 : 1,
-                    color: _sidebarHovered || _dragSidebarWidth != null ? const Color(0xffb0b3b9) : Colors.transparent,
-                  ))),
-                ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: ConversationAppearance(
-              style: session.conversationStyle,
-              child: ColoredBox(color: session.conversationStyle == ConversationStyle.harness ? Colors.white : const Color(0xfffdfdfd),
-              child: Column(
-              children: [
+    session.viewingConversation = !_homeOpen;
+    final minSidebarWidth = 136.0;
+    final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0).toDouble();
+    final savedWidth = session.openCodeSidebarWidth;
+    final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth).toDouble();
+    final pane = _conversationPane(context, tasks);
+    if (!_hasSidebar) {
+      return ColoredBox(color: const Color(0xfff9f9f9), child: Column(children: [
+        OpenCodeTopBar(session: session, home: _homeOpen, leadingInset: _trafficInset,
+          onHome: _showHome, onSearch: () => _showHome(search: true),
+          onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
+          onSelect: _openTask, onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived)))),
+        Expanded(child: pane),
+      ]));
+    }
+    return ColoredBox(color: const Color(0xfff9f9f9), child: DesktopSidebarFrame(
+      open: session.sidebarOpen, width: sidebarWidth,
+      resizerOffset: 4, resizing: _dragSidebarWidth != null,
+      collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
+      onToggle: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
+      unread: session.openTasks.any((entry) => !entry.$2.running && entry.$2.lastActivity > (session.viewedTasks[entry.$2.id] ?? -1)),
+      sidebar: OpenCodeSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
+            onHome: _showHome, onSearch: () => _showHome(search: true),
+            onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
+            onSelect: _openTask, onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
+        ,
+      resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
+      child: pane,
+    ));
+  }
+
+  Widget _sidebarResizer(double sidebarWidth, double minSidebarWidth, double maxSidebarWidth) =>
+    SidebarResizer(key: const ValueKey('sidebar-resizer'), size: sidebarWidth,
+      min: minSidebarWidth, max: maxSidebarWidth,
+      onResize: (width) => setState(() => _dragSidebarWidth = width),
+      onResizeEnd: (width) {
+        unawaited(_run(() => session.chooseSidebarWidth(width)));
+        setState(() => _dragSidebarWidth = null);
+      },
+      onCancel: () => setState(() => _dragSidebarWidth = null));
+
+  Widget _conversationPane(BuildContext context, Set<DesktopTask> tasks) {
+    final home = _homeOpen;
+    return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
+      child: ConversationTypography(
+          child: Padding(padding: const EdgeInsets.all(8), child: SessionPanelWorkspace(
+            session: session, task: home ? null : session.task,
+            onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
+            child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
+              Offstage(offstage: home, child: Column(children: [
                 _header(context),
-                if (session.conversationStyle == ConversationStyle.opencode) const Divider(height: 1, color: Color(0xffeeeeef)),
-                Expanded(
-                  child: ConversationDeck(
+                Expanded(child: ConversationDataScope(client: session.client, providers: session.providers, child: ConversationDeck(
                     task: session.task,
                     tasks: tasks,
                     directory: session.project?.path ?? '',
                     empty: _empty(context),
                     onRetry: (task) => unawaited(_run(() => session.loadHistory(task))),
-                  ),
-                ),
+                    onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
+                ))),
                 if (session.error case final error?)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
@@ -518,278 +574,13 @@ class _DesktopViewState extends State<DesktopView> {
                   )
                 else if (session.project != null)
                   _Composer(key: _composer, session: session),
-              ],
-            ))),
-          ),
-        ],
-      );
-  }
-
-  Widget _sidebar(BuildContext context, double width) => SizedBox(
-    key: const ValueKey('sidebar'),
-    width: width,
-    child: Material(
-      color: const Color(0xfff9f9f9),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SizedBox(height: 52, child: Row(
-              children: [
-                PopupMenuButton<String>(
-                  tooltip: 'Happen',
-                  onSelected: (value) => value == 'settings' ? _settings() : _addProject(),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'project', child: Text('Open project')),
-                    PopupMenuItem(value: 'settings', child: Text('Settings')),
-                  ],
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Text('Happen', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -.7)),
-                    SizedBox(width: 4),
-                    Icon(Icons.keyboard_arrow_down_rounded, size: 15, color: Color(0xff979aa0)),
-                  ]),
-                ),
-              ],
-            )),
-          ),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: SidebarItem(
-            child: const Row(children: [
-              Icon(Icons.edit_square, size: 16, color: Color(0xff656971)),
-              SizedBox(width: 8),
-              Text('New task', style: TextStyle(fontSize: 14, color: Color(0xff1a1c1f))),
-            ]),
-            onTap: session.project?.available == true && session.project?.removing != true
-                ? () => _run(() => _selectProject(session.project!)) : _addProject,
+              ])),
+              if (home) OpenCodeHome(session: session, focusNode: _sessionSearchFocus,
+                onSelect: _openTask, onNew: _openDraft, onAddProject: () => unawaited(_addProject())),
+            ])),
           )),
-          const SizedBox(height: 12),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              children: [
-                ..._sidebarSection('pinned', 'Pinned', () => [
-                  for (final id in session.pinnedTaskIds)
-                    for (final project in session.projects)
-                      for (final task in project.tasks)
-                        if (task.id == id && !task.archived) _taskTile(project, task, section: 'pinned'),
-                  for (final key in session.pinnedProjectKeys)
-                    for (final project in session.projects)
-                      if (project.checkoutKey == key) ..._projectRows(project, section: 'pinned'),
-                ]),
-                ..._sidebarSection('projects', 'Projects', () => [
-                  for (final project in session.projects)
-                    if (!session.pinnedProjectKeys.contains(project.checkoutKey)) ..._projectRows(project),
-                ], action: IconButton(
-                  tooltip: 'Open project',
-                  onPressed: _addProject,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints.tightFor(width: 24, height: 24),
-                  icon: const Icon(Icons.add_rounded, size: 16),
-                )),
-                ..._sidebarSection('recents', 'Recents', _recentRows),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.circle,
-                  size: 7,
-                  color: session.connected
-                      ? const Color(0xff58a375)
-                      : Colors.orange,
-                ),
-                const SizedBox(width: 9),
-                Text(
-                  session.connected ? 'Local' : 'Disconnected',
-                  style: const TextStyle(fontSize: 12, color: Color(0xff777b82)),
-                ),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'App settings',
-                  onPressed: _settings,
-                  icon: const Icon(Icons.settings_outlined, size: 18),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-
-  List<Widget> _sidebarSection(String id, String title, List<Widget> Function() children, {Widget? action}) {
-    final collapsed = session.collapsedSidebarSections.contains(id);
-    return [
-      Semantics(
-        key: ValueKey('section:$id'),
-        expanded: !collapsed,
-        child: SidebarHover(builder: (context, active) => SidebarItem(
-          key: ValueKey('section-header:$id'),
-          padding: const EdgeInsets.only(left: 8, right: 4),
-          child: Row(children: [
-            Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Color(0x7e1a1c1f))),
-            if (collapsed || active) Icon(collapsed ? Icons.chevron_right : Icons.expand_more,
-              size: 14, color: const Color(0x7e1a1c1f)),
-            const Spacer(),
-            if (action != null && active) action,
-          ]),
-          onTap: () {
-            if (id == 'recents' && !collapsed) _recentLimit = 10;
-            _navigationTasks = null;
-            unawaited(_run(() => session.chooseSidebarSection(id, !collapsed)));
-          },
-        )),
-      ),
-      if (!collapsed) ...children(),
-      const SizedBox(height: 16),
-    ];
-  }
-
-  Widget _sidebarEmpty(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(24, 4, 12, 4),
-    child: Text(text, style: const TextStyle(fontSize: 12, color: Color(0xffb1b3b9))),
-  );
-
-  List<Widget> _recentRows() {
-    final tasks = _orderedSectionTasks('recents');
-    final visible = tasks.take(_recentLimit).toList();
-    if (tasks.length - visible.length == 1) visible.add(tasks.last);
-    final active = tasks.where((entry) => entry.$2 == session.task).firstOrNull;
-    if (active != null && !visible.contains(active)) visible.add(active);
-    return [
-      for (final (project, task) in visible) _taskTile(project, task, section: 'recents'),
-      if (tasks.isEmpty) _sidebarEmpty('No recent tasks'),
-      if (visible.length < tasks.length)
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton(
-            onPressed: () => setState(() => _recentLimit += 10),
-            child: const Text('Show more'),
-          ),
         ),
-    ];
-  }
-
-  List<Widget> _projectRows(Project project, {String section = 'projects'}) => [
-    SidebarHover(builder: (context, active) => SidebarItem(
-      key: ValueKey('project:${project.checkoutKey}'),
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      selected: session.project == project && session.task == null,
-      onTap: project.removing ? null : () => _toggleProject(project),
-      child: Row(children: [
-      Semantics(
-        expanded: !_collapsedProjects.contains(project.checkoutKey),
-        child: IconButton(
-          tooltip: '${_collapsedProjects.contains(project.checkoutKey) ? 'Expand' : 'Collapse'} ${project.name}',
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 16, height: 24),
-          style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-          icon: Icon(active ? _collapsedProjects.contains(project.checkoutKey) ? Icons.chevron_right : Icons.expand_more
-            : Icons.folder_outlined, size: 16, color: project.available ? const Color(0xff50545b) : const Color(0xffb1b3b9)),
-          onPressed: project.removing ? null : () => _toggleProject(project),
-        ),
-      ),
-      const SizedBox(width: 8),
-      Expanded(child: Tooltip(
-        message: project.available ? project.path : '${project.path}\nFolder unavailable',
-        child: Text(
-          project.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 14, height: 1.5, fontWeight: FontWeight.w400,
-            color: project.available ? const Color(0xff1a1c1f) : const Color(0xffb1b3b9)),
-        ),
-      )),
-      if (active) ...[
-        IconButton(
-          tooltip: 'New task in ${project.name}',
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 22, height: 24),
-          icon: const Icon(Icons.add, size: 16),
-          onPressed: project.available && !project.removing ? () => _run(() => _selectProject(project)) : null,
-        ),
-        PopupMenuButton<String>(
-          tooltip: 'Project actions',
-          padding: EdgeInsets.zero,
-          iconSize: 16,
-          style: IconButton.styleFrom(minimumSize: const Size(22, 24), maximumSize: const Size(22, 24), padding: EdgeInsets.zero),
-          enabled: !project.removing && !session.submitting && !project.tasks.any((task) => task.archiving),
-          icon: const Icon(Icons.more_horiz, size: 16),
-          onSelected: (value) {
-            _navigationTasks = null;
-            unawaited(_run(() => value == 'pin'
-                ? session.pinProject(project, !session.pinnedProjectKeys.contains(project.checkoutKey))
-                : _removeProject(project)));
-          },
-          itemBuilder: (_) => [
-            PopupMenuItem(value: 'pin', child: Text(session.pinnedProjectKeys.contains(project.checkoutKey) ? 'Unpin project' : 'Pin project')),
-            const PopupMenuItem(value: 'remove', child: Text('Remove project')),
-          ],
-        ),
-      ],
-      ]),
-    )),
-    if (!_collapsedProjects.contains(project.checkoutKey))
-      for (final task in project.tasks.where((task) => !task.archived && !session.pinnedTaskIds.contains(task.id)))
-        _taskTile(project, task, section: section, grouped: true),
-  ];
-
-  Widget _taskTile(Project project, DesktopTask task, {String section = 'projects', bool grouped = false}) {
-    final state = (session.task == task, task.title, task.running, task.archiving, task.archived,
-      session.connected, project.available, project.removing, session.pinnedTaskIds.contains(task.id), grouped);
-    final key = (section, task);
-    final cached = _taskTiles[key];
-    if (cached?.state == state) return cached!.tile;
-    final tile = Padding(
-    key: ValueKey('$section:${task.id}'),
-    padding: const EdgeInsets.only(bottom: 1),
-    child: SidebarHover(builder: (context, active) => SidebarItem(
-      key: _taskRowKeys.putIfAbsent(key, () => GlobalKey()),
-      padding: EdgeInsets.only(left: grouped ? 32 : 8, right: 8),
-      selected: session.task == task,
-      child: Row(children: [Expanded(child: Tooltip(
-        message: '${task.title}\n${project.path}',
-        child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 14, height: 20 / 14,
-            color: project.available ? const Color(0xff1a1c1f) : const Color(0xffb1b3b9))),
-      )),
-        if (task.running || task.archiving)
-          const Padding(padding: EdgeInsets.only(right: 6), child: SizedBox.square(dimension: 10,
-            child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xff777b82)))),
-        if (active) PopupMenuButton<String>(
-          tooltip: 'Task actions',
-          padding: EdgeInsets.zero,
-          iconSize: 16,
-          style: IconButton.styleFrom(minimumSize: const Size(20, 24), maximumSize: const Size(20, 24), padding: EdgeInsets.zero),
-          enabled: session.connected && !task.archiving && !project.removing,
-          icon: const Icon(Icons.more_horiz, size: 16),
-          onSelected: (value) {
-            _navigationTasks = null;
-            unawaited(_run(() => value == 'pin'
-                ? session.pinTask(task, !session.pinnedTaskIds.contains(task.id))
-                : _archiveTask(task, value == 'archive')));
-          },
-          itemBuilder: (_) => [
-            if (!task.archived)
-              PopupMenuItem(value: 'pin', child: Text(session.pinnedTaskIds.contains(task.id) ? 'Unpin task' : 'Pin task')),
-            PopupMenuItem(value: task.archived ? 'restore' : 'archive', child: Text(task.archived ? 'Restore task' : 'Archive task')),
-          ],
-        ),
-      ]),
-      onTap: () {
-        _navigationSection = section;
-        _navigationTask = task;
-        _navigationTasks = null;
-        unawaited(_run(() => grouped ? _selectProject(project, task) : session.select(project, task)));
-      },
-    )),
-  );
-    _taskTiles[key] = (state: state, tile: tile);
-    return tile;
+    );
   }
 
   Future<void> _archiveTask(DesktopTask task, bool archived) async {
@@ -809,13 +600,14 @@ class _DesktopViewState extends State<DesktopView> {
     }
   }
 
-  Widget _header(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 24),
-    child: SizedBox(height: 56, child: Row(
+  Widget _header(BuildContext context) => DesktopWindowDragRegion(child: AnimatedPadding(
+    duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+    padding: EdgeInsets.only(left: _hasSidebar && !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 24) : 24, right: 24),
+    child: SizedBox(height: 48, child: Row(
       children: [
         if (session.task != null && session.project != null) ...[
           Flexible(child: Text(session.project!.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, color: Color(0xff8b8e95)))),
+            style: TextStyle(fontSize: 13, color: opencodeMuted))),
           const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('/', style: TextStyle(color: Color(0xffc8cacf)))),
         ],
         Expanded(
@@ -823,18 +615,39 @@ class _DesktopViewState extends State<DesktopView> {
             session.task?.title ?? session.project?.name ?? 'Your workspace',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Color(0xff50545b)),
+            style: TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500,
+              letterSpacing: -.04,
+              fontVariations: const [FontVariation('wght', 530)],
+              color: opencodeInk),
           ),
         ),
+        if (session.task != null)
+          ContextUsageIndicator(messages: session.task!.messages.values,
+            limit: session.task!.contextLimit ?? session.modelInfo?['context_limit'] as num?,
+            onPressed: () {
+              session.openSessionPanel(session.task!, contextPanel, toggle: true);
+              if (!session.panelsFor(session.task!).opened) _composer.currentState?._focus.requestFocus();
+            }),
+        if (session.project != null)
+          IconButton(
+            tooltip: 'Open terminal (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘J' : 'Ctrl+J'})',
+            onPressed: _canOpenTerminal ? _openTerminal : null,
+            icon: const Icon(Icons.terminal_outlined, size: 17, color: Color(0xff777b82)),
+          ),
         if (session.project != null)
           IconButton(
             tooltip: 'New task',
-            onPressed: session.project!.available && !session.project!.removing ? () => _run(() => _selectProject(session.project!)) : null,
+            onPressed: session.project!.available && !session.project!.removing ? () => _run(_newChat) : null,
             icon: const Icon(Icons.edit_square, size: 17, color: Color(0xff777b82)),
           ),
+        if (session.task != null && session.panelLayouts[session.task!.id]?.opened != true)
+          IconButton(key: const ValueKey('toggle-side-panel'),
+            tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘B' : 'Ctrl+B'})',
+            onPressed: _toggleSidePanel,
+            icon: const SidePanelIcon(opened: false)),
       ],
     )),
-  );
+  ));
 
   Widget _empty(BuildContext context) => Center(
     child: Padding(
@@ -851,7 +664,7 @@ class _DesktopViewState extends State<DesktopView> {
                 ? 'Start with a project'
                 : 'What are we working on?',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: session.conversationStyle == ConversationStyle.harness ? 28 : 24,
+            style: TextStyle(fontSize: 24,
               fontWeight: FontWeight.w500, letterSpacing: -.8, color: const Color(0xff292b30)),
           ),
           const SizedBox(height: 12),
@@ -886,7 +699,7 @@ class _Composer extends StatefulWidget {
 
 class _ComposerState extends State<_Composer> {
   late String _draftKey = widget.session.draftKey;
-  late TextEditingController _text = ComposerTextController(
+  late ComposerTextController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
     files: widget.session.fileDrafts[_draftKey] ?? const [],
   );
@@ -1007,7 +820,7 @@ class _ComposerState extends State<_Composer> {
       text: widget.session.drafts[_draftKey] ?? '',
       files: widget.session.fileDrafts[_draftKey] ?? const [],
     )..addListener(_saveDraft);
-    // EditableText and autocomplete detach their listeners during this build.
+    // The editor and autocomplete detach their listeners during this build.
     WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
   }
 
@@ -1017,7 +830,7 @@ class _ComposerState extends State<_Composer> {
     } else {
       widget.session.drafts[_draftKey] = _text.text;
     }
-    final files = _text is ComposerTextController ? (_text as ComposerTextController).files : const <ComposerFileReference>[];
+    final files = _text.files;
     if (files.isEmpty) {
       widget.session.fileDrafts.remove(_draftKey);
     } else {
@@ -1029,9 +842,7 @@ class _ComposerState extends State<_Composer> {
     final controller = _text;
     final before = _text.value, selection = _text.selection;
     if (!selection.isValid || selection.isCollapsed) return;
-    final text = _text is ComposerTextController
-        ? (_text as ComposerTextController).serializeRange(selection.start, selection.end)
-        : selection.textInside(before.text);
+    final text = _text.serializeRange(selection.start, selection.end);
     await Clipboard.setData(ClipboardData(text: text));
     if (cut && mounted && identical(_text, controller) && _text.value == before && !widget.session.submitting) {
       final editor = _focus.context;
@@ -1099,6 +910,28 @@ class _ComposerState extends State<_Composer> {
     }
   }
 
+  Future<void> _pickAttachments() async {
+    if (_receivingAttachments || widget.session.submitting || _dictating) return;
+    final lifetime = _attachmentLifetime;
+    setState(() => _receivingAttachments = true);
+    try {
+      final paths = await MacosFilePicker().pick(MacosFilePickerMode.file,
+        allowsMultiple: true, initialDirectory: widget.session.project?.path, dialogTitle: 'Attach files');
+      try {
+        lifetime.throwIfCancelled();
+        if (mounted) _addAttachments([for (final path in paths ?? <MacosFilePickerPath>[]) composerAttachmentForFile(path.path)]);
+      } finally {
+        for (final path in paths ?? <MacosFilePickerPath>[]) { await path.release(); }
+      }
+    } on CancelledException {
+      // A different task now owns the composer.
+    } catch (error) {
+      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
+    } finally {
+      if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
+    }
+  }
+
   Future<void> _submit() async {
     if (!_text.value.composing.isCollapsed) return;
     if (_dictating) {
@@ -1113,7 +946,7 @@ class _ComposerState extends State<_Composer> {
     if (_autocomplete.currentState?.consumeCommand() == true) return;
     final controller = _text, draftKey = _draftKey;
     final draft = _text.text;
-    final prompt = _text is ComposerTextController ? (_text as ComposerTextController).serializePrompt() : draft;
+    final prompt = _text.serializePrompt();
     final attachments = List<ComposerAttachment>.of(_attachments);
     try {
       final accepted = await widget.session.send(prompt, attachments: attachments);
@@ -1175,16 +1008,7 @@ class _ComposerState extends State<_Composer> {
   @override
   Widget build(BuildContext context) {
     _bindVoice();
-    // Retained composers still own a plain controller after hot reload. Wait
-    // for any active dictation session before migrating its unchanged value.
-    if (_text is! ComposerTextController && _voiceText == null) {
-      final previous = _text;
-      previous.removeListener(_saveDraft);
-      _text = ComposerTextController.fromValue(previous.value)..addListener(_saveDraft);
-      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
-    }
     final session = widget.session;
-    final harness = ConversationAppearance.of(context) == ConversationStyle.harness;
     final running = session.task?.running == true;
     final available =
         session.connected &&
@@ -1200,10 +1024,11 @@ class _ComposerState extends State<_Composer> {
       onLeave: () { if (mounted) setState(() => _draggingAttachments = false); },
       child: Center(
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: harness ? 832 : 800),
+        constraints: BoxConstraints(maxWidth: opencodeSessionWidth),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
-          child: CallbackShortcuts(
+          padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+          CallbackShortcuts(
             bindings: {
               const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
                 if (!_text.value.composing.isCollapsed) return;
@@ -1236,19 +1061,33 @@ class _ComposerState extends State<_Composer> {
               focusNode: _focus,
               client: session.client,
               cwd: session.project!.path,
-              enabled: session.connected && !session.submitting && !_dictating && _text is ComposerTextController,
+              enabled: session.connected && !session.submitting && !_dictating,
+              session: session,
+              commands: {
+                '/new': (description: 'Start a new session', run: () => unawaited(session.select(session.project!))),
+                if (defaultTargetPlatform == TargetPlatform.macOS)
+                  '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
+                '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
+                if (session.task != null) '/context': (description: 'Inspect session context',
+                  run: () => session.openSessionPanel(session.task!, contextPanel)),
+                '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
+                  (session.project!.checkoutKey, session.task?.id), session.project!.path)),
+              },
               child: DecoratedBox(
                 key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(harness ? 24 : 12),
-                  border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary : const Color(0xffe0e1e4),
-                    width: _draggingAttachments ? 2 : 1),
-                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: harness ? .04 : .025),
-                    blurRadius: harness ? 16 : 6, offset: const Offset(0, 2))],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary
+                    : const Color(0x1f000000),
+                    width: _draggingAttachments ? 2 : .5),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x0a000000), blurRadius: 4, offset: Offset(0, 2)),
+                    BoxShadow(color: Color(0x14000000), blurRadius: 2, spreadRadius: -1, offset: Offset(0, 1)),
+                  ],
                 ),
                 child: Padding(
-                  padding: EdgeInsets.fromLTRB(harness ? 18 : 14, 12, 10, 10),
+                  padding: EdgeInsets.fromLTRB(8, 0, 8, 0),
                   child: Column(
                     children: [
                       if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
@@ -1280,32 +1119,42 @@ class _ComposerState extends State<_Composer> {
                             TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
-                      TextField(
+                      ComposerEditor(
                         controller: _text,
                         focusNode: _focus,
                         enabled: session.connected,
-                        contextMenuBuilder: (_, state) => composerContextMenu(state, _paste, copy: _copy),
-                        autofocus: true,
-                        minLines: 2,
-                        maxLines: 8,
-                        style: TextStyle(fontSize: harness ? 15 : 14, height: harness ? 1.6 : 1.5, color: const Color(0xff1a1c1f)),
-                        decoration: const InputDecoration(
-                          hintText: 'Ask anything, @ a file, / for commands',
-                          hintStyle: TextStyle(color: Color(0xff979aa0)),
-                          contentPadding: EdgeInsets.only(top: 4, bottom: 12),
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                        ),
+                        paste: _paste, copy: _copy,
                       ),
-                      Row(
+                      SizedBox(height: 44, child: Row(
                         children: [
+                          PopupMenuButton<String>(tooltip: 'Add context or commands', enabled: available && !_dictating,
+                            padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 220),
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'context': _autocomplete.currentState?.openContext();
+                                case 'commands': _autocomplete.currentState?.openCommands();
+                                case 'history': _autocomplete.currentState?.openHistory();
+                                case 'attach': unawaited(_pickAttachments());
+                              }
+                            },
+                            itemBuilder: (_) => [
+                              const PopupMenuItem(value: 'context', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                                leading: Icon(Icons.alternate_email_rounded, size: 16), title: Text('Add context'), trailing: Text('@'))),
+                              const PopupMenuItem(value: 'commands', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                                leading: Icon(Icons.terminal_rounded, size: 16), title: Text('Commands'), trailing: Text('/'))),
+                              const PopupMenuItem(value: 'history', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                                leading: Icon(Icons.history_rounded, size: 16), title: Text('Prompt history'), trailing: Text('⇧↑'))),
+                              if (defaultTargetPlatform == TargetPlatform.macOS)
+                                const PopupMenuItem(value: 'attach', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                                  leading: Icon(Icons.attach_file_rounded, size: 16), title: Text('Attach files'))),
+                            ],
+                            child: const SizedBox.square(dimension: 28,
+                              child: Icon(Icons.add_rounded, size: 20, color: Color(0xff656971)))),
                           if (_dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                            if (session.task case final task?) ContextUsageIndicator(events: task.events.values),
+                          Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.start, children: [
                             Flexible(child: ComposerModelPicker(session: session, enabled: available)),
                           ])),
                           const SizedBox(width: 8),
@@ -1313,7 +1162,6 @@ class _ComposerState extends State<_Composer> {
                             DictationButton(
                               phase: _voicePhase,
                               amplitude: _voice.amplitude,
-                              statusHint: _voice.liveTranscriptionHint,
                               enabled: available && (!_voice.active || _ownsVoice),
                               onStart: () => unawaited(_startVoice()),
                               onStop: () => unawaited(_finishVoice(DictationAction.insert)),
@@ -1331,7 +1179,7 @@ class _ComposerState extends State<_Composer> {
                               backgroundColor: const Color(0xff1a1c1f), foregroundColor: Colors.white,
                               disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
                               minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(harness ? 18 : 8)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                             ),
                             tooltip: stopWorking ? 'Stop task and clear pending messages' : running
                                 ? (session.deliveryMode == 'steer'
@@ -1351,10 +1199,7 @@ class _ComposerState extends State<_Composer> {
                           );
                           }),
                         ],
-                      ),
-                      if (_ownsVoice && _voice.phase == DictationPhase.recording && _voice.liveTranscriptionHint != null)
-                        Align(alignment: Alignment.centerLeft, child: Text(_voice.liveTranscriptionHint!,
-                          style: const TextStyle(fontSize: 11, color: Colors.black38))),
+                      )),
                       if (!session.authenticated)
                         const Align(alignment: Alignment.centerLeft, child: Text('Sign in to the selected provider to send',
                           style: TextStyle(fontSize: 11, color: Colors.black38))),
@@ -1364,6 +1209,7 @@ class _ComposerState extends State<_Composer> {
               ),
             )),
           ),
+          ]),
         ),
       ),
       ),

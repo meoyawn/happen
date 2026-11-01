@@ -92,7 +92,13 @@ void main() {
           return;
         }
         modelRequests.add(body);
-        final web = (body['tools'] as List).singleWhere((tool) => lab == 'openai'
+        final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
+        final tools = [
+          ...body['tools'] as List,
+          if (lab == 'openai') for (final item in input)
+            if (item['type'] == 'additional_tools') ...item['tools'] as List,
+        ];
+        final web = tools.singleWhere((tool) => lab == 'openai'
             ? tool['name'] == 'web' : tool['function']['name'] == 'websearch');
         final parameters = lab == 'openai' ? web['tools'][0]['parameters'] : web['function']['parameters'];
         if (lab == 'openai' && _schemaHash(parameters) != _codexWebSchemaHash) {
@@ -105,7 +111,6 @@ void main() {
           await request.response.close();
           return;
         }
-        final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
         final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
         final resumed = input[lastUser]['content'] == 'Continue';
         final results = input.skip(lastUser + 1).where((item) => lab == 'openai'

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:desktop/conversation.dart';
 import 'package:desktop/conversation_markdown.dart';
@@ -8,6 +9,7 @@ import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:protocol/protocol.dart';
 
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 
@@ -97,7 +99,7 @@ print(message);
     expect(find.byType(Table), findsOneWidget);
     expect(find.byIcon(Icons.check_box_outlined), findsOneWidget);
     expect(find.textContaining('09:41'), findsOneWidget);
-    expect(find.text('Completed in 1m 25s'), findsOneWidget);
+    expect(find.text('1m 25s'), findsOneWidget);
     expect(tester.getTopLeft(find.text('Plan the release', findRichText: true)).dx,
       greaterThan(tester.getTopLeft(heading).dx + 100));
 
@@ -107,6 +109,10 @@ print(message);
     await tester.tap(find.byTooltip('Wrap long lines'));
     await tester.pump();
     expect(find.byTooltip('Scroll long lines'), findsOneWidget);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    await mouse.moveTo(tester.getCenter(heading));
+    await tester.pump();
     await tester.tap(find.byTooltip('Copy response'));
     await tester.pump();
     expect(clipboard, response);
@@ -125,14 +131,14 @@ print(message);
       });
     await open(tester, task, size: const Size(420, 800));
     await tester.pump(const Duration(seconds: 1));
-    expect(find.textContaining('Compacting context ·'), findsOneWidget);
+    expect(find.text('Compacting context'), findsNWidgets(2));
     expect(find.textContaining('Working'), findsNothing);
     expect(find.text('Internal compaction text', findRichText: true), findsNothing);
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
     task.retryStatus = 'Reconnecting… 1/5';
     await open(tester, task, size: const Size(420, 800));
     await tester.pump();
-    expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsOneWidget);
+    expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
 
     task
@@ -144,15 +150,16 @@ print(message);
       }};
     await open(tester, task, size: const Size(420, 800));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('Context compacted in 42s'), findsOneWidget);
-    expect(find.textContaining('Working ·'), findsOneWidget);
+    expect(find.text('Context compacted'), findsOneWidget);
+    expect(find.text('Working'), findsNWidgets(2));
     expect(find.textContaining('Compacting context'), findsNothing);
     expect(find.text('Keep the release plan.', findRichText: true), findsNothing);
-    await tester.tap(find.text('Context compacted in 42s'));
+    await tester.tap(find.text('Context compacted'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Keep the release plan.', findRichText: true), findsOneWidget);
     expect(find.textContaining('private-provider-state'), findsNothing);
-    expect(conversation(task).where((entry) => entry.compaction != null).single.id, 'compaction');
+    expect(conversation(task).where((entry) => entry.compaction != null).single.compaction!.endedAt!.millisecondsSinceEpoch,
+      started.add(const Duration(seconds: 42)).millisecondsSinceEpoch);
     task
       ..running = false
       ..events[4] = {'seq': 4, 'type': 'turn.completed', 'data': {}};
@@ -161,7 +168,7 @@ print(message);
     await tester.pumpWidget(const SizedBox.shrink());
     await open(tester, replayed);
     await tester.pumpAndSettle();
-    expect(find.text('Context compacted in 42s'), findsOneWidget);
+    expect(find.text('Context compacted'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -253,10 +260,10 @@ print(message);
     expect(conversation(task).last.text, 'Replaced');
     task.pending.clear();
     task.streamingText = '';
-    task.transientTerminal = {'type': 'turn.cancelled', 'data': {}};
+    applySessionEvent(task.messages, {'id': 'evt_stop', 'type': 'session.execution.interrupted', 'data': {}, 'created': 1}, {});
     expect(conversation(task).last.text, 'Stopped');
-    task.transientTerminal = null;
     task.events.clear();
+    task.messages.clear();
     expect(conversation(task), isEmpty);
   });
 
@@ -282,19 +289,18 @@ print(message);
   testWidgets('collapsed tools defer JSON formatting until their contents are opened', (tester) async {
     final arguments = _CountedJson({'cmd': 'pwd'});
     final output = _CountedJson({'output': '/project'});
-    final task = DesktopTask('lazy-tools', 'Lazy tools')..events.addAll({
-      1: {'seq': 1, 'type': 'tool.started', 'data': {
-        'call_id': 'cell', 'namespace': 'functions', 'name': 'exec', 'input': 'text(await tools.exec_command({cmd: "pwd"}));',
-      }},
-      2: {'seq': 2, 'type': 'host_tool.started', 'data': {
-        'id': 'shell', 'parent_call_id': 'cell', 'name': 'exec_command', 'arguments': arguments,
-      }},
-      3: {'seq': 3, 'type': 'host_tool.completed', 'data': {'id': 'shell', 'output': output}},
-    });
+    final task = DesktopTask('lazy-tools', 'Lazy tools')..messages['msg_tools'] = {
+      'id': 'msg_tools', 'type': 'assistant', 'metadata': {'seq': 1}, 'time': {'created': 1, 'streamed': 2}, 'content': [
+        {'type': 'tool', 'id': 'cell', 'name': 'functions.exec', 'time': {'created': 1},
+          'state': {'status': 'completed', 'input': {'code': 'text(await tools.exec_command({cmd: "pwd"}));'}}},
+        {'type': 'tool', 'id': 'shell', 'name': 'exec_command', 'time': {'created': 1}, 'native': {'parentCallID': 'cell'},
+          'state': {'status': 'completed', 'input': arguments, 'content': [{'type': 'text', 'text': output}]}},
+      ],
+    };
     await open(tester, task);
     expect(arguments.encodes, 0);
     expect(output.encodes, 0);
-    await tester.tap(find.text('functions.exec'));
+    await tester.tap(find.textContaining('Used 1', findRichText: true));
     await tester.pumpAndSettle();
     expect(arguments.encodes, 0);
     expect(output.encodes, 0);
@@ -302,7 +308,6 @@ print(message);
     await tester.pumpAndSettle();
     expect(arguments.encodes, 1);
     expect(output.encodes, 1);
-    expect(find.textContaining('/project'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -349,6 +354,8 @@ print(message);
     await open(tester, task);
     await tester.pumpAndSettle();
     expect(find.byType(Image), findsNothing);
+    await tester.tap(find.textContaining('Used 1', findRichText: true));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('mcp__browser.screenshot'));
     await tester.pumpAndSettle();
     await tester.runAsync(() async {
@@ -356,7 +363,6 @@ print(message);
     });
     await tester.pumpAndSettle();
     expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
-    expect(find.text('Code & output'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -378,7 +384,7 @@ const value = "${List.filled(100, 'long').join()}";
     await open(tester, task, size: const Size(420, 800));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('In progress', findRichText: true), findsOneWidget);
-    expect(find.textContaining('Working ·'), findsOneWidget);
+    expect(find.text('Working'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
     final completed = '${task.streamingText}\n```\n\n**Done.**';
     task
@@ -391,8 +397,8 @@ const value = "${List.filled(100, 'long').join()}";
     await open(tester, task, size: const Size(420, 800));
     await tester.pumpAndSettle();
     expect(find.text('Done.', findRichText: true), findsOneWidget);
-    expect(find.textContaining('Working ·'), findsNothing);
-    expect(find.text('Completed in 25s'), findsOneWidget);
+    expect(find.text('Working'), findsNothing);
+    expect(conversation(task).where((entry) => entry.response != null).single.response!.duration, isNotNull);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
