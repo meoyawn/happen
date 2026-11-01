@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent/agent.dart';
+import 'package:agent/src/instructions.dart';
 import 'package:crypto/crypto.dart';
 import 'package:openai/openai.dart';
 import 'package:openai/src/instructions.dart' as codex;
@@ -59,6 +60,22 @@ void main() {
       '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nThese AGENTS.md instructions replace all previously provided AGENTS.md instructions.\n\nNew\n</INSTRUCTIONS>');
     expect(codex.renderInstructions({'cwd': '/repo', 'files': []}, initial).text,
       '# AGENTS.md instructions\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions no longer apply.\n</INSTRUCTIONS>');
+  });
+
+  test('instruction tracking ignores budget bookkeeping and cwd-only changes', () {
+    final previous = <String, dynamic>{'cwd': '/repo', 'truncated': true, 'files': [
+      {'path': '/repo/AGENTS.md', 'scope': '/repo', 'text': 'Current rules', 'truncated': true},
+    ]};
+    final current = <String, dynamic>{'cwd': '/repo/sub', 'truncated': false, 'files': [
+      {'path': '/repo/AGENTS.md', 'scope': '/repo', 'text': 'Current rules'},
+    ]};
+    for (final interface in [const OpenAIToolInterface(), const OpenCodeToolInterface()]) {
+      expect(instructionUpdate(interface, current, previous), isNull);
+      expect(instructionUpdate(interface, {'cwd': '/repo', 'files': []}, null), isNull);
+      expect(instructionUpdate(interface, {'cwd': '/repo', 'files': [
+        {'path': '/repo/AGENTS.md', 'text': 'Changed rules'},
+      ]}, current)?.text, contains('Changed rules'));
+    }
   });
 
   final fixture = jsonObject(jsonDecode(File('test/fixtures/tool_search/opencode_instructions.json').readAsStringSync()));

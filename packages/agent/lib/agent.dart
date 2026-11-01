@@ -328,14 +328,11 @@ class _Agent {
         if (contextFingerprint(current) == contextFingerprint(snapshot)) return;
         final item = instructionUpdate(interface, current, snapshot);
         cancellation.throwIfCancelled();
-        final entries = await callIsolate(writer, 'append_batch', {
-          'events': [if (item != null) {
-            'type': 'agents.updated', 'data': {'snapshot': current, 'item': item.toJson()},
-          }],
-          'metadata': {'agents_snapshot': current},
-        }) as List;
-        for (final raw in entries) { event(jsonObject(raw)); }
-        if (item != null) input.add(item);
+        if (item != null) {
+          event(await _append('agents.updated', {'snapshot': current, 'item': item.toJson()},
+            metadata: {'agents_snapshot': current}));
+          input.add(item);
+        }
         snapshot = current;
       }
 
@@ -587,6 +584,7 @@ class _Agent {
             {'text': text, 'telemetry': telemetry.snapshot()},
             metadata: {
               'status': 'idle',
+              'agents_snapshot': snapshot,
               if (!identical(mcpSnapshot, persistedMcp)) 'mcp_snapshot': mcpSnapshot,
               if (!identical(clientSnapshot, persistedClient)) 'client_tools_snapshot': clientSnapshot,
             },

@@ -76,8 +76,11 @@ Future<Json> loadAgentsMd(
 bool isHarnessContext(ConversationItem item) => item.native['harness'] is Map;
 
 ConversationItem? instructionUpdate(ToolInterface interface, Json current, Json? previous) {
-  if (contextFingerprint(current) == contextFingerprint(previous)) return null;
-  if ((current['files'] as List).isEmpty && (previous?['files'] as List? ?? []).isEmpty) return null;
+  List<Json> files(Json? snapshot) => [for (final raw in snapshot?['files'] as List? ?? []) {
+    'path': raw['path'], 'text': raw['text'], 'global': raw['global'] == true,
+  }];
+  // Budget bookkeeping and cwd alone must not repeat unchanged instructions.
+  if (contextFingerprint(files(current)) == contextFingerprint(files(previous))) return null;
   final item = interface.instructionContext(current, previous);
   return item.text.isEmpty ? null : item;
 }
