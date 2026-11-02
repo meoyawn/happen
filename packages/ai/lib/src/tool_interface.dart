@@ -20,6 +20,9 @@ abstract class ToolInterface {
   List<ToolDefinition> definitionsFor(List<Json> deferred) => definitions;
   List<Json> hostCatalogFor(List<Json> deferred) => hostCatalog;
   bool get developerContextFirst => false;
+  /// Orchestrators retain separate host-call records; native calls already have
+  /// their own durable tool.started/tool.completed pair.
+  bool isCodeCall(ToolCall call) => true;
   ToolDefinition? get nestedDiscovery => null;
   String? catalogContext(List<Json> current, List<Json>? previous);
   Map<String, String> get services => const {};
@@ -30,7 +33,7 @@ abstract class ToolInterface {
   Future<List<Json>> prepareImages(List<Json> images, {required CancellationToken cancellation}) =>
       prepareInputAttachments(images, cancellation: cancellation);
   List<Json> externalCatalog(List<Json> catalog) => catalog;
-  Json search(List<Json> catalog, Json arguments) =>
+  Json search(List<Json> catalog, Json arguments, {bool native = false}) =>
       throw UnsupportedError('This provider discovers tools inside code mode');
 }
 

@@ -46,17 +46,18 @@ ConversationItem gptItemFromNative(Json wire) {
             },
         ],
       );
+    case 'tool_search_call':
     case 'function_call':
     case 'custom_tool_call':
       final call = ToolCall(
         id: requiredString(wire, 'call_id'),
-        name: requiredString(wire, 'name'),
+        name: type == 'tool_search_call' ? 'tool_search' : requiredString(wire, 'name'),
         namespace: wire['namespace'] as String?,
-        input:
+        input: type == 'tool_search_call' ? jsonEncode(wire['arguments']) :
             (wire[type == 'custom_tool_call' ? 'input' : 'arguments']
                 as String?) ??
             '',
-        format: type == 'custom_tool_call' ? 'text' : 'json',
+        format: type == 'tool_search_call' ? 'search' : type == 'custom_tool_call' ? 'text' : 'json',
         native: {
           'gpt': {
             ...state
@@ -214,6 +215,11 @@ List<Json> _gptItems(ConversationItem item) {
         textParts.add({'type': 'input_text', 'text': attachedFileText(part)});
       case 'tool_call':
         final call = ToolCall.fromJson(part);
+        if (call.format == 'search') {
+          output.add({'id': 'tsc_${item.id}', ...meta, 'type': 'tool_search_call',
+            'call_id': call.id, 'execution': meta['execution'] ?? 'client', 'arguments': jsonDecode(call.input)});
+          continue;
+        }
         output.add({
           'id': '${call.format == 'text' ? 'ctc' : 'fc'}_${item.id}',
           ...meta,
@@ -227,6 +233,11 @@ List<Json> _gptItems(ConversationItem item) {
             'arguments': call.input,
         });
       case 'tool_result':
+        if (part['format'] == 'search') {
+          output.add({'id': 'tso_${item.id}', ...meta, 'type': 'tool_search_output',
+            'call_id': part['call_id'], 'status': 'completed', 'execution': 'client', 'tools': jsonDecode(part['output'] as String)});
+          continue;
+        }
         final inlineImages = meta.remove('inline_images') == true;
         final images = inlineImages ? const <dynamic>[] : part['images'] as List? ?? [];
         final content = meta.remove('content_items') == true
@@ -269,8 +280,7 @@ List<Json> _gptItems(ConversationItem item) {
 List<Json> gptTools(Iterable<ToolDefinition> tools) {
   final result = <Json>[];
   final hosted = <Json>[];
-  final namespaces = <String, List<Json>>{};
-  final descriptions = <String, String>{};
+  final namespaces = <String, Json>{};
   for (final tool in tools) {
     if (tool.native['gpt'] is Map) {
       hosted.add(jsonObject(tool.native['gpt']));
@@ -291,19 +301,17 @@ List<Json> gptTools(Iterable<ToolDefinition> tools) {
     if (tool.namespace == null || tool.namespace == 'functions') {
       result.add(spec);
     } else {
-      (namespaces[tool.namespace!] ??= []).add(spec);
-      if (tool.namespaceDescription?.trim().isNotEmpty == true) {
-        descriptions.putIfAbsent(tool.namespace!, () => tool.namespaceDescription!.trim());
+      final namespace = namespaces.putIfAbsent(tool.namespace!, () {
+        final namespace = <String, dynamic>{'type': 'namespace', 'name': tool.namespace,
+          'description': '', 'tools': <Json>[]};
+        result.add(namespace);
+        return namespace;
+      });
+      (namespace['tools'] as List).add(spec);
+      if (namespace['description'] == '' && tool.namespaceDescription?.trim().isNotEmpty == true) {
+        namespace['description'] = tool.namespaceDescription!.trim();
       }
     }
-  }
-  for (final entry in namespaces.entries) {
-    result.add({
-      'type': 'namespace',
-      'name': entry.key,
-      'description': descriptions[entry.key] ?? '',
-      'tools': entry.value,
-    });
   }
   return [...result, ...hosted];
 }

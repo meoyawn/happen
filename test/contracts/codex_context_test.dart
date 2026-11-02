@@ -81,6 +81,26 @@ String text(Json item) => item['content'] is String ? item['content'] as String
     return true;
   }
   String outputText(String text, String path) {
+    final shell = RegExp(r'^(?:Chunk ID: ([0-9a-f]{6})\n)?Wall time: ([0-9.]+) seconds\n'
+      r'(Process exited with code -?[0-9]+|Process running with session ID [0-9]+)\n'
+      r'(?:Original token count: [0-9]+\n)?Output:\n').firstMatch(text);
+    if (shell != null) {
+      timings.add({'path': path, 'kind': 'shell', 'unit': 'seconds', 'value': double.parse(shell[2]!)});
+      var header = shell[0]!.replaceFirst('Wall time: ${shell[2]} seconds', 'Wall time: <ELAPSED> seconds');
+      if (shell[1] != null) header = header.replaceFirst('Chunk ID: ${shell[1]}', 'Chunk ID: <CHUNK_ID>');
+      header = header.replaceFirst(RegExp(r'Process running with session ID [0-9]+'), 'Process running with session ID <SESSION_ID>');
+      return '$header${text.substring(shell.end)}';
+    }
+    final patch = RegExp(r'^Exit code: -?[0-9]+\nWall time: ([0-9.]+) seconds\n(?:Total output lines: [0-9]+\n)?Output:\n').firstMatch(text);
+    if (patch != null) {
+      timings.add({'path': path, 'kind': 'patch', 'unit': 'seconds', 'value': double.parse(patch[1]!)});
+      return text.replaceFirst('Wall time: ${patch[1]} seconds', 'Wall time: <ELAPSED> seconds');
+    }
+    final mcp = RegExp(r'^Wall time: ([0-9.]+) seconds\nOutput:(?:\n|$)').firstMatch(text);
+    if (mcp != null) {
+      timings.add({'path': path, 'kind': 'mcp', 'unit': 'seconds', 'value': double.parse(mcp[1]!)});
+      return text.replaceFirst('Wall time: ${mcp[1]} seconds', 'Wall time: <ELAPSED> seconds');
+    }
     final status = RegExp(r'^Script (completed|failed|terminated|running with cell ID [1-9][0-9]*)\nWall time ([0-9.]+) seconds\nOutput:\n$').firstMatch(text);
     if (status != null) {
       timings.add({'path': path, 'kind': 'script', 'unit': 'seconds', 'value': double.parse(status[2]!)});
@@ -164,7 +184,8 @@ String baseInstructionId(String thread, String instructions) {
 
 bool itemIdContract(List<Json> items, {String? thread, Map<String, String> modelIds = const {}}) {
   const prefixes = {'message': 'msg', 'reasoning': 'rs', 'function_call': 'fc', 'custom_tool_call': 'ctc',
-    'function_call_output': 'fco', 'custom_tool_call_output': 'ctco', 'compaction': 'cmp', 'web_search_call': 'ws'};
+    'function_call_output': 'fco', 'custom_tool_call_output': 'ctco', 'tool_search_call': 'tsc',
+    'tool_search_output': 'tso', 'compaction': 'cmp', 'web_search_call': 'ws'};
   final seen = <String>{};
   for (var index = 0; index < items.length; index++) {
     final item = items[index], kind = item['type'] ?? (item.containsKey('role') ? 'message' : null);
@@ -182,6 +203,11 @@ bool itemIdContract(List<Json> items, {String? thread, Map<String, String> model
 
 bool shellIdContract(List<Json> input) {
   for (final item in input.where((item) => {'function_call_output', 'custom_tool_call_output'}.contains(item['type']))) {
+    if (item['output'] case final String output when output.startsWith('Chunk ID: ')) {
+      if (!RegExp(r'^Chunk ID: [0-9a-f]{6}\n').hasMatch(output)) return false;
+      final session = RegExp(r'\nProcess running with session ID ([0-9]+)\n').firstMatch(output);
+      if (session != null && (int.parse(session[1]!) < 1000 || int.parse(session[1]!) >= 100000)) return false;
+    }
     for (final part in item['output'] is List ? (item['output'] as List).whereType<Map>() : const <Map>[]) {
       try {
         var value = jsonDecode(part['text'] as String? ?? '');
@@ -253,7 +279,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       await file.writeAsBytes(bytes, flush: true);
       files.putIfAbsent(engine, () => []).add(file.path);
       final completed = {for (final item in (body['input'] as List).map(jsonObject))
-        if (['custom_tool_call_output', 'function_call_output'].contains(item['type'])) item['call_id']};
+        if (['custom_tool_call_output', 'function_call_output', 'tool_search_output'].contains(item['type'])) item['call_id']};
       final messages = scenario['messages'] as List? ?? [];
       final prelude = scenario['workflow'] == 'compaction' && messages.length > 1 &&
         messages.take(messages.length - 1).contains(text(jsonObject((body['input'] as List).last)));
@@ -269,7 +295,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       var step = 0;
       while (step + 1 < steps.length) {
         final expected = {for (final item in (steps[step] as List).map(jsonObject))
-          if (['custom_tool_call', 'function_call'].contains(item['type'])) item['call_id']};
+          if (['custom_tool_call', 'function_call', 'tool_search_call'].contains(item['type'])) item['call_id']};
         if (expected.isEmpty) {
           final previous = continuationIds[clock]?[step];
           if (!continuing.contains(step) || previous == null || !inputIds.containsAll(previous)) break;
@@ -308,7 +334,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       http.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
       http.response.add(utf8.encode(stream.toString()));
       if (output.any((item) => item['type'] == 'message') &&
-          output.every((item) => !{'function_call', 'custom_tool_call'}.contains(item['type'])) && !continuing.contains(step)) {
+          output.every((item) => !{'function_call', 'custom_tool_call', 'tool_search_call'}.contains(item['type'])) && !continuing.contains(step)) {
         final watch = watches.remove(clock)!..stop();
         currentArrivals.remove(clock);
         loops.putIfAbsent(engine, () => []).add(watch.elapsedMicroseconds);
@@ -330,7 +356,7 @@ double median(List<int> values) {
 }
 
 Future<Json> scenario(Json scenario, String model, String codex, String output, int samples,
-  CancellationToken cancellation, String catalog) async {
+  CancellationToken cancellation, String catalog, {required bool codeModeOnly}) async {
   final work = '$output/work', home = '$output/home', codexHome = '$output/codex-home', data = '$output/happen-data';
   for (final path in [work, home, codexHome, data]) { await Directory(path).create(recursive: true); }
   final globalSkills = Directory('$home/.agents/skills');
@@ -387,7 +413,7 @@ enabled = false
 enabled = false
 [features]
 code_mode = true
-code_mode_only = true
+code_mode_only = $codeModeOnly
 code_mode_tool_search = true
 deferred_tool_world_state = true
 incremental_tools = true
@@ -406,7 +432,7 @@ env_key = "CONTEXT_CONTRACT_KEY"
 [model_providers.context_contract.capabilities]
 remote_compaction = "v2"
 ''');
-  final happenConfig = <String, dynamic>{'providers': {'openai': {'model': model,
+  final happenConfig = <String, dynamic>{'code_mode_only': codeModeOnly, 'providers': {'openai': {'model': model,
     'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'live'}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
@@ -525,7 +551,13 @@ remote_compaction = "v2"
           final start = description.indexOf(nestedMarker);
           return start < 0 ? null : description.substring(start);
         }
-        checks['nested_tool_context_equal:$i:run-$iteration'] = nested(referenceExec) != null && nested(referenceExec) == nested(actualExec);
+        checks['nested_tool_context_equal:$i:run-$iteration'] = codeModeOnly
+          ? nested(referenceExec) != null && nested(referenceExec) == nested(actualExec)
+          : referenceExec != null && actualExec != null && nested(referenceExec) == null && nested(actualExec) == null;
+        for (final pair in [('codex', referenceTools), ('happen', actualTools)]) {
+          checks['${pair.$1}:code_mode_only_surface:$i:run-$iteration'] =
+            pair.$2.any((tool) => tool['name'] == 'exec_command') == !codeModeOnly;
+        }
         checks['codex_parallel_tool_calls:$i:run-$iteration'] = a[i]['parallel_tool_calls'] == true;
         checks['happen_parallel_tool_calls:$i:run-$iteration'] = b[i]['parallel_tool_calls'] == true;
         checks['standard_reasoning_context:$i:run-$iteration'] = !jsonObject(a[i]['reasoning']).containsKey('context') &&
@@ -542,6 +574,17 @@ remote_compaction = "v2"
           checks['$engine:tool_result_delivered:run-$iteration'] = requests.length > 1 && (requests.last['input'] as List).map(jsonObject)
             .where((item) => ['custom_tool_call_output', 'function_call_output'].contains(item['type']))
             .any((item) => jsonEncode(item).contains(marker));
+        }
+      }
+      if (!codeModeOnly && scenario['id'] == 'tool-search') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final input = (pair.$2.last['input'] as List).map(jsonObject).toList();
+          checks['${pair.$1}:native_discovery_delivers_callable_schema:run-$iteration'] = input.any((item) =>
+            item['type'] == 'tool_search_output' && item['call_id'] == 'search_dart' &&
+            (item['tools'] as List).any((tool) => tool['type'] == 'namespace' && tool['name'] == 'mcp__dart' &&
+              (tool['tools'] as List).any((tool) => tool['name'] == 'roots' && tool['parameters'] is Map)));
+          checks['${pair.$1}:discovered_mcp_called_directly:run-$iteration'] = input.any((item) =>
+            item['type'] == 'function_call' && item['namespace'] == 'mcp__dart' && item['name'] == 'roots');
         }
       }
       if (scenario['workflow'] == 'image') {
@@ -745,11 +788,13 @@ void main() {
   const samples = 3;
   const codex = 'codex';
   var output = '';
-  late File catalog;
+  const codeModeOnlyValues = [true, false];
+  final catalogs = <bool, File>{};
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
-  final report = <String, dynamic>{'models': models, 'results': <Json>[]};
+  final report = <String, dynamic>{'models': models, 'code_mode': true,
+    'code_mode_only': codeModeOnlyValues, 'results': <Json>[]};
   setUpAll(() async {
     final isolatedHome = Platform.environment['CONTEXT_CONTRACT_HOME'];
     if (isolatedHome == null || Platform.environment['HOME'] != isolatedHome ||
@@ -764,44 +809,56 @@ void main() {
     report['codexVersion'] = (await run([codex, '--version'], env, '$output/version.log', cancellation)).stdout.trim();
     final bundled = File('${root.path}/packages/openai/catalog/models.json');
     report['baseCatalogSHA256'] = sha256.convert(await bundled.readAsBytes()).toString();
-    final fastCatalog = jsonObject(jsonDecode(await bundled.readAsString()));
-    for (final row in fastCatalog['models'] as List) { row['use_responses_lite'] = false; }
-    catalog = File('$output/models.json');
-    await save(catalog.path, fastCatalog);
-    report['protocolOverrides'] = {'use_responses_lite': false};
-    report['catalogSHA256'] = sha256.convert(await catalog.readAsBytes()).toString();
+    report['catalogs'] = <String, dynamic>{};
+    for (final codeModeOnly in codeModeOnlyValues) {
+      final fastCatalog = jsonObject(jsonDecode(await bundled.readAsString()));
+      final overrides = {'use_responses_lite': false, 'tool_mode': codeModeOnly ? 'code_mode_only' : 'code_mode'};
+      // Model selectors take precedence over feature flags in Codex. Override
+      // both explicitly so the two feature rows cannot exercise the same mode.
+      for (final row in fastCatalog['models'] as List) { row.addAll(overrides); }
+      final catalog = catalogs[codeModeOnly] = File('$output/models-code_mode_only-$codeModeOnly.json');
+      await save(catalog.path, fastCatalog);
+      report['catalogs']['$codeModeOnly'] = {'overrides': overrides,
+        'sha256': sha256.convert(await catalog.readAsBytes()).toString()};
+    }
   });
   tearDownAll(() async {
     cancellation.cancel();
     for (final signal in signals) { await signal.cancel(); }
     if (output.isEmpty) return;
-    report['passed'] = (report['results'] as List).length == models.length * contextCases.length &&
+    report['passed'] = (report['results'] as List).length == models.length * codeModeOnlyValues.length * contextCases.length &&
       (report['results'] as List).every((item) => item['passed'] == true);
     await save('$output/report.json', report);
     print('Context contract evidence: $output/report.json');
   });
   for (final model in models) {
-    group(model, () {
-      for (final value in contextCases) {
-        test(value['id'] as String, () async {
-          final path = '$output/$model/${value['id']}';
-          final deadline = TimeoutCancellationToken(const Duration(minutes: 2));
-          final lifetime = CancellationToken();
-          addTearDown(lifetime.cancel);
-          Json result;
-          try {
-            result = await scenario(value, model, codex, path, samples,
-              cancellation.merge(deadline).merge(lifetime), catalog.absolute.path);
-          } catch (error) {
-            result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
-          } finally { deadline.cancel(); }
-          result['model'] = model;
-          (report['results'] as List).add(result);
-          await save('$path/result.json', result);
-          final failed = jsonObject(result['checks'] ?? {}).entries.where((entry) => entry.value != true).map((entry) => entry.key).toList();
-          expect(result['passed'], isTrue, reason: '${result['error'] ?? failed.join(', ')}\nEvidence: $path/result.json');
-        });
-      }
-    });
+    for (final codeModeOnly in codeModeOnlyValues) {
+      group('$model code_mode_only=$codeModeOnly', () {
+        for (final fixture in contextCases) {
+          final value = {...fixture,
+            if (!codeModeOnly && fixture['mixed_responses'] is List) 'responses': fixture['mixed_responses']};
+          test(fixture['id'] as String, () async {
+            final path = '$output/$model/code_mode_only-$codeModeOnly/${value['id']}';
+            final deadline = TimeoutCancellationToken(const Duration(minutes: 2));
+            final lifetime = CancellationToken();
+            addTearDown(lifetime.cancel);
+            Json result;
+            try {
+              result = await scenario(value, model, codex, path, samples,
+                cancellation.merge(deadline).merge(lifetime), catalogs[codeModeOnly]!.absolute.path, codeModeOnly: codeModeOnly);
+            } catch (error) {
+              result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
+            } finally { deadline.cancel(); }
+            result['model'] = model;
+            result['code_mode'] = true;
+            result['code_mode_only'] = codeModeOnly;
+            (report['results'] as List).add(result);
+            await save('$path/result.json', result);
+            final failed = jsonObject(result['checks'] ?? {}).entries.where((entry) => entry.value != true).map((entry) => entry.key).toList();
+            expect(result['passed'], isTrue, reason: '${result['error'] ?? failed.join(', ')}\nEvidence: $path/result.json');
+          });
+        }
+      });
+    }
   }
 }

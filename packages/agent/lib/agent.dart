@@ -753,15 +753,13 @@ class _Agent {
               },
               call: (name, arguments, {required cancellation}) async {
                 cancellation.throwIfCancelled();
-                final id = newId();
-                event(
-                  await _append('host_tool.started', {
-                    'id': id,
-                    'parent_call_id': call.id,
-                    'name': name,
-                    'arguments': arguments,
-                  }),
-                );
+                final nested = interface.isCodeCall(call);
+                final id = nested ? newId() : call.id;
+                if (nested) {
+                  event(await _append('host_tool.started', {
+                    'id': id, 'parent_call_id': call.id, 'name': name, 'arguments': arguments,
+                  }));
+                }
                 try {
                   cancellation.throwIfCancelled();
                   final Object? output;
@@ -769,6 +767,7 @@ class _Agent {
                   if (nestedDiscovery != null && name == nestedDiscovery.name) {
                     output = interface.search(
                       await currentDeferredCatalog(cancellation), jsonObject(arguments),
+                      native: call.format == 'search',
                     );
                   } else if (service == 'skills.read') {
                     output = await callIsolate(network, 'skills.read', {
@@ -820,25 +819,20 @@ class _Agent {
                     }, timeout: null, cancellation: cancellation);
                   }
                   if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
-                  event(
-                    await _append('host_tool.completed', {
-                      'id': id,
-                      'parent_call_id': call.id,
-                      'name': name,
-                      'output': output,
-                    }),
-                  );
+                  if (nested) {
+                    event(await _append('host_tool.completed', {
+                      'id': id, 'parent_call_id': call.id, 'name': name, 'output': output,
+                    }));
+                  }
                   return output;
                 } catch (error) {
-                  event(
-                    await _append('host_tool.completed', {
-                      'id': id,
-                      'parent_call_id': call.id,
-                      'name': name,
+                  if (nested) {
+                    event(await _append('host_tool.completed', {
+                      'id': id, 'parent_call_id': call.id, 'name': name,
                       if (error is CancelledException) 'cancelled': true,
                       'error': error.toString(),
-                    }),
-                  );
+                    }));
+                  }
                   rethrow;
                 }
               },

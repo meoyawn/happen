@@ -41,7 +41,13 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
     DateTime.now().millisecondsSinceEpoch;
   final sourceID = record['id'] as String? ?? (record['seq'] == null ? newId() : '$sessionID:${record['seq']}');
   final durable = record['seq'] != null;
-  final config = jsonObject(state['config'] ?? {});
+  // Only route identity is read from projection state. Full configuration and
+  // request catalogs remain in canonical events/metadata, not a rewritten copy
+  // on every tool packet. Also compact projections created before this change.
+  final config = jsonObject(state['config'] ?? {})
+    ..removeWhere((key, _) => key != 'provider' && key != 'model');
+  if (state.containsKey('config')) state['config'] = config;
+  state.remove('tools');
   Json model() => {'providerID': config['provider'] ?? 'openai', 'id': config['model'] ?? '',
     if (state['reasoning'] != null) 'variant': state['reasoning']};
   void add(String type, Json payload, {int version = 1, int? timestamp}) {
@@ -114,8 +120,7 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
     case 'input.delivery':
       add('session.inbox.delivery.changed', {'inboxID': 'msg_${data['id']}', 'delivery': data['delivery']});
     case 'task.created':
-      state['config'] = data;
-      state['tools'] = [];
+      state['config'] = {for (final key in ['provider', 'model']) if (data.containsKey(key)) key: data[key]};
       state['reasoning'] = data['provider_settings']?['reasoning'];
       add('session.created', {
         'projectID': data['project_id'] ?? data['cwd'] ?? sessionID,
@@ -134,11 +139,6 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
     case 'mcp.updated':
     case 'client_tools.updated':
       final item = jsonObject(data['item'] ?? {});
-      if (item['tools'] is List) {
-        final tools = {for (final tool in (state['tools'] as List? ?? [])) '${tool['namespace']}.${tool['name']}': tool};
-        for (final tool in item['tools']) { tools['${tool['namespace']}.${tool['name']}'] = tool; }
-        state['tools'] = tools.values.toList();
-      }
       synthetic(item, description: record['type'] as String);
     case 'input.committed':
       final item = jsonObject(data['item']);
@@ -159,11 +159,6 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
       add('session.execution.started', {});
     case 'model.started':
       if (data['instructions'] case final String text) instructions(text);
-      if (data['tools'] is List) {
-        final tools = {for (final tool in (state['tools'] as List? ?? [])) '${tool['namespace']}.${tool['name']}': tool};
-        for (final tool in data['tools']) { tools['${tool['namespace']}.${tool['name']}'] = tool; }
-        state['tools'] = tools.values.toList();
-      }
       state['assistantMessageID'] = requiredString(data, 'assistantMessageID');
       add('session.step.started', {'assistantMessageID': assistant(), 'agent': 'build', 'model': model(), 'started': created});
     case 'model.completed':

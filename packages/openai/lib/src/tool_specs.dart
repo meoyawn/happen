@@ -7,9 +7,21 @@ import 'web_search.dart';
 import 'image_generation.dart';
 import 'goals.dart';
 
-ToolDefinition codeDefinition({required bool deferredTools, bool imageGeneration = false, bool goals = true}) => ToolDefinition(
+ToolDefinition codeDefinition({required bool deferredTools, bool imageGeneration = false, bool goals = true, bool codeModeOnly = true}) => ToolDefinition(
   name: 'exec', namespace: 'functions', format: 'text',
-  description: _codeDescription(deferredTools, imageGeneration, goals), grammar: _codeGrammar,
+  description: _codeDescription(deferredTools, imageGeneration, goals, codeModeOnly), grammar: _codeGrammar,
+);
+
+ToolDefinition directDefinition(Json tool) => ToolDefinition.fromJson({
+  ...tool, 'name': tool['tool_name'] ?? tool['name'],
+  'description': describeTool(tool, namespaceInstructions: false)['description'],
+  if (tool['name'] == 'apply_patch') 'grammar': _patchGrammar,
+});
+
+ToolDefinition get directSearchDefinition => ToolDefinition(
+  name: 'tool_search', description: toolSearchDefinition.description, format: 'search',
+  native: {'gpt': {'type': 'tool_search', 'execution': 'client',
+    'description': toolSearchDefinition.description, 'parameters': toolSearchDefinition.parameters}},
 );
 
 const sleepDefinition = ToolDefinition(
@@ -77,9 +89,36 @@ NEWLINE: /\r?\n/
 SOURCE: /[\s\S]+/
 ''';
 
+// Codex core/assets/tools/apply_patch.lark.
+const _patchGrammar = r'''start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF
+''';
+
 // Codex code-mode-protocol/description.rs renders eager nested declarations
 // into exec itself; tool_search only indexes the deferred external catalog.
-String _codeDescription(bool deferredTools, bool imageGeneration, bool goals) {
+String _codeDescription(bool deferredTools, bool imageGeneration, bool goals, bool codeModeOnly) {
+  final guidance = r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
+To find one, filter `ALL_TOOLS` by `name` and `description`.
+
+Tool availability can change between calls.''';
+  if (!codeModeOnly) return [_codeRuntimeDescription, guidance, if (deferredTools) _searchGuidance].join('\n\n');
   final enabled = [
     // Happen-only extensions remain callable and discoverable in ALL_TOOLS,
     // but do not inflate the shared Codex eager declaration on every request.
@@ -92,10 +131,7 @@ String _codeDescription(bool deferredTools, bool imageGeneration, bool goals) {
     ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
   return [
     _codeRuntimeDescription,
-    r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
-To find one, filter `ALL_TOOLS` by `name` and `description`.
-
-Tool availability can change between calls.''',
+    guidance,
     'Shared MCP Types:\n```ts\n$sharedMcpTypes\n```',
     for (final tool in enabled.where((tool) => tool['namespace'] == null)) '### `${tool['name']}`\n${tool['description']}',
     for (final tool in enabled.where((tool) => tool['namespace'] != null)) ...[

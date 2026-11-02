@@ -10,7 +10,7 @@ Json _object(Object? value) => value is Map ? jsonObject(value) : const {};
 List<String> _documents = const [];
 BM25Index? _index;
 
-Json discoverTools(List<Json> catalog, Json arguments) {
+Json discoverTools(List<Json> catalog, Json arguments, {bool native = false}) {
   final query = requiredString(arguments, 'query').trim();
   final limit = arguments['limit'] ?? 8;
   if (query.isEmpty) throw const FormatException('query must not be empty');
@@ -23,6 +23,32 @@ Json discoverTools(List<Json> catalog, Json arguments) {
     _index = BM25Index(documents);
   }
   final selected = [for (final row in _index!.search(query, limit)) catalog[row.index]];
+  if (native) {
+    final tools = <Json>[], namespaces = <String, Json>{};
+    for (final tool in selected) {
+      final spec = <String, dynamic>{
+        'type': tool['format'] == 'text' ? 'custom' : 'function',
+        'name': tool['tool_name'] ?? tool['name'], 'description': tool['description'] ?? '',
+        'defer_loading': true,
+        if (tool['format'] == 'text') 'format': {'type': 'text'}
+        else ...{'strict': false, 'parameters': tool['parameters'] ?? {},
+          if (tool['output_schema'] != null) 'output_schema': tool['output_schema']},
+      };
+      final namespace = tool['namespace'] as String?;
+      if (namespace == null || namespace == 'functions') { tools.add(spec); }
+      else {
+        final group = namespaces.putIfAbsent(namespace, () {
+          final description = (tool['namespace_description'] as String? ?? '').trim();
+          final group = <String, dynamic>{'type': 'namespace', 'name': namespace,
+            'description': description.isEmpty ? 'Tools in the $namespace namespace.' : description, 'tools': <Json>[]};
+          tools.add(group);
+          return group;
+        });
+        (group['tools'] as List).add(spec);
+      }
+    }
+    return {'tools': tools};
+  }
   return {'tools': [for (final tool in selected.map(describeTool))
     {'name': tool['name'], 'description': tool['description']}]};
 }

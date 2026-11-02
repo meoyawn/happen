@@ -44,7 +44,7 @@ OpenAI sessions use Codex's default incremental-tools contract:
   are conditional and independent of the base prompt.
 
 This is the only supported OpenAI window contract. There is no compatibility
-flag, old-envelope branch, native discovery route, or prototype history decoder.
+flag, old-envelope branch, or prototype history decoder.
 Context tests exercise the actual request envelopes, prefix multiplicity/order,
 repeated compaction, and resume.
 This does not establish parity for all world-state sections; see `../GAPS.md`.
@@ -63,8 +63,12 @@ The code-mode-only description contract also follows
 (`build_exec_tool_description`): eager nested tool declarations belong in the
 exec description; ranked search receives the deferred catalog. Happen renders
 its implemented shell, patch, history, resource, and search tools there, with
-ALL_TOOLS and nested-search guidance. OpenAI uses CodeModeOnly for all supported
-GPT-6 models, as selected by the pinned model catalog. Tool search is callable
-only through exec; web retains its separate eager definition.
+ALL_TOOLS and nested-search guidance. OpenAI defaults to CodeModeOnly for the
+supported GPT-6 models. `code_mode_only: false` selects CodeMode instead: native
+declarations retain their registration order and nested-call declarations,
+while exec contains runtime and discovery guidance without duplicating schemas.
+Native `tool_search_call`/`tool_search_output` items retain their client execution,
+schemas and identities through history and resume; nested search still returns
+callable names and TypeScript declarations. Web retains its hosted definition.
 Runtime helpers and shell options are described only where implemented; the
 upstream V8, yield/wait, media, and PTY capabilities are not claimed.

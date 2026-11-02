@@ -93,11 +93,13 @@ const imageGenerationCatalog = <String, dynamic>{
   'name': 'imagegen', 'tool_name': 'imagegen', 'namespace': 'image_gen',
   'namespace_description': 'Tools in the image_gen namespace.',
   'description': _description,
+  // Match Codex's serialized JsonSchema subset for this reserved tool. Defaults
+  // and numeric/length bounds stay enforced by generateImage, not on the wire.
   'parameters': {'type': 'object', 'properties': {
     'prompt': {'type': 'string'},
-    'transparent_background': {'type': 'boolean', 'default': false, 'description': 'Whether the output should have a transparent background. Defaults to false.'},
-    'referenced_image_paths': {'type': ['array', 'null'], 'items': {'type': 'string'}, 'maxItems': 5},
-    'num_last_images_to_include': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
+    'transparent_background': {'type': 'boolean', 'description': 'Whether the output should have a transparent background. Defaults to false.'},
+    'referenced_image_paths': {'type': ['array', 'null'], 'items': {'type': 'string'}},
+    'num_last_images_to_include': {'type': ['integer', 'null']},
   }, 'required': ['prompt'], 'additionalProperties': false},
   'output_schema': {'type': 'object', 'properties': {
     'image_url': {'type': 'string'}, 'output_hint': {'type': 'string'},

@@ -570,6 +570,7 @@ void _networkMain(List<Object?> args) async {
             defaults['model'] as String? ??
             (provider is OpenCodeProvider ? provider.defaultModel : 'gpt-6.1-sol');
         final selected = {
+          if (lab == 'openai') 'code_mode_only': global['code_mode_only'] ?? true,
           ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],

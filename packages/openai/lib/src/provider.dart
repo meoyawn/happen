@@ -65,6 +65,7 @@ class OpenAIProvider implements ModelProvider {
       'standalone_web_search',
       'sleep_tool',
       'goals',
+      'code_mode_only',
     };
     if (selected.keys.any((key) => !allowed.contains(key))) {
       throw ArgumentError('Unsupported GPT setting');
@@ -91,7 +92,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['standalone_web_search', 'sleep_tool', 'goals']) {
+    for (final key in ['standalone_web_search', 'sleep_tool', 'goals', 'code_mode_only']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -118,6 +119,7 @@ class OpenAIProvider implements ModelProvider {
       'standalone_web_search': selected['standalone_web_search'] ?? false,
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
+      'code_mode_only': selected['code_mode_only'] ?? true,
     };
   }
 

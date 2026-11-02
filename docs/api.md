@@ -21,6 +21,11 @@ or pass the global `--data-dir PATH` option to select another directory. It hold
 authentication references, `AGENTS.md`, and task databases. Global configuration
 defaults to `~/.config/happen/config.yaml`, independently of the data directory.
 
+Set `code_mode_only: false` in that file to expose direct OpenAI tools alongside
+`exec`/`wait`, including native MCP discovery. This boolean defaults to `true`;
+Code Mode remains enabled in both modes. The choice is fixed when a session is
+created and preserved on resume. It does not change OpenCode sessions.
+
 Skills are discovered only in `~/.agents/skills/` globally and `.agents/skills/`
 locally. Local discovery walks from the nearest Git repository root down to the
 task working directory, or checks only that directory outside a repository.

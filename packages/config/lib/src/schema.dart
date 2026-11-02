@@ -19,6 +19,7 @@ const globalConfigSchema = <String, Object?>{
   'type': 'object',
   'additionalProperties': false,
   'properties': {
+    'code_mode_only': {'type': 'boolean', 'default': true},
     'default_provider': {
       'enum': ['openai', 'gpt', 'deepseek', 'opencode'],
     },
