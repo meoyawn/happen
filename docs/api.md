@@ -578,6 +578,12 @@ Independent read-only connections take WAL snapshots without acquiring a writer.
 Existing execution histories project in bounded transactions on their owning
 writer; live events and reopened history use the same reducer in `protocol`.
 
+Tool/plugin state uses OpenCode-style namespaced JSON KV (`get`, `set`, `remove`,
+and ordered, prefix-paginated `scan`) in the `kv` table of that same session SQLite.
+There is no separate state database. Callers own their namespaces and validation;
+the storage package has no goal-specific methods or lifecycle rules. Goal state
+keys include the session ID, so a fork does not inherit its parent's goal.
+
 Context inspection does not read the message/part projection. A running agent
 serializes the same buffer and envelope used by inference. Sleeping sessions
 restore through that same agent initialization path, without admitting a turn,

@@ -14,7 +14,7 @@ export 'src/session_reader.dart' show readSession;
 export 'src/session_list.dart' show listSessions;
 
 part 'src/session.dart';
-part 'src/goals.dart';
+part 'src/kv.dart';
 
 /// Access this object only from its dedicated SQLite owner isolate.
 class TaskStore {
@@ -54,12 +54,16 @@ class TaskStore {
       CREATE TABLE IF NOT EXISTS conversation_parts (
         id TEXT PRIMARY KEY, data TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS kv (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL,
+        time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+      ) STRICT;
     ''');
     _sessionSchema();
   }
   final String directory, taskId;
   late final Database db;
-  Json goal(String method, Json arguments) => _goalOperation(this, method, arguments);
+  Object? keyValue(String method, Json arguments) => _keyValue(this, method, arguments);
   int get lastSequence =>
       db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').first['seq']
           as int;

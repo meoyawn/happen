@@ -5172,3 +5172,53 @@ in 348 ms; a competing startup read took 2.7 seconds. These are observations, no
 latency guarantees. After a controlled restart for the database-worker edit, Dart
 MCP's live widget tree contained both Inbox row keys. A later hot reload reported
 no runtime errors. Neither turn was resumed.
+
+## 2026-11-02 — Library-backed JSON Schema validation
+
+Use `schema_engine` 1.0.0 in `packages/ai` and `packages/config`, replacing the
+handwritten tool-input validator and the older `json_schema` dependency. This is
+a pure Dart schema compiler/validator, not a UI engine: it has no runtime
+dependencies, Flutter requirement, FFI, or automatic network/filesystem access.
+The CLI consumes it through these shared packages. No fork or submodule is needed.
+
+Keep schema maps and their declared dialects intact. Config remains Draft 7 with
+format assertions enabled, preserving its transport dependencies and sanitized
+diagnostics. Undeclared tool schemas default to 2020-12; validation does not coerce
+arguments or invent bounds/defaults. Resolve references synchronously and reject
+unresolved resources rather than fetching tool-supplied URLs. Cache at most 128
+compiled tool schemas in content-keyed LRU order so edits invalidate rules without
+retaining every historical catalog. Compilation failures remain `FormatException`s;
+argument errors identify the JSON Pointer and keyword without echoing values.
+This replaces existing validation sites; it does not add new MCP/client dispatch
+validation or alter provider schema serialization.
+
+Selection evidence: compared published `schema_engine` 1.0.0,
+`json_schema_builder` 0.1.7 and `json_schema` 5.2.2 using an external Dart harness
+against JSON-Schema-Test-Suite commit
+`3f05891cac5d51ffa068d7076d1372130e00c829`. The harness used native decoded JSON,
+local remote fixtures and official meta-schemas, without rewriting schemas.
+`schema_engine` passed all 925 Draft-7 and 1,298 2020-12 core cases in boolean,
+first-error and all-error modes (6,669 checks). `json_schema_builder` passed
+1,289/1,298 2020-12 cases, with seven mismatches and two reference-resolution
+errors; it does not implement Draft-7 semantics. `json_schema` passed 909/925
+Draft-7 cases and does not support 2020-12. Optional fixtures were not run.
+These are local observations, not proof of universal conformance; `schema_engine`
+is a young library with a smaller adoption history. Its resolved version and
+checksum are recorded in `pubspec.lock`.
+
+Verification on macOS arm64, Dart 3.13.7:
+
+    dart test test/tool_input_test.dart test/config_test.dart test/config_reload_test.dart test/tool_interfaces_test.dart test/web_search_test.dart
+    dart analyze packages/ai packages/config test/tool_input_test.dart
+    dart build cli --target=packages/cli/bin/happen.dart --output=<temporary-directory>
+    git diff --check
+
+All 21 focused tests pass. The new regressions first reproduced rejection of an
+unbounded negative integer, ignored referenced constraints, and acceptance of
+invalid/unresolved schemas. The AOT CLI runs `--version` and `mcp list`, accepts
+empty configuration, and rejects an invalid config with the offending field path.
+Official Dart MCP hot reload succeeds in the running desktop with no runtime
+errors. Live MCP VM probes confirm negative integers are accepted when unbounded,
+patterns reject invalid tool input, and invalid config reports its field path.
+Whole-repository analysis still reports warnings/lints in untouched files;
+scoped analysis is clean. No formatter was run.

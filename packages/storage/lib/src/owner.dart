@@ -80,8 +80,7 @@ void _storeMain(List<Object?> args) async {
       final cancellation = operations[id]!;
       try {
         cancellation.throwIfCancelled();
-        if (store != null && ({'append', 'append_batch', 'context', 'session.prepare', 'session.inbox.update', 'session.inbox.commit'}.contains(request['method']) ||
-            (request['method'] as String).startsWith('goal.'))) {
+        if (store != null && {'append', 'append_batch', 'context', 'session.prepare', 'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
           await store.prepareSession(cancellation: cancellation);
         }
         final Object? result = switch (request['method']) {
@@ -100,8 +99,7 @@ void _storeMain(List<Object?> args) async {
             metadata: jsonObject(params['metadata'] ?? {}),
           ),
           'metadata' => store!.metadata(params['key'] as String),
-          'goal.get_goal' || 'goal.create_goal' || 'goal.update_goal' || 'goal.account' || 'goal.begin' || 'goal.end' =>
-            store!.goal((request['method'] as String).substring(5), params),
+          'kv.get' || 'kv.set' || 'kv.remove' || 'kv.scan' => store!.keyValue((request['method'] as String).substring(3), params),
           'archive' => store!.archive(params['archived'] as bool),
           'maintain' => store!.maintain(),
           'context' => store!.modelSnapshot(),

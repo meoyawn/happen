@@ -10,6 +10,7 @@ import 'src/instructions.dart';
 import 'src/discovery.dart';
 import 'src/skills.dart';
 import 'src/providers.dart';
+import 'src/goals.dart';
 
 export 'src/config.dart' show initialConfiguration;
 
@@ -232,7 +233,8 @@ class _Agent {
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
-    var goalActive = false;
+    GoalRuntime? goals;
+    var uncachedTokensUsed = 0;
     final turnId = interface.id == 'openai' ? newUuidV7() : newId();
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
@@ -244,10 +246,16 @@ class _Agent {
         throw ArgumentError('The model and provider are fixed for this task');
       }
       final baseline = jsonObject(config['provider_settings']);
+      uncachedTokensUsed = await _metadata('uncached_tokens_used') as int? ?? 0;
       if (interface.id == 'openai' && baseline['goals'] != false) {
-        final goal = await _metadata('goal');
-        goalActive = goal is Map && goal['status'] == 'active';
-        if (goalActive) await callIsolate(writer, 'goal.begin', {}, cancellation: cancellation);
+        final namespace = 'happen.goal'.codeUnits.map((unit) => unit.toRadixString(16).padLeft(4, '0')).join();
+        final key = 'plugin:$namespace:session:$taskId';
+        goals = GoalRuntime(taskId: taskId, tokens: () => uncachedTokensUsed,
+          load: (token) async => jsonObject(await callIsolate(writer, 'kv.get', {'key': key}, cancellation: token) ?? {}),
+          save: (state, token) async {
+            await callIsolate(writer, 'kv.set', {'key': key, 'value': state}, cancellation: token);
+          });
+        await goals.call('begin', {}, cancellation: cancellation);
       }
       final previousEffort = effort;
       final selectedEffort = settings['reasoning'] as String? ?? previousEffort;
@@ -567,18 +575,11 @@ class _Agent {
           }, timeout: null, cancellation: token) as String;
 
       void countUsage(ModelUsage usage) {
+        uncachedTokensUsed += (usage.inputTokens - usage.cachedInputTokens).clamp(0, 0x7fffffffffffffff) + usage.outputTokens;
         telemetry.add('input_tokens', usage.inputTokens);
         telemetry.add('cached_input_tokens', usage.cachedInputTokens);
         telemetry.add('cache_write_tokens', usage.cacheWriteTokens);
         telemetry.add('output_tokens', usage.outputTokens);
-      }
-
-      Future<void> countGoalUsage(ModelUsage usage) async {
-        if (!goalActive) return;
-        final state = jsonObject(await callIsolate(writer, 'goal.account', {
-          'tokens': (usage.inputTokens - usage.cachedInputTokens).clamp(0, 0x7fffffffffffffff) + usage.outputTokens,
-        }, cancellation: cancellation));
-        goalActive = state['goal']?['status'] == 'active';
       }
 
       Future<void> compactContext(String reason) async {
@@ -586,6 +587,7 @@ class _Agent {
         event(await _append('compaction.started', {'reason': reason}));
         final result = CompactionResult.fromJson(await networkCall('compact'));
         cancellation.throwIfCancelled();
+        countUsage(result.usage);
         final freshSkills = skillContext(skillsCatalog,
           contextWindow: baseline['context_limit'] as int?);
         final restored = restoreContext(
@@ -620,13 +622,12 @@ class _Agent {
             'context_usage': size,
             'context_usage_items': restored.length,
             'skills_state': freshSkills.snapshot,
+            'uncached_tokens_used': uncachedTokensUsed,
           },
         );
         skillsSnapshot = freshSkills.snapshot;
         usageTokens = size;
         usageItems = input.length;
-        countUsage(result.usage);
-        await countGoalUsage(result.usage);
         telemetry.add('compactions');
         event(entry);
       }
@@ -700,7 +701,6 @@ class _Agent {
         telemetry.observe('model', modelTime.elapsed);
         telemetry.add('model_requests');
         countUsage(reply.usage);
-        await countGoalUsage(reply.usage);
         final nextUsage = reply.usage.contextTokens;
         final nextItems = input.length + reply.output.length;
         final calls = reply.calls;
@@ -716,12 +716,13 @@ class _Agent {
         for (final entry in await _appendBatch([
           {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID}},
           if (calls.isNotEmpty) toolStarted(calls.first),
-        ], {'context_usage': nextUsage, 'context_usage_items': nextItems})) { event(entry); }
+        ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed})) { event(entry); }
         usageTokens = nextUsage;
         usageItems = nextItems;
         if (calls.isEmpty) {
           if (await takeSteering()) continue;
           if (await takeNotifications()) continue;
+          if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
           await finish(reply.text);
           return;
         }
@@ -780,9 +781,7 @@ class _Agent {
                       'arguments': arguments, 'call_id': id, 'turn_id': turnId,
                     }, timeout: null, cancellation: cancellation);
                   } else if (service?.startsWith('goal.') == true) {
-                    final state = jsonObject(await callIsolate(writer, service!, jsonObject(arguments), cancellation: cancellation));
-                    goalActive = state['goal']?['status'] == 'active';
-                    output = state;
+                    output = await goals!.call(service!.substring(5), jsonObject(arguments), cancellation: cancellation);
                   } else if (service?.startsWith('history.') == true) {
                     output = await callIsolate(
                       writer,
@@ -819,6 +818,7 @@ class _Agent {
                       'name': name, 'arguments': arguments,
                     }, timeout: null, cancellation: cancellation);
                   }
+                  if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
                   event(
                     await _append('host_tool.completed', {
                       'id': id,
@@ -879,6 +879,7 @@ class _Agent {
             link.dispose();
           }
           telemetry.observe('code', watch.elapsed);
+          if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
           telemetry.add('code_cells');
           final item = interface.resultItem(call, result, images: images);
           event(
@@ -903,7 +904,7 @@ class _Agent {
       _accepting = false;
       _steering.clear();
       try {
-        if (goalActive) await callIsolate(writer, 'goal.end', {}, cancellation: _lifetime);
+        if (goals?.active == true) await goals!.call('end', {}, cancellation: _lifetime);
       } finally {
         cancellation.cancel();
         await host?.close();

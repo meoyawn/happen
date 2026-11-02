@@ -32,6 +32,11 @@ const contextCases = <Map<String, dynamic>>[
   {
     'id': 'goal-lifecycle', 'workflow': 'goal',
     'prompt': 'Explicitly create a goal named GOAL_CONTEXT_RECEIPT with a 1000-token budget. Inspect it, mark it complete, then inspect the completed goal.',
+    'messages': [
+      'Explicitly create a goal named GOAL_CONTEXT_RECEIPT with a 1000-token budget. Inspect it, mark it complete, then inspect the completed goal.',
+      'Read the saved completed goal without creating another goal, then reply READY.',
+    ],
+    'hibernate_between_turns': true,
     'files': {}, 'contains': [], 'absent': [],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_lifecycle',
@@ -40,6 +45,10 @@ const contextCases = <Map<String, dynamic>>[
           'text(await tools.get_goal({}));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_complete',
         'input': 'text(await tools.get_goal({})); text(await tools.update_goal({status:"complete"})); text(await tools.get_goal({}));'}],
+      [_ready],
+    ],
+    'resume_responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_restore', 'input': 'text(await tools.get_goal({}));'}],
       [_ready],
     ],
     'result': 'GOAL_CONTEXT_RECEIPT',

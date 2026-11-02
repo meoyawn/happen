@@ -61,6 +61,10 @@ URL citations through that same Responses stream, then verifies their retention
 in the next actual inference request. It needs no live internet query or a second
 fake search implementation. Sleep is exercised directly, including invalid zero
 duration; goal tools create, inspect, account usage, complete, and inspect again.
+The goal case also cold-resumes the completed goal: Codex launches a new CLI
+process, and Happen hibernates its session owners before the next prompt. Goal
+state uses generic namespaced KV in the same session SQLite; its rules live in
+the agent, with no goal-aware storage API.
 The package-reading MCP case starts independent real `dart mcp-server`
 processes, registers the fixture package, and reads its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with

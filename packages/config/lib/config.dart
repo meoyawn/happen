@@ -4,8 +4,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cancellation_token/cancellation_token.dart';
-import 'package:json_schema/json_schema.dart';
 import 'package:path/path.dart' as p;
+import 'package:schema_engine/schema_engine.dart';
 import 'package:yaml/yaml.dart';
 
 import 'src/schema.dart';
@@ -15,7 +15,8 @@ export 'src/watcher.dart' show ConfigWatcher;
 typedef ConfigSnapshot = ({String? path, Map<String, dynamic> values});
 
 const _maxBytes = 1024 * 1024;
-final _schema = JsonSchema.create(globalConfigSchema);
+final _configValidator = JsonSchema.fromJson(globalConfigSchema)
+    .compile(options: SchemaOptions(assertFormats: true));
 
 /// Configuration has its own home; moving it does not move credentials/history.
 String defaultConfigPath() {
@@ -84,24 +85,21 @@ Map<String, dynamic> parseConfig(String source) {
                     line.trim().isEmpty || line.trimLeft().startsWith('#'),
               ));
   final value = empty ? const <String, dynamic>{} : plain(root);
-  final errors = _schema.validate(value).errors;
-  if (errors.isNotEmpty) {
-    final error = errors.first;
+  final error = _configValidator.validate(value);
+  if (error != null) {
     final location = error.instancePath.isEmpty ? '/' : error.instancePath;
-    final reason = error.message.startsWith('type:')
-        ? 'incorrect value type'
-        : error.message.startsWith('enum violated')
-        ? 'unsupported option'
-        : switch (error.schemaPath.split('/').last) {
-            'additionalProperties' => 'unsupported field',
-            'oneOf' => error.schemaPath.contains('/oauth/')
-                ? 'specify OAuth options or false' : 'specify exactly one command or URL',
-            'dependencies' => 'field does not apply to this transport',
-            'maxProperties' => 'at most 64 MCP servers are supported',
-            'minLength' || 'pattern' => 'invalid or empty string',
-            'format' => 'invalid URI',
-            _ => 'schema constraint failed',
-          };
+    final reason = switch (error.keyword) {
+      'type' => 'incorrect value type',
+      'enum' => 'unsupported option',
+      'additionalProperties' => 'unsupported field',
+      'oneOf' => error.schemaPath.contains('/oauth/')
+          ? 'specify OAuth options or false' : 'specify exactly one command or URL',
+      'dependencies' => 'field does not apply to this transport',
+      'maxProperties' => 'at most 64 MCP servers are supported',
+      'minLength' || 'pattern' => 'invalid or empty string',
+      'format' => 'invalid URI',
+      _ => 'schema constraint failed',
+    };
     throw FormatException('Invalid configuration at $location: $reason');
   }
   final config = value as Map<String, dynamic>;

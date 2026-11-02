@@ -243,8 +243,12 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       final completed = {for (final item in (body['input'] as List).map(jsonObject))
         if (['custom_tool_call_output', 'function_call_output'].contains(item['type'])) item['call_id']};
       final messages = scenario['messages'] as List? ?? [];
-      final prelude = messages.length > 1 && messages.take(messages.length - 1).contains(text(jsonObject((body['input'] as List).last)));
-      final steps = (prelude ? null : scenario['responses'] as List?) ?? [[{
+      final prelude = scenario['workflow'] == 'compaction' && messages.length > 1 &&
+        messages.take(messages.length - 1).contains(text(jsonObject((body['input'] as List).last)));
+      final resumed = messages.length > 1 && (body['input'] as List).map(jsonObject)
+        .any((item) => item['role'] == 'user' && text(item) == messages.last);
+      final scripted = resumed && scenario['resume_responses'] is List ? scenario['resume_responses'] : scenario['responses'];
+      final steps = (prelude ? null : scripted as List?) ?? [[{
         'type': 'message', 'role': 'assistant',
         'content': [{'type': 'output_text', 'text': 'READY', 'annotations': []}],
       }]];
@@ -440,6 +444,9 @@ remote_compaction = "v2"
               if (message == 0) '--skip-git-repo-check' else ...['resume', '--last'],
               '--json', messages[message]], codexEnv, '$runPath/$engine.message-$message.jsonl', cancellation);
           } else {
+            if (message > 0 && scenario['hibernate_between_turns'] == true) {
+              await client.request('session.hibernate', {'sessionID': taskID}).asCancellable(cancellation);
+            }
             await turn(messages[message]);
           }
         }
@@ -547,6 +554,18 @@ remote_compaction = "v2"
             item['type'] == 'web_search_call' && item['status'] == 'completed' && item['action']?['query'] == 'context-contract web fixture');
           checks['${pair.$1}:hosted_search_citation_retained:run-$iteration'] = input.any((item) => item['role'] == 'assistant' &&
             jsonEncode(item['content']).contains('https://example.test/context-contract'));
+        }
+      }
+      if (scenario['workflow'] == 'goal') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final input = (pair.$2.last['input'] as List).map(jsonObject).toList();
+          final output = input.singleWhere((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'goal_restore');
+          final parts = output['output'] as List;
+          final saved = jsonObject(jsonDecode(parts.last['text'] as String));
+          final goal = jsonObject(saved['goal']);
+          checks['${pair.$1}:completed_goal_survives_cold_resume:run-$iteration'] = goal['threadId'] == pair.$2.last['prompt_cache_key'] &&
+            goal['objective'] == 'GOAL_CONTEXT_RECEIPT' && goal['status'] == 'complete' && goal['tokensUsed'] == 110 &&
+            goal['tokenBudget'] == 1000 && saved['remainingTokens'] == 890;
         }
       }
       if (scenario['workflow'] == 'compaction') {
