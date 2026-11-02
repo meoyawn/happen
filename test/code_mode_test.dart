@@ -162,6 +162,7 @@ void main() {
         '{"max_output_tokens": 1.5}',
         '{"max_output_tokens": "10"}',
         '{"max_output_tokens": 9007199254740992}',
+        '{"yield_time_ms": 0}',
         '{"unknown": 10}',
         '[]',
         '{',

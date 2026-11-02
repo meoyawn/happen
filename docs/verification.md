@@ -158,13 +158,13 @@ running. If direct access from this harness is unavailable, distinguish that
 limitation from tests of the adapter using recorded or local protocol fixtures.
 Never label a local fixture run as live model verification.
 
-For OpenCode Console, run `dart run bin/happen.dart login --provider opencode` and
+For OpenCode Console, run `dart run packages/cli/bin/happen.dart login --provider opencode` and
 approve the device in the signed-in browser. Select provider `opencode` and the
 exact model `deepseek-v4.1-flash-free`, as shown in
 [api.md](api.md). Check authentication independently from inference. The package
 owns its credentials; do not copy the OpenCode CLI's tokens into Happen.
 
-Start with `dart run bin/happen.dart exec --provider opencode --reasoning low
+Start with `dart run packages/cli/bin/happen.dart exec --provider opencode --reasoning low
 "Reply READY only. Do not use tools."`. Compare with
 `opencode run --standalone --log-level none --model
 opencode/deepseek-v4.1-flash-free#low --format json "Reply READY only. Do not use tools."`

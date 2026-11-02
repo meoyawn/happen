@@ -99,7 +99,7 @@ List<ConversationItem> restoreContext(
   String? Function(List<Json>, List<Json>?)? catalogContext,
   required ConversationItem Function(Json, Json?) instructionContext,
   required ConversationItem Function(String, {bool replacement}) environmentContext,
-  List<ConversationItem> prefixContext = const [],
+  bool developerContextFirst = false,
   ConversationItem? skills,
 }) {
   final result = compacted
@@ -116,9 +116,10 @@ List<ConversationItem> restoreContext(
   );
   final initial = [
     ...retained,
+    if (developerContextFirst && skills != null) skills,
     if ((snapshot['files'] as List).isNotEmpty) instructionContext(snapshot, null),
     environmentContext(cwd),
-    if (skills != null) skills,
+    if (!developerContextFirst && skills != null) skills,
     if (catalogContext?.call(deferredCatalog(mcpSnapshot ?? {}, clientSnapshot ?? {}), null) case final String text)
       ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
         native: {'harness': {'context': 'tool_catalog'}}),
@@ -151,9 +152,7 @@ List<ConversationItem> restoreContext(
       ),
     );
   }
-  // Codex split_prefix_updates keeps declarations and base instructions ahead
-  // of retained real-user messages, not beside the refreshed ordinary context.
-  return [...prefixContext, ...result];
+  return result;
 }
 
 // Codex's WorldStateHash sorts JSON objects before comparing tool definitions.

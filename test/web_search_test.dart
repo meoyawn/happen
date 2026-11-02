@@ -93,11 +93,7 @@ void main() {
         }
         modelRequests.add(body);
         final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
-        final tools = [
-          ...body['tools'] as List,
-          if (lab == 'openai') for (final item in input)
-            if (item['type'] == 'additional_tools') ...item['tools'] as List,
-        ];
+        final tools = body['tools'] as List;
         final web = tools.singleWhere((tool) => lab == 'openai'
             ? tool['name'] == 'web' : tool['function']['name'] == 'websearch');
         final parameters = lab == 'openai' ? web['tools'][0]['parameters'] : web['function']['parameters'];

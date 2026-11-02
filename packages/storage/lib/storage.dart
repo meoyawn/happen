@@ -20,14 +20,15 @@ class TaskStore {
     this.directory,
     this.taskId, {
     bool create = true,
+    bool ephemeral = false,
   }) {
     validateTaskId(taskId);
     final folder = Directory('$directory/tasks/$taskId');
-    if (!create && !File('${folder.path}/history.sqlite').existsSync()) {
+    if (!ephemeral && !create && !File('${folder.path}/history.sqlite').existsSync()) {
       throw StateError('Task does not exist: $taskId');
     }
-    folder.createSync(recursive: true);
-    db = sqlite3.open('${folder.path}/history.sqlite');
+    if (!ephemeral) folder.createSync(recursive: true);
+    db = sqlite3.open(ephemeral ? ':memory:' : '${folder.path}/history.sqlite');
     db.execute('PRAGMA journal_mode = WAL');
     db.execute('PRAGMA synchronous = NORMAL');
     db.execute('PRAGMA foreign_keys = ON');
@@ -330,6 +331,26 @@ class TaskStore {
   }
 
   List<Json> modelContext({int maxBytes = maxContextBytes}) => readModelContext(db, maxBytes: maxBytes);
+
+  /// Restore an agent's buffer and accounting together on its single writer.
+  Json modelSnapshot() {
+    final checkpoint = db.select("SELECT seq FROM events WHERE type = 'context.compacted' ORDER BY seq DESC LIMIT 1");
+    final after = checkpoint.isEmpty ? 0 : checkpoint.single['seq'] as int;
+    final usage = db.select("SELECT data FROM events WHERE type = 'model.completed' AND seq > ? ORDER BY seq DESC LIMIT 1", [after]);
+    final times = db.select('SELECT min(created_at) AS created, max(created_at) AS updated FROM events').single;
+    return {
+      'input': modelContext(),
+      'requestTools': metadataValue('request_tools'),
+      'through': db.select('SELECT coalesce(max(seq), 0) AS seq FROM session_event').single['seq'],
+      'sourceThrough': lastSequence,
+      'windowID': metadataValue('current_window'),
+      'effectiveReasoning': metadataValue('effective_reasoning'),
+      'tokens': usage.isEmpty ? null : sessionTokens(jsonObject(jsonObject(jsonDecode(usage.single['data'] as String))['usage'] ?? {})),
+      'created': DateTime.tryParse(times['created'] as String? ?? '')?.millisecondsSinceEpoch,
+      'updated': DateTime.tryParse(times['updated'] as String? ?? '')?.millisecondsSinceEpoch,
+      'archived': metadataValue('archived_at') != null,
+    };
+  }
 
   void _validateHistoryAgent(Json params) {
     final name = params['agent_name'];

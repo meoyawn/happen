@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/openai_output.dart';
 
 void main() {
   test('MCP cells filter complete results while model output is bounded', () async {
@@ -100,22 +101,22 @@ void main() {
     Json completed(List<Json> history) => jsonObject(history.singleWhere(
       (event) => event['type'] == 'tool.completed',
     )['data']);
-    String modelOutput() => (requests.last['input'] as List).lastWhere((item) =>
+    List<String> modelOutput() => printedOpenAIOutput((requests.last['input'] as List).lastWhere((item) =>
       item['type'] == 'function_call_output' || item['type'] == 'custom_tool_call_output',
-    )['output'] as String;
+    )['output']);
 
     final filtered = completed(await turn('filter'));
     final selected = [{'uri': 'package:desktop/app.dart', 'id': 'app'}];
     expect(filtered['values'], {'libraries': selected, 'complete': true});
-    final filteredOutput = jsonDecode(modelOutput())['output'] as List;
-    expect(jsonDecode(filteredOutput.single as String), {
+    final filteredOutput = modelOutput();
+    expect(jsonDecode(filteredOutput.single), {
       'libraries': selected,
       'structuredContent': {'bytes': 3 * 1024 * 1024},
     });
 
     final printed = completed(await turn('print'));
     expect(printed['values'], {'printed': true});
-    final preview = (jsonDecode(modelOutput())['output'] as List).single as String;
+    final preview = modelOutput().single;
     expect(preview, startsWith('Warning: truncated output'));
     expect(preview, contains('BEGIN'));
     expect(preview, contains('END'));

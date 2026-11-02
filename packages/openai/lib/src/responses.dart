@@ -7,6 +7,8 @@ import 'package:protocol/protocol.dart';
 
 import 'web_pages.dart';
 import 'retry.dart';
+import 'trace.dart';
+import 'records.dart' show withGptInstructions;
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -36,6 +38,7 @@ class ResponsesClient {
   final HttpClient _http;
   final HttpConnections? connections;
   final bool _ownsHttp;
+  final _traces = <String, Future<Directory?>>{};
 
   Future<String> search({
     required String model,
@@ -57,8 +60,9 @@ class ResponsesClient {
         'max_output_tokens': 10000,
       };
       final headers = <String, String>{
-        HttpHeaders.authorizationHeader: 'Bearer ${requiredString(auth, 'access_token')}',
-        'chatgpt-account-id': requiredString(auth, 'account_id'),
+        if (auth['access_token'] case final String token when token.isNotEmpty)
+          HttpHeaders.authorizationHeader: 'Bearer $token',
+        if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
         'originator': 'agent',
         'session-id': sessionId,
         'x-client-request-id': newId(),
@@ -108,9 +112,8 @@ class ResponsesClient {
     }
     final body = <String, dynamic>{
       'model': model,
-      'instructions': instructions,
-      'input': input,
-      'tools': tools,
+      'input': withGptInstructions(instructions, input),
+      if (tools.isNotEmpty) 'tools': tools,
       'tool_choice': toolChoice,
       'parallel_tool_calls': true,
       'store': false,
@@ -125,11 +128,17 @@ class ResponsesClient {
       'max_output_tokens': ?maxOutputTokens,
     };
     var retries = 0, connectionRetries = 0;
+    final tracing = Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty == true;
+    final trace = tracing ? await (_traces[sessionId] ??= startModelTrace(sessionId, cancellation)) : null;
+    final traceID = newId();
+    await recordModelTrace(trace, traceID, 'request', body, cancellation);
     var connectionDelay = const Duration(seconds: 5);
     final sampling = input.isEmpty || input.last['type'] != 'compaction_trigger';
     while (true) {
       try {
-        return await _respond(body, sessionId, transport, cancellation, onEvent);
+        final response = await _respond(body, sessionId, transport, cancellation, onEvent);
+        await recordModelTrace(trace, traceID, 'response', {'output': response.output, 'usage': response.usage}, cancellation);
+        return response;
       } on CancelledException {
         rethrow;
       } catch (error) {
@@ -173,9 +182,9 @@ class ResponsesClient {
           .asCancellable(cancellation);
       cancellation.throwIfCancelled();
       final headers = <String, String>{
-        HttpHeaders.authorizationHeader:
-            'Bearer ${requiredString(auth, 'access_token')}',
-        'chatgpt-account-id': requiredString(auth, 'account_id'),
+        if (auth['access_token'] case final String token when token.isNotEmpty)
+          HttpHeaders.authorizationHeader: 'Bearer $token',
+        if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
         'originator': 'agent',
         HttpHeaders.userAgentHeader: 'agent/0.1.0 (Dart)',
         'OpenAI-Beta': transport == 'websocket'

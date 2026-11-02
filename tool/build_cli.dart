@@ -34,7 +34,7 @@ Future<void> main(List<String> arguments) async {
     cancellation.throwIfCancelled();
     final sources = await _compilerSources(cache, pin, cancellation);
     stdout.writeln('Building the CLI and its native assets with the package build hooks.');
-    await _run(sdk, ['build', 'cli', '--target=bin/happen.dart', '--output=${cache.path}/native'], root.path, cancellation);
+    await _run(sdk, ['build', 'cli', '--target=packages/cli/bin/happen.dart', '--output=${cache.path}/native'], root.path, cancellation);
     final native = Directory('${cache.path}/native/bundle/lib');
     final libraries = (await native.list().toList()).whereType<File>().toList()..sort((a, b) => a.path.compareTo(b.path));
     final actual = libraries.map((file) => file.uri.pathSegments.last).toSet();
@@ -75,7 +75,7 @@ Future<void> main(List<String> arguments) async {
       }
       await payload.close();
       final main = File('${work.path}/main.dart');
-      await main.writeAsString("import '${File('${root.path}/bin/happen.dart').uri}' as cli;\nimport '$bootstrap';\nimport 'payload.dart';\nFuture<void> main(List<String> arguments) async {\n  await bootstrapNativeAssets(nativeId, assets);\n  await cli.main(arguments);\n}\n");
+      await main.writeAsString("import '${File('${root.path}/packages/cli/bin/happen.dart').uri}' as cli;\nimport '$bootstrap';\nimport 'payload.dart';\nFuture<void> main(List<String> arguments) async {\n  await bootstrapNativeAssets(nativeId, assets);\n  await cli.main(arguments);\n}\n");
       final assets = File('${work.path}/native_assets.json');
       await assets.writeAsString(jsonEncode({'format-version': [1, 0, 0], 'native-assets': {
         'macos_arm64': {for (final asset in manifest) asset['asset_id']: ['system', asset['install_name']]},

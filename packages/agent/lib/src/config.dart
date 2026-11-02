@@ -4,7 +4,7 @@ import 'providers.dart';
 
 Json initialConfiguration(Json input, String cwd, bool telemetry) {
   final settings = jsonObject(input['provider_settings']);
-  final interface = toolInterface(input['provider'] as String);
+  final interface = toolInterface(input['provider'] as String, settings: settings);
   return {
     'cwd': cwd,
     'provider': input['provider'],

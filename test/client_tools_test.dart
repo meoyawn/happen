@@ -66,7 +66,7 @@ void main() {
                     'type': 'message',
                     'role': 'assistant',
                     'content': [
-                      {'type': 'output_text', 'text': outputs.last['output']},
+                      {'type': 'output_text', 'text': jsonEncode(outputs.last['output'])},
                     ],
                   },
                 ]
@@ -134,7 +134,7 @@ void main() {
           await root.delete(recursive: true);
         });
         if (embedded) {
-          expect(server.http.address.type, InternetAddressType.unix);
+          expect(server.http!.address.type, InternetAddressType.unix);
           expect((await File(server.socketPath!).stat()).mode & 0x1ff, 0x180);
           await expectLater(
             AgentServer.start(

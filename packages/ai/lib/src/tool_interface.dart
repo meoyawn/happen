@@ -17,12 +17,16 @@ abstract class ToolInterface {
   ConversationItem environmentContext(String cwd, {bool replacement = false});
   List<ToolDefinition> get definitions;
   List<Json> get hostCatalog;
-  bool get toolsInHistory => false;
+  List<ToolDefinition> definitionsFor(List<Json> deferred) => definitions;
+  List<Json> hostCatalogFor(List<Json> deferred) => hostCatalog;
+  bool get developerContextFirst => false;
   ToolDefinition? get nestedDiscovery => null;
   String? catalogContext(List<Json> current, List<Json>? previous);
   Map<String, String> get services => const {};
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation);
   String formatResult(ToolCall call, Json result);
+  ConversationItem resultItem(ToolCall call, Json result, {List<Json> images = const []}) =>
+    ConversationItem.toolResult(call, formatResult(call, result), isError: result.containsKey('error'), images: images);
   Future<List<Json>> prepareImages(List<Json> images, {required CancellationToken cancellation}) =>
       prepareInputAttachments(images, cancellation: cancellation);
   List<Json> externalCatalog(List<Json> catalog) => catalog;

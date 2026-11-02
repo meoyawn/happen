@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/openai_output.dart';
 
 void main() {
   test('code-mode-only discovery stays nested across catalog edits and compaction', () async {
@@ -86,7 +87,7 @@ void main() {
       await http.response.close();
     });
     final endpoint = 'http://127.0.0.1:${provider.port}/responses';
-    var server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path, endpoint: endpoint);
+    var server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path, endpoint: endpoint, skillsHome: root.path);
     var client = await AgentClient.connect(server.uri);
     addTearDown(() async {
       await client.close();
@@ -104,11 +105,9 @@ void main() {
       return result;
     }
     List<Json> definitions(Json request) => [
-      for (final item in (request['input'] as List).map(jsonObject))
-        if (item['type'] == 'additional_tools')
-          for (final namespace in item['tools'] as List)
-            if (!{'functions', 'web'}.contains(namespace['name']))
-              ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
+      for (final namespace in request['tools'] as List)
+        if (!{'exec', 'wait', 'web'}.contains(namespace['name']))
+          ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
     ];
 
     final started = await turn('task.start', {
@@ -120,12 +119,10 @@ void main() {
     });
     final id = started['task_id'];
     final prefix = requests.single['input'] as List;
-    expect(requests.single['instructions'], '');
-    expect(requests.single['tools'], isEmpty);
-    final initialTools = prefix.first['tools'];
-    expect((initialTools as List).where((tool) => tool['type'] == 'tool_search'), isEmpty);
-    final exec = (initialTools as List).singleWhere((tool) => tool['name'] == 'functions')['tools']
-        .singleWhere((tool) => tool['name'] == 'exec');
+    expect(requests.single.containsKey('instructions'), false);
+    final initialTools = requests.single['tools'] as List;
+    expect(initialTools.where((tool) => tool['type'] == 'tool_search'), isEmpty);
+    final exec = initialTools.singleWhere((tool) => tool['name'] == 'exec');
     final description = exec['description'] as String;
     for (final name in ['exec_command', 'write_stdin']) {
       expect(description, contains('declare const tools: { $name('));
@@ -136,27 +133,27 @@ void main() {
     expect(jsonEncode(prefix), isNot(contains('unused_schema_')));
     expect(jsonEncode(prefix), isNot(contains('client_schema_')));
     expect(jsonEncode(prefix), isNot(contains('Original guidance tail.')));
-    expect(utf8.encode(jsonEncode(prefix.skip(2).toList())).length, lessThan(5000));
+    expect(utf8.encode(jsonEncode(prefix.skip(1).toList())).length, lessThan(5000));
 
     await turn('task.send', {'task_id': id, 'prompt': 'code'});
     expect(definitions(requests.last), isEmpty, reason: 'Code-mode discovery must not load native schemas');
     expect((requests.last['input'] as List).take(prefix.length), prefix);
     final codeResult = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
-    final printed = jsonDecode(codeResult['output'] as String)['output'] as List;
-    final found = jsonDecode(printed.first as String)['tools'] as List;
+    final printed = printedOpenAIOutput(codeResult['output']);
+    final found = jsonDecode(printed.first)['tools'] as List;
     expect(found.single['name'], 'mcp__archive__probe');
     expect(found.single['description'], contains('Discovered after an in-cell config edit'));
     expect(found.single['description'], contains('declare const tools: { mcp__archive__probe('));
     expect(found.single['description'], contains('action'));
     expect(found.single['description'], contains('Current guidance tail.'));
     expect(found.single.keys, unorderedEquals(['name', 'description']));
-    expect((requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer')['content'],
+    expect(openAIMessageText((requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer') as Map),
       contains('Deferred tool namespaces:'));
-    expect(jsonDecode(printed[1] as String)['description'], contains('declare const tools: { mcp__archive__probe('));
-    expect(jsonDecode(jsonDecode(printed[2] as String)['content'][0]['text'])['pid'], isPositive);
-    expect(jsonDecode(printed[3] as String), {'tools': []},
+    expect(jsonDecode(printed[1])['description'], contains('declare const tools: { mcp__archive__probe('));
+    expect(jsonDecode(jsonDecode(printed[2])['content'][0]['text'])['pid'], isPositive);
+    expect(jsonDecode(printed[3]), {'tools': []},
       reason: 'Codex search indexes deferred tools; built-ins are advertised in functions.exec');
-    expect(jsonDecode(printed.last as String), {'before': 'before\n', 'after': 'after\n'});
+    expect(jsonDecode(printed.last), {'before': 'before\n', 'after': 'after\n'});
     expect(await File('${root.path}/note.txt').readAsString(), 'after\n');
 
     for (var i = 0; i < 2; i++) {
@@ -164,12 +161,12 @@ void main() {
       await turn('task.send', {'task_id': id, 'prompt': 'nested'});
       expect(definitions(requests.last), isEmpty);
       final result = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
-      final output = jsonDecode(result['output'] as String)['output'] as List;
-      expect(jsonDecode(output.first as String)['tools'].single['name'], 'mcp__archive__probe');
-      expect(jsonDecode(jsonDecode(output.last as String)['content'][0]['text'])['pid'], isPositive);
+      final output = printedOpenAIOutput(result['output']);
+      expect(jsonDecode(output.first)['tools'].single['name'], 'mcp__archive__probe');
+      expect(jsonDecode(jsonDecode(output.last)['content'][0]['text'])['pid'], isPositive);
     }
-    expect(requests.every((request) => (request['tools'] as List).isEmpty && request['instructions'] == ''), isTrue);
-    expect(requests.every((request) => jsonEncode(request['input'][0]['tools']) == jsonEncode(initialTools)), isTrue);
+    expect(requests.every((request) => !request.containsKey('instructions')), isTrue);
+    expect(requests.every((request) => jsonEncode(request['tools']) == jsonEncode(initialTools)), isTrue);
 
   });
 }

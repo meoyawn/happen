@@ -12,13 +12,43 @@ import 'package:server/server.dart';
 void main() {
   final binding = _LifecycleTestBinding();
   setUp(binding.exits.clear);
-  testWidgets('two distinct quit presses await shutdown', (tester) async {
+  testWidgets('idle desktop quits with one press and awaits shutdown without an overlay', (tester) async {
+    final closed = Completer<void>();
+    var closes = 0;
+    await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: false,
+      onQuit: () { closes++; return closed.future; },
+      child: const Scaffold(body: TextField(autofocus: true)),
+    )));
+    await tester.pump();
+    final modifier = defaultTargetPlatform == TargetPlatform.macOS
+      ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+    await tester.sendKeyDownEvent(modifier);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
+    await tester.pump();
+    expect(find.textContaining('again to quit'), findsNothing);
+    expect(closes, 1);
+    expect(binding.exits, isEmpty);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyQ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyQ);
+    await tester.sendKeyUpEvent(modifier);
+    expect(closes, 1);
+    closed.complete();
+    await tester.pumpAndSettle();
+    expect(binding.exits, [AppExitType.required]);
+    expect(find.textContaining('again to quit'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
+
+  testWidgets('active local tasks require two distinct quit presses and await shutdown', (tester) async {
     final platform = defaultTargetPlatform;
     final closed = Completer<void>();
     var closes = 0;
     final editor = TextEditingController(text: 'Keep this draft');
     addTearDown(editor.dispose);
     await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: true,
       onQuit: () { closes++; return closed.future; },
       child: Scaffold(body: TextField(controller: editor, autofocus: true)),
     )));
@@ -52,9 +82,48 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
 
+  testWidgets('local activity enables confirmation and finishing the last task clears it', (tester) async {
+    var closes = 0;
+    Widget app(bool active) => MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: active,
+      onQuit: () async { closes++; },
+      child: const Scaffold(body: TextField(autofocus: true)),
+    ));
+    final modifier = defaultTargetPlatform == TargetPlatform.macOS
+      ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+    Future<void> quit() async {
+      await tester.sendKeyDownEvent(modifier);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyQ);
+      await tester.sendKeyUpEvent(modifier);
+      await tester.pump();
+    }
+    await tester.pumpWidget(app(false));
+    await tester.pumpWidget(app(true));
+    await quit();
+    expect(find.textContaining('again to quit'), findsOneWidget);
+    expect(closes, 0);
+    await tester.pumpWidget(app(false));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('again to quit'), findsNothing);
+    expect(closes, 0);
+    expect(binding.exits, isEmpty);
+    await tester.pumpWidget(app(true));
+    await quit();
+    expect(find.textContaining('again to quit'), findsOneWidget);
+    expect(closes, 0, reason: 'New local work must require a fresh confirmation');
+    await tester.pumpWidget(app(false));
+    await quit();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('again to quit'), findsNothing);
+    expect(closes, 1);
+    expect(binding.exits, [AppExitType.required]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
+
   testWidgets('quit confirmation expires and cancels on Escape, other input, click, or blur', (tester) async {
     var closes = 0, clicks = 0;
     await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: true,
       onQuit: () async { closes++; },
       child: Scaffold(body: Column(children: [
         const TextField(autofocus: true),
@@ -125,6 +194,7 @@ void main() {
     });
     var closes = 0;
     await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: server.activeTaskCount > 0,
       onQuit: () async {
         closes++;
         await client.close();

@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'package:protocol/protocol.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-import 'model_context.dart';
-
 /// Each reader opens the session's WAL database read-only. It never initializes
 /// schema or writes projections; the session's single writer does that first.
 Future<Json> readSession(String directory, String sessionID, String method, Json params,
     {required CancellationToken cancellation}) async {
   cancellation.throwIfCancelled();
+  if (!{'session.message.list', 'session.event.list', 'session.inbox'}.contains(method)) {
+    throw ArgumentError('Unknown stored session read: $method');
+  }
   validateTaskId(sessionID);
   return await CancellableIsolate.run(() {
     final db = sqlite3.open('$directory/tasks/$sessionID/history.sqlite', mode: OpenMode.readOnly);
@@ -76,68 +77,15 @@ Future<Json> readSession(String directory, String sessionID, String method, Json
         final last = data.lastOrNull?['durable']?['seq'] as int? ?? after;
         return {'data': data, 'through': through, 'cursor': {if (last < through) 'next': last}};
       }
-      if (method == 'session.inbox') return {'data': [
-        for (final row in db.select('SELECT * FROM session_inbox ORDER BY enqueued_seq')) {
-          'id': (row['id'] as String).replaceFirst(RegExp(r'^msg_'), ''),
-          'prompt': decode(row['payload'])['text'], 'attachments': decode(row['payload'])['files'],
-          'delivery': row['delivery'], 'reasoning': decode(row['payload'])['metadata']?['reasoning'],
-          'created_at': DateTime.fromMillisecondsSinceEpoch(row['time_created'] as int).toUtc().toIso8601String(),
-        },
-      ]};
-      if (method == 'session.context') {
-        final latest = db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').single['seq'] as int;
-        final fence = cursor.isEmpty ? latest : cursor['through'] as int;
-        if (fence < 0 || fence > latest) throw const FormatException('Invalid context cursor');
-        final input = readModelContext(db, through: fence);
-        final start = cursor.isEmpty ? 0 : cursor['after'] as int;
-        if (start < 0 || start > input.length) throw const FormatException('Invalid context cursor');
-        final limit = (params['limit'] as int? ?? 100).clamp(1, 200);
-        final page = <Json>[];
-        var bytes = 0;
-        for (final item in input.skip(start).take(limit)) {
-          final size = utf8.encode(jsonEncode(item)).length;
-          if (page.isNotEmpty && bytes + size > maxClientFrameBytes ~/ 2) break;
-          if (size > maxClientFrameBytes - 1024 * 1024) throw const FormatException('Context item exceeds the WebSocket frame budget');
-          page.add(item); bytes += size;
-        }
-        final checkpoint = db.select("SELECT seq FROM events WHERE type = 'context.compacted' AND seq <= ? ORDER BY seq DESC LIMIT 1", [fence]);
-        final compaction = checkpoint.isEmpty ? 0 : checkpoint.single['seq'] as int;
-        final request = db.select("SELECT data FROM events WHERE type = 'model.started' AND seq <= ? ORDER BY seq DESC LIMIT 1", [fence]);
-        final envelope = request.isEmpty ? <String, dynamic>{} : decode(request.single['data']);
-        final usage = db.select("SELECT data FROM events WHERE type = 'model.completed' AND seq > ? AND seq <= ? ORDER BY seq DESC LIMIT 1", [compaction, fence]);
-        final effort = db.select("SELECT data FROM events WHERE type = 'configuration.updated' AND seq <= ? ORDER BY seq DESC LIMIT 1", [fence]);
-        final times = db.select('SELECT min(created_at) AS created, max(created_at) AS updated FROM events WHERE seq <= ?', [fence]).single;
-        final window = db.select('SELECT window_id FROM events WHERE seq <= ? ORDER BY seq DESC LIMIT 1', [fence]);
-        final counts = <String, int>{};
-        for (final item in input) {
-          final kind = item['kind'] == 'message'
-            ? (item['native']?['harness'] == null ? item['role'] as String : 'context')
-            : item['kind'] as String;
-          counts[kind] = (counts[kind] ?? 0) + 1;
-        }
-        final base = input.where((item) => item['native']?['harness']?['context'] == 'model').lastOrNull;
-        final archived = db.select("SELECT value FROM metadata WHERE key = 'archived_at'");
-        return {
-          'sessionID': sessionID,
-          'through': db.select('SELECT coalesce(max(seq), 0) AS seq FROM session_event WHERE source_seq <= ?', [fence]).single['seq'],
-          'sourceThrough': fence,
-          'windowID': window.isEmpty ? null : window.single['window_id'],
-          'model': {'providerID': config['provider'], 'id': config['model']},
-          'limit': config['provider_settings']?['context_limit'],
-          'instructions': envelope['instructions'], 'tools': envelope['tools'],
-          if (base != null) 'baseInstructionID': base['id'],
-          'settings': config['provider_settings'] ?? {},
-          'effectiveReasoning': effort.isEmpty ? (config['provider_settings']?['reasoning']) : decode(effort.single['data'])['effort'],
-          'counts': counts, 'inputCount': input.length,
-          'tokens': usage.isEmpty ? null : sessionTokens(jsonObject(decode(usage.single['data'])['usage'] ?? {})),
-          'created': DateTime.tryParse(times['created'] as String? ?? '')?.millisecondsSinceEpoch,
-          'updated': DateTime.tryParse(times['updated'] as String? ?? '')?.millisecondsSinceEpoch,
-          'input': page, 'cursor': {
-            if (start + page.length < input.length)
-              'next': base64Url.encode(utf8.encode(jsonEncode({'through': fence, 'after': start + page.length}))),
+      if (method == 'session.inbox') {
+        return {'data': [
+          for (final row in db.select('SELECT * FROM session_inbox ORDER BY enqueued_seq')) {
+            'id': (row['id'] as String).replaceFirst(RegExp(r'^msg_'), ''),
+            'prompt': decode(row['payload'])['text'], 'attachments': decode(row['payload'])['files'],
+            'delivery': row['delivery'], 'reasoning': decode(row['payload'])['metadata']?['reasoning'],
+            'created_at': DateTime.fromMillisecondsSinceEpoch(row['time_created'] as int).toUtc().toIso8601String(),
           },
-          'archived': archived.isNotEmpty && jsonDecode(archived.single['value'] as String) != null,
-        };
+        ]};
       }
       return {
         ...messagePage(),

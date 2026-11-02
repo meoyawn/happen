@@ -16,9 +16,9 @@ workspace:
   - packages/tool_runtime
   - packages/agent
   - packages/server
+  - packages/cli
   - packages/desktop
 dependencies:
-  args: ^2.7.0
   ai: any
   openai: any
   opencode: any

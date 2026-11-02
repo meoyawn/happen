@@ -34,7 +34,6 @@ void main() {
         'provider_settings': {'reasoning': 'low'},
       }, '/repo', false);
       expect(config['instructions'], model.instructions);
-      expect(const OpenAIToolInterface().toolsInHistory, true);
       expect(config['instructions'], isNot(contains('You are now in persistent mode')));
       expect(config['tool_interface'], 'openai');
     }
@@ -54,7 +53,7 @@ void main() {
     ]};
     final text = codex.renderInstructions(initial, null);
     expect(text.role, 'user');
-    expect(text.text, '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nGlobal\n'
+    expect(text.text, '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nGlobal'
       '\n\n--- project-doc ---\n\nProject\n\n\nNested\n</INSTRUCTIONS>');
     expect(codex.renderInstructions({'cwd': '/repo', 'files': [{'text': 'New'}]}, initial).text,
       '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nThese AGENTS.md instructions replace all previously provided AGENTS.md instructions.\n\nNew\n</INSTRUCTIONS>');

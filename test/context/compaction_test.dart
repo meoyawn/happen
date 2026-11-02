@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/openai_output.dart';
 
 void main() {
   test('compaction restores instructions and effort while durable recall survives restart and transfer', () async {
@@ -89,7 +90,7 @@ void main() {
                 'type': 'message',
                 'role': 'assistant',
                 'content': [
-                  {'type': 'output_text', 'text': outputs.last['output']},
+                  {'type': 'output_text', 'text': jsonEncode(outputs.last['output'])},
                 ],
               },
             ]
@@ -252,14 +253,12 @@ void main() {
     expect(jsonEncode(continuation['input']), isNot(contains('receipt-867')));
     expect(jsonEncode(continuation['input']), contains('opaque-checkpoint'));
     expect(jsonEncode(continuation['input']), contains('use cedar'));
-    final instructionItems = (continuation['input'] as List).where((item) =>
-      item['role'] == 'user' && item['content'] is String &&
-      (item['content'] as String).startsWith('# AGENTS.md instructions'),
-    ).toList();
+    final instructionItems = (continuation['input'] as List).where((item) => item['role'] == 'user')
+      .map((item) => openAIMessageText(item as Map)).where((text) => text.startsWith('# AGENTS.md instructions')).toList();
     expect(instructionItems, hasLength(1));
-    expect(instructionItems.single['content'], contains('use cedar'));
-    expect(instructionItems.single['content'], isNot(contains('use maple')));
-    expect(instructionItems.single['content'], isNot(contains('replace all previously provided AGENTS.md instructions')));
+    expect(instructionItems.single, contains('use cedar'));
+    expect(instructionItems.single, isNot(contains('use maple')));
+    expect(instructionItems.single, isNot(contains('replace all previously provided AGENTS.md instructions')));
     expect(jsonEncode(continuation['input']), contains('retain the newline'));
     expect(continuation['reasoning']['effort'], 'low');
     expect(
@@ -270,7 +269,7 @@ void main() {
     );
     Json recalledItem(Json event) => jsonObject(
       jsonDecode(
-        jsonDecode(event['data']['text'] as String)['output'][0] as String,
+        printedOpenAIOutput(jsonDecode(event['data']['text'] as String)).first,
       ),
     );
     final record = recalledItem(recalled);

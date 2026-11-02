@@ -3,9 +3,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fake_async/fake_async.dart';
+import 'package:ai/ai.dart';
+import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/openai_output.dart';
 
 void main() {
   group('WebSocket agent protocol', () {
@@ -193,14 +196,15 @@ void main() {
       final replay = jsonObject(await client.request('session.event.list', {'sessionID': id, 'limit': 500}));
       expect(replay['data'], events.where((event) => event['durable'] != null).toList());
       final context = jsonObject(await client.request('session.context', {'sessionID': id}));
-      expect(requests.last['instructions'], '');
-      expect(requests.last['tools'], isEmpty);
-      expect(context['system'], requests.last['input'][1]['content']);
-      expect((context['data'] as List).where((message) => message['type'] == 'system'), isEmpty);
-      expect((context['data'] as List).where((message) => message['context'] == 'model'), hasLength(1));
-      expect((context['data'] as List).where((message) => message['type'] == 'synthetic')
-        .any((message) => message['text'].toString().contains('Session-specific instruction')), true);
-      expect(context['tools'], isNotEmpty);
+      expect(requests.last.containsKey('instructions'), false);
+      expect(requests.last['tools'], isNotEmpty);
+      final input = (context['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))).toList();
+      expect(context['instructions'], requests.last['input'][0]['content']);
+      expect(input.where((item) => item.native['harness']?['context'] == 'model'), isEmpty);
+      expect(input.any((item) => item.text.contains('Session-specific instruction')), true);
+      expect(input.where((item) => item.kind == 'tools'), isEmpty);
+      expect(gptPromptInput(context['instructions'] as String, input.take(input.length - 1)), requests.last['input']);
+      expect(gptTools((context['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool)))), requests.last['tools']);
       expect(context['limit'], 100000);
       expect(context['tokens'], {'input': 10, 'output': 5, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}});
       expect((page['data'] as List).where((message) => message['type'] == 'assistant'), hasLength(2));
@@ -377,8 +381,8 @@ void main() {
         expect(request['reasoning'], {'effort': 'low'});
         expect(input.take((requests[1]['input'] as List).length), requests[1]['input']);
       }
-      expect(jsonDecode((requests[4]['input'] as List).last['output'] as String)['output'], ['42']);
-      expect(jsonDecode((requests[6]['input'] as List).last['output'] as String)['output'], ['42']);
+      expect(printedOpenAIOutput((requests[4]['input'] as List).last['output']), ['42']);
+      expect(printedOpenAIOutput((requests[6]['input'] as List).last['output']), ['42']);
       expect(releaseStreams.isCompleted, isFalse);
       expect(jsonObject(await client.request('telemetry'))['resident_tasks'], 0);
     });
@@ -420,8 +424,8 @@ void main() {
           (item) => item['type'] == 'custom_tool_call_output',
         );
         expect(
-          jsonDecode(toolResult['output'] as String),
-          isNot(contains('error')),
+          (toolResult['output'] as List).first['text'],
+          startsWith('Script completed\n'),
         );
         expect(await File('${work.path}/result.txt').readAsString(), '42\n');
         expect(first['data']['text'], 'Verified 42 ✓');
@@ -462,7 +466,7 @@ void main() {
         final outputs = (requests.last['input'] as List)
             .where((item) => item['type'] == 'custom_tool_call_output')
             .toList();
-        expect(jsonDecode(outputs.last['output'] as String)['output'], ['42']);
+        expect(printedOpenAIOutput(outputs.last['output']), ['42']);
 
         final fork = jsonObject(
           await client.request('task.fork', {

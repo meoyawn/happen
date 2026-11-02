@@ -7,16 +7,65 @@ tasks:
     description: Build the single-file macOS arm64 Happen AOT CLI with embedded native libraries
     command: dart tool/build_cli.dart
     preset: utility
-    inputs: []
+    inputs:
+      - pubspec.yaml
+      - pubspec.lock
+      - tool/build_cli.dart
+      - tool/cli_native_bootstrap.dart
+      - tool/dart2native.json
+      - packages/cli/**/*
+      - packages/agent/**/*
+      - packages/ai/**/*
+      - packages/openai/**/*
+      - packages/opencode/**/*
+      - packages/auth/**/*
+      - packages/config/**/*
+      - packages/mcp/**/*
+      - packages/protocol/**/*
+      - packages/server/**/*
+      - packages/storage/**/*
+      - packages/code_mode/**/*
+      - packages/tool_runtime/**/*
+      - packages/telemetry/**/*
+      - third_party/quickjs/**/*
+      - third_party/http/pkgs/http2/**/*
     outputs:
       - build/cli/happen
       - build/cli/build-report.json
     options:
-      cache: false
+      cache: true
       interactive: false
       shell: false
       outputStyle: stream
       mutex: happen-cli-build
+
+  test-unit:
+    description: Run source-level Dart tests without building the CLI
+    command: dart test --exclude-tags e2e
+    preset: utility
+    inputs:
+      - pubspec.yaml
+      - pubspec.lock
+      - test/**/*
+      - packages/**/*
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  test-e2e:
+    description: Compare in-process agent context and timings against Codex
+    command: dart run tool/test_e2e.dart
+    preset: utility
+    inputs:
+      - test/contracts/**/*
+      - test/fixtures/context_contract/**/*
+      - tool/test_e2e.dart
+      - packages/openai/catalog/models.json
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
 
   dev:
     description: Run one Flutter desktop in the foreground with stateful hot reload

@@ -36,6 +36,8 @@ void _agentMain(List<Object?> args) {
   final port = ReceivePort();
   (args[0] as SendPort).send(port.sendPort);
   Future<void>? running;
+  String? turnOperation;
+  final reads = <String, CancellationToken>{};
   port.listen((raw) async {
     final request = jsonObject(raw),
         params = jsonObject(jsonObject(raw)['params']);
@@ -43,13 +45,16 @@ void _agentMain(List<Object?> args) {
     try {
       switch (request['method']) {
         case 'turn':
+        case 'prepare':
           if (running != null) {
             throw StateError('Task already has an active turn');
           }
+          turnOperation = request['operation_id'] as String?;
           running = actor.turn(
             params['prompt'] as String? ?? '',
             (event) => reply?.send({'event': event}),
             compact: params['compact'] == true,
+            prepareOnly: request['method'] == 'prepare',
             settings: jsonObject(params['settings'] ?? {}),
           );
           try {
@@ -57,9 +62,24 @@ void _agentMain(List<Object?> args) {
             reply?.send({'result': null});
           } finally {
             running = null;
+            turnOperation = null;
+          }
+        case 'context':
+          final id = request['operation_id'] as String;
+          final cancellation = reads[id] = CancellationToken();
+          try {
+            reply?.send({'result': await actor.context(cancellation)});
+          } finally {
+            reads.remove(id);
+            cancellation.cancel();
           }
         case 'cancel':
-          actor.cancel();
+          final operation = params['operation_id'];
+          if (operation == null || operation == turnOperation) {
+            actor.cancel();
+          } else {
+            reads[operation]?.cancel();
+          }
           reply?.send({'result': null});
         case 'steer':
           actor.steer(params);
@@ -67,13 +87,15 @@ void _agentMain(List<Object?> args) {
         case 'close':
           actor.cancel();
           await running;
+          actor.dispose();
+          for (final read in reads.values) { read.cancel(); }
           reply?.send({'result': null});
           port.close();
         default:
           throw StateError('Unknown agent operation');
       }
     } catch (error) {
-      reply?.send({'error': error.toString()});
+      reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
     }
   });
 }
@@ -81,6 +103,80 @@ void _agentMain(List<Object?> args) {
 class _Agent {
   _Agent(this.config);
   final Json config;
+  final _lifetime = CancellationToken();
+  Future<void>? _restoring;
+  List<ConversationItem> input = [];
+  List<ToolDefinition>? _tools;
+  Json _contextState = {};
+  String get effort => _contextState['effectiveReasoning'] as String? ?? config['provider_settings']['reasoning'] as String;
+  set effort(String value) => _contextState['effectiveReasoning'] = value;
+
+  Future<void> _restore() => _restoring ??= () async {
+    final saved = jsonObject(await callIsolate(writer, 'context', {}, cancellation: _lifetime));
+    input = (saved['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))).toList();
+    _contextState = {...saved}..remove('input');
+    if (saved['requestTools'] case final List tools) {
+      _tools = tools.map((tool) => ToolDefinition.fromJson(jsonObject(tool))).toList();
+    }
+  }();
+
+  ModelRequest request() {
+    final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
+    return ModelRequest(
+      taskId: taskId, model: config['model'] as String,
+      instructions: config['instructions'] as String,
+      input: input, tools: _tools ?? interface.definitions,
+      settings: jsonObject(config['provider_settings']), effectiveReasoning: effort,
+    );
+  }
+
+  Future<Json> context(CancellationToken cancellation) async {
+    await _restore().asCancellable(cancellation);
+    cancellation.throwIfCancelled();
+    final current = request();
+    final counts = <String, int>{};
+    for (final item in current.input) {
+      final kind = item.kind == 'message' ? (item.native['harness'] == null ? item.role! : 'context') : item.kind;
+      counts[kind] = (counts[kind] ?? 0) + 1;
+    }
+    return {
+      ..._contextState,
+      'sessionID': taskId, 'model': {'providerID': config['provider'], 'id': current.model},
+      'limit': current.settings['context_limit'],
+      'instructions': current.instructions, 'tools': current.tools.map((tool) => tool.toJson()).toList(),
+      'settings': current.settings, 'effectiveReasoning': current.effectiveReasoning,
+      'input': current.input.map((item) => item.toJson()).toList(),
+      'inputCount': current.input.length, 'counts': counts,
+    };
+  }
+
+  void dispose() => _lifetime.cancel();
+
+  Json _record(Json entry) {
+    final type = entry['type'] as String, data = jsonObject(entry['data']);
+    final items = modelContextItems(type, data);
+    if (type == 'context.compacted') {
+      input = items.toList();
+      _contextState['tokens'] = null;
+    } else {
+      input.addAll(items);
+    }
+    if (type == 'model.completed') _contextState['tokens'] = sessionTokens(jsonObject(data['usage'] ?? {}));
+    if (type == 'tools.updated' && data['tools'] is List) {
+      _tools = (data['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool))).toList();
+    }
+    if (type == 'configuration.updated' && data['effort'] is String) effort = data['effort'] as String;
+    final time = DateTime.parse(entry['created_at'] as String).millisecondsSinceEpoch;
+    _contextState['created'] ??= time;
+    _contextState['updated'] = time;
+    _contextState['sourceThrough'] = entry['seq'];
+    _contextState['windowID'] = entry['window_id'];
+    for (final event in entry['session_events'] as List? ?? []) {
+      _contextState['through'] = event['durable']['seq'];
+    }
+    return entry;
+  }
+
   CancellationToken? _cancellation;
   CancellationToken? _responseCancellation;
   CancellationToken? _toolCancellation;
@@ -113,18 +209,23 @@ class _Agent {
     String type,
     Json data, {
     Json metadata = const {},
-  }) async => jsonObject(
+  }) async => _record(jsonObject(
     await callIsolate(writer, 'append', {
       'type': type,
       'data': data,
       'metadata': metadata,
     }),
-  );
+  ));
+
+  Future<List<Json>> _appendBatch(List<Json> events, Json metadata) async =>
+      (await callIsolate(writer, 'append_batch', {'events': events, 'metadata': metadata}) as List)
+        .map((entry) => _record(jsonObject(entry))).toList();
 
   Future<void> turn(
     String prompt,
     void Function(Json) emit, {
     bool compact = false,
+    bool prepareOnly = false,
     Json settings = const {},
   }) async {
     final cancellation = CancellationToken();
@@ -132,23 +233,22 @@ class _Agent {
     _accepting = !compact;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
-    final interface = toolInterface(config['tool_interface'] as String);
+    final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
     final turnId = newId();
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
     try {
+      await _restore().asCancellable(cancellation);
       if (settings['model'] != null && settings['model'] != config['model'] ||
           settings['provider'] != null &&
               settings['provider'] != config['provider']) {
         throw ArgumentError('The model and provider are fixed for this task');
       }
       final baseline = jsonObject(config['provider_settings']);
-      final previousEffort =
-          await _metadata('effective_reasoning') ?? baseline['reasoning'];
-      var effort =
-          settings['reasoning'] as String? ?? previousEffort as String;
-      if (effort != previousEffort && config['reasoning_updates'] != true) {
+      final previousEffort = effort;
+      final selectedEffort = settings['reasoning'] as String? ?? previousEffort;
+      if (selectedEffort != previousEffort && config['reasoning_updates'] != true) {
         throw ArgumentError('Reasoning effort is fixed for this task');
       }
       if (settings['settings'] != null) {
@@ -159,7 +259,7 @@ class _Agent {
       await callIsolate(network, 'validate_settings', {
         'provider': config['provider'],
         'model': config['model'],
-        'settings': {...baseline, 'reasoning': effort},
+        'settings': {...baseline, 'reasoning': selectedEffort},
       }, cancellation: cancellation);
       cancellation.throwIfCancelled();
       final savedCwd = await _metadata('current_cwd') as String?;
@@ -190,12 +290,6 @@ class _Agent {
           metadata: {'status': 'running'},
         ),
       );
-      var input = (await callIsolate(
-        writer,
-        'context',
-        {},
-        cancellation: cancellation,
-      ) as List).map((v) => ConversationItem.fromJson(jsonObject(v))).toList();
       final completed = input
           .expand((item) => item.content)
           .where((p) => p['type'] == 'tool_result')
@@ -209,22 +303,49 @@ class _Agent {
             isError: true,
           );
           event(await _append('tool.completed', {'item': result.toJson()}));
-          input.add(result);
         }
       }
 
-      // Codex's incremental-tools windows own one ordered tools/base prefix.
-      final incrementalTools = interface.toolsInHistory;
-      final prefixContext = <ConversationItem>[
-        if (incrementalTools) ...[
-          ConversationItem(kind: 'tools', tools: interface.definitions,
-            native: {'harness': {'context': 'top_level_tools'}}),
-          if ((config['instructions'] as String).isNotEmpty) ConversationItem(
-            role: 'developer', content: [{'type': 'text', 'text': config['instructions']}],
-            native: {'harness': {'context': 'model'}},
-          ),
-        ],
-      ];
+      var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
+      var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': []});
+      var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
+      final clientTools = config['client_tools'] as SendPort?;
+      var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
+      Future<Json> readMcpCatalog([CancellationToken? token]) async {
+        final current = jsonObject(await callIsolate(network, 'mcp.catalog', {
+          'task_id': taskId, 'revision': mcpCatalog['revision'],
+        }, cancellation: token ?? cancellation));
+        if (current['unchanged'] != true) mcpCatalog = current;
+        return mcpCatalog;
+      }
+      Future<Json> readClientCatalog([CancellationToken? token]) async {
+        final current = clientTools == null ? const <String, dynamic>{'tools': []}
+          : jsonObject(await callIsolate(clientTools, 'catalog', {
+            'task_id': taskId, 'revision': clientCatalog['revision'],
+          }, cancellation: token ?? cancellation));
+        if (current['unchanged'] != true) clientCatalog = current;
+        return clientCatalog;
+      }
+      // Cache rendering for this turn's immutable snapshots, not availability.
+      // Every access still checks live revisions; a revision invalidates both
+      // the deferred list and the rendered runtime catalog.
+      Json? describedMcp, describedClient;
+      var deferredTools = <Json>[];
+      List<Json>? runtimeCatalog;
+      Future<List<Json>> currentDeferredCatalog(CancellationToken token) async {
+        await Future.wait([readMcpCatalog(token), readClientCatalog(token)]);
+        if (!identical(describedMcp, mcpCatalog) || !identical(describedClient, clientCatalog)) {
+          deferredTools = deferredCatalog(mcpCatalog, clientCatalog);
+          describedMcp = mcpCatalog; describedClient = clientCatalog;
+          runtimeCatalog = null;
+        }
+        return deferredTools;
+      }
+      Future<List<Json>> currentRuntimeCatalog(CancellationToken token) async {
+        final deferred = await currentDeferredCatalog(token);
+        return runtimeCatalog ??= [...interface.hostCatalogFor(deferred), ...interface.externalCatalog(deferred)];
+      }
+      await currentDeferredCatalog(cancellation);
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
       var skillsCatalog = <String, dynamic>{'skills': []};
       Future<void> refreshSkills() async {
@@ -241,7 +362,6 @@ class _Agent {
           if (item != null) 'item': item.toJson(),
         }, metadata: {'skills_state': next.snapshot}));
         skillsSnapshot = next.snapshot;
-        if (item != null) input.add(item);
       }
 
       Future<Json> readInstructions() async => loadAgentsMd(
@@ -250,6 +370,7 @@ class _Agent {
         }, cancellation: cancellation)),
         config['global_directory'] as String, cancellation,
       );
+      if (interface.developerContextFirst) await refreshSkills();
       var snapshot = await readInstructions();
       final previousSnapshot = await _metadata('agents_snapshot');
       final updates = <Json>[];
@@ -258,17 +379,14 @@ class _Agent {
             'type': type,
             'data': {...data, 'item': item.toJson()},
           });
-      for (final item in prefixContext) {
-        if (!input.any((previous) => previous.native['harness']?['context'] == item.native['harness']['context'])) {
-          update(item.kind == 'tools' ? 'tools.updated' : 'instructions.updated', item);
-        }
-      }
       if (instructionUpdate(interface, snapshot, previousSnapshot is Map ? jsonObject(previousSnapshot) : null)
           case final ConversationItem item) {
         update('agents.updated', item, {'snapshot': snapshot});
       }
-      if (savedCwd == null || previousCwd != cwd) {
-        update('environment.updated', interface.environmentContext(cwd, replacement: savedCwd != null), {'cwd': cwd});
+      final environment = interface.environmentContext(cwd, replacement: savedCwd != null);
+      final previousEnvironment = input.where((item) => item.native['harness']?['context'] == 'environment').lastOrNull;
+      if (savedCwd == null || previousCwd != cwd || interface.developerContextFirst && previousEnvironment?.text != environment.text) {
+        update('environment.updated', environment, {'cwd': cwd});
       }
       if (settings['instructions'] != null) {
         update(
@@ -279,48 +397,31 @@ class _Agent {
           ),
         );
       }
-      if (effort != previousEffort) {
+      if (selectedEffort != previousEffort) {
         update(
           'configuration.updated',
           ConversationItem(
             kind: 'configuration',
-            settings: {'reasoning': effort},
+            settings: {'reasoning': selectedEffort},
           ),
-          {'effort': effort},
+          {'effort': selectedEffort},
         );
       }
-      if (!compact) {
-        update('input.committed', ConversationItem.user(prompt, attachments: settings['attachments']), {
+      Json? pendingInput;
+      if (!compact && (!prepareOnly || prompt.isNotEmpty)) {
+        pendingInput = {
+          'item': ConversationItem.user(prompt, attachments: settings['attachments']).toJson(),
           if (settings['message_id'] != null)
             'message_id': settings['message_id'],
           if (settings['sent_at'] != null) 'sent_at': settings['sent_at'],
-        });
-      } else if (effort != previousEffort) {
-        update(
-          'input.committed',
-          ConversationItem.text(
+        };
+      } else if (selectedEffort != previousEffort) {
+        pendingInput = {
+          'item': ConversationItem.text(
             'user',
             'Apply the updated settings and compact the current context.',
-          ),
-        );
-      }
-      if (updates.isNotEmpty) {
-        cancellation.throwIfCancelled();
-        final committed = await callIsolate(writer, 'append_batch', {
-          'events': updates,
-          'metadata': {
-            'effective_reasoning': effort,
-            'current_cwd': cwd,
-            'agents_snapshot': snapshot,
-          },
-        }) as List;
-        for (final raw in committed) {
-          final entry = jsonObject(raw);
-          event(entry);
-          input.add(
-            ConversationItem.fromJson(jsonObject(entry['data']['item'])),
-          );
-        }
+          ).toJson(),
+        };
       }
 
       Future<void> refreshInstructions() async {
@@ -331,7 +432,6 @@ class _Agent {
         if (item != null) {
           event(await _append('agents.updated', {'snapshot': current, 'item': item.toJson()},
             metadata: {'agents_snapshot': current}));
-          input.add(item);
         }
         snapshot = current;
       }
@@ -343,8 +443,9 @@ class _Agent {
         final messages = _steering.toList();
         _steering.clear();
         final updates = <Json>[];
+        var nextEffort = effort;
         for (final message in messages) {
-          if (message['reasoning'] case final String selected when selected != effort) {
+          if (message['reasoning'] case final String selected when selected != nextEffort) {
             if (config['reasoning_updates'] != true) {
               throw ArgumentError('Reasoning effort is fixed for this task');
             }
@@ -358,7 +459,7 @@ class _Agent {
                 ).toJson(),
               },
             });
-            effort = selected;
+            nextEffort = selected;
           }
           updates.add({
             'type': 'input.committed',
@@ -373,66 +474,31 @@ class _Agent {
             },
           });
         }
-        final entries = await callIsolate(writer, 'append_batch', {
-          'events': updates,
-          'metadata': {'effective_reasoning': effort},
-        }) as List;
+        final entries = await _appendBatch(updates, {'effective_reasoning': nextEffort});
         for (final raw in entries) {
           final entry = jsonObject(raw);
           event(entry);
-          input.add(
-            ConversationItem.fromJson(jsonObject(entry['data']['item'])),
-          );
         }
         return true;
       }
 
       var usageItems = await _metadata('context_usage_items') as int? ?? 0;
-      var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
-      var clientSnapshot = jsonObject(
-        await _metadata('client_tools_snapshot') ?? {'tools': []},
-      );
-      var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
-      if (incrementalTools) {
-        final known = loadedTools(input);
-        final changed = interface.definitions.where((tool) => !known.containsKey(toolKey(tool)) ||
-          contextFingerprint(known[toolKey(tool)]!.toJson()) != contextFingerprint(tool.toJson())).toList();
-        if (changed.isNotEmpty) {
-          final update = ConversationItem(kind: 'tools', tools: changed,
-            native: {'harness': {'context': 'top_level_tools'}});
-          event(await _append('tools.updated', {'item': update.toJson()}));
-          input.add(update);
-        }
-      }
       final nestedDiscovery = interface.nestedDiscovery;
-      final clientTools = config['client_tools'] as SendPort?;
-      var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
-      Future<Json> readMcpCatalog([CancellationToken? token]) async {
-        final current = jsonObject(await callIsolate(network, 'mcp.catalog', {
-          'task_id': taskId, 'revision': mcpCatalog['revision'],
-        }, cancellation: token ?? cancellation));
-        if (current['unchanged'] != true) mcpCatalog = current;
-        return mcpCatalog;
-      }
-      Future<Json> readClientCatalog([CancellationToken? token]) async {
-        final current = clientTools == null ? <String, dynamic>{'tools': []}
-          : jsonObject(await callIsolate(clientTools, 'catalog', {
-            'task_id': taskId, 'revision': clientCatalog['revision'],
-          }, cancellation: token ?? cancellation));
-        if (current['unchanged'] != true) clientCatalog = current;
-        return clientCatalog;
-      }
-      Future<List<Json>> currentDeferredCatalog(CancellationToken token) async {
-        await Future.wait([readMcpCatalog(token), readClientCatalog(token)]);
-        return deferredCatalog(mcpCatalog, clientCatalog);
-      }
+      List<Json>? declaredCatalog;
       Future<void> refreshTools() async {
-        await Future.wait([readMcpCatalog(), readClientCatalog()]);
-        final mcpChanged = contextFingerprint(mcpCatalog) != contextFingerprint(mcpSnapshot);
-        final clientChanged = contextFingerprint(clientCatalog) != contextFingerprint(clientSnapshot);
+        final deferred = await currentDeferredCatalog(cancellation);
+        if (!identical(declaredCatalog, deferred)) {
+          final serialized = interface.definitionsFor(deferred).map((tool) => tool.toJson()).toList();
+          if (_tools == null || contextFingerprint(_tools!.map((tool) => tool.toJson()).toList()) != contextFingerprint(serialized)) {
+            event(await _append('tools.updated', {'tools': serialized}, metadata: {'request_tools': serialized}));
+          }
+          declaredCatalog = deferred;
+        }
+        final mcpChanged = !identical(mcpCatalog, mcpSnapshot) && contextFingerprint(mcpCatalog) != contextFingerprint(mcpSnapshot);
+        final clientChanged = !identical(clientCatalog, clientSnapshot) && contextFingerprint(clientCatalog) != contextFingerprint(clientSnapshot);
         final hasContext = input.any((item) => ['mcp', 'client_tools', 'tool_catalog'].contains(item.native['harness']?['context']));
         if (!mcpChanged && !clientChanged && hasContext) return;
-        final text = interface.catalogContext(deferredCatalog(mcpCatalog, clientCatalog),
+        final text = interface.catalogContext(deferred,
           hasContext ? deferredCatalog(mcpSnapshot, clientSnapshot) : null);
         final updates = <ConversationItem>[
           if (text != null) ConversationItem(role: 'developer', content: [{'type': 'text', 'text': text}],
@@ -440,29 +506,34 @@ class _Agent {
         ];
         if (updates.isNotEmpty) {
           cancellation.throwIfCancelled();
-          final entries = await callIsolate(writer, 'append_batch', {
-            'events': [for (final item in updates) {
+          final entries = await _appendBatch([for (final item in updates) {
               'type': mcpChanged ? 'mcp.updated' : 'client_tools.updated',
               'data': {'item': item.toJson(), 'snapshot': mcpChanged ? mcpCatalog : clientCatalog},
-            }],
-            'metadata': {'mcp_snapshot': mcpCatalog, 'client_tools_snapshot': clientCatalog},
-          }) as List;
+            }], {'mcp_snapshot': mcpCatalog, 'client_tools_snapshot': clientCatalog});
           for (final entry in entries) { event(jsonObject(entry)); }
-          input.addAll(updates);
           persistedMcp = mcpCatalog; persistedClient = clientCatalog;
         }
         mcpSnapshot = mcpCatalog; clientSnapshot = clientCatalog;
       }
 
-      ModelRequest request() => ModelRequest(
-        taskId: taskId,
-        model: config['model'] as String,
-        instructions: incrementalTools ? '' : config['instructions'] as String,
-        input: input,
-        tools: incrementalTools ? [] : interface.definitions,
-        settings: baseline,
-        effectiveReasoning: effort,
-      );
+      if (interface.developerContextFirst) await refreshTools();
+      if (updates.isNotEmpty) {
+        cancellation.throwIfCancelled();
+        final committed = await _appendBatch(updates, {
+          'effective_reasoning': selectedEffort, 'current_cwd': cwd, 'agents_snapshot': snapshot,
+        });
+        for (final entry in committed) { event(entry); }
+      }
+
+      Future<void> refreshContext() async {
+        await refreshInstructions();
+        await refreshSkills();
+        await refreshTools();
+        if (pendingInput case final Json data) {
+          event(await _append('input.committed', data));
+          pendingInput = null;
+        }
+      }
       String? assistantMessageID;
       Future<Json> networkCall(String method, [CancellationToken? token]) async {
         final active = token ?? cancellation;
@@ -481,10 +552,10 @@ class _Agent {
             method,
             {'provider': config['provider'], ...request().toJson()},
             onEvent: (value) {
-              if (!active.isCancelled) event({...value,
+              if (!active.isCancelled) { event({...value,
                 if (method == 'respond') 'assistantMessageID': assistantMessageID,
                 if (method == 'compact' && value['type'] == 'text.delta') 'type': 'compaction.delta',
-              });
+              }); }
             },
             timeout: null,
             cancellation: active,
@@ -545,7 +616,7 @@ class _Agent {
           catalogContext: interface.catalogContext,
           instructionContext: interface.instructionContext,
           environmentContext: interface.environmentContext,
-          prefixContext: prefixContext,
+          developerContextFirst: interface.developerContextFirst,
           skills: freshSkills.item,
         );
         final size =
@@ -566,7 +637,6 @@ class _Agent {
             'skills_state': freshSkills.snapshot,
           },
         );
-        input = restored;
         skillsSnapshot = freshSkills.snapshot;
         usageTokens = size;
         usageItems = input.length;
@@ -601,14 +671,16 @@ class _Agent {
             native: {'harness': {'context': 'tool_notification'}},
           );
           event(await _append('input.committed', {'item': item.toJson()}));
-          input.add(item);
         }
         return notices.isNotEmpty;
       }
 
+      if (prepareOnly) {
+        await refreshContext();
+        return;
+      }
       if (compact) {
-        await refreshSkills();
-        await refreshTools();
+        await refreshContext();
         await compactContext('manual');
         await finish('Context compacted. Full history remains available.');
         return;
@@ -617,11 +689,9 @@ class _Agent {
       var overflowRecovered = false;
       while (true) {
         cancellation.throwIfCancelled();
+        await refreshContext();
         await takeSteering();
         await takeNotifications();
-        await refreshInstructions();
-        await refreshSkills();
-        await refreshTools();
         final estimate = usageTokens > 0 && usageItems <= input.length
             ? usageTokens + estimateTokens(input.skip(usageItems))
             : estimateTokens(input) +
@@ -648,19 +718,20 @@ class _Agent {
         telemetry.observe('model', modelTime.elapsed);
         telemetry.add('model_requests');
         countUsage(reply.usage);
-        input.addAll(reply.output);
-        usageTokens = reply.usage.contextTokens;
-        usageItems = input.length;
+        final nextUsage = reply.usage.contextTokens;
+        final nextItems = input.length + reply.output.length;
         event(
           await _append(
             'model.completed',
             {...reply.toJson(), 'assistantMessageID': assistantMessageID},
             metadata: {
-              'context_usage': usageTokens,
-              'context_usage_items': usageItems,
+              'context_usage': nextUsage,
+              'context_usage_items': nextItems,
             },
           ),
         );
+        usageTokens = nextUsage;
+        usageItems = nextItems;
         if (reply.calls.isEmpty) {
           if (await takeSteering()) continue;
           if (await takeNotifications()) continue;
@@ -687,10 +758,7 @@ class _Agent {
           try {
             if (_steering.isNotEmpty) throw const CancelledException();
             result = await host.execute(call, ToolExecution(
-              catalog: (cancellation) async => [
-                ...interface.hostCatalog,
-                ...interface.externalCatalog(await currentDeferredCatalog(cancellation)),
-              ],
+              catalog: currentRuntimeCatalog,
               cancellation: cellCancellation,
               values: values,
               call: (name, arguments, {required cancellation}) async {
@@ -813,13 +881,7 @@ class _Agent {
           }
           telemetry.observe('code', watch.elapsed);
           telemetry.add('code_cells');
-          final output = interface.formatResult(call, result);
-          final item = ConversationItem.toolResult(
-            call,
-            output,
-            isError: result.containsKey('error'),
-            images: images,
-          );
+          final item = interface.resultItem(call, result, images: images);
           event(
             await _append(
               'tool.completed',
@@ -827,7 +889,6 @@ class _Agent {
               metadata: {'values': values},
             ),
           );
-          input.add(item);
         }
       }
     } catch (error) {

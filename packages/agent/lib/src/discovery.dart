@@ -1,12 +1,4 @@
-import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
-
-String toolKey(ToolDefinition tool) => '${tool.namespace ?? ''}.${tool.name}';
-
-Map<String, ToolDefinition> loadedTools(Iterable<ConversationItem> input) => {
-  for (final item in input)
-    for (final tool in item.tools) toolKey(tool): tool,
-};
 
 List<Json> deferredCatalog(Json mcp, Json client) => [
   for (final raw in mcp['tools'] as List? ?? []) {

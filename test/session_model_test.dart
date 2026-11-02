@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:storage/storage.dart';
 import 'package:test/test.dart';
@@ -34,19 +35,20 @@ void main() {
     final store = TaskStore(root.path, id);
     addTearDown(store.close);
     store.append('task.created', {'instructions': 'Base prompt'});
-    store.append('instructions.updated', {'item': {'role': 'developer', 'content': [
+    final instructions = ConversationItem(role: 'developer', content: [
       {'type': 'text', 'text': 'Base prompt'},
-    ], 'native': {'harness': {'context': 'model'}}}});
+    ], native: {'harness': {'context': 'model'}});
+    store.append('instructions.updated', {'item': instructions.toJson()});
     store.append('model.started', {'assistantMessageID': 'msg_reply', 'instructions': ''});
-    store.append('input.committed', {'item': {'role': 'user', 'content': [
+    store.append('input.committed', {'item': ConversationItem(role: 'user', content: [
       {'type': 'text', 'text': 'Background notification'},
-    ], 'native': {'harness': {'context': 'tool_notification'}}}});
+    ], native: {'harness': {'context': 'tool_notification'}}).toJson()});
     final messages = (await read())['data'] as List;
     expect(messages.where((message) => message['type'] == 'system' || message['type'] == 'user'), isEmpty);
     final base = messages.singleWhere((message) => message['context'] == 'model');
     expect(base['type'], 'synthetic');
     expect(base['role'], 'developer');
-    expect((await read('session.context'))['systemMessage'], base);
+    expect(store.modelContext().first, instructions.toJson());
     expect((await read('session.inbox'))['data'], isEmpty);
   });
 
@@ -61,24 +63,23 @@ void main() {
       'provider_settings': {'context_limit': 10000, 'reasoning': 'high'}};
     append('task.created', config, metadata: {'config': config});
     append('turn.started', {});
-    append('input.committed', {'message_id': 'first', 'item': {'role': 'user', 'content': [
-      {'type': 'text', 'text': 'Read the file'},
-    ]}});
+    append('input.committed', {'message_id': 'first', 'item': ConversationItem.text('user', 'Read the file').toJson()});
     append('model.started', {'assistantMessageID': 'msg_a', 'instructions': 'Actual system prompt', 'tools': [
       {'namespace': 'functions', 'name': 'read'},
     ]});
     append('model.completed', {'assistantMessageID': 'msg_a', 'output': [
-      {'content': [
+      ConversationItem(role: 'assistant', content: [
         {'type': 'reasoning', 'text': 'Inspect first'},
         {'type': 'tool_call', 'id': 'call_read', 'namespace': 'functions', 'name': 'read', 'input': '{"path":"a.txt"}'},
         {'type': 'text', 'text': 'Reading…'},
-      ]},
+      ]).toJson(),
     ], 'usage': {'input_tokens': 100, 'cached_input_tokens': 30, 'cache_write_tokens': 10,
       'output_tokens': 20, 'reasoning_tokens': 5}});
-    append('tool.completed', {'item': {'content': [
+    append('tool.completed', {'item': ConversationItem(role: 'tool', content: [
       {'type': 'tool_result', 'call_id': 'call_read', 'output': 'file content'},
-    ]}});
+    ]).toJson()});
     append('turn.completed', {});
+    final context = store.modelSnapshot();
     store.close();
     final snapshot = await read();
     final saved = {for (final raw in snapshot['data'] as List) raw['id'] as String: jsonObject(raw)};
@@ -89,12 +90,8 @@ void main() {
     expect(sessionTokenTotal(jsonObject(assistant['tokens'])), 120);
     expect(assistant['content'][1]['state']['status'], 'completed');
     expect(assistant['content'][2]['text'], 'Reading…');
-    final context = await read('session.context');
-    expect(context['system'], 'Actual system prompt');
-    expect(context['tools'].single['name'], 'read');
-    expect(context['limit'], 10000);
     expect(context['tokens'], assistant['tokens']);
-    expect(context['counts']['user'], 1);
+    expect((context['input'] as List).map((item) => item['role']), ['user', 'assistant', 'tool']);
     expect(Directory('${root.path}/tasks/$id').listSync().where((file) => file.path.endsWith('.sqlite')), hasLength(1));
   });
 
@@ -124,7 +121,7 @@ void main() {
     writer = await startStore(root.path, id, create: false);
     try {
       final committed = jsonObject(await callIsolate(writer.port, 'append', {'type': 'input.committed', 'data': {
-        'message_id': 'queued', 'delivery': 'queue', 'item': {'role': 'user', 'content': [{'type': 'text', 'text': 'Later'}]},
+        'message_id': 'queued', 'delivery': 'queue', 'item': ConversationItem.text('user', 'Later').toJson(),
       }}));
       expect((committed['session_events'] as List).map((event) => event['type']), ['session.inbox.delivered']);
       expect((await read('session.inbox'))['data'], isEmpty);
@@ -140,7 +137,7 @@ void main() {
     final store = TaskStore(root.path, id);
     addTearDown(store.close);
     for (var i = 0; i < 5; i++) {
-      store.append('input.committed', {'message_id': '$i', 'item': {'role': 'user', 'content': [{'type': 'text', 'text': '$i'}]}});
+      store.append('input.committed', {'message_id': '$i', 'item': ConversationItem.text('user', '$i').toJson()});
     }
     final expected = (await read())['data'];
     store.db.execute('DELETE FROM session_part; DELETE FROM session_message; DELETE FROM session_event; DELETE FROM session_inbox;');
@@ -150,16 +147,16 @@ void main() {
     expect((await read())['data'], expected);
     var page = await read('session.message.list', {'limit': 2});
     final ids = <String>[for (final message in page['data']) message['id'] as String];
-    store.append('input.committed', {'message_id': 'new', 'item': {'role': 'user', 'content': [{'type': 'text', 'text': 'New'}]}});
+    store.append('input.committed', {'message_id': 'new', 'item': ConversationItem.text('user', 'New').toJson()});
     while (page['cursor']['next'] != null) {
       page = await read('session.message.list', {'limit': 2, 'cursor': page['cursor']['next']});
       ids.insertAll(0, [for (final message in page['data']) message['id'] as String]);
     }
     expect(ids, ['msg_0', 'msg_1', 'msg_2', 'msg_3', 'msg_4']);
     store.append('compaction.started', {'reason': 'manual'});
-    store.append('context.compacted', {'reason': 'manual', 'summary': 'Checkpoint'});
-    final context = await read('session.context');
+    store.append('context.compacted', {'reason': 'manual', 'summary': 'Checkpoint', 'input': []});
+    final context = store.modelSnapshot();
     expect(context['tokens'], isNull);
-    expect(context['data'], isEmpty);
+    expect(context['input'], isEmpty);
   });
 }

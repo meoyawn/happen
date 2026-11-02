@@ -168,14 +168,15 @@ void main() {
     }
   });
 
-  test('CLI MCP login accepts a hidden callback and list/logout use the same server', () async {
+  test('local CLI MCP login accepts a hidden callback and list/logout share credentials', () async {
     final fixture = await _OAuthFixture.start();
     addTearDown(fixture.close);
     final server = await fixture.happen();
     final client = await AgentClient.connect(server.uri);
     Process? process;
     try {
-      final command = ['run', 'bin/happen.dart', 'mcp', '--url', server.uri.toString()];
+      final command = ['run', 'packages/cli/bin/happen.dart', '--data-dir', fixture.root.path,
+        '--config', '${fixture.root.path}/config.yaml', 'mcp'];
       process = await Process.start(Platform.resolvedExecutable, [...command, 'login', 'strength', '--no-browser']);
       final output = <String>[];
       final errors = process.stderr.drain<void>();

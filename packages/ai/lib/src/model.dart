@@ -140,6 +140,20 @@ class ConversationItem {
       .toList();
 }
 
+/// Model history carried by a committed event, not its transcript projection.
+Iterable<ConversationItem> modelContextItems(String type, Json data) {
+  final List items = switch (type) {
+    'context.compacted' => data['input'] as List,
+    'model.completed' => data['output'] as List,
+    'input.committed' || 'configuration.updated' || 'instructions.updated' ||
+    'environment.updated' || 'tools.updated' || 'agents.updated' ||
+    'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'tool.completed' =>
+      [if (data['item'] != null) data['item']],
+    _ => const [],
+  };
+  return items.map((item) => ConversationItem.fromJson(jsonObject(item)));
+}
+
 class ToolCall {
   const ToolCall({
     required this.id,

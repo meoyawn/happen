@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/openai_output.dart';
 
 void main() {
   for (final lab in ['openai', 'opencode']) {
@@ -96,10 +97,9 @@ void main() {
         return result;
       }
       List<Json> input(Json request) => (request[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
-      List<String> instructions(Json request) => [for (final item in input(request))
-        if (item['content'] case final String text when text.startsWith('# AGENTS.md instructions') ||
-            text.contains('Instructions from: ') || text.startsWith('The instructions from ') ||
-            text == 'Previously loaded instructions no longer apply.') text];
+      List<String> instructions(Json request) => input(request).map(openAIMessageText).where((text) =>
+        text.startsWith('# AGENTS.md instructions') || text.contains('Instructions from: ') ||
+        text.startsWith('The instructions from ') || text == 'Previously loaded instructions no longer apply.').toList();
 
       final started = await turn('task.start', {'cwd': work.path, 'prompt': 'Update the instructions.'});
       final id = started['task_id'];

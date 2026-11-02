@@ -33,8 +33,10 @@ const globalConfigSchema = <String, Object?>{
           'properties': {
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
+            'api_key_env': _nonemptyString,
             'settings': {'type': 'object'},
           },
+          'dependencies': {'api_key_env': ['endpoint']},
         },
         'gpt': {
           'type': 'object',
@@ -42,8 +44,10 @@ const globalConfigSchema = <String, Object?>{
           'properties': {
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
+            'api_key_env': _nonemptyString,
             'settings': {'type': 'object'},
           },
+          'dependencies': {'api_key_env': ['endpoint']},
         },
         'deepseek': {
           'type': 'object',

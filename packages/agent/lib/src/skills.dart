@@ -65,14 +65,9 @@ SkillContextUpdate skillContext(Json catalog, {
     final roots = visible.map((skill) => skill['root'] as String).toSet().toList()..sort();
     var index = 0;
     for (final root in roots) {
-      final paths = visible.map((skill) => skill['path'] as String)
-        .where((path) => path.startsWith('$root/')).toList();
       final alias = 'r$index';
-      // Include a root mapping only when it saves more than its own overhead.
-      if (paths.length * (root.length - alias.length) > root.length + alias.length + 8) {
-        aliases[alias] = root;
-        index++;
-      }
+      aliases[alias] = root;
+      index++;
     }
   }
   String locator(String path) {
@@ -93,22 +88,18 @@ SkillContextUpdate skillContext(Json catalog, {
     final prefix = initial ? [
       '<skills_instructions>',
       '## Skills',
-      'Skills are local instructions in SKILL.md files. Use a skill when the user names it or the task matches its description.',
-      'Read the selected SKILL.md completely before acting. Resolve its relative paths against the containing directory. Load supporting files only as needed.',
-      'Use the skill tool when available, with the expanded file path as its id; otherwise use file tools. Read the skill again if its instructions are no longer in context.',
+      'A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.',
       if (aliases.isNotEmpty) ...[
         '### Skill roots',
-        'Expand each short path using these roots:',
-        for (final entry in aliases.entries) '- ' + entry.key + ': ' + entry.value,
+        for (final entry in aliases.entries) '- `${entry.key}` = `${entry.value}`',
       ],
       '### Available skills',
     ].join('\n') + '\n' : '<skills_instructions>\n### Added or updated skills\n'
       'Each entry replaces the earlier entry for the same file. Removed files must no longer be used.\n';
     // Reserve the omission notice before allocating. It also explains where
     // descriptions went without repeating the complete inventory.
-    final notice = 'Descriptions may be shortened; some skills may be omitted to fit the context budget.\n';
     final suffix = (errorCount > 0 ? '$errorCount skill files or directories could not be loaded.\n' : '')
-      + notice + '</skills_instructions>';
+      + '</skills_instructions>';
     var available = remaining - budget.cost(prefix + suffix);
     final selected = <_SkillLine>[];
     for (final row in rows) {

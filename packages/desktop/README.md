@@ -60,14 +60,16 @@ its content and scroll position; closing its last tab hides it.
 
 **Context** shows the actual saved system prompt,
 provider/model, context limit, token and cache counts, tools, model settings, and
-expandable projected session messages. For OpenAI sessions the base prompt
-is a developer context item, as in Codex, rather than a second system copy.
-Earlier context pages load on demand. **Export session JSON** saves a JSON file
-to Downloads with a unique title-based filename. It exports each message body once;
-context metadata references its base prompt
-by message ID instead of embedding the message page and prompt again.
-Usage becomes available after a
-response measures the current context, including after compaction.
+expandable canonical context items in model order. For OpenAI sessions the base
+prompt is supplied once through the request envelope and becomes the developer
+prefix in Standard Responses, rather than being duplicated in stored input.
+The panel reads the agent's actual inference buffer, not transcript projections.
+Additional context pages load on demand from an immutable snapshot. **Export
+session JSON** saves a JSON file to Downloads with a unique title-based filename.
+It includes all model input once in `context.input`, with its request envelope
+and accounting, without duplicating the projected transcript.
+Usage becomes available after a response measures the current context, including
+after compaction.
 The composer groups the model/reasoning menu, microphone, and Send/Stop.
 The model/reasoning menu keeps models fixed for existing tasks; supported reasoning
 changes apply to the next message.

@@ -61,7 +61,7 @@ void main() {
 
     Future<void> reply(String prompt, {bool fail = false}) async {
       replies[prompt]!.write('data: ${jsonEncode(fail
-        ? {'type': 'response.failed', 'response': {'status': 'failed', 'error': {'code': 'invalid_request_error', 'message': 'Fixture failure'}}}
+        ? {'type': 'response.failed', 'response': {'status': 'failed', 'error': {'code': 'invalid_prompt', 'message': 'Fixture failure'}}}
         : {'type': 'response.completed', 'response': {'status': 'completed', 'output': []}})}\n\n');
       await replies[prompt]!.close();
     }

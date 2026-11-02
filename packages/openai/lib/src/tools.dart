@@ -40,7 +40,7 @@ class HostTools {
         if (timeout < 0) throw const FormatException('timeout_ms must be non-negative');
         final watch = Stopwatch()..start();
         final command = await _runner.start(
-          input['shell'] as String? ?? defaultShell,
+          codexShell(input['shell'] as String?),
           [if (input['login'] != false) '-l', '-c', requiredString(input, 'command')],
           directory: input['workdir'] as String? ?? directory,
           cancellation: cancellation,
@@ -74,7 +74,7 @@ class HostTools {
           throw UnsupportedError('Permission escalation is not implemented');
         }
         final command = _Command(await _runner.start(
-          input['shell'] as String? ?? defaultShell,
+          codexShell(input['shell'] as String?),
           [if (input['login'] != false) '-l', '-c', requiredString(input, 'cmd')],
           directory: input['workdir'] as String? ?? directory,
           cancellation: this.cancellation,

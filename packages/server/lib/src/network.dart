@@ -16,6 +16,7 @@ import 'skills.dart';
 Future<IsolateOwner> startNetwork(
   String directory, {
   String? endpoint,
+  String? apiKeyEnv,
   String? configPath,
   String? skillsHome,
   SendPort? events,
@@ -31,6 +32,7 @@ Future<IsolateOwner> startNetwork(
     'directory': directory,
     'skills_home': skillsHome,
     'endpoint': endpoint,
+    'api_key_env': apiKeyEnv,
     'config_path': configPath,
     'config': global.values,
     'loaded_config_path': global.path,
@@ -54,11 +56,21 @@ void _networkMain(List<Object?> args) async {
   final auth = AuthManager(directory, http: http, connections: connections);
   final consoleAuth = OpenCodeAuthManager(directory, http: http, connections: connections);
   final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
+  final apiKeyEnv = startup['api_key_env'] as String? ?? gptOptions['api_key_env'] as String?;
+  if (apiKeyEnv != null && endpoint == null) throw ArgumentError('An API-key Responses endpoint is required');
+  Future<Json> gptCredentials({bool refresh = false}) async {
+    if (apiKeyEnv == null) return auth.credentials(refresh: refresh);
+    final key = Platform.environment[apiKeyEnv];
+    if (key != null && key.isNotEmpty) return {'access_token': key};
+    final host = Uri.parse(endpoint as String).host;
+    if (host == 'localhost' || (InternetAddress.tryParse(host)?.isLoopback ?? false)) return {};
+    throw StateError('Responses API credential environment variable is missing');
+  }
   final gpt = OpenAIProvider(
     ResponsesClient(
       http: http,
       connections: connections,
-      credentials: auth.credentials,
+      credentials: gptCredentials,
       endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
     ),
   );

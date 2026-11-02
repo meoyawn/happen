@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 
 /// Window visibility is native; only an explicit quit releases the server.
 class DesktopLifecycle extends StatefulWidget {
-  const DesktopLifecycle({super.key, required this.onQuit, this.onResume, required this.child});
+  const DesktopLifecycle({super.key, required this.onQuit, this.onResume,
+    required this.hasActiveLocalTasks, required this.child});
 
   final Future<void> Function() onQuit;
   final VoidCallback? onResume;
+  final bool hasActiveLocalTasks;
   final Widget child;
 
   @override
@@ -42,6 +44,12 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
     );
   }
 
+  @override
+  void didUpdateWidget(DesktopLifecycle oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.hasActiveLocalTasks) _dismissConfirmation();
+  }
+
   KeyEventResult _handleKey(KeyEvent event) {
     final keyboard = HardwareKeyboard.instance;
     final macOS = defaultTargetPlatform == TargetPlatform.macOS;
@@ -52,7 +60,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
         !(macOS ? keyboard.isControlPressed : keyboard.isMetaPressed)) {
       // Holding the key must never confirm quitting through key repeat.
       if (event is KeyDownEvent && _closing == null) {
-        if (_confirmation != null) {
+        if (!widget.hasActiveLocalTasks || _confirmation != null) {
           unawaited(_exit());
         } else {
           setState(() => _confirmation = Timer(const Duration(seconds: 1), _dismissConfirmation));

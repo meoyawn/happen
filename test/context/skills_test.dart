@@ -153,7 +153,7 @@ void main() {
       expect(catalogText(), initial);
       expect(bodyCount(), 1);
 
-      await skill(local, 'Changed local guidance.', 'LOCAL_BODY');
+      await local.writeAsString('---\nname: local-updated\ndescription: Changed local guidance.\n---\nLOCAL_BODY\n');
       await send(id);
       final beforeRestart = catalogText();
       await client!.close();
@@ -171,6 +171,7 @@ void main() {
           await send(id);
           expect(catalogText(), hasLength(1));
           expect(catalogText().single, isNot(initial.single));
+          expect(catalogText().single, contains('- local-updated'));
           expect(bodyCount(), 0, reason: 'Selected bodies are ordinary context, not automatically re-injected');
           await send(id, 'load omitted skill');
           expect(bodyCount(), 1);

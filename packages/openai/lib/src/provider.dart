@@ -51,6 +51,7 @@ class OpenAIProvider implements ModelProvider {
       'context_limit',
       'compaction_headroom',
       'reasoning_summary',
+      'web_search',
     };
     if (selected.keys.any((key) => !allowed.contains(key))) {
       throw ArgumentError('Unsupported GPT setting');
@@ -71,6 +72,8 @@ class OpenAIProvider implements ModelProvider {
     if (!{'none', 'concise', 'detailed', 'auto'}.contains(summary)) {
       throw ArgumentError('Unsupported GPT reasoning summary');
     }
+    final webSearch = selected['web_search'] ?? 'live';
+    if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final context = selected['context_limit'] ?? info.contextWindow;
     final headroom = selected['compaction_headroom'] ?? 32000;
     if (context is! int ||
@@ -90,10 +93,14 @@ class OpenAIProvider implements ModelProvider {
       'context_limit': context,
       'compaction_headroom': headroom,
       'reasoning_summary': summary,
+      'web_search': webSearch,
     };
   }
 
   void _validate(ModelRequest request) {
+    if (request.input.any((item) => item.kind == 'tools' || item.native['harness']?['context'] == 'model')) {
+      throw const ModelFailure('obsolete_context', 'This task contains an obsolete incremental-tools prefix. Start a new Standard Responses task.');
+    }
     if (!models.contains(request.model)) {
       throw ArgumentError('Unsupported GPT model');
     }

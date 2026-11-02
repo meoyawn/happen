@@ -4378,7 +4378,7 @@ Pinned source evidence, inspected with git show/direct reads:
   owner, with a configurable loopback listener, rather than cross-machine sync.
 - [MCP authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
 
-The release entry point is bin/happen.dart. `moon run build-cli` produces
+The release entry point is packages/cli/bin/happen.dart. `moon run build-cli` produces
 build/cli/happen and a build report. It reuses the existing package hooks, then
 embeds compressed SQLite/QuickJS dylibs in a stock Dart AOT executable. Bootstrap
 installs missing libraries into a private content-addressed cache and preloads
@@ -4413,7 +4413,7 @@ Reproduction on macOS arm64, Apple M1 Pro, Dart 3.13.7, Flutter 3.47.8:
     cd ../..
     moon run build-cli
     python3 tool/verify_cli.py
-    dart analyze bin/happen.dart tool/build_cli.dart tool/cli_native_bootstrap.dart packages/mcp packages/config packages/server/lib/server.dart packages/server/lib/src/network.dart packages/desktop/lib/mcp_auth.dart packages/desktop/lib/mcp_conversation.dart
+    dart analyze packages/cli tool/build_cli.dart tool/cli_native_bootstrap.dart packages/mcp packages/config packages/server/lib/server.dart packages/server/lib/src/network.dart packages/desktop/lib/mcp_auth.dart packages/desktop/lib/mcp_conversation.dart
     git diff --check
 
 All 19 focused backend tests and 24 focused desktop tests passed; final auth,

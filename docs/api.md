@@ -5,12 +5,14 @@ Initialize the pinned QuickJS submodule, then resolve the Dart workspace:
 ```sh
 git submodule update --init --recursive
 dart pub get
-dart run bin/happen.dart login --from-codex
-dart run bin/happen.dart exec --cwd /path/to/repo "Complete this task"
+dart run packages/cli/bin/happen.dart login --from-codex
+dart run packages/cli/bin/happen.dart exec --cwd /path/to/repo "Complete this task"
 ```
 
-`exec` starts an embedded server and connects through a private temporary Unix
-socket. The server and CLI remain in one process. `login --from-codex` stores a
+`packages/cli` is a workspace package. Its commands call the local agent host
+directly, without a listener, socket, WebSocket, or remote-machine connection.
+`exec` owns its agent, persistence and provider isolates in one process.
+`login --from-codex` stores a
 reference to Codex's credential file; Codex remains responsible for refreshing
 that login. `login` and `login --device` create an independently owned login.
 
@@ -33,28 +35,16 @@ including files omitted from the catalog. OpenCode uses its native
 `skill({id: "/full/path/to/SKILL.md"})` tool; OpenAI uses file tools. Compaction
 refreshes the catalog, and skills can be read again as needed.
 
-For a remote server, run the loopback listener on the remote machine and forward
-its port with SSH:
-
-```sh
-dart run bin/happen.dart serve --host 127.0.0.1 --port 8765
-ssh -N -L 8765:127.0.0.1:8765 user@remote
-dart run bin/happen.dart exec --url ws://127.0.0.1:8765/ws "Complete this task"
-```
-
-The first command runs remotely; the remaining commands run locally. SSH process
-management belongs to the future client. An explicit local socket is also
-available through `serve --socket /absolute/path` and
-`exec --url unix:///absolute/path`. Existing socket paths are never overwritten.
-The IP listener uses HTTP/1.1 WebSocket upgrades and rejects browser Origin
-headers. Non-loopback binding requires a bearer token.
+The CLI has no `serve`, `--url`, or server-authentication options. Applications
+that need a listener can embed `AgentServer.start` or `startEmbedded` from the
+server package; the desktop continues using its private local Unix socket.
 
 Dart applications can embed `AgentServer.startEmbedded(directory: ...)` and
 connect to its `uri`. Call `close()` on the client and server when their owner
 exits. Build a distributable CLI with its native libraries using:
 
 ```sh
-dart build cli --target=bin/happen.dart --output=build/happen
+dart build cli --target=packages/cli/bin/happen.dart --output=build/happen
 ```
 
 Keep the resulting `bundle/bin` and `bundle/lib` directories together. For a
@@ -83,6 +73,51 @@ runs without a Dart SDK on `PATH`, measures cold/warm launches, checks concurren
 extraction and repair, and executes a fixture-backed task through SQLite and
 Code Mode. Reports are written next to the executable. This release target
 currently supports macOS arm64 and uses ad-hoc code signing.
+
+## Context JSON and deterministic comparisons
+
+```sh
+# Build initial model input through the real agent, without calling a model.
+dart run packages/cli/bin/happen.dart debug prompt-input --cwd /path/to/repo -o input.json "task"
+
+# Export the complete immutable model buffer after a turn, or inspect it later.
+dart run packages/cli/bin/happen.dart exec --context-output context.json "task"
+dart run packages/cli/bin/happen.dart debug context SESSION -o context.json
+
+# A local Responses API endpoint needs no ChatGPT login.
+dart run packages/cli/bin/happen.dart exec --endpoint http://127.0.0.1:8080/v1/responses "task"
+
+# Opt-in native OpenAI request/response evidence, then local reduction.
+HAPPEN_ROLLOUT_TRACE_ROOT=.local/traces dart run packages/cli/bin/happen.dart exec "task"
+dart run packages/cli/bin/happen.dart debug trace-reduce .local/traces/BUNDLE
+
+# Real Codex against the in-process agent; only Responses API output is synthetic.
+moon run test-e2e
+```
+
+`--endpoint` accepts a complete HTTP(S) loopback Responses URL, including its
+`/responses` path. It optionally reads `OPENAI_API_KEY`, or the environment
+variable selected with `--api-key-env`; an unauthenticated local endpoint is
+also supported. ChatGPT credentials are never forwarded to that endpoint.
+Endpoint selection applies to this CLI process; supply it again when resuming.
+
+`debug prompt-input` returns prepared native OpenAI history items, like Codex's
+command. Under Standard Responses the base prompt and request-level tools are
+assembled later; use context export for the buffer plus envelope, or native
+tracing for the complete wire request.
+`debug context` and `exec --context-output` use exactly the same
+`readContextSnapshot` mechanism as desktop JSON export: all pages of one
+immutable actor snapshot, with its envelope and usage, never a transcript projection.
+Reading a saved session neither starts a model turn nor refreshes its context.
+
+Tracing is off unless `HAPPEN_ROLLOUT_TRACE_ROOT` is set. Each recorded session
+in a CLI process gets a private bundle with `manifest.json`, `trace.jsonl`, and
+raw JSON bodies under `payloads/`. `trace-reduce` assembles `inference_calls`
+in `state.json` inside the supplied bundle; `-o FILE` selects another output.
+Happen's reduced schema is deliberately smaller than Codex's runtime graph.
+These artifacts contain full context and tool results; authorization headers
+and credential values are not recorded. See [the context contract](../test/fixtures/context_contract/README.md)
+for strict comparisons, isolated configs, real Dart MCP, and timing assertions.
 
 ## Desktop development
 
@@ -172,7 +207,7 @@ providers:
 ```
 
 Use the global `--config PATH` option to select another YAML file, for example
-`dart run bin/happen.dart --config /path/config.yaml serve`. Embedded applications
+`dart run packages/cli/bin/happen.dart --config /path/config.yaml exec "task"`. Embedded applications
 can pass `configPath` to `AgentServer.start` or `startEmbedded`; their default is
 also `~/.config/happen/config.yaml`. A missing file at startup means empty
 configuration.
@@ -199,14 +234,14 @@ YAML has been selected, deletion also does not reactivate an old JSON config.
 
 Existing tasks check catalog revisions before the next model request, including
 between steps of an active turn. New tools remain deferred; only namespace
-summaries and changes to already loaded native schemas enter context. OpenAI appends
-changed loaded schemas as developer-role `additional_tools` items; the original
-request-level tools stay fixed. OpenAI MCP calls use `mcp__SERVER.TOOL`, and code
+summaries enter context. OpenAI keeps declarations in request-level `tools`,
+refreshing its code-mode discovery declaration when availability changes; it does
+not append incremental declarations to history. OpenAI MCP calls use `mcp__SERVER.TOOL`, and code
 mode uses `tools.mcp__SERVER__TOOL`. OpenCode calls MCP tools inside `execute`
 through `tools.SERVER.TOOL`, preserving bracket notation for hyphens. Its native
 catalog stays fixed; external schemas remain inside Code Mode. Namespace removals
 append availability notices, and calls check the live registry. OpenAI compaction
-restores only currently available native tools that were already loaded. A catalog check
+restores current context while the request catalog remains provider-owned. A catalog check
 reconciles config immediately, without waiting for the file watcher's debounce.
 Unchanged catalogs return a revision response without copying their schemas.
 Invalid edits retain the live catalog.
@@ -253,12 +288,11 @@ client, `client_secret_env`, `token_endpoint_auth_method` (`none`,
 Otherwise scopes come from the server's challenge/resource metadata, with
 `offline_access` added only when the authorization server advertises it.
 
-The CLI starts a temporary local server by default. `happen mcp --url URL`
-connects to an existing server, so its server-side credentials and connections
-are used. For a browser on another machine:
+The CLI owns its MCP connections locally in-process. For a terminal where the
+browser should not be opened automatically:
 
 ```sh
-happen mcp --url ws://127.0.0.1:8765/ws login strength --no-browser
+happen mcp login strength --no-browser
 ```
 
 Open the printed authorization URL and paste the complete final callback URL
@@ -278,7 +312,7 @@ at its next catalog/inventory read. Logout clears Happen's locally saved login.
 in Dart. Startup and reload validate types, supported fields, transport options,
 and server-name collisions before changing connections. Diagnostics omit config
 values. Export the schema for a YAML editor with
-`dart run bin/happen.dart config-schema > /path/happen.schema.json`.
+`dart run packages/cli/bin/happen.dart config-schema > /path/happen.schema.json`.
 Provider-specific settings and model limits remain validated by their providers.
 Provider configuration and `public_url` take effect at server startup; resolved
 provider settings remain saved with each task.
@@ -439,7 +473,7 @@ provider instructions, namespace summaries, and OpenAI's loaded subset once.
 Create Happen's own Console login:
 
 ```sh
-dart run bin/happen.dart login --provider opencode
+dart run packages/cli/bin/happen.dart login --provider opencode
 ```
 
 Open the displayed URL in your signed-in browser, confirm the device code, and
@@ -457,7 +491,7 @@ providers:
     settings: {reasoning: low}
 ```
 
-Then run `dart run bin/happen.dart exec --provider opencode "Complete this task"`.
+Then run `dart run packages/cli/bin/happen.dart exec --provider opencode "Complete this task"`.
 The route uses Chat Completions, with a 200,000-token context and a maximum output
 of 32,000 tokens from the pinned OpenCode catalog. The exact free model is required;
 there is no automatic paid fallback. Native DeepSeek remains available with
@@ -491,7 +525,7 @@ below. Existing `task.*` clients retain their event contract.
 | --- | --- |
 | `session.message.list` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Returns chronological `data` from the newest page, `cursor.next` for earlier messages, and a durable `through` fence. Includes configuration, effective reasoning, running/pending state, and archive state. Subscribes before taking the snapshot. |
 | `session.event.list` | `sessionID`, optional `after` durable sequence, `limit` (1–500). Returns persisted OpenCode events, `through`, and `cursor.next` for replay. |
-| `session.context` | `sessionID`, optional message `cursor` and `limit`. Returns the latest base prompt (system or classified developer context), tools, effective model settings, counts, context limit, token/cache usage, and projected session messages after the latest completed compaction. Messages paginate like `session.message.list`; this is not a complete provider request dump. |
+| `session.context` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Reads the agent's actual normalized model buffer and request envelope. Returns chronological `input`, `instructions`, `tools`, frozen `settings`, `effectiveReasoning`, `inputCount`, counts, token/cache usage, context limit, `through`, `sourceThrough`, `windowID`, and `snapshotID`. `cursor.next` appends the next input page from the same immutable snapshot, even if execution or compaction changes the live context. |
 | `session.read.cancel` | `request_id` of a pending session read on this connection. Cancels snapshot/replay work without interrupting the session writer or execution. |
 
 Each session stores its event log, normalized messages/parts, and durable inbox in
@@ -500,15 +534,33 @@ Independent read-only connections take WAL snapshots without acquiring a writer.
 Existing execution histories project in bounded transactions on their owning
 writer; live events and reopened history use the same reducer in `protocol`.
 
-OpenAI sessions follow Codex's incremental-tools layout: declarations and
-the developer base prompt appear once at the front of model history. The
-top-level request `tools` and `instructions` are empty. Compaction restores one
-current prefix. This is the only supported OpenAI envelope; obsolete formats
-are not migrated or preserved through compatibility paths.
+Context inspection does not read the message/part projection. A running agent
+serializes the same buffer and envelope used by inference. Sleeping sessions
+restore through that same agent initialization path, without admitting a turn,
+refreshing repository/skill/tool context, or calling a provider. Completed model
+output and tool results enter the buffer only after their durable commit;
+uncommitted streaming deltas and queued inputs do not enter it. Compaction
+replaces the buffer, including its native provider state.
+
+Context cursors belong to their WebSocket connection. At most four unfinished
+inspection snapshots are retained per connection; completing pagination or
+disconnecting releases them. An evicted cursor returns an explicit expiration
+error and requires a fresh read. Context pagination runs forward, unlike
+transcript pagination. This is normalized model history, not a provider-specific
+HTTP wire-body dump.
+
+OpenAI sessions use Standard Responses: declarations live in request-level
+`tools`; the provider prepends the developer base prompt to native `input`.
+`parallel_tool_calls` is true. `reasoning.context` is omitted, using the standard
+backend's current-turn default. Base instructions and tool declarations are not
+duplicated in durable model history, including after compaction. Incremental-tool
+prefixes are obsolete and rejected for inference, without migration or fallback.
+Initial repository, environment, skill and deferred-tool context precedes the
+real user prompt in both the model buffer and durable history.
 Synthetic messages preserve their model role and harness context classification.
-The desktop JSON export stores message bodies only in `messages`; `context`
-contains metadata and `systemMessageID`, without repeating its message page or
-prompt text.
+The desktop JSON export fetches every page of one agent snapshot and stores the
+ordered bodies once in `context.input`, alongside its envelope and accounting.
+It does not embed a second, projected `messages` transcript.
 
 Task operations acknowledge admission before emitting their durable events;
 wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outcome.

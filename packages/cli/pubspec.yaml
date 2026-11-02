@@ -1,0 +1,16 @@
+name: cli
+publish_to: none
+version: 0.1.0
+resolution: workspace
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+executables:
+  happen:
+dependencies:
+  args: ^2.7.0
+  ai: any
+  config: any
+  openai: any
+  opencode: any
+  protocol: any
+  server: any

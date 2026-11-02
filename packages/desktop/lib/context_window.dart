@@ -4,14 +4,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
+import 'package:server/server.dart' show readContextSnapshot;
 
 import 'appearance.dart';
 import 'conversation_markdown.dart';
 import 'session.dart';
 import 'session_export.dart';
 
-/// Port of OpenCode's gui-plugins/context/tab.tsx. Reads the same message model
-/// as the transcript, including hidden system and synthetic messages.
+/// Inspects a read-only snapshot of the agent's actual model buffer.
 class SessionContextWindow extends StatefulWidget {
   const SessionContextWindow({super.key, required this.session, required this.task, this.downloadsDirectory});
   final DesktopSession session;
@@ -27,7 +27,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   Json? _snapshot;
   String? _error;
   bool _exporting = false;
-  bool _loading = false, _loadingEarlier = false;
+  bool _loading = false, _loadingMore = false;
 
   @override
   void initState() {
@@ -37,12 +37,13 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   }
 
   void _changed() {
-    if (!_loading && !widget.task.running && _snapshot != null && widget.task.through > (_snapshot!['through'] as int)) unawaited(_load());
+    if (!_loading && _snapshot != null && widget.task.through > (_snapshot!['through'] as int)) unawaited(_load());
   }
 
   Future<void> _load() async {
     if (_loading) return;
     _loading = true;
+    final through = widget.task.through;
     setState(() => _error = null);
     try {
       final snapshot = await widget.session.client.sessionRead('session.context', {
@@ -51,50 +52,39 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       if (mounted) setState(() => _snapshot = snapshot);
     } on CancelledException { /* Closing the panel cancels its reads. */ }
     catch (error) { if (mounted) setState(() => _error = error.toString()); }
-    finally { _loading = false; }
+    finally {
+      _loading = false;
+      if (mounted && widget.task.through > through) _changed();
+    }
   }
 
-  Future<void> _earlier() async {
-    if (_loadingEarlier || _snapshot?['cursor']?['next'] == null) return;
-    setState(() => _loadingEarlier = true);
+  Future<void> _more() async {
+    final snapshot = _snapshot;
+    if (_loading || _loadingMore || snapshot?['cursor']?['next'] == null) return;
+    setState(() => _loadingMore = true);
     try {
       final page = await widget.session.client.sessionRead('session.context', {
-        'sessionID': widget.task.id, 'cursor': _snapshot!['cursor']['next'],
+        'sessionID': widget.task.id, 'cursor': snapshot!['cursor']['next'],
       }, cancellation: _lifetime);
-      if (mounted) {
+      if (mounted && identical(_snapshot, snapshot)) {
         setState(() {
-          _snapshot = {..._snapshot!, 'data': [...page['data'] as List, ..._snapshot!['data'] as List], 'cursor': page['cursor']};
+          _snapshot = {...snapshot, 'input': [...snapshot['input'] as List, ...page['input'] as List], 'cursor': page['cursor']};
         });
       }
     } on CancelledException { /* Closing the panel owns this read. */ }
-    catch (error) { if (mounted) setState(() => _error = error.toString()); }
-    finally { if (mounted) setState(() => _loadingEarlier = false); }
+    catch (error) { if (mounted && identical(_snapshot, snapshot)) setState(() => _error = error.toString()); }
+    finally { if (mounted) setState(() => _loadingMore = false); }
   }
 
   Future<void> _export() async {
     if (_exporting) return;
     setState(() => _exporting = true);
     try {
-      final messages = <Json>[];
-      String? before;
-      do {
-        final page = await widget.session.client.sessionRead('session.message.list', {
-          'sessionID': widget.task.id, 'limit': 200, 'cursor': ?before,
-        }, cancellation: _lifetime);
-        messages.insertAll(0, (page['data'] as List).map(jsonObject));
-        before = page['cursor']?['next'] as String?;
-      } while (before != null);
+      final snapshot = await readContextSnapshot(widget.session.client, widget.task.id, cancellation: _lifetime);
       _lifetime.throwIfCancelled();
-      // Messages are the canonical bodies. Context adds accounting and a
-      // reference to its base prompt, rather than embedding those bodies again.
-      final contextMetadata = _snapshot == null ? null : ({..._snapshot!}
-        ..remove('data')..remove('system')..remove('systemMessage')..remove('cursor'));
       final file = await saveSessionExport({
         'info': {'id': widget.task.id, 'title': widget.task.title},
-        'messages': messages, 'context': contextMetadata == null ? null : {
-          ...contextMetadata,
-          if (_snapshot!['systemMessage'] != null) 'systemMessageID': _snapshot!['systemMessage']['id'],
-        },
+        'context': snapshot,
       }, downloadsDirectory: widget.downloadsDirectory, cancellation: _lifetime);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved to ${file.path}')));
     } on CancelledException { /* The caller owns the export lifetime. */ }
@@ -117,34 +107,22 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
 
   Widget _content() {
     final snapshot = _snapshot!;
-    final byID = {for (final raw in snapshot['data'] as List) raw['id'] as String: jsonObject(raw),
-      if (snapshot['systemMessage'] != null) snapshot['systemMessage']['id'] as String: jsonObject(snapshot['systemMessage']),
-      ...widget.task.messages};
-    final all = byID.values.toList()..sort((a, b) =>
-      (a['metadata']?['seq'] as int? ?? 0).compareTo(b['metadata']?['seq'] as int? ?? 0));
-    final compaction = all.where((item) => item['type'] == 'compaction' && item['status'] == 'completed')
-      .fold<int>(snapshot['compaction'] as int? ?? 0, (seq, item) =>
-        (item['metadata']['seq'] as int) > seq ? item['metadata']['seq'] as int : seq);
-    final messages = all.where((item) => (item['metadata']?['seq'] as int? ?? 0) > compaction).toList();
-    final latest = lastAssistantWithUsage(messages);
-    final tokens = latest?['tokens'] as Json?;
+    final input = (snapshot['input'] as List).map(jsonObject).toList();
+    final tokens = snapshot['tokens'] as Json?;
     final total = tokens == null ? null : sessionTokenTotal(tokens);
     final limit = snapshot['limit'] as num?;
     final used = total == null || limit == null || limit == 0 ? null : total / limit;
-    final model = latest?['model'] ?? snapshot['model'];
+    final model = snapshot['model'];
     final providers = widget.session.providers.where((provider) => provider['id'] == model?['providerID']);
     final provider = providers.firstOrNull;
     final modelInfo = (provider?['models'] as List? ?? []).where((item) => item['id'] == model?['id']).firstOrNull;
-    final system = all.where((item) => item['type'] == 'system').lastOrNull?['text'] as String? ?? snapshot['system'] as String? ?? '';
-    final counts = {...jsonObject(snapshot['counts'] ?? {})};
-    for (final message in all.where((item) => (item['metadata']?['seq'] as int? ?? 0) > (snapshot['through'] as int))) {
-      counts[message['type'] as String] = (counts[message['type']] as int? ?? 0) + 1;
-    }
+    final system = snapshot['instructions'] as String? ?? '';
+    final counts = jsonObject(snapshot['counts']);
     String number(Object? value) => value is num ? value.round().toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},') : '—';
     String time(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value).toLocal().toString().split('.').first : '—';
     final stats = <(String, String)>[
       ('Session', widget.task.title),
-      ('Messages', number(counts.values.whereType<num>().fold<num>(0, (a, b) => a + b))),
+      ('Context items', number(snapshot['inputCount'])),
       ('Provider', provider?['name'] as String? ?? model?['providerID'] as String? ?? '—'),
       ('Model', modelInfo?['name'] as String? ?? model?['id'] as String? ?? '—'),
       ('Context Limit', number(limit)), ('Total Tokens', number(total)),
@@ -171,23 +149,27 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
         value: used.clamp(0, 1).toDouble(), minHeight: 3, color: opencodeMuted, backgroundColor: opencodeLayer)),
       const SizedBox(height: 28),
       if (system.isNotEmpty) ...[
-        Row(children: [const Expanded(child: Text('System Prompt', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-          ConversationCopyButton(text: system, label: 'Copy system prompt', compact: true)]),
-        const SizedBox(height: 8),
-        Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xfffafafa),
-          border: Border.all(color: opencodeBorder, width: .5), borderRadius: BorderRadius.circular(6)),
-          child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? '')),
+        ExpansionTile(
+          key: PageStorageKey('context-system:${widget.task.id}'),
+          shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(top: 8),
+          title: Row(children: [const Expanded(child: Text('System Prompt', style: TextStyle(fontSize: 12, color: opencodeMuted))),
+            ConversationCopyButton(text: system, label: 'Copy system prompt', compact: true)]),
+          children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xfffafafa),
+            border: Border.all(color: opencodeBorder, width: .5), borderRadius: BorderRadius.circular(6)),
+            child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))],
+        ),
         const SizedBox(height: 28),
       ],
       _raw('Tools', snapshot['tools'] ?? []),
       _raw('Model settings', snapshot['settings'] ?? {}),
       const SizedBox(height: 20),
-      Row(children: [const Expanded(child: Text('Raw messages', style: TextStyle(fontSize: 12, color: opencodeMuted))),
+      Row(children: [const Expanded(child: Text('Raw context', style: TextStyle(fontSize: 12, color: opencodeMuted))),
         TextButton.icon(onPressed: _exporting ? null : _export, icon: const Icon(Icons.download_rounded, size: 14),
           label: Text(_exporting ? 'Exporting…' : 'Export session JSON', style: const TextStyle(fontSize: 12)))]),
-      if (snapshot['cursor']?['next'] != null) TextButton(onPressed: _loadingEarlier ? null : _earlier,
-        child: Text(_loadingEarlier ? 'Loading…' : 'Load earlier context messages')),
-      for (final message in messages) _raw('${message['type']} • ${message['id']}', message),
+      for (final item in input) _raw('${item['role'] ?? item['kind']} • ${item['id']}', item),
+      if (snapshot['cursor']?['next'] != null) TextButton(onPressed: _loadingMore ? null : _more,
+        child: Text(_loadingMore ? 'Loading…' : 'Load more context items')),
     ]);
   }
 

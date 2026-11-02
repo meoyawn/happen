@@ -31,6 +31,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   AgentClient? _client;
   DesktopSession? _session;
   LocalTaskSleepInhibitor? _sleep;
+  StreamSubscription<int>? _activity;
   String? _error;
   late final Future<void> _opening;
   Future<void>? _closing;
@@ -45,6 +46,9 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   void _watchLocalTasks() {
     if (_lifetime.isCancelled || _server == null) return;
+    _activity ??= _server!.activeTaskCounts.listen((_) {
+      if (mounted && !_lifetime.isCancelled) setState(() {});
+    });
     _sleep ??= LocalTaskSleepInhibitor(_server!, onError: (error) {
       _session?.showError(error);
       FlutterError.reportError(FlutterErrorDetails(exception: error, library: 'local task sleep'));
@@ -104,6 +108,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   Future<void> _closeOwners() async {
     _lifetime.cancel();
     await _opening;
+    await _activity?.cancel();
     try {
       if (_session case final session?) {
         await session.close();
@@ -135,6 +140,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
     builder: (context, child) => DesktopLifecycle(
       onQuit: _close,
       onResume: () => unawaited(_refreshProjects()),
+      hasActiveLocalTasks: (_server?.activeTaskCount ?? 0) > 0,
       child: child!,
     ),
     debugShowCheckedModeBanner: false,

@@ -14,18 +14,23 @@ import 'tools.dart';
 import 'web_search.dart';
 
 class OpenAIToolInterface extends ToolInterface {
-  const OpenAIToolInterface();
+  const OpenAIToolInterface({this.webSearch = true});
+  final bool webSearch;
   @override
   String get id => 'openai';
   @override
-  bool get toolsInHistory => true;
+  bool get developerContextFirst => true;
   @override
   ConversationItem instructionContext(Json current, Json? previous) => renderInstructions(current, previous);
   @override
   ConversationItem environmentContext(String cwd, {bool replacement = false}) => renderEnvironment(cwd);
   @override
   // CodeModeOnly exposes discovery through exec; web keeps its hosted surface.
-  List<ToolDefinition> get definitions => [specs.codeDefinition, webSearchDefinition];
+  List<ToolDefinition> get definitions => definitionsFor(const []);
+  @override
+  List<ToolDefinition> definitionsFor(List<Json> deferred) => [
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty), if (webSearch) webSearchDefinition,
+  ];
   @override
   ToolDefinition get nestedDiscovery => specs.toolSearchDefinition;
   @override
@@ -38,27 +43,45 @@ class OpenAIToolInterface extends ToolInterface {
   Json search(List<Json> catalog, Json arguments) => discoverTools(catalog, arguments);
   @override
   Map<String, String> get services => {
-    'web__run': 'web.search',
+    if (webSearch) 'web__run': 'web.search',
     for (final tool in historyCatalog) tool['name'] as String: 'history.${(tool['name'] as String).substring(9)}',
     ...mcpResourceMethods,
   };
   @override
   List<Json> get hostCatalog => [
-    ...specs.hostCatalog, ...historyCatalog, ...mcpResourceCatalog,
-    {...specs.toolSearchDefinition.toJson(), 'format': 'json'},
+    ...specs.hostCatalog.where((tool) => webSearch || tool['name'] != 'web__run'), ...historyCatalog, ...mcpResourceCatalog,
   ].map(describeTool).toList();
   @override
-  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation);
+  List<Json> hostCatalogFor(List<Json> deferred) => [
+    ...hostCatalog,
+    if (deferred.isNotEmpty) describeTool({...specs.toolSearchDefinition.toJson(), 'format': 'json'}),
+  ];
   @override
-  String formatResult(ToolCall call, Json result) =>
-      call.namespace == 'web' && call.name == 'run' && !result.containsKey('error')
-          ? result['output'] as String
-          : jsonEncode(result.containsKey('error') ? result : {'output': result['output']});
+  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation, webSearch);
+  @override
+  String formatResult(ToolCall call, Json result) => jsonEncode([
+    if (call.namespace == 'web' && call.name == 'run' && !result.containsKey('error'))
+      {'type': 'input_text', 'text': result['output']}
+    else ...[
+      {'type': 'input_text', 'text': 'Script ${result.containsKey('error') ? 'failed' : 'completed'}\n'
+        'Wall time ${(result['wall_time_seconds'] as num? ?? 0).toStringAsFixed(1)} seconds\nOutput:\n'},
+      for (final value in result['output'] as List? ?? []) {'type': 'input_text', 'text': value},
+      if (result.containsKey('error')) {'type': 'input_text', 'text': 'Script error:\n${result['error']}'},
+    ],
+  ]);
+  @override
+  ConversationItem resultItem(ToolCall call, Json result, {List<Json> images = const []}) {
+    final item = super.resultItem(call, result, images: images);
+    return ConversationItem(id: item.id, role: item.role, content: [
+      for (final part in item.content) {...part, 'native': {'gpt': {'content_items': true}}},
+    ]);
+  }
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation) : host = HostTools(cwd, cancellation);
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch) : host = HostTools(cwd, cancellation);
   final HostTools host;
+  final bool webSearch;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
       host.call(name, arguments, cancellation: cancellation, cwd: cwd);
@@ -67,7 +90,7 @@ class _OpenAITools extends ToolRuntime {
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
-    if (call.namespace == 'web' && call.name == 'run') {
+    if (webSearch && call.namespace == 'web' && call.name == 'run') {
       return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};
     }
     if (call.name != 'exec' || call.namespace != null && call.namespace != 'functions') {
@@ -81,7 +104,8 @@ class _OpenAITools extends ToolRuntime {
     final metadata = <String, Json>{};
     for (final tool in catalog) { metadata.putIfAbsent(tool['name'] as String, () => tool); }
     final ordered = metadata.keys.toList()..sort();
-    return const CodeMode().execute(
+    final watch = Stopwatch()..start();
+    final result = await const CodeMode().execute(
       call.input,
       tool: (name, arguments, {required cancellation}) async {
         cancellation.throwIfCancelled();
@@ -91,11 +115,21 @@ class _OpenAITools extends ToolRuntime {
           }
         }
         cancellation.throwIfCancelled();
-        return context.call(names[name] ?? name, arguments, cancellation: cancellation);
+        final hostName = names[name] ?? name;
+        final result = await context.call(hostName, arguments, cancellation: cancellation);
+        // Codex exposes typed MCP content blocks to JavaScript: the discriminator
+        // precedes the payload, even when a server sends its JSON keys sorted.
+        // Keep arbitrary payload fields and their values untouched.
+        if (hostName.startsWith('mcp__') && result is Map && result['content'] is List) {
+          return {...result, 'content': [for (final part in result['content'] as List)
+            if (part is Map && part.containsKey('type')) {'type': part['type'], ...part} else part]};
+        }
+        return result;
       },
       catalog: [for (final name in ordered) {'name': name, 'description': metadata[name]!['description']}],
       values: context.values,
       cancellation: context.cancellation,
     );
+    return {...result, 'wall_time_seconds': watch.elapsedMicroseconds / 1000000};
   }
 }

@@ -180,14 +180,14 @@ void main() {
           cancellation: CancellationToken(),
         );
         expect(second.text, 'Done ✓');
-        expect((bodies[1]['input'] as List).sublist(1, 4), native);
+        expect((bodies[1]['input'] as List).sublist(2, 5), native);
         expect(bodies[1]['reasoning'], {'effort': 'low'});
         expect(
           (bodies[1]['input'] as List).reversed.skip(1).first['type'],
           'configuration_update',
         );
-        expect(bodies[1]['tools'][0]['name'], 'functions');
-        expect(bodies[1]['tools'][0]['tools'][0]['type'], 'custom');
+        expect(bodies[1]['tools'][0]['name'], 'exec');
+        expect(bodies[1]['tools'][0]['type'], 'custom');
         if (transport == 'websocket') {
           expect(bodies[1]['type'], 'response.create');
         }
@@ -221,7 +221,7 @@ void main() {
       Future<void> respond(Json body, Future<void> Function(Json) send) async {
         requests++;
         await send({'type': 'response.created'});
-        if (body['instructions'] == 'silent') {
+        if ((body['input'] as List).first['content'] == 'silent') {
           await release.future;
           return;
         }
@@ -336,7 +336,7 @@ void main() {
         'text',
         'event-stream',
       );
-      if (body['instructions'] == 'wait') {
+      if ((body['input'] as List).first['content'] == 'wait') {
         request.response.write('data: {"type":"response.created"}\n\n');
         await request.response.flush();
         waiting.add(request.response);

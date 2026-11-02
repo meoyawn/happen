@@ -5,12 +5,9 @@ import 'declarations.dart';
 import 'history_tools.dart';
 import 'web_search.dart';
 
-ToolDefinition get codeDefinition => ToolDefinition(
-  name: 'exec',
-  namespace: 'functions',
-  format: 'text',
-  description: codeTool['tools']![0]['description'] as String,
-  grammar: codeTool['tools']![0]['format']['definition'] as String,
+ToolDefinition codeDefinition({required bool deferredTools}) => ToolDefinition(
+  name: 'exec', namespace: 'functions', format: 'text',
+  description: _codeDescription(deferredTools), grammar: _codeGrammar,
 );
 
 const toolSearchDefinition = ToolDefinition(
@@ -28,19 +25,8 @@ const toolSearchDefinition = ToolDefinition(
 );
 
 // Codex 0.164 wire names and grammar; see docs/decisions.md.
-Map<String, dynamic> get codeTool => <String, dynamic>{
-  'type': 'namespace',
-  'name': 'functions',
-  'description': '',
-  'tools': [
-    {
-      'type': 'custom',
-      'name': 'exec',
-      'description': _codeDescription(),
-      'format': {
-        'type': 'grammar',
-        'syntax': 'lark',
-        'definition': r'''
+const _codeGrammar = r'''
+
 start: pragma_source | plain_source
 pragma_source: PRAGMA_LINE NEWLINE SOURCE
 plain_source: SOURCE
@@ -48,19 +34,15 @@ plain_source: SOURCE
 PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
 NEWLINE: /\r?\n/
 SOURCE: /[\s\S]+/
-''',
-      },
-    },
-  ],
-};
+''';
 
 // Codex code-mode-protocol/description.rs renders eager nested declarations
 // into exec itself; tool_search only indexes the deferred external catalog.
-String _codeDescription() {
+String _codeDescription(bool deferredTools) {
   final enabled = [
     ...hostCatalog.where((tool) => tool['name'] != 'web__run'),
     ...historyCatalog, ...mcpResourceCatalog,
-    {...toolSearchDefinition.toJson(), 'format': 'json'},
+    if (deferredTools) {...toolSearchDefinition.toJson(), 'format': 'json'},
   ].map(describeTool).toList()..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
   return [
     'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value). Output defaults to 10000 tokens; override with a first-line // @exec: {"max_output_tokens": 20000} pragma. Oversized text is truncated, preserving its beginning and end.',
@@ -79,7 +61,7 @@ Global helpers:
 To find one, filter `ALL_TOOLS` by `name` and `description`.
 
 Tool availability can change between calls.''',
-    r'''Use `await tools.tool_search({query: "...", limit: 8})` for BM25-ranked discovery of deferred tools (up to `limit` matches; 8 by default). It returns `{tools: [{name, description}]}` with callable names and full TypeScript declarations. Print results with `text()` and inspect unfamiliar declarations before calling `tools[result.name](arguments)` in a later execution.''',
+    if (deferredTools) r'''Use `await tools.tool_search({query: "...", limit: 8})` for BM25-ranked discovery of deferred tools (up to `limit` matches; 8 by default). It returns `{tools: [{name, description}]}` with callable names and full TypeScript declarations. Print results with `text()` and inspect unfamiliar declarations before calling `tools[result.name](arguments)` in a later execution.''',
     for (final tool in enabled) '### `${tool['name']}`\n${tool['description']}',
   ].join('\n\n');
 }

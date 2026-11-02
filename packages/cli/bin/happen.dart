@@ -8,6 +8,7 @@ import 'package:opencode/opencode.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:cli/debug.dart';
 
 ArgParser parser() {
   final parser = ArgParser()
@@ -28,41 +29,29 @@ ArgParser parser() {
       ..addOption('codex-auth'),
   );
   parser.addCommand(
-    'serve',
-    ArgParser()
-      ..addOption('host', defaultsTo: '127.0.0.1')
-      ..addOption('port', defaultsTo: '8765')
-      ..addOption('socket')
-      ..addOption('token')
-      ..addOption('max-agents', defaultsTo: '256')
-      ..addFlag('telemetry', defaultsTo: true),
-  );
-  parser.addCommand(
     'exec',
     ArgParser()
-      ..addOption('url')
-      ..addOption('token')
       ..addOption('cwd', defaultsTo: Directory.current.path)
       ..addOption('provider', allowed: ['openai', 'gpt', 'deepseek', 'opencode'])
       ..addOption('model')
       ..addOption('reasoning')
+      ..addOption('endpoint', help: 'Local Responses API URL (including /responses); no ChatGPT login needed')
+      ..addOption('api-key-env', defaultsTo: 'OPENAI_API_KEY')
       ..addOption('resume')
+      ..addOption('context-output', help: 'Save the complete model context snapshot as JSON')
       ..addFlag('json', negatable: false)
       ..addFlag('telemetry', defaultsTo: true),
   );
   parser.addCommand(
     'request',
-    ArgParser()
-      ..addOption('url', defaultsTo: 'ws://127.0.0.1:8765/ws')
-      ..addOption('token'),
+    ArgParser(),
   );
-  final mcp = parser.addCommand('mcp', ArgParser()
-    ..addOption('url', help: 'Use a running Happen server instead of a temporary local server')
-    ..addOption('token'));
+  final mcp = parser.addCommand('mcp', ArgParser());
   mcp.addCommand('list', ArgParser()..addFlag('verbose', negatable: false)..addFlag('json', negatable: false));
   mcp.addCommand('login', ArgParser()..addFlag('no-browser', negatable: false,
     help: 'Print the sign-in link and accept the final callback URL without opening a browser'));
   mcp.addCommand('logout', ArgParser());
+  addDebugCommands(parser);
   return parser;
 }
 
@@ -85,12 +74,15 @@ Future<void> run(List<String> arguments) async {
   }
   if (parsed['help'] == true || command == null) {
     stdout.writeln(
-      'Happen\n\n  happen login [--device | --from-codex | --provider opencode]\n  happen serve [--port 8765]\n  happen exec [--url ws://127.0.0.1:8765/ws] "task"\n  happen mcp list [--verbose | --json]\n  happen mcp login SERVER [--no-browser]\n  happen mcp logout SERVER\n  happen request METHOD \'{"parameter":"value"}\'\n  happen config-schema\n\n${options.usage}',
+      'Happen\n\n  happen login [--device | --from-codex | --provider opencode]\n  happen exec "task" [--context-output FILE]\n  happen debug prompt-input [PROMPT]\n  happen debug context SESSION [--output FILE]\n  happen mcp list [--verbose | --json]\n  happen mcp login SERVER [--no-browser]\n  happen mcp logout SERVER\n  happen request METHOD \'{"parameter":"value"}\'\n  happen config-schema\n\n${options.usage}',
     );
     return;
   }
   final directory = Directory(parsed['data-dir'] as String).absolute.path;
   switch (command.name) {
+    case 'debug':
+      await debug(command, directory, parsed['config'] as String?);
+      return;
     case 'mcp':
       await _mcp(command, directory, parsed['config'] as String?);
       return;
@@ -149,34 +141,6 @@ Future<void> run(List<String> arguments) async {
       } finally {
         auth.close();
       }
-    case 'serve':
-      final server = await AgentServer.start(
-        directory: directory,
-        configPath: parsed['config'] as String? ?? defaultConfigPath(),
-        host: command['host'] as String,
-        port: int.parse(command['port'] as String),
-        socketPath: command['socket'] as String?,
-        token: command['token'] as String?,
-        maxAgents: int.parse(command['max-agents'] as String),
-        telemetry: command['telemetry'] as bool,
-      );
-      stdout.writeln(server.uri);
-      final done = Completer<void>();
-      final subscriptions = [ProcessSignal.sigint, ProcessSignal.sigterm]
-          .map(
-            (signal) => signal.watch().listen((_) {
-              if (!done.isCompleted) done.complete();
-            }),
-          )
-          .toList();
-      try {
-        await done.future;
-      } finally {
-        for (final subscription in subscriptions) {
-          await subscription.cancel();
-        }
-        await server.close();
-      }
     case 'exec':
       final prompt = command.rest.isEmpty
           ? (stdin.hasTerminal ? '' : await utf8.decoder.bind(stdin).join())
@@ -187,20 +151,23 @@ Future<void> run(List<String> arguments) async {
       AgentServer? embedded;
       AgentClient? client;
       StreamSubscription<Json>? events;
-      StreamSubscription<ProcessSignal>? interrupt;
+      final cancellation = CancellationToken();
+      final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
+        .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
       try {
-        final url = command['url'] as String?;
-        if (url == null) {
-          embedded = await AgentServer.startEmbedded(
-            directory: directory,
-            configPath: parsed['config'] as String? ?? defaultConfigPath(),
-            telemetry: command['telemetry'] as bool,
-          );
+        final endpoint = localResponsesEndpoint(command);
+        if (endpoint != null && command.wasParsed('provider') && !{'openai', 'gpt'}.contains(command['provider'])) {
+          throw ArgumentError('--endpoint is only available for the OpenAI provider');
         }
-        client = await AgentClient.connect(
-          url == null ? embedded!.uri : Uri.parse(url),
-          token: command['token'] as String?,
+        embedded = await AgentServer.startLocal(
+          directory: directory,
+          configPath: parsed['config'] as String? ?? defaultConfigPath(),
+          telemetry: command['telemetry'] as bool,
+          endpoint: endpoint,
+          apiKeyEnv: endpoint == null ? null : command['api-key-env'] as String,
         );
+        cancellation.throwIfCancelled();
+        client = AgentClient.local(embedded);
         final terminal = Completer<Json>();
         String? taskId = command['resume'] as String?;
         events = client.events.stream.listen(
@@ -230,18 +197,19 @@ Future<void> run(List<String> arguments) async {
             'prompt': prompt,
             if (taskId == null || command.wasParsed('cwd'))
               'cwd': command['cwd'],
-            if (command.wasParsed('provider')) 'provider': command['provider'],
+            if (endpoint != null) 'provider': 'openai'
+            else if (command.wasParsed('provider')) 'provider': command['provider'],
             if (command.wasParsed('model')) 'model': command['model'],
             if (command.wasParsed('reasoning'))
               'reasoning': command['reasoning'],
             'telemetry': command['telemetry'],
-          }),
+          }).asCancellable(cancellation),
         );
         taskId = result['task_id'] as String;
-        interrupt = ProcessSignal.sigint.watch().listen((_) {
-          unawaited(client!.request('task.cancel', {'task_id': taskId}));
-        });
-        final completed = await terminal.future;
+        final completed = await terminal.future.asCancellable(cancellation);
+        if (command['context-output'] case final String path) {
+          await writeContextJson(await readContextSnapshot(client, taskId, cancellation: cancellation), path);
+        }
         if (command['json'] == false) {
           if (completed['type'] == 'turn.completed') {
             stdout.writeln(completed['data']?['text'] ?? '');
@@ -250,11 +218,14 @@ Future<void> run(List<String> arguments) async {
           }
         }
         if (completed['type'] != 'turn.completed') exitCode = 1;
+      } on CancelledException {
+        exitCode = 130;
       } finally {
-        await interrupt?.cancel();
+        cancellation.cancel();
         await events?.cancel();
         await client?.close();
         await embedded?.close();
+        for (final signal in signals) { await signal.cancel(); }
       }
     case 'request':
       if (command.rest.isEmpty) {
@@ -262,10 +233,9 @@ Future<void> run(List<String> arguments) async {
           'Provide a protocol method and optional JSON parameters',
         );
       }
-      final client = await AgentClient.connect(
-        Uri.parse(command['url'] as String),
-        token: command['token'] as String?,
-      );
+      final server = await AgentServer.startLocal(directory: directory,
+        configPath: parsed['config'] as String? ?? defaultConfigPath());
+      final client = AgentClient.local(server);
       try {
         final result = await client.request(
           command.rest.first,
@@ -276,6 +246,7 @@ Future<void> run(List<String> arguments) async {
         stdout.writeln(jsonEncode(result));
       } finally {
         await client.close();
+        await server.close();
       }
     default:
       throw ArgumentError('Unknown command');
@@ -300,11 +271,9 @@ Future<void> _mcp(ArgResults command, String directory, String? configPath) asyn
   Future<void>? browser;
   Object? browserError;
   try {
-    final url = command['url'] as String?;
-    if (url == null) embedded = await AgentServer.startEmbedded(directory: directory, configPath: configPath);
+    embedded = await AgentServer.startLocal(directory: directory, configPath: configPath);
     cancellation.throwIfCancelled();
-    final connected = client = await AgentClient.connect(url == null ? embedded!.uri : Uri.parse(url),
-      token: url == null ? embedded!.token : command['token'] as String?, cancellation: cancellation);
+    final connected = client = AgentClient.local(embedded);
     if (operation.name == 'list') {
       final inventory = await connected.mcpInventory(verbose: operation['verbose'] as bool, cancellation: cancellation);
       if (operation['json'] == true || operation['verbose'] == true) {

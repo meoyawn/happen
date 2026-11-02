@@ -14,9 +14,9 @@ int cellOutputTokens(String source) {
     throw const FormatException('exec pragma must be a JSON object');
   }
   for (final entry in directive.entries) {
-    if (entry.key != 'max_output_tokens' && entry.key != 'yield_time_ms') {
-      throw const FormatException(
-        'exec pragma only supports yield_time_ms and max_output_tokens',
+    if (entry.key != 'max_output_tokens') {
+      throw FormatException(
+        'exec pragma only supports max_output_tokens; got ${entry.key}',
       );
     }
     final value = entry.value;
@@ -25,8 +25,6 @@ int cellOutputTokens(String source) {
       throw FormatException('${entry.key} must be a non-negative safe integer');
     }
   }
-  // Yielding is not implemented. Preserve the existing treatment of that field
-  // as a comment, while honoring the independently supported output budget.
   return directive['max_output_tokens'] as int? ?? 10000;
 }
 

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
@@ -103,7 +105,34 @@ ConversationItem gptItemFromNative(Json wire) {
   }
 }
 
-List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
+List<Json> withGptInstructions(String instructions, List<Json> input) => [
+  if (instructions.isNotEmpty) {'role': 'developer', 'content': instructions},
+  ...input,
+];
+
+List<Json> gptPromptInput(String instructions, Iterable<ConversationItem> items) =>
+  withGptInstructions(instructions, gptInput(items));
+
+List<Json> gptInput(Iterable<ConversationItem> items) {
+  final output = <Json>[];
+  ConversationItem? previous;
+  bool context(ConversationItem? item) => item?.kind == 'message' &&
+    {'agents_md', 'environment', 'skills', 'tool_catalog'}.contains(item?.native['harness']?['context']);
+  List<Json> parts(Json item) => item['content'] is String
+    ? [{'type': 'input_text', 'text': item['content']}] : (item['content'] as List).map(jsonObject).toList();
+  for (final item in items) {
+    for (final wire in _gptItems(item)) {
+      if (context(item) && context(previous) && output.isNotEmpty &&
+          output.last['role'] == wire['role'] && output.last.containsKey('content') && wire.containsKey('content')) {
+        output.last['content'] = [...parts(output.last), ...parts(wire)];
+      } else { output.add(wire); }
+    }
+    previous = item;
+  }
+  return output;
+}
+
+List<Json> _gptItems(ConversationItem item) {
   final native = jsonObject(item.native['gpt'] ?? {});
   switch (item.kind) {
     case 'configuration':
@@ -114,13 +143,7 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
         },
       ];
     case 'tools':
-      return <Json>[
-        {
-          'type': 'additional_tools',
-          'role': 'developer',
-          'tools': gptTools(item.tools),
-        },
-      ];
+      throw const ModelFailure('obsolete_context', 'Standard Responses declarations belong to request tools, not model input.');
     case 'compaction':
       if (native['type'] != 'compaction' ||
           native['encrypted_content'] is! String) {
@@ -183,15 +206,18 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
             'arguments': call.input,
         });
       case 'tool_result':
+        final content = meta.remove('content_items') == true
+          ? (jsonDecode(part['output'] as String) as List).map(jsonObject).toList() : null;
         output.add({
           ...meta,
           'type': part['format'] == 'text'
               ? 'custom_tool_call_output'
               : 'function_call_output',
           'call_id': part['call_id'],
-          'output': (part['images'] as List? ?? []).isEmpty ? part['output'] : [
-            if ((part['output'] as String).isNotEmpty) {'type': 'input_text', 'text': part['output']},
-            for (final image in (part['images'] as List).map(jsonObject))
+          'output': content == null && (part['images'] as List? ?? []).isEmpty ? part['output'] : [
+            if (content != null) ...content
+            else if ((part['output'] as String).isNotEmpty) {'type': 'input_text', 'text': part['output']},
+            for (final image in (part['images'] as List? ?? []).map(jsonObject))
               {'type': 'input_image', 'image_url': attachmentDataUrl(image), 'detail': image['detail'] ?? 'high'},
           ],
         });
@@ -212,7 +238,7 @@ List<Json> gptInput(Iterable<ConversationItem> items) => items.expand((item) {
     });
   }
   return output;
-}).toList();
+}
 
 List<Json> gptTools(Iterable<ToolDefinition> tools) {
   final result = <Json>[];
@@ -231,7 +257,7 @@ List<Json> gptTools(Iterable<ToolDefinition> tools) {
         'parameters': tool.parameters,
       if (tool.format != 'text') 'strict': false,
     };
-    if (tool.namespace == null) {
+    if (tool.namespace == null || tool.namespace == 'functions') {
       result.add(spec);
     } else {
       (namespaces[tool.namespace!] ??= []).add(spec);
