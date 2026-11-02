@@ -1,6 +1,19 @@
-# desktop
+# Happen desktop
 
-Happen desktop client
+Happen's Flutter desktop app, with the agent harness and server in the same
+process.
+
+![A coding conversation in Happen, with inline tool activity and the message composer](screenshots/conversation.png)
+
+Read [why we're building Happen](../../README.md#why) and the
+[design decisions](../../README.md#design-decisions): Dart and Flutter,
+in-process QuickJS and server, interruption down to tool calls, and Codex
+harness parity.
+
+Release app RAM measurements will be added to the
+[project README](../../README.md#release-ram-usage) once available.
+
+## Using Happen
 
 **Settings → Appearance → Project icons** switches between **Letters** (the
 default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
@@ -223,6 +236,8 @@ Tasks have no elapsed-time or step limit. GPT reconnects interrupted model
 streams with bounded retries, and the conversation shows reconnection progress
 and terminal failures. Stop or archive a task to end it. The embedded server
 runs inside Happen, so quitting the application stops its work.
+
+## Development
 
 From the repository root:
 
