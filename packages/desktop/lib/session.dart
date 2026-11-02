@@ -21,10 +21,12 @@ class Project {
     : tasks = tasks ?? [];
   final String checkoutKey, path;
   String id;
-  String? branch, avatarColor;
+  String? branch, avatarColor, displayName;
+  Uint8List? avatarImage;
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
-  String get name => path.split(Platform.pathSeparator).last;
+  String get folderName => path.split(Platform.pathSeparator).where((part) => part.isNotEmpty).lastOrNull ?? path;
+  String get name => displayName ?? folderName;
 }
 
 class DesktopTask {
@@ -106,7 +108,6 @@ class DesktopSession extends ChangeNotifier {
   String projectAvatarStyle = 'letters';
   OpenCodeLayout openCodeLayout = OpenCodeLayout.top;
   bool sidebarOpen = true, inboxWorkingExpanded = true;
-  bool inboxArchivedExpanded = true;
   bool viewingConversation = true;
   int? inboxSince;
   final openTabIds = <String>[];
@@ -259,6 +260,22 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> renameProject(Project target, String name) async {
+    if (!projects.contains(target) || target.removing) return;
+    final trimmed = name.trim();
+    final value = trimmed.isEmpty || trimmed == target.folderName ? null : trimmed;
+    await _setting('project_name:${target.checkoutKey}', value ?? '');
+    target.displayName = value;
+    notifyListeners();
+  }
+
+  Future<void> chooseProjectAvatarImage(Project target, Uint8List? image) async {
+    if (!projects.contains(target) || target.removing) return;
+    await _setting('project_avatar_image:${target.checkoutKey}', image == null ? '' : base64Encode(image));
+    target.avatarImage = image;
+    notifyListeners();
+  }
+
   Future<void> chooseSidebarWidth(double width) async {
     if (!width.isFinite || width <= 0) throw ArgumentError('Invalid sidebar width');
     openCodeSidebarWidth = width;
@@ -391,12 +408,6 @@ class DesktopSession extends ChangeNotifier {
     inboxWorkingExpanded = expanded;
     notifyListeners();
     await _setting('inbox_working_expanded', expanded.toString());
-  }
-
-  Future<void> chooseInboxArchivedExpanded(bool expanded) async {
-    inboxArchivedExpanded = expanded;
-    notifyListeners();
-    await _setting('inbox_archived_expanded', expanded.toString());
   }
 
   List<(Project, DesktopTask)> get openTasks => [
@@ -731,7 +742,6 @@ class DesktopSession extends ChangeNotifier {
     openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == settings['opencode_layout']).firstOrNull ?? OpenCodeLayout.top;
     sidebarOpen = settings['sidebar_open'] != 'false';
     inboxWorkingExpanded = settings['inbox_working_expanded'] != 'false';
-    inboxArchivedExpanded = settings['inbox_archived_expanded'] != 'false';
     inboxSince = int.tryParse(settings['inbox_since'] as String? ?? '');
     try {
       final viewed = jsonDecode(settings['viewed_tasks'] as String? ?? '{}');
@@ -777,8 +787,14 @@ class DesktopSession extends ChangeNotifier {
                   ..lastActivity = t['last_activity'] as int? ?? 0,
           ],
         )..avatarColor = opencodeProjectColors.containsKey(settings['project_avatar_color:$key'])
-          ? settings['project_avatar_color:$key'] as String : null,
+          ? settings['project_avatar_color:$key'] as String : null
+          ..displayName = (settings['project_name:$key'] as String?)?.trim().isNotEmpty == true
+            ? settings['project_name:$key'] as String : null,
       );
+      final image = settings['project_avatar_image:$key'] as String?;
+      if (image != null && image.isNotEmpty) {
+        try { projects.last.avatarImage = base64Decode(image); } on FormatException { /* Use the default icon. */ }
+      }
     }
     await _checkProjectAvailability();
     await refreshProjects();
@@ -1442,7 +1458,6 @@ class ToolActivity {
   final DateTime? startedAt;
   DateTime? endedAt;
   final children = <ToolActivity>[];
-  final images = <Json>[];
   String status = 'running';
 }
 
@@ -1501,17 +1516,36 @@ List<ChatEntry> conversation(DesktopTask task) {
   DateTime? started;
   String? activeAssistant;
   var turnFirstRow = 0;
+  final responseImageRows = <ChatEntry>[];
+  void finishImages() {
+    if (responseImageRows.isEmpty) return;
+    final index = result.lastIndexWhere((entry) => entry.role == 'Happen' && entry.text.isNotEmpty);
+    if (index > result.indexOf(responseImageRows.last)) {
+      final entry = result[index], seen = <Object>{};
+      final images = [for (final image in [...entry.attachments, ...responseImageRows.expand((row) => row.attachments)])
+        if (seen.add(image[r'$part'] ?? image['data'] ?? image['path'] ?? image)) image];
+      result[index] = ChatEntry(entry.id, entry.role, entry.text, timestamp: entry.timestamp,
+        startedAt: entry.startedAt, streaming: entry.streaming, response: entry.response, attachments: images);
+      final sources = responseImageRows.toSet();
+      result.removeWhere(sources.contains);
+    }
+    responseImageRows.clear();
+  }
   var liveTextPart = false;
   for (final message in messages) {
     final id = message['id'] as String, created = at(message['time']['created']);
     switch (message['type']) {
       case 'user':
+        // An intervening user message keeps earlier media with its source reply.
+        responseImageRows.clear();
         started ??= created;
         result.add(ChatEntry(id, 'You', message['text'] as String? ?? '',
           attachments: (message['files'] as List? ?? []).map(jsonObject).toList(), timestamp: created));
       case 'assistant':
         started ??= created;
         activeAssistant = id;
+        final imageOwners = <String, String>{};
+        final imageRows = <String, List<Json>>{};
         var ordinal = 0;
         for (final part in (message['content'] as List? ?? []).map(jsonObject)) {
           final partID = '$id:${ordinal++}';
@@ -1521,9 +1555,10 @@ List<ChatEntry> conversation(DesktopTask task) {
               status['input'], formatInput: true, startedAt: at(part['time']?['created']));
             tool.status = switch (status['status']) {'completed' => 'done', 'error' => 'failed', _ => task.running ? 'running' : 'interrupted'};
             tool.endedAt = at(part['time']?['completed']);
+            final outputImages = <Json>[];
             if (status['content'] is List) {
               final content = status['content'] as List;
-              tool.images.addAll(content.where((part) => part['type'] == 'image').map(jsonObject));
+              outputImages.addAll(content.where((part) => part['type'] == 'image').map(jsonObject));
               final text = content.where((part) => part['type'] != 'image').toList();
               if (text.isNotEmpty) tool.output = text.length == 1 && text.first['type'] == 'text' ? text.first['text'] : {'content': text};
             } else if (status['error'] != null) { tool.output = status['error']; }
@@ -1531,6 +1566,21 @@ List<ChatEntry> conversation(DesktopTask task) {
             final parent = tools[part['native']?['parentCallID']];
             if (parent != null) { parent.children.add(tool); }
             else { result.add(ChatEntry(partID, 'Tool', tool.name, tool: tool, timestamp: created)); }
+            final owner = imageOwners[tool.id] = imageOwners[parent?.id] ?? tool.id;
+            if (outputImages.isNotEmpty) {
+              // A nested call and its enclosing cell share one image row.
+              final images = imageRows.putIfAbsent(owner, () {
+                final images = <Json>[];
+                final row = ChatEntry('$id:$owner:images', 'Happen', '', timestamp: created, attachments: images);
+                result.add(row);
+                responseImageRows.add(row);
+                return images;
+              });
+              final seen = {for (final image in images) image[r'$part'] ?? image['data'] ?? image['path'] ?? image};
+              for (final image in outputImages) {
+                if (seen.add(image[r'$part'] ?? image['data'] ?? image['path'] ?? image)) images.add(image);
+              }
+            }
           } else if (part['type'] == 'text' || part['type'] == 'reasoning') {
             if ((part['text'] as String? ?? '').isEmpty) continue;
             final reasoning = part['type'] == 'reasoning';
@@ -1550,12 +1600,14 @@ List<ChatEntry> conversation(DesktopTask task) {
           ..summary = message['summary'] as String? ?? '';
         result.add(ChatEntry(id, 'Compaction', '', compaction: activity));
       case 'idle':
+        finishImages();
         final interrupted = message['outcome'] == 'interrupted';
         final index = result.lastIndexWhere((entry) => entry.role == 'Happen');
         if (index >= turnFirstRow) {
           final entry = result[index];
           final model = messages.where((m) => m['type'] == 'assistant' && m['id'] == activeAssistant).firstOrNull?['model'];
           result[index] = ChatEntry(entry.id, entry.role, entry.text, timestamp: entry.timestamp,
+            attachments: entry.attachments,
             response: (provider: model?['providerID'] as String?, model: model?['id'] as String?,
               reasoning: model?['variant'] as String?, duration: created != null && started != null ? created.difference(started) : null,
               interrupted: interrupted));
@@ -1571,6 +1623,7 @@ List<ChatEntry> conversation(DesktopTask task) {
   if (task.streamingText.isNotEmpty && !liveTextPart && !result.any((entry) => entry.compaction?.status == 'running')) {
     result.add(ChatEntry('${activeAssistant ?? task.id}:streaming', 'Happen', task.streamingText, streaming: true));
   }
+  finishImages();
   for (final entry in task.pending.entries) {
     final item = entry.value;
     result.add(ChatEntry('pending:${entry.key}', item['delivery'] == 'steer' ? 'Steer pending' : 'Queued', item['prompt'] as String? ?? '',
@@ -1583,7 +1636,30 @@ List<ChatEntry> conversation(DesktopTask task) {
   return task._conversation = result;
 }
 
-String conversationDataText(Object? value) => _pretty(value);
+/// Binary media is presented by the response's image widgets.
+String conversationDataText(Object? value) {
+  final imageData = RegExp(r'data:image/[^,\s"]+,[^"\s]+');
+  if (value is String) {
+    final text = value;
+    try { value = jsonDecode(text); } on FormatException { return text.replaceAll(imageData, '[Image]'); }
+  }
+  if (value is List && value.isNotEmpty && value.every((part) =>
+      part is Map && {'input_text', 'input_image'}.contains(part['type']))) {
+    return value.where((part) => part['type'] == 'input_text')
+      .map((part) => conversationDataText(part['text'])).join('\n');
+  }
+  Object? display(Object? value) {
+    if (value is String) return value.replaceAll(imageData, '[Image]');
+    if (value is List) return value.map(display).toList();
+    if (value is Map) return {
+      for (final entry in value.entries) entry.key:
+        entry.key == 'data' && (value['mime_type'] ?? value['mimeType'] ?? '').toString().startsWith('image/')
+          ? '[Image]' : display(entry.value),
+    };
+    return value;
+  }
+  return const JsonEncoder.withIndent('  ').convert(display(value));
+}
 
 String _pretty(Object? value) {
   if (value is String) {

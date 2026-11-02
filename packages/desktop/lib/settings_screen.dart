@@ -1,9 +1,15 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:macos_file_picker/macos_file_picker.dart';
+import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'composer_attachments.dart';
 import 'interface_mode.dart';
 import 'project_avatar.dart';
 import 'session.dart';
@@ -16,6 +22,8 @@ const _pages = [
     description: 'Customize preferences and default behavior'),
   (id: 'appearance', label: 'Appearance', icon: Icons.palette_outlined,
     description: 'Customize how Happen looks'),
+  (id: 'projects', label: 'Projects', icon: Icons.folder_outlined,
+    description: 'Manage your projects and customize their appearance'),
   (id: 'archived', label: 'Archived tasks', icon: Icons.archive_outlined,
     description: 'View past conversations or restore them to continue'),
 ];
@@ -23,10 +31,13 @@ const _pages = [
 // OpenCode: app/src/settings/{navigation.tsx,settings.css}; only supported pages are listed.
 class DesktopSettingsScreen extends StatefulWidget {
   const DesktopSettingsScreen({super.key, required this.session, required this.accounts,
-    required this.archived, required this.run, this.windowControls = true});
+    required this.archived, required this.run, this.addProject, this.openProject,
+    this.removeProject, this.windowControls = true});
   final DesktopSession session;
   final Widget accounts, archived;
   final Future<void> Function(Future<void> Function()) run;
+  final Future<void> Function()? addProject;
+  final Future<void> Function(Project)? openProject, removeProject;
   final bool windowControls;
 
   @override
@@ -35,16 +46,25 @@ class DesktopSettingsScreen extends StatefulWidget {
 
 class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   String _page = 'preferences';
+  Project? _project;
+  String _projectQuery = '';
+  final _projectSearch = TextEditingController();
   final _scroll = ScrollController();
 
   void _select(String page) {
-    if (_page == page) return;
+    if (_page == page && _project == null) return;
     if (_scroll.hasClients) _scroll.jumpTo(0);
-    setState(() => _page = page);
+    setState(() { _page = page; _project = null; });
+  }
+
+  void _editProject(Project project) {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    setState(() { _page = 'projects'; _project = project; });
   }
 
   @override
   void dispose() {
+    _projectSearch.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -58,6 +78,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final page = _pages.firstWhere((page) => page.id == _page);
+    final project = widget.session.projects.contains(_project) && _project?.removing != true ? _project : null;
     return Focus(autofocus: true, onKeyEvent: (_, event) {
       if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.escape) return KeyEventResult.ignored;
       unawaited(Navigator.maybePop(context));
@@ -76,10 +97,30 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
           final content = SingleChildScrollView(controller: _scroll,
             padding: EdgeInsets.fromLTRB(wide ? 4 : 24, wide ? 48 : 24, wide ? 4 : 24, 80),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Text(page.label, style: const TextStyle(fontSize: 15, height: 20 / 15,
-                fontWeight: FontWeight.w600, color: opencodeInk)),
-              const SizedBox(height: 4),
-              Text(page.description, style: const TextStyle(fontSize: 11, height: 16 / 11, color: opencodeMuted)),
+              if (_page == 'projects' && project != null) ...[
+                Align(alignment: Alignment.centerLeft, child: TextButton.icon(
+                  onPressed: () => _select('projects'), style: _navStyle(),
+                  icon: const Icon(Icons.arrow_back, size: 14), label: const Text('All projects'))),
+                const SizedBox(height: 16),
+                Row(children: [
+                  ProjectAvatar(project: project, size: 32, generated: widget.session.projectAvatarStyle == 'generated'),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(project.name, style: const TextStyle(fontSize: 15,
+                    fontWeight: FontWeight.w600, color: opencodeInk))),
+                  _projectMenu(project),
+                ]),
+              ] else
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(page.label, style: const TextStyle(fontSize: 15, height: 20 / 15,
+                      fontWeight: FontWeight.w600, color: opencodeInk)),
+                    const SizedBox(height: 4),
+                    Text(page.description, style: const TextStyle(fontSize: 11, height: 16 / 11, color: opencodeMuted)),
+                  ])),
+                  if (_page == 'projects' && widget.session.projects.isNotEmpty && widget.addProject != null)
+                    TextButton.icon(onPressed: widget.addProject, style: _navStyle(),
+                      icon: const Icon(Icons.add, size: 16), label: const Text('Add project')),
+                ]),
               const SizedBox(height: 24),
               if (widget.session.loginSucceeded) ...[
                 Container(padding: const EdgeInsets.all(16),
@@ -91,6 +132,8 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
               switch (_page) {
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
+                'projects' => project == null ? _projects() : _ProjectSettings(
+                  key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run),
                 'archived' => widget.archived,
                 _ => _preferences(),
               },
@@ -165,14 +208,226 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         _choice('Project icons', widget.session.projectAvatarStyle, const {'letters': 'Letters', 'generated': 'Generated'},
           (value) => widget.run(() => widget.session.chooseProjectAvatarStyle(value))),
       ])),
-    for (final project in widget.session.projects.where((project) => !project.removing))
-      _settingsRow(project.name, project.path, Row(mainAxisSize: MainAxisSize.min, children: [
-        ProjectAvatar(project: project, size: 24, generated: widget.session.projectAvatarStyle == 'generated'),
-        const SizedBox(width: 16),
-        SizedBox(width: 244, child: Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.end, children: [
-          for (final color in opencodeProjectColors.keys) _projectColor(project, color),
+  ]);
+
+  Widget _projectMenu(Project project) => PopupMenuButton<String>(
+    tooltip: 'Options for ${project.name}', icon: const Icon(Icons.more_horiz, size: 18),
+    onSelected: (action) {
+      switch (action) {
+        case 'edit': _editProject(project);
+        case 'open': unawaited(widget.openProject?.call(project));
+        case 'copy': unawaited(widget.run(() => Clipboard.setData(ClipboardData(text: project.path))));
+        case 'remove': unawaited(widget.removeProject?.call(project));
+      }
+    },
+    itemBuilder: (_) => [
+      const PopupMenuItem(value: 'edit', child: Text('Edit project')),
+      if (widget.openProject != null) PopupMenuItem(value: 'open', enabled: project.available, child: const Text('Open project')),
+      const PopupMenuItem(value: 'copy', child: Text('Copy folder path')),
+      if (widget.removeProject != null) const PopupMenuItem(value: 'remove', child: Text('Remove project')),
+    ]);
+
+  Widget _projects() {
+    final projects = widget.session.projects.where((project) => !project.removing).toList();
+    final query = _projectQuery.trim().toLowerCase();
+    final filtered = projects.where((project) => query.isEmpty ||
+      project.name.toLowerCase().contains(query) || project.path.toLowerCase().contains(query)).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (projects.length > 7 || query.isNotEmpty) ...[
+        TextField(decoration: _settingsInput('Search projects').copyWith(
+          prefixIcon: const Icon(Icons.search, size: 16),
+          suffixIcon: query.isEmpty ? null : IconButton(tooltip: 'Clear search',
+            onPressed: () { _projectSearch.clear(); setState(() => _projectQuery = ''); },
+            icon: const Icon(Icons.close, size: 14))),
+          controller: _projectSearch, onChanged: (value) => setState(() => _projectQuery = value)),
+        const SizedBox(height: 16),
+      ],
+      if (projects.isEmpty)
+        _settingsList([Padding(padding: const EdgeInsets.symmetric(vertical: 64), child: Column(children: [
+          const Icon(Icons.folder_outlined, size: 28, color: opencodeMuted),
+          const SizedBox(height: 16),
+          const Text('No projects yet', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 4),
+          const Text('Add a project folder to get started.', style: TextStyle(fontSize: 13, color: opencodeMuted)),
+          if (widget.addProject != null) ...[
+            const SizedBox(height: 24),
+            OutlinedButton.icon(onPressed: widget.addProject,
+              icon: const Icon(Icons.add, size: 16), label: const Text('Add project')),
+          ],
+        ]))])
+      else if (filtered.isEmpty)
+        Padding(padding: const EdgeInsets.symmetric(vertical: 48), child: Text('No projects match “${_projectQuery.trim()}”.',
+          textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: opencodeMuted)))
+      else
+        _settingsList([for (final project in filtered)
+          Row(children: [
+            Expanded(child: TextButton(
+              onPressed: () => _editProject(project),
+              style: _navStyle().copyWith(padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(vertical: 14))),
+              child: Row(children: [
+                ProjectAvatar(project: project, size: 24, generated: widget.session.projectAvatarStyle == 'generated'),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: opencodeInk)),
+                  const SizedBox(height: 2),
+                  Text(project.path, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, color: opencodeMuted)),
+                ])),
+                if (!project.available) const Tooltip(message: 'Project folder is unavailable',
+                  child: Padding(padding: EdgeInsets.only(left: 8),
+                    child: Icon(Icons.warning_amber_rounded, size: 16, color: opencodeMuted))),
+              ]))),
+            _projectMenu(project),
+          ]),
+        ]),
+    ]);
+  }
+}
+
+class _ProjectSettings extends StatefulWidget {
+  const _ProjectSettings({super.key, required this.project, required this.session, required this.run});
+  final Project project;
+  final DesktopSession session;
+  final Future<void> Function(Future<void> Function()) run;
+
+  @override
+  State<_ProjectSettings> createState() => _ProjectSettingsState();
+}
+
+class _ProjectSettingsState extends State<_ProjectSettings> {
+  late final _name = TextEditingController(text: widget.project.name);
+  final _nameFocus = FocusNode();
+  final _lifetime = CancellationToken();
+  bool _loadingIcon = false, _receivingIcon = false, _dragOver = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameFocus.addListener(_nameFocusChanged);
+  }
+
+  void _nameFocusChanged() {
+    if (!_nameFocus.hasFocus) _saveName();
+  }
+
+  void _saveName() {
+    final value = _name.text.trim();
+    if (value == widget.project.name) return;
+    unawaited(widget.run(() => widget.session.renameProject(widget.project, value)));
+  }
+
+  @override
+  void dispose() {
+    _saveName();
+    _lifetime.cancel();
+    _nameFocus.removeListener(_nameFocusChanged);
+    _nameFocus.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chooseIcon() async {
+    if (_loadingIcon || _receivingIcon) return;
+    final paths = await MacosFilePicker().pick(MacosFilePickerMode.file,
+      allowsMultiple: false, allowedUtiTypes: ['public.image'], dialogTitle: 'Choose project icon');
+    try {
+      if (mounted && paths != null && paths.isNotEmpty) await _loadIcon(paths.first.path);
+    } finally {
+      for (final path in paths ?? <MacosFilePickerPath>[]) { await path.release(); }
+    }
+  }
+
+  Future<void> _loadIcon(String path) async {
+    if (_loadingIcon || !mounted) return;
+    setState(() => _loadingIcon = true);
+    try {
+      final file = File(path);
+      if (await file.length() > 8 * 1024 * 1024) throw ArgumentError('Choose an image smaller than 8 MB');
+      _lifetime.throwIfCancelled();
+      final bytes = await file.readAsBytes();
+      _lifetime.throwIfCancelled();
+      final codec = await ui.instantiateImageCodecWithSize(await ui.ImmutableBuffer.fromUint8List(bytes),
+        getTargetSize: (width, height) => width <= 128 && height <= 128 ? const ui.TargetImageSize()
+          : width >= height ? const ui.TargetImageSize(width: 128) : const ui.TargetImageSize(height: 128));
+      try {
+        _lifetime.throwIfCancelled();
+        final frame = await codec.getNextFrame();
+        try {
+          _lifetime.throwIfCancelled();
+          final png = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+          _lifetime.throwIfCancelled();
+          if (png == null) throw StateError('Could not read this image');
+          await widget.session.chooseProjectAvatarImage(widget.project, png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes));
+        } finally { frame.image.dispose(); }
+      } finally { codec.dispose(); }
+    } finally {
+      if (mounted) setState(() => _loadingIcon = false);
+    }
+  }
+
+  Future<void> _dropIcon(DropDetails details) => widget.run(() async {
+    if (_loadingIcon || _receivingIcon) return;
+    setState(() { _dragOver = false; _receivingIcon = true; });
+    try {
+      final attachments = await receiveComposerDrop(details, widget.session.attachmentDirectory, _lifetime);
+      try {
+        if (attachments.isNotEmpty) await _loadIcon(attachments.first.path);
+      } finally {
+        for (final attachment in attachments) { await attachment.discard(); }
+      }
+    } finally {
+      if (mounted) setState(() => _receivingIcon = false);
+    }
+  });
+
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    if (!widget.project.available) ...[
+      Container(padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: const Color(0xfffff6e5), borderRadius: BorderRadius.circular(8)),
+        child: const Row(children: [
+          Icon(Icons.folder_off_outlined, size: 20, color: opencodeMuted), SizedBox(width: 12),
+          Expanded(child: Text('This project folder is unavailable. Check that it exists and any external drive is connected.',
+            style: TextStyle(fontSize: 13, color: opencodeMuted))),
         ])),
-      ])),
+      const SizedBox(height: 16),
+    ],
+    _settingsList([
+      _settingsRow('Name', 'The name shown for this project in Happen.',
+        SizedBox(width: 244, child: TextField(controller: _name, focusNode: _nameFocus,
+          style: const TextStyle(fontSize: 13, color: opencodeInk),
+          decoration: _settingsInput(widget.project.folderName).copyWith(labelText: 'Project name', floatingLabelBehavior: FloatingLabelBehavior.never),
+          onSubmitted: (_) => _saveName(), onTapOutside: (_) => _nameFocus.unfocus()))),
+      _settingsRow('Icon', 'Upload an image or drop one onto the icon.',
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          DropTarget(enabled: !_loadingIcon && !_receivingIcon, acceptedKinds: const {DropItemKind.file},
+            onEnter: (_) => setState(() => _dragOver = true),
+            onLeave: () { if (mounted) setState(() => _dragOver = false); },
+            onDrop: _dropIcon,
+            child: Tooltip(message: 'Choose project icon', child: InkWell(
+              onTap: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(_chooseIcon)),
+              borderRadius: BorderRadius.circular(6),
+              child: Container(padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: _dragOver ? opencodeInk : Colors.transparent)),
+                child: _loadingIcon || _receivingIcon ? const SizedBox.square(dimension: 32, child: CircularProgressIndicator(strokeWidth: 2))
+                  : ProjectAvatar(project: widget.project, size: 32, generated: widget.session.projectAvatarStyle == 'generated'))))),
+          if (widget.project.avatarImage != null) ...[
+            const SizedBox(width: 8),
+            IconButton(tooltip: 'Remove custom icon', icon: const Icon(Icons.close, size: 16),
+              onPressed: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(() => widget.session.chooseProjectAvatarImage(widget.project, null)))),
+          ],
+        ])),
+      if (widget.project.avatarImage == null)
+        _settingsRow('Color', 'Choose a color for the project icon.',
+          SizedBox(width: 244, child: Wrap(spacing: 8, runSpacing: 12, alignment: WrapAlignment.end, children: [
+            for (final color in opencodeProjectColors.keys) _projectColor(widget.project, color),
+          ]))),
+      _settingsRow('Folder', 'The local folder used for this project.',
+        SizedBox(width: 244, child: SelectableText(widget.project.path,
+          style: const TextStyle(fontSize: 12, color: opencodeMuted)))),
+    ]),
   ]);
 
   Widget _projectColor(Project project, String color) {
@@ -192,6 +447,14 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
       )));
   }
 }
+
+InputDecoration _settingsInput(String hint) => InputDecoration(
+  hintText: hint, filled: true, fillColor: Colors.white,
+  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
+    borderSide: const BorderSide(color: Color(0x1f000000), width: .5)),
+  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
+    borderSide: const BorderSide(color: opencodeInk, width: 1)));
 
 ButtonStyle _navStyle({bool selected = false}) => TextButton.styleFrom(
   visualDensity: VisualDensity.standard,
@@ -222,7 +485,8 @@ Widget _settingsRow(String title, String description, Widget control) => Padding
     ]);
     if (bounds.maxWidth < 420) {
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        copy, const SizedBox(height: 16), Align(alignment: Alignment.centerRight, child: control),
+        copy, const SizedBox(height: 16), Align(alignment: Alignment.centerRight,
+          child: ConstrainedBox(constraints: BoxConstraints(maxWidth: bounds.maxWidth), child: control)),
       ]);
     }
     return Row(children: [Expanded(child: copy), const SizedBox(width: 16), control]);

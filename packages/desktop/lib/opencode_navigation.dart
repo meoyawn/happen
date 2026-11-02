@@ -5,26 +5,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import 'appearance.dart';
+import 'opencode_activity.dart';
 import 'session.dart';
 import 'project_avatar.dart';
 import 'sidebar_hover.dart';
 import 'window_chrome.dart';
 
-({List<(Project, DesktopTask)> needs, List<(Project, DesktopTask)> recent,
-  List<(Project, DesktopTask)> archived, List<(Project, DesktopTask)> working})
+({List<(Project, DesktopTask)> working, List<(Project, DesktopTask)> needs,
+  List<(Project, DesktopTask)> recent})
 inboxSections(DesktopSession session) {
   final entries = [for (final project in session.projects) if (!project.removing)
-    for (final task in project.tasks) (project, task)]
+    for (final task in project.tasks) if (!task.archived) (project, task)]
     ..sort((a, b) => b.$2.lastActivity.compareTo(a.$2.lastActivity));
-  final needs = entries.where((entry) => !entry.$2.archived &&
+  final needs = entries.where((entry) =>
     {'failed', 'interrupted'}.contains(_taskStatus(session, entry.$2))).toList();
-  final working = entries.where((entry) => !entry.$2.archived && entry.$2.running).toList()
+  final working = entries.where((entry) => entry.$2.running).toList()
     ..sort((a, b) => _runStarted(a.$2).compareTo(_runStarted(b.$2)));
-  final finished = entries.where((entry) => !entry.$2.running && !needs.contains(entry) &&
+  final recent = entries.where((entry) => !entry.$2.running && !needs.contains(entry) &&
     _finishedAt(entry.$2) >= (session.inboxSince ?? 0)).toList()
     ..sort((a, b) => _finishedAt(b.$2).compareTo(_finishedAt(a.$2)));
-  return (needs: needs, recent: finished.where((entry) => !entry.$2.archived).toList(),
-    archived: finished.where((entry) => entry.$2.archived).toList(), working: working);
+  return (working: working, needs: needs, recent: recent);
 }
 
 // OpenCode: app/src/shell/titlebar/{titlebar,tab-nav,inbox}.tsx.
@@ -78,44 +78,31 @@ class OpenCodeSidebar extends StatelessWidget {
       _navigationButton(title, icon, onTap, selected: selected);
 
   Widget _inbox(BuildContext context) {
-    final (:needs, :recent, :archived, :working) = inboxSections(session);
-    return LayoutBuilder(builder: (context, constraints) {
-      final visibleWorking = working.where((entry) => session.inboxWorkingExpanded || !home && session.task == entry.$2).toList();
-      final workingHeight = working.isEmpty ? 0.0 : math.min(24.0 + visibleWorking.length * 68, constraints.maxHeight * .45);
-      return Column(children: [
-        Expanded(child: _InboxList(children: [
-          for (final id in session.openTabIds)
-            for (final draft in session.sessionDrafts) if (draft.id == id)
-              Padding(padding: const EdgeInsets.only(bottom: 4), child: SizedBox(height: 45,
-                child: _draftTab(session, draft, vertical: true, home: home, onTap: () => onDraft(draft)))),
-          if (needs.isNotEmpty) ...[
-            _inboxHeading('Needs attention', count: needs.length),
-            for (final (project, task) in needs) _inboxRow(context, project, task),
-          ],
-          if (recent.isNotEmpty) ...[
-            if (needs.isNotEmpty) _inboxHeading('Recent'),
-            for (final (project, task) in recent) _inboxRow(context, project, task),
-          ],
-          if (archived.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _inboxHeading('Archived', count: archived.length, expanded: session.inboxArchivedExpanded,
-              onTap: () => unawaited(_navigationRun(session, () => session.chooseInboxArchivedExpanded(!session.inboxArchivedExpanded)))),
-            if (session.inboxArchivedExpanded)
-              for (final (project, task) in archived) _inboxRow(context, project, task),
-          ],
-          if (needs.isEmpty && recent.isEmpty && working.isEmpty && archived.isEmpty)
-            const Padding(padding: EdgeInsets.symmetric(vertical: 24, horizontal: 6),
-              child: Text('No sessions in your inbox yet.', style: TextStyle(fontSize: 12, color: opencodeFaint))),
-        ])),
-        if (working.isNotEmpty) SizedBox(height: workingHeight, child: Column(children: [
-          _inboxHeading('Working', count: working.length, expanded: session.inboxWorkingExpanded,
-            onTap: () => unawaited(_navigationRun(session, () => session.chooseInboxWorkingExpanded(!session.inboxWorkingExpanded)))),
-          Expanded(child: _InboxList(children: [
-            for (final (project, task) in visibleWorking) _inboxRow(context, project, task),
-          ])),
-        ])),
-      ]);
-    });
+    final (:working, :needs, :recent) = inboxSections(session);
+    return _InboxList(children: [
+      if (working.isNotEmpty) ...[
+        _inboxHeading('Working', count: working.length, expanded: session.inboxWorkingExpanded,
+          onTap: () => unawaited(_navigationRun(session, () => session.chooseInboxWorkingExpanded(!session.inboxWorkingExpanded)))),
+        for (final (project, task) in working)
+          if (session.inboxWorkingExpanded || !home && session.task == task) _inboxRow(context, project, task),
+        const SizedBox(height: 12),
+      ],
+      for (final id in session.openTabIds)
+        for (final draft in session.sessionDrafts) if (draft.id == id)
+          Padding(padding: const EdgeInsets.only(bottom: 4), child: SizedBox(height: 45,
+            child: _draftTab(session, draft, vertical: true, home: home, onTap: () => onDraft(draft)))),
+      if (needs.isNotEmpty) ...[
+        _inboxHeading('Needs attention', count: needs.length),
+        for (final (project, task) in needs) _inboxRow(context, project, task),
+      ],
+      if (recent.isNotEmpty) ...[
+        if (working.isNotEmpty || needs.isNotEmpty) _inboxHeading('Recent'),
+        for (final (project, task) in recent) _inboxRow(context, project, task),
+      ],
+      if (needs.isEmpty && recent.isEmpty && working.isEmpty && session.sessionDrafts.isEmpty)
+        const Padding(padding: EdgeInsets.symmetric(vertical: 24, horizontal: 6),
+          child: Text('No sessions in your inbox yet.', style: TextStyle(fontSize: 12, color: opencodeFaint))),
+    ]);
   }
 
   Widget _inboxHeading(String label, {int? count, bool? expanded, VoidCallback? onTap}) =>
@@ -142,17 +129,16 @@ class OpenCodeSidebar extends StatelessWidget {
     final color = switch (status) {
       'failed' => const Color(0xffc44848),
       'interrupted' => const Color(0xffb67a2a),
-      'working' => const Color(0xff5477b8),
       'done' => const Color(0xff43825c),
       _ => opencodeFaint,
     };
     final statusLabel = switch (status) {
-      'failed' => 'Failed', 'interrupted' => 'Interrupted', 'working' => 'Working', 'done' => 'Done', _ => _age(task.lastActivity),
+      'failed' => 'Failed', 'interrupted' => 'Interrupted', 'done' => 'Done', _ => _age(task.lastActivity),
     };
     return Padding(padding: const EdgeInsets.only(bottom: 4), child: _taskMenu(context, session, task, onArchive,
       child: SidebarHover(builder: (context, active) => Material(color: selected ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(6),
         child: InkWell(key: ValueKey('inbox:${task.id}'), borderRadius: BorderRadius.circular(6),
-          onTap: () => onSelect(project, task), child: Opacity(opacity: task.archived && !selected ? .5 : status == 'working' && !selected ? .7 : 1,
+          onTap: () => onSelect(project, task), child: Opacity(opacity: status == 'working' && !selected ? .7 : 1,
             child: Padding(padding: const EdgeInsets.all(6), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
                 ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated'), const SizedBox(width: 6),
@@ -161,15 +147,16 @@ class OpenCodeSidebar extends StatelessWidget {
                 const SizedBox(width: 6),
                 Stack(alignment: Alignment.centerRight, children: [
                   Visibility(visible: !active && !task.archiving, maintainSize: true, maintainAnimation: true, maintainState: true,
-                    child: Text(statusLabel, style: TextStyle(fontSize: 12, height: 16 / 12, color: color))),
+                    child: status == 'working'
+                      ? const Tooltip(message: 'Working', child: OpenCodeActivityIndicator())
+                      : Text(statusLabel, style: TextStyle(fontSize: 12, height: 16 / 12, color: color))),
                   if (active || task.archiving)
                     SizedBox(width: 20, height: 16, child: IconButton(
-                      tooltip: task.archived ? 'Restore session' : 'Archive session', padding: EdgeInsets.zero,
+                      tooltip: 'Archive session', padding: EdgeInsets.zero,
                       style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                      onPressed: session.connected && !task.archiving && !project.removing ? () => onArchive(task, !task.archived) : null,
-                      icon: task.archived ? const Icon(Icons.unarchive_outlined, size: 14, color: opencodeFaint)
-                        : SvgPicture.string(_archiveSvg, width: 14, height: 14,
-                            colorFilter: const ColorFilter.mode(opencodeFaint, BlendMode.srcIn)))),
+                      onPressed: session.connected && !task.archiving && !project.removing ? () => onArchive(task, true) : null,
+                      icon: SvgPicture.string(_archiveSvg, width: 14, height: 14,
+                        colorFilter: const ColorFilter.mode(opencodeFaint, BlendMode.srcIn)))),
                 ]),
               ]),
               const SizedBox(height: 2),
@@ -323,7 +310,7 @@ class OpenCodeTabStrip extends StatelessWidget {
                         onPressed: () => unawaited(_navigationRun(session, () => session.closeTab(task))),
                         icon: const Icon(Icons.close, size: 14, color: opencodeFaint))
                     : Center(child: task.running
-                        ? const SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.3, color: opencodeFaint))
+                        ? const OpenCodeActivityIndicator()
                         : _taskStatus(session, task) == 'done' || _taskStatus(session, task) == 'failed'
                           ? Container(width: 7, height: 7, decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xff5876db)))
                           : null)),

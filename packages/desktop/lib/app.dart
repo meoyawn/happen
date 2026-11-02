@@ -116,6 +116,12 @@ class _DesktopViewState extends State<DesktopView> {
           listenable: _viewChanges,
           builder: (context, _) => DesktopSettingsScreen(
             session: session, run: _run,
+            addProject: _addProject,
+            openProject: (project) async {
+              Navigator.pop(context);
+              await _run(() => _selectProject(project));
+            },
+            removeProject: (project) => _run(() => _removeProject(project)),
             windowControls: defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen,
             accounts: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               for (final provider in session.providers) _accountCard(provider),
@@ -267,7 +273,7 @@ class _DesktopViewState extends State<DesktopView> {
           await session.addProject(paths.first.path);
           if (!mounted) return;
           setState(() => session.viewingConversation = true);
-          _focusComposer();
+          if (!_settingsOpen) _focusComposer();
         }
       } finally {
         for (final path in paths ?? <MacosFilePickerPath>[]) {
@@ -343,17 +349,19 @@ class _DesktopViewState extends State<DesktopView> {
   void _selectAdjacentTask(int offset) {
     final inbox = session.openCodeLayout == OpenCodeLayout.inbox;
     final sections = inbox ? inboxSections(session) : null;
+    final working = sections?.working.where((entry) =>
+      session.inboxWorkingExpanded || !_homeOpen && session.task == entry.$2).toList() ?? <(Project, DesktopTask)>[];
     final tasks = sections == null ? session.openTasks : [
+      ...working,
       ...sections.needs,
       ...sections.recent,
-      if (session.inboxArchivedExpanded) ...sections.archived,
-      for (final entry in sections.working)
-        if (session.inboxWorkingExpanded || !_homeOpen && session.task == entry.$2) entry,
     ];
     final ids = inbox ? [
+      ...working.map((entry) => entry.$2.id),
       for (final id in session.openTabIds)
         if (session.sessionDrafts.any((draft) => draft.id == id)) id,
-      ...tasks.map((entry) => entry.$2.id),
+      ...sections!.needs.map((entry) => entry.$2.id),
+      ...sections.recent.map((entry) => entry.$2.id),
     ] : session.openTabIds;
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;

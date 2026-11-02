@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
+import 'dart:ui' as ui;
 
 import 'package:desktop/conversation.dart';
 import 'package:desktop/conversation_markdown.dart';
 import 'package:desktop/inline_reference.dart';
+import 'package:desktop/image_preview.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -231,7 +233,12 @@ print(message);
     await tester.pumpAndSettle();
     expect(tester.widgetList<RawImage>(find.byType(RawImage)).where((image) => image.image != null).length, 2);
     expect(find.text('Could not load image'), findsOneWidget);
-    await tester.tap(find.byTooltip('Open image').first);
+    await tester.runAsync(() async {
+      await tester.tap(find.byTooltip('Open image').first);
+      await tester.pump();
+      final preview = tester.widget<ImagePreview>(find.byType(ImagePreview));
+      await precacheImage(preview.images[preview.initialIndex].provider, tester.element(find.byType(Scaffold).first));
+    });
     await tester.pumpAndSettle();
     expect(find.byTooltip('Zoom in'), findsOneWidget);
     await tester.tap(find.byTooltip('Zoom in'));
@@ -344,27 +351,92 @@ print(message);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('MCP tool images remain visible inside the tool disclosure', (tester) async {
-    final task = DesktopTask('tool-image', 'Screenshot')..events.addAll({
-      1: {'seq': 1, 'type': 'tool.started', 'data': {'call_id': 'image', 'name': 'screenshot', 'namespace': 'mcp__browser', 'input': '{}'}},
-      2: {'seq': 2, 'type': 'tool.completed', 'data': {'item': {'content': [
-        {'call_id': 'image', 'output': jsonEncode({'output': {'content': [
-          {'type': 'image', 'data': _png, 'mimeType': 'image/png'},
-        ]}})},
-      ]}}},
-    });
-    await open(tester, task);
-    await tester.pumpAndSettle();
-    expect(find.byType(Image), findsNothing);
-    await tester.tap(find.textContaining('Used 1', findRichText: true));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('mcp__browser.screenshot'));
-    await tester.pumpAndSettle();
+  testWidgets('generated images stay in their reply and reuse decoded pixels after scrolling', (tester) async {
+    late String data;
     await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawColor(Colors.blue, BlendMode.src);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(1200, 1800);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      data = base64Encode(bytes!.buffer.asUint8List());
+      image.dispose();
+      picture.dispose();
+    });
+    final image = {'type': 'image', 'name': 'Generated image', 'mime_type': 'image/png', 'data': data};
+    final task = DesktopTask('tool-image', 'Generated image')..loaded = true;
+    for (var index = 0; index < 20; index++) {
+      task.messages['user$index'] = {'id': 'user$index', 'type': 'user', 'metadata': {'seq': index},
+        'time': {'created': index}, 'text': List.filled(5, 'Earlier message $index').join('\n\n')};
+    }
+    task.messages['tools'] = {'id': 'tools', 'type': 'assistant', 'metadata': {'seq': 20},
+      'time': {'created': 20, 'streamed': 21}, 'content': [
+        {'type': 'text', 'text': 'Generating the image'},
+        {'type': 'tool', 'id': 'cell', 'name': 'functions.exec', 'time': {'created': 20},
+          'state': {'status': 'completed', 'input': {'code': 'await tools.imagegen()'}, 'content': [image]}},
+        {'type': 'tool', 'id': 'image', 'name': 'image_gen.imagegen', 'time': {'created': 20},
+          'native': {'parentCallID': 'cell'}, 'state': {'status': 'completed', 'input': {}, 'content': [
+            {'type': 'text', 'text': jsonEncode([{'type': 'input_image', 'image_url': 'data:image/png;base64,$data'}])},
+            image,
+          ]}},
+        {'type': 'text', 'text': 'Scan this image'},
+      ]};
+    task.messages['follow-up'] = {'id': 'follow-up', 'type': 'user', 'metadata': {'seq': 21},
+      'time': {'created': 18}, 'text': 'invalid qr code. next'};
+    task.messages['answer'] = {'id': 'answer', 'type': 'assistant', 'metadata': {'seq': 22},
+      'time': {'created': 22, 'streamed': 23}, 'content': [{'type': 'text', 'text': 'Done'}]};
+    task.messages['idle'] = {'id': 'idle', 'type': 'idle', 'metadata': {'seq': 23},
+      'time': {'created': 23}, 'outcome': 'succeeded'};
+    await tester.runAsync(() async {
+      await open(tester, task, size: const Size(800, 650));
+      expect(find.byType(ConversationImage), findsOneWidget);
       await precacheImage(tester.widget<Image>(find.byType(Image)).image, tester.element(find.byType(Scaffold)));
     });
     await tester.pumpAndSettle();
-    expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
+    final decoded = tester.widget<RawImage>(find.byType(RawImage)).image!.clone();
+    addTearDown(decoded.dispose);
+    expect(decoded.height, lessThanOrEqualTo(390));
+    expect(tester.getSize(find.byType(ConversationImage)).height, lessThanOrEqualTo(390));
+    expect(tester.getBottomLeft(find.byType(ConversationImage)).dy,
+      lessThan(tester.getTopLeft(find.text('Scan this image', findRichText: true)).dy));
+    expect(tester.getBottomLeft(find.byType(ConversationImage)).dy,
+      lessThan(tester.getTopLeft(find.text('invalid qr code. next', findRichText: true)).dy));
+    expect(find.byType(ConversationImage).hitTestable(), findsOneWidget);
+    final position = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
+    expect(position.extentBefore, 0);
+    await tester.drag(find.byType(ListView), const Offset(0, 1000));
+    await tester.pumpAndSettle();
+    expect(find.byType(ConversationImage), findsNothing);
+    await tester.tap(find.text('Jump to latest'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<RawImage>(find.byType(RawImage)).image!.isCloneOf(decoded), isTrue,
+      reason: 'Returning to a generated image must reuse its decoded pixels');
+    await tester.runAsync(() async {
+      await tester.tap(find.byTooltip('Open image'));
+      await tester.pump();
+      final preview = tester.widget<ImagePreview>(find.byType(ImagePreview));
+      await precacheImage(preview.images.single.provider, tester.element(find.byType(Scaffold).first));
+    });
+    await tester.pumpAndSettle();
+    final full = tester.widget<RawImage>(find.descendant(of: find.byType(ImagePreview), matching: find.byType(RawImage))).image!;
+    expect(full.width, 1200);
+    expect(full.height, 1800);
+    await tester.tap(find.byTooltip('Close image'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    final completed = DesktopTask('completed-image', 'Completed generation')..loaded = true
+      ..messages.addAll({...task.messages}..remove('follow-up'));
+    await tester.runAsync(() async {
+      await open(tester, completed, size: const Size(800, 650));
+      await precacheImage(tester.widget<Image>(find.byType(Image)).image, tester.element(find.byType(Scaffold)));
+    });
+    await tester.pumpAndSettle();
+    expect(find.byType(ConversationImage), findsOneWidget);
+    expect(tester.getTopLeft(find.byType(ConversationImage)).dy,
+      greaterThan(tester.getTopLeft(find.text('Done', findRichText: true)).dy));
+    expect(find.byType(ConversationImage).hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

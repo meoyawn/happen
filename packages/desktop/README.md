@@ -4,7 +4,13 @@ Happen desktop client
 
 **Settings → Appearance → Project icons** switches between **Letters** (the
 default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
-Each project has OpenCode's nine-color picker. Uncolored letters are gray;
+**Settings → Projects** lists added folders and opens each project's settings.
+Rename a project, upload or drop a custom icon, or choose one of OpenCode's nine
+colors. Names and icons also update throughout the app and are saved per project.
+Use the project menu to open it, copy its folder path, or remove it from Happen.
+Larger lists can be searched by name or path.
+
+Uncolored letters are gray;
 choosing a color keeps the uppercase letter even in Generated mode. Click the
 selected color again to return to the default. Choices are saved per project.
 

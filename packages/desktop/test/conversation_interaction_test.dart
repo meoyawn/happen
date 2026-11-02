@@ -62,7 +62,14 @@ void main() {
       await open(tester, surface == 'user'
         ? ConversationTranscript(task: task, directory: '', onRetry: () {})
         : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [message(parts), message([parts.first])]));
-      await tester.tap(find.byWidgetPredicate((widget) => widget is ConversationImage && widget.label == 'Second'));
+      await tester.runAsync(() async {
+        await tester.tap(find.byWidgetPredicate((widget) => widget is ConversationImage && widget.label == 'Second'));
+        await tester.pump();
+        final preview = tester.widget<ImagePreview>(find.byType(ImagePreview));
+        for (final image in preview.images) {
+          await precacheImage(image.provider, tester.element(find.byType(Scaffold).first));
+        }
+      });
       await tester.pumpAndSettle();
       final preview = find.byType(ImagePreview);
       ui.Image displayed() => tester.widget<RawImage>(find.descendant(of: preview, matching: find.byType(RawImage))).image!;

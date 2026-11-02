@@ -24,6 +24,16 @@ String _code(Object? value) {
   return decoded is Map && decoded['code'] is String ? decoded['code'] as String : conversationDataText(value);
 }
 
+String _outputText(Object? value) => (value as String? ?? '')
+  .replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+  .replaceFirst(RegExp(r'^Script (?:completed|failed)\nWall time [^\n]+\nOutput:\n'), '')
+  .replaceFirst(RegExp(r'^Script error:\s*'), '').trim();
+
+String _errorText(String output) {
+  final error = output.replaceFirst(RegExp(r'^Error:\s*'), '').trim();
+  return error.isEmpty ? 'Tool call failed' : error;
+}
+
 String _summary(ToolActivity call) {
   if (call.preview != null) return call.preview!.split('\n').first;
   final value = call.rawInput;
@@ -121,27 +131,36 @@ class OpenCodeExecute extends StatelessWidget {
       style: IconButton.styleFrom(minimumSize: const Size.square(24), maximumSize: const Size.square(24),
         padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
       icon: const Icon(Icons.code_rounded, size: 16, color: opencodeFaint)),
-    builder: (context) => DefaultTextStyle(style: _codeStyle, child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        for (final call in tool.children) Padding(padding: const EdgeInsets.only(bottom: 6),
-          child: _ExecuteCall(key: PageStorageKey('execute-call:${call.id}'), call: call, directory: directory, onExpand: onExpand)),
-        if (tool.images.isNotEmpty) ConversationImageParts(parts: tool.images, directory: directory),
-        ConversationData(value: tool.rawOutput, builder: (context, value) {
-          final output = value == null ? '' : conversationDataText(value).trim();
-          if (output.isEmpty) return const SizedBox.shrink();
-          return _ExecuteOutput(key: PageStorageKey('execute-output:${tool.id}'), output: output,
-            failed: tool.status == 'failed', onExpand: onExpand);
-        }),
-      ],
-    )),
+    builder: (context) => ConversationData(value: tool.rawOutput, formatText: true, builder: (context, value) {
+      final output = _outputText(value);
+      final error = tool.status == 'failed' ? _errorText(output) : null;
+      final owner = tool.children.where((call) => call.status == 'failed').lastOrNull;
+      return DefaultTextStyle(style: _codeStyle, child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start, children: [
+          for (final call in tool.children) Padding(padding: const EdgeInsets.only(bottom: 6),
+            child: _ExecuteCall(key: PageStorageKey('execute-call:${call.id}'), call: call, directory: directory,
+              error: identical(call, owner) ? error : null, onExpand: onExpand)),
+          if (error != null && owner == null) ConversationDisclosure(
+            key: PageStorageKey('execute-error:${tool.id}'), label: error.split('\n').first,
+            fontSize: 13, color: Theme.of(context).colorScheme.error, onExpand: onExpand,
+            icon: Icon(Icons.error_outline_rounded, size: 13, color: Theme.of(context).colorScheme.error),
+            builder: (context) => Padding(padding: const EdgeInsets.only(left: 20),
+              child: SelectableText(error,
+                style: _codeStyle.copyWith(color: Theme.of(context).colorScheme.error)))),
+          if (error == null && output.isNotEmpty) _ExecuteOutput(
+            key: PageStorageKey('execute-output:${tool.id}'), output: output, onExpand: onExpand),
+        ],
+      ));
+    }),
   ));
 }
 
 class _ExecuteCall extends StatefulWidget {
-  const _ExecuteCall({super.key, required this.call, required this.directory, required this.onExpand});
+  const _ExecuteCall({super.key, required this.call, required this.directory, required this.onExpand, this.error});
   final ToolActivity call;
   final String directory;
   final VoidCallback onExpand;
+  final String? error;
 
   @override
   State<_ExecuteCall> createState() => _ExecuteCallState();
@@ -187,16 +206,18 @@ class _ExecuteCallState extends State<_ExecuteCall> {
           child: ConversationData(value: call.rawInput, builder: (context, value) {
             final input = _decode(value);
             return SelectionArea(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              if (call.images.isNotEmpty) ConversationImageParts(parts: call.images, directory: widget.directory),
               if (input is Map) for (final entry in input.entries) Padding(padding: const EdgeInsets.only(bottom: 2),
                 child: Text.rich(TextSpan(children: [
                   TextSpan(text: '${entry.key}: ', style: const TextStyle(color: opencodeMuted)),
                   TextSpan(text: conversationDataText(entry.value)),
                 ])))
               else Text(conversationDataText(value)),
-              if (call.rawOutput != null || failed) ConversationData(value: call.rawOutput, builder: (context, value) =>
+              if (widget.error != null) Padding(padding: const EdgeInsets.only(top: 8),
+                child: Text(widget.error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)))
+              else if (call.rawOutput != null || failed) ConversationData(value: call.rawOutput, formatText: true, builder: (context, value) =>
                 Padding(padding: const EdgeInsets.only(top: 8), child: Text(
-                  value == null ? 'Tool call failed' : conversationDataText(value),
+                  value as String? ?? 'Tool call failed',
                   style: TextStyle(color: failed ? Theme.of(context).colorScheme.error : opencodeMuted)))),
             ]));
           })),
@@ -206,18 +227,17 @@ class _ExecuteCallState extends State<_ExecuteCall> {
 }
 
 class _ExecuteOutput extends StatelessWidget {
-  const _ExecuteOutput({super.key, required this.output, required this.failed, required this.onExpand});
+  const _ExecuteOutput({super.key, required this.output, required this.onExpand});
   final String output;
-  final bool failed;
   final VoidCallback onExpand;
 
   @override
   Widget build(BuildContext context) => ConversationDisclosure(
-    label: failed ? 'Error' : 'Output', fontSize: 13, onExpand: onExpand,
-    icon: Text('›', style: _codeStyle.copyWith(color: failed ? Theme.of(context).colorScheme.error : opencodeFaint)),
+    label: 'Output', fontSize: 13, onExpand: onExpand,
+    icon: Text('›', style: _codeStyle.copyWith(color: opencodeFaint)),
     summary: Text('${output.split('\n').length} lines', style: _codeStyle.copyWith(color: opencodeMuted)),
     builder: (context) => Padding(padding: const EdgeInsets.only(left: 20),
-      child: SelectableText(output, style: _codeStyle.copyWith(color: failed ? Theme.of(context).colorScheme.error : opencodeInk))),
+      child: SelectableText(output, style: _codeStyle)),
   );
 }
 
@@ -244,8 +264,15 @@ class _ExecuteDetails extends StatelessWidget {
           Flexible(child: SingleChildScrollView(padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               ConversationData(value: tool.rawInput, builder: (context, value) => _section('Code', _code(value), 'javascript')),
-              ConversationData(value: tool.rawOutput, builder: (context, value) => value == null ? const SizedBox.shrink()
-                : _section(failed ? 'Error' : 'Output', conversationDataText(value), failed ? '' : 'json')),
+              ConversationData(value: tool.rawOutput, formatText: true, builder: (context, value) {
+                final output = _outputText(value);
+                if (!failed && output.isEmpty) return const SizedBox.shrink();
+                var language = '';
+                if (!failed) {
+                  try { jsonDecode(output); language = 'json'; } on FormatException { /* Plain console output. */ }
+                }
+                return _section(failed ? 'Error' : 'Output', failed ? _errorText(output) : output, language);
+              }),
             ]))),
         ])),
     );

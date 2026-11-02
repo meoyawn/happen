@@ -5,12 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
-import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, maxClientFrameBytes;
+import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl;
 
 import 'code_highlight.dart';
 import 'appearance.dart';
 import 'inline_reference.dart';
 import 'image_preview.dart';
+import 'inline_image.dart';
 import 'conversation_data.dart';
 
 const conversationInk = Color(0xff1a1c1f);
@@ -390,14 +391,13 @@ class _ConversationImageState extends State<ConversationImage> {
   void _resolve() {
     _provider = null;
     try {
+      if (widget.source.startsWith('data:')) {
+        _provider = InlineImage(widget.source);
+        return;
+      }
       final uri = _contentUri(widget.source, widget.directory);
       if (uri == null) return;
-      if (uri.scheme == 'data') {
-        // Bound inline decoding; invalid content remains a readable placeholder.
-        if (widget.source.length > maxClientFrameBytes) return;
-        final data = uri.data;
-        if (data != null && data.mimeType.startsWith('image/')) _provider = MemoryImage(data.contentAsBytes());
-      } else if (uri.scheme == 'http' || uri.scheme == 'https') {
+      if (uri.scheme == 'http' || uri.scheme == 'https') {
         if (uri.host.isNotEmpty) _provider = NetworkImage(uri.toString());
       } else if (uri.scheme == 'file') {
         _provider = FileImage(File(uri.toFilePath()));
@@ -424,17 +424,23 @@ class _ConversationImageState extends State<ConversationImage> {
   Widget _image() {
     final provider = _provider;
     if (provider == null) return _placeholder(failed: true);
-    return Image(
-      image: provider,
-      fit: widget.thumbnail ? BoxFit.cover : BoxFit.contain,
-      width: widget.thumbnail ? 58 : null,
-      height: widget.thumbnail ? 46 : null,
-      gaplessPlayback: true,
-      semanticLabel: widget.label,
-      frameBuilder: (_, child, frame, synchronous) =>
-          synchronous || frame != null ? child : _placeholder(),
-      errorBuilder: (_, _, _) => _placeholder(failed: true),
-    );
+    return LayoutBuilder(builder: (context, constraints) {
+      final ratio = MediaQuery.devicePixelRatioOf(context);
+      final height = widget.thumbnail ? 46.0 : MediaQuery.sizeOf(context).height * .6;
+      final width = widget.thumbnail ? 58.0 : constraints.maxWidth;
+      return ConstrainedBox(constraints: BoxConstraints(maxHeight: height), child: Image(
+        image: ResizeImage(provider, width: width.isFinite ? (width * ratio).ceil() : null,
+          height: (height * ratio).ceil(), policy: ResizeImagePolicy.fit),
+        fit: widget.thumbnail ? BoxFit.cover : BoxFit.contain,
+        width: widget.thumbnail ? 58 : null,
+        height: widget.thumbnail ? 46 : null,
+        gaplessPlayback: true,
+        semanticLabel: widget.label,
+        frameBuilder: (_, child, frame, synchronous) =>
+            synchronous || frame != null ? child : _placeholder(),
+        errorBuilder: (_, _, _) => _placeholder(failed: true),
+      ));
+    });
   }
 
   PreviewImage? _previewImage() {

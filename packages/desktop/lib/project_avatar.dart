@@ -20,7 +20,7 @@ class ProjectAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final variant = color ?? project.avatarColor;
     final palette = opencodeProjectColors[variant] ?? opencodeProjectColors['gray']!;
-    return SizedBox.square(dimension: size, child: generated && variant == null
+    final fallback = generated && variant == null
     ? RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id)))
     : DecoratedBox(
         decoration: BoxDecoration(
@@ -33,7 +33,12 @@ class ProjectAvatar extends StatelessWidget {
             fontVariations: const [ui.FontVariation('wght', 530)],
             letterSpacing: .05, color: Colors.white,
             shadows: const [Shadow(color: Color(0x33000000), blurRadius: 4)]))),
-      ));
+      );
+    return SizedBox.square(dimension: size, child: project.avatarImage != null && color == null && label == null
+      ? ClipRRect(borderRadius: BorderRadius.circular(size > 16 ? 6 : 4),
+          child: Image.memory(project.avatarImage!, width: size, height: size, fit: BoxFit.cover,
+            gaplessPlayback: true, errorBuilder: (_, _, _) => fallback))
+      : fallback);
   }
 }
 

@@ -509,8 +509,10 @@ class _MessageState extends State<_Message> {
               child: body,
             ),
           ))
-        else if (!user)
+        else if (!user && entry.text.isNotEmpty)
           body,
+        if (!user && entry.attachments.isNotEmpty)
+          ConversationImageParts(parts: entry.attachments, directory: widget.directory),
         if (!user) ...[
           if (entry.response != null) OpenCodeResponseFooter(entry: entry, visible: _hovered || _focused),
         ] else ...[
@@ -689,16 +691,10 @@ class _ToolRow extends StatelessWidget {
         : elapsed == null ? null : Text(elapsed, style: TextStyle(fontSize: 12, color: color)),
       builder: (context) => Padding(padding: EdgeInsets.only(left: nested ? 8 : 12, bottom: 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (tool.images.isNotEmpty) ConversationImageParts(parts: tool.images, directory: directory),
         if (tool.startedAt case final at?) Align(alignment: Alignment.centerLeft,
           child: Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: _Timestamp(at: at))),
-        ConversationData(value: tool.rawOutput, builder: (context, output) => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _ToolImages(output: output, directory: directory),
-            _details(identical(output, tool.rawOutput) ? tool.output : conversationDataText(output)),
-          ],
-        )),
+        ConversationData(value: tool.rawOutput, formatText: true,
+          builder: (context, output) => _details(output as String?)),
         for (final child in tool.children)
           Padding(padding: const EdgeInsets.only(top: 8), child: _ToolRow(
             key: ValueKey(child.id), tool: child, directory: directory, nested: true, onExpand: onExpand)),
@@ -711,46 +707,4 @@ class _ToolRow extends StatelessWidget {
     language: tool.name == 'functions.exec' || tool.name == 'exec' ? 'javascript' : 'json',
     output: output,
   ));
-}
-
-class _ToolImages extends StatelessWidget {
-  const _ToolImages({required this.output, required this.directory});
-  final Object? output;
-  final String directory;
-
-  @override
-  Widget build(BuildContext context) => Column(children: [
-    // Parse only when the disclosure is visible. Keep the exact result available
-    // in Code & output, including content types with no visual presentation.
-    for (final source in _toolImages(output).take(24))
-      ConversationImage(source: source, label: 'Tool image', directory: directory),
-  ]);
-}
-
-Iterable<String> _toolImages(Object? value, [int depth = 0]) sync* {
-  if (depth > 8) return;
-  if (value is String) {
-    try {
-      yield* _toolImages(jsonDecode(value), depth + 1);
-    } on FormatException {
-      // Ordinary output is text, not a serialized MCP result.
-    }
-  } else if (value is List) {
-    for (final part in value) {
-      yield* _toolImages(part, depth + 1);
-    }
-  } else if (value is Map) {
-    final mime = value['mimeType'] ?? value['mime_type'];
-    if (value['image_url'] case final String source when source.startsWith('data:image/')) {
-      yield source;
-    } else if (value['type'] == 'image' && value['data'] is String &&
-        mime is String && mime.startsWith('image/')) {
-      final data = value['data'] as String;
-      yield data.startsWith('data:') ? data : 'data:$mime;base64,$data';
-    } else {
-      for (final key in ['output', 'content', 'contentItems', 'images']) {
-        if (value.containsKey(key)) yield* _toolImages(value[key], depth + 1);
-      }
-    }
-  }
 }
