@@ -4,29 +4,37 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'appearance.dart';
 import 'session.dart';
 
 // OpenCode: ui/src/data-display/project-avatar/{project-avatar.tsx,project-avatar.css}.
 class ProjectAvatar extends StatelessWidget {
-  const ProjectAvatar({super.key, required this.project, this.size = 16, this.generated = false});
+  const ProjectAvatar({super.key, required this.project, this.size = 16, this.generated = false,
+    this.color, this.label});
   final Project project;
   final double size;
   final bool generated;
+  final String? color, label;
 
   @override
-  Widget build(BuildContext context) => SizedBox.square(dimension: size, child: generated
+  Widget build(BuildContext context) {
+    final variant = color ?? project.avatarColor;
+    final palette = opencodeProjectColors[variant] ?? opencodeProjectColors['gray']!;
+    return SizedBox.square(dimension: size, child: generated && variant == null
     ? RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id)))
     : DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(4),
-          gradient: const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [Color(0xff767676), Color(0xff5c5c5c)]),
-          border: Border.all(color: const Color(0xff3a3a3a), width: .5)),
-        child: Center(child: Text(project.name.characters.firstOrNull?.toUpperCase() ?? '',
+          borderRadius: BorderRadius.circular(size > 16 ? 6 : 4),
+          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Color.alphaBlend(const Color(0x29ffffff), palette.background), palette.background]),
+          border: Border.all(color: palette.border, width: .5)),
+        child: Center(child: Text((label ?? project.name).characters.firstOrNull?.toUpperCase() ?? '',
           style: TextStyle(fontSize: size * 11 / 16, height: 1, fontWeight: FontWeight.w500,
+            fontVariations: const [ui.FontVariation('wght', 530)],
             letterSpacing: .05, color: Colors.white,
             shadows: const [Shadow(color: Color(0x33000000), blurRadius: 4)]))),
       ));
+  }
 }
 
 // OpenCode's optional mesh generator (generated.ts, version 1).

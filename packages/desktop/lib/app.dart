@@ -195,6 +195,7 @@ class _DesktopViewState extends State<DesktopView> {
     final working = session.signingIn && session.loginProvider == id;
     final available = session.connected && !session.signingIn && session.signingOut == null;
     final buttonStyle = ButtonStyle(
+      visualDensity: VisualDensity.standard,
       minimumSize: const WidgetStatePropertyAll(Size(0, 28)),
       padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,

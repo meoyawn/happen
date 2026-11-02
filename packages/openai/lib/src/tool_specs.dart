@@ -5,10 +5,19 @@ import 'declarations.dart';
 import 'history_tools.dart';
 import 'web_search.dart';
 import 'image_generation.dart';
+import 'goals.dart';
 
-ToolDefinition codeDefinition({required bool deferredTools, bool imageGeneration = false}) => ToolDefinition(
+ToolDefinition codeDefinition({required bool deferredTools, bool imageGeneration = false, bool goals = true}) => ToolDefinition(
   name: 'exec', namespace: 'functions', format: 'text',
-  description: _codeDescription(deferredTools, imageGeneration), grammar: _codeGrammar,
+  description: _codeDescription(deferredTools, imageGeneration, goals), grammar: _codeGrammar,
+);
+
+const sleepDefinition = ToolDefinition(
+  name: 'sleep', namespace: 'clock', namespaceDescription: 'Tools for reading and waiting on time.',
+  description: 'Pause execution for a specified duration. The sleep ends early when new input arrives for the active turn. Returns the elapsed wall-clock time.',
+  parameters: {'type': 'object', 'properties': {
+    'duration_ms': {'type': 'number', 'description': 'How long to sleep in milliseconds. Must be between 1 and 43200000.'},
+  }, 'required': ['duration_ms'], 'additionalProperties': false},
 );
 
 const waitDefinition = ToolDefinition(
@@ -70,7 +79,7 @@ SOURCE: /[\s\S]+/
 
 // Codex code-mode-protocol/description.rs renders eager nested declarations
 // into exec itself; tool_search only indexes the deferred external catalog.
-String _codeDescription(bool deferredTools, bool imageGeneration) {
+String _codeDescription(bool deferredTools, bool imageGeneration, bool goals) {
   final enabled = [
     // Happen-only extensions remain callable and discoverable in ALL_TOOLS,
     // but do not inflate the shared Codex eager declaration on every request.
@@ -78,6 +87,7 @@ String _codeDescription(bool deferredTools, bool imageGeneration) {
     ...mcpResourceCatalog,
     if (deferredTools) toolSearchCatalog,
     if (imageGeneration) imageGenerationCatalog,
+    if (goals) ...goalCatalog,
   ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList()
     ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
   return [

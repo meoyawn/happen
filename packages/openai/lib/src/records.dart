@@ -10,6 +10,8 @@ ConversationItem gptItemFromNative(Json wire) {
   final type = wire['type'];
   final state = {...wire};
   switch (type) {
+    case 'web_search_call':
+      return ConversationItem(role: 'assistant', native: {'gpt': state});
     case 'compaction':
       return ConversationItem(
         kind: 'compaction',
@@ -170,6 +172,7 @@ List<Json> _gptItems(ConversationItem item) {
       }
       return <Json>[{'id': 'cmp_${item.id}', ...native}];
   }
+  if (native['type'] == 'web_search_call') return [{'id': 'ws_${item.id}', ...native}];
   if (native['type'] == 'reasoning') {
     final summary = <Json>[], content = <Json>[];
     for (final part in item.content) {
@@ -265,9 +268,14 @@ List<Json> _gptItems(ConversationItem item) {
 
 List<Json> gptTools(Iterable<ToolDefinition> tools) {
   final result = <Json>[];
+  final hosted = <Json>[];
   final namespaces = <String, List<Json>>{};
   final descriptions = <String, String>{};
   for (final tool in tools) {
+    if (tool.native['gpt'] is Map) {
+      hosted.add(jsonObject(tool.native['gpt']));
+      continue;
+    }
     final spec = <String, dynamic>{
       'type': tool.format == 'text' ? 'custom' : 'function',
       'name': tool.name,
@@ -297,5 +305,5 @@ List<Json> gptTools(Iterable<ToolDefinition> tools) {
       'tools': entry.value,
     });
   }
-  return result;
+  return [...result, ...hosted];
 }

@@ -42,7 +42,7 @@ void main() {
       final modelRequests = <Json>[], searchRequests = <Json>[];
       final searches = <String>[];
       await config.writeAsString(jsonEncode({'providers': {
-        'openai': {'endpoint': '$endpoint/codex/responses'},
+        'openai': {'endpoint': '$endpoint/codex/responses', 'settings': {'standalone_web_search': true}},
         'opencode': {
           'endpoint': '$endpoint/inference/openai/v1',
           'web_search': {'endpoint': '$endpoint/hosted/search'},

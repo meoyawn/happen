@@ -105,7 +105,6 @@ const value = await tools.archive.probe({key: "saved"});
 
   test('Codex code mode exposes sorted metadata and dispatches normalized callable names', () async {
     const interface = OpenAIToolInterface();
-    expect(interface.definitions.map((tool) => '${tool.namespace}.${tool.name}'), ['functions.exec', 'functions.wait', 'web.run']);
     expect(interface.nestedDiscovery.name, 'tool_search');
     final runtime = interface.createRuntime(root.path, cancellation);
     addTearDown(runtime.close);

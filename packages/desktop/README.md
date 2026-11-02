@@ -2,6 +2,12 @@
 
 Happen desktop client
 
+**Settings → Appearance → Project icons** switches between **Letters** (the
+default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
+Each project has OpenCode's nine-color picker. Uncolored letters are gray;
+choosing a color keeps the uppercase letter even in Generated mode. Click the
+selected color again to return to the default. Choices are saved per project.
+
 The conversation uses OpenCode's message model and presentation, with Inter and
 IBM Plex Mono fonts, compact spacing, and its working indicator. Nested tool calls
 appear inline; **View code** opens the JavaScript source.
@@ -215,7 +221,8 @@ runs inside Happen, so quitting the application stops its work.
 From the repository root:
 
 ```sh
-flutter pub get
+git submodule update --init --recursive
+third_party/flutter/bin/flutter pub get
 moon run dev -- --status
 moon run dev
 ```
@@ -236,14 +243,39 @@ Checkout locks and supervisor metadata stay in the ignored `.local/run/`;
 the shared launch lock stays in the system temporary directory. They are never
 added to the app bundle.
 
+### Vendored development SDK
+
+`moonx dev` (`moon run dev`) uses the `third_party/flutter` submodule from
+[meoyawn/flutter](https://github.com/meoyawn/flutter), branch `happen/stable`.
+It contains the fix for [Flutter #195780](https://github.com/flutter/flutter/issues/195780)
+([upstream PR #195781](https://github.com/flutter/flutter/pull/195781))
+on stable Flutter 3.47.9 / Dart 3.13.7: the mouse update guard is cleared in
+`finally` after a hit-test or hover exception. The fix and its five regression
+cases live in the fork. SDK source is never patched by a launch script.
+
+Update the fork by incorporating upstream stable and rerunning its mouse tracker
+tests, then update the submodule commit. Use the vendored `bin/flutter` for direct
+development commands. An already-running supervisor switches SDKs on the next
+development launch; an already-frozen process needs a restart to reset its state.
+
+### Release builds
+
 ```sh
 moon run release
 moon run release-reinstall
 ```
 
-`release` directly runs `flutter build macos --release` under this package,
-producing `build/macos/Build/Products/Release/Happen.app`. It creates no workflow
-logs or locks and performs no process inspection or reuse. `release-reinstall`
+`release` resolves Flutter's current upstream `stable` revision on every build
+and uses a clean checkout with its bundled Dart SDK in `.local/release-macos/`.
+Local SDK modifications are rejected. The development fork is excluded from the
+release source snapshot.
+
+The build uses a snapshot of the working sources, including uncommitted changes
+and submodules. Its package configuration, Xcode files and native build products
+are isolated from the running development app. The signed result is copied to
+`build/macos/Build/Products/Release/Happen.app` under this package, with exact
+Flutter, Dart and engine versions recorded alongside it in `toolchain.json`.
+An upstream version check must succeed before building. `release-reinstall`
 builds first, stages and verifies the bundle, and installs it at `/Applications/Happen.app`.
 It stops the installed release before replacing the bundle and leaves it
 stopped. Failed replacement validation restores the previous bundle and leaves

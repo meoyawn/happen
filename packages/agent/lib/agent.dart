@@ -232,6 +232,7 @@ class _Agent {
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
+    var goalActive = false;
     final turnId = interface.id == 'openai' ? newUuidV7() : newId();
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
@@ -243,6 +244,11 @@ class _Agent {
         throw ArgumentError('The model and provider are fixed for this task');
       }
       final baseline = jsonObject(config['provider_settings']);
+      if (interface.id == 'openai' && baseline['goals'] != false) {
+        final goal = await _metadata('goal');
+        goalActive = goal is Map && goal['status'] == 'active';
+        if (goalActive) await callIsolate(writer, 'goal.begin', {}, cancellation: cancellation);
+      }
       final previousEffort = effort;
       final selectedEffort = settings['reasoning'] as String? ?? previousEffort;
       if (selectedEffort != previousEffort && config['reasoning_updates'] != true) {
@@ -567,6 +573,14 @@ class _Agent {
         telemetry.add('output_tokens', usage.outputTokens);
       }
 
+      Future<void> countGoalUsage(ModelUsage usage) async {
+        if (!goalActive) return;
+        final state = jsonObject(await callIsolate(writer, 'goal.account', {
+          'tokens': (usage.inputTokens - usage.cachedInputTokens).clamp(0, 0x7fffffffffffffff) + usage.outputTokens,
+        }, cancellation: cancellation));
+        goalActive = state['goal']?['status'] == 'active';
+      }
+
       Future<void> compactContext(String reason) async {
         cancellation.throwIfCancelled();
         event(await _append('compaction.started', {'reason': reason}));
@@ -612,6 +626,7 @@ class _Agent {
         usageTokens = size;
         usageItems = input.length;
         countUsage(result.usage);
+        await countGoalUsage(result.usage);
         telemetry.add('compactions');
         event(entry);
       }
@@ -685,6 +700,7 @@ class _Agent {
         telemetry.observe('model', modelTime.elapsed);
         telemetry.add('model_requests');
         countUsage(reply.usage);
+        await countGoalUsage(reply.usage);
         final nextUsage = reply.usage.contextTokens;
         final nextItems = input.length + reply.output.length;
         final calls = reply.calls;
@@ -763,6 +779,10 @@ class _Agent {
                       'provider': config['provider'], ...request().toJson(),
                       'arguments': arguments, 'call_id': id, 'turn_id': turnId,
                     }, timeout: null, cancellation: cancellation);
+                  } else if (service?.startsWith('goal.') == true) {
+                    final state = jsonObject(await callIsolate(writer, service!, jsonObject(arguments), cancellation: cancellation));
+                    goalActive = state['goal']?['status'] == 'active';
+                    output = state;
                   } else if (service?.startsWith('history.') == true) {
                     output = await callIsolate(
                       writer,
@@ -847,7 +867,9 @@ class _Agent {
             }
             cancellation.throwIfCancelled();
             if (_steering.isEmpty) rethrow;
-            result = {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
+            result = interface.id == 'openai' && call.namespace == 'clock' && call.name == 'sleep'
+              ? {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep interrupted by new input.'}
+              : {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
           } catch (error) {
             result = {'error': error.toString()};
           } finally {
@@ -880,9 +902,13 @@ class _Agent {
     } finally {
       _accepting = false;
       _steering.clear();
-      cancellation.cancel();
-      await host?.close();
-      _cancellation = null;
+      try {
+        if (goalActive) await callIsolate(writer, 'goal.end', {}, cancellation: _lifetime);
+      } finally {
+        cancellation.cancel();
+        await host?.close();
+        _cancellation = null;
+      }
     }
   }
 }

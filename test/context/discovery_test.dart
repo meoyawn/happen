@@ -106,7 +106,7 @@ void main() {
     }
     List<Json> definitions(Json request) => [
       for (final namespace in request['tools'] as List)
-        if (!{'exec', 'wait', 'web'}.contains(namespace['name']))
+        if (namespace['type'] != 'web_search' && !{'exec', 'wait', 'clock', 'web'}.contains(namespace['name']))
           ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
     ];
 

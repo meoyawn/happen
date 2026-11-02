@@ -67,32 +67,24 @@ tasks:
       shell: false
       outputStyle: stream
 
-  prepare-flutter:
-    description: Apply the exception-safe mouse tracker fix to the development Flutter SDK
-    command: dart packages/desktop/tool/prepare_flutter.dart
-    preset: utility
-    inputs: []
-    options:
-      cache: false
-      shell: false
-      outputStyle: stream
-
   dev:
-    description: Run one Flutter desktop in the foreground with stateful hot reload
+    description: Run one Flutter desktop using the vendored development SDK
     command: python3 packages/desktop/tool/run_flutter.py
-    deps:
-      - '~:prepare-flutter'
+    env:
+      PATH: '$workspaceRoot/third_party/flutter/bin:$PATH'
+      FLUTTER_ROOT: '$workspaceRoot/third_party/flutter'
     preset: server
     inputs: []
     options:
+      envOverride: true
       interactive: true
       cache: false
       shell: false
       outputStyle: stream
 
   release:
-    description: Build the macOS release
-    command: env -C packages/desktop flutter build macos --release
+    description: Build the macOS release with an unmodified latest-stable Flutter SDK
+    command: dart packages/desktop/tool/build_release.dart
     preset: utility
     inputs: []
     options:

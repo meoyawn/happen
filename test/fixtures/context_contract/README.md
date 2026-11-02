@@ -41,8 +41,9 @@ plugins, apps, collaboration, account credential storage, and permission prompts
 are disabled explicitly. No user config or ChatGPT account is used. Shell
 selection is not overridden: the runtime follows Codex's account-database shell
 selection and platform defaults, not the launching terminal's `SHELL` value.
-Hosted web search is explicitly disabled in both test configurations; this suite
-uses real local tools/MCP rather than substituting a hosted-search service.
+Provider-hosted web search is enabled in both configurations (`web_search = "live"`).
+The reference keeps the current default `sleep_tool` gate and model-driven mode;
+both matrix models advertise clock support. Goals are explicitly enabled.
 
 Global skill discovery is explicitly redirected to the same temporary
 `home/.agents/skills` directory: Codex receives that generated `HOME`, and Happen
@@ -55,7 +56,12 @@ extra user, bundled, or plugin skill fails the isolation assertion.
 arrays. The local HTTP peer emits real Responses SSE and advances a scripted
 step only after the previous call IDs have actual tool results. File operations,
 JavaScript, SQLite, instruction discovery, skills, tool search, and MCP execution
-are real. The package-reading MCP case starts independent real `dart mcp-server`
+are real. The web case supplies deterministic hosted `web_search_call` results and
+URL citations through that same Responses stream, then verifies their retention
+in the next actual inference request. It needs no live internet query or a second
+fake search implementation. Sleep is exercised directly, including invalid zero
+duration; goal tools create, inspect, account usage, complete, and inspect again.
+The package-reading MCP case starts independent real `dart mcp-server`
 processes, registers the fixture package, and reads its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
 `+mcp__dart evaluate expression flutter driver runtime errors` and compares the

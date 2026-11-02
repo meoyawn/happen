@@ -90,6 +90,30 @@ void main() {
     }
   });
 
+  test('goals persist across reopen and cannot bypass an exhausted token budget by pausing', () async {
+    final root = await Directory.systemTemp.createTemp('goal-state-');
+    final id = newUuidV7();
+    var store = TaskStore(root.path, id);
+    addTearDown(() async { store.close(); await root.delete(recursive: true); });
+    expect(store.goal('get_goal', {})['goal'], isNull);
+    store.goal('create_goal', {'objective': 'Retain the real goal', 'token_budget': 10});
+    expect(() => store.goal('create_goal', {'objective': 'Overwrite unfinished work'}), throwsStateError);
+    store.goal('account', {'tokens': 10});
+    expect(store.goal('update_goal', {'status': 'paused'})['goal']['status'], 'budget_limited');
+    store.close();
+    store = TaskStore(root.path, id, create: false);
+    final restored = store.goal('get_goal', {});
+    expect(restored['remainingTokens'], 0);
+    expect(restored['goal'], containsPair('objective', 'Retain the real goal'));
+    expect(restored['goal'], containsPair('threadId', id));
+    expect(restored['goal'], containsPair('tokensUsed', 10));
+    expect(store.goal('update_goal', {'status': 'complete'})['completionBudgetReport'], isA<String>());
+    final next = store.goal('create_goal', {'objective': 'The next explicit goal'});
+    expect(next['remainingTokens'], isNull);
+    expect(next['goal']['status'], 'active');
+    expect(next['goal']['tokensUsed'], 0);
+  });
+
   test('a failed derived cache never loses a durable event and repairs on read', () async {
     final root = await Directory.systemTemp.createTemp('history-cache-');
     final id = newId();

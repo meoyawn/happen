@@ -3,6 +3,11 @@ import 'package:protocol/protocol.dart';
 
 import 'web_search_schema.dart';
 
+const hostedWebSearchDefinition = ToolDefinition(
+  name: 'web_search', description: 'Provider-hosted web search.',
+  native: {'gpt': {'type': 'web_search', 'external_web_access': true, 'search_content_types': ['text', 'image']}},
+);
+
 // SearchCommands at Codex 2681f8cba2831ef72bca2c0672b2e49d5f690745.
 const webSearchDefinition = ToolDefinition(
   name: 'run',
@@ -35,4 +40,3 @@ Json webSearchCommands(Object? value) {
   validateToolInput(commands, webSearchParameters, 'web.run');
   return commands;
 }
-

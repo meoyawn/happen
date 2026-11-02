@@ -13,10 +13,12 @@ import 'tool_specs.dart' as specs;
 import 'tools.dart';
 import 'web_search.dart';
 import 'image_generation.dart';
+import 'goals.dart';
 
 class OpenAIToolInterface extends ToolInterface {
-  const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false});
-  final bool webSearch, imageGeneration;
+  const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
+    this.standaloneWebSearch = false, this.sleepTool = true, this.goals = true});
+  final bool webSearch, imageGeneration, standaloneWebSearch, sleepTool, goals;
   @override
   String get id => 'openai';
   @override
@@ -30,7 +32,9 @@ class OpenAIToolInterface extends ToolInterface {
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
   List<ToolDefinition> definitionsFor(List<Json> deferred) => [
-    specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration), specs.waitDefinition, if (webSearch) webSearchDefinition,
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration, goals: goals), specs.waitDefinition,
+    if (sleepTool) specs.sleepDefinition,
+    if (webSearch) standaloneWebSearch ? webSearchDefinition : hostedWebSearchDefinition,
   ];
   @override
   ToolDefinition get nestedDiscovery => specs.toolSearchDefinition;
@@ -44,15 +48,17 @@ class OpenAIToolInterface extends ToolInterface {
   Json search(List<Json> catalog, Json arguments) => discoverTools(catalog, arguments);
   @override
   Map<String, String> get services => {
-    if (webSearch) 'web__run': 'web.search',
+    if (webSearch && standaloneWebSearch) 'web__run': 'web.search',
     if (imageGeneration) 'image_gen__imagegen': 'image.generate',
+    if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
     for (final tool in historyCatalog) tool['name'] as String: 'history.${(tool['name'] as String).substring(9)}',
     ...mcpResourceMethods,
   };
   @override
   List<Json> get hostCatalog => [
-    ...specs.hostCatalog.where((tool) => webSearch || tool['name'] != 'web__run'), ...historyCatalog, ...mcpResourceCatalog,
+    ...specs.hostCatalog.where((tool) => webSearch && standaloneWebSearch || tool['name'] != 'web__run'), ...historyCatalog, ...mcpResourceCatalog,
     if (imageGeneration) imageGenerationCatalog,
+    if (goals) ...goalCatalog,
   ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList();
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
@@ -60,10 +66,12 @@ class OpenAIToolInterface extends ToolInterface {
     if (deferred.isNotEmpty) describeTool(specs.toolSearchCatalog),
   ];
   @override
-  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation, webSearch);
+  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool);
   @override
   String formatResult(ToolCall call, Json result) => jsonEncode([
     if (result['notification'] case final String notice) {'type': 'input_text', 'text': notice}
+    else if (call.namespace == 'clock' && call.name == 'sleep')
+      {'type': 'input_text', 'text': result['output'] ?? result['error']}
     else if (call.namespace == 'web' && call.name == 'run' && !result.containsKey('error'))
       {'type': 'input_text', 'text': result['output']}
     else ...[
@@ -104,13 +112,13 @@ class OpenAIToolInterface extends ToolInterface {
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch)
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool)
     : host = HostTools(cwd, cancellation), cells = CodeSession(cancellation);
   final HostTools host;
   final CodeSession cells;
   @override
   bool get hasRunningCells => cells.hasRunningCells;
-  final bool webSearch;
+  final bool webSearch, sleepTool;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
       host.call(name, arguments, cancellation: cancellation, cwd: cwd);
@@ -119,6 +127,16 @@ class _OpenAITools extends ToolRuntime {
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
+    if (sleepTool && call.namespace == 'clock' && call.name == 'sleep') {
+      final arguments = jsonObject(jsonDecode(call.input));
+      final duration = arguments['duration_ms'];
+      if (arguments.keys.any((key) => key != 'duration_ms') || duration is! int || duration < 1 || duration > 43200000) {
+        return {'error': 'duration_ms must be between 1 and 43200000'};
+      }
+      final watch = Stopwatch()..start();
+      await cancellableDelay(Duration(milliseconds: duration), context.cancellation);
+      return {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep completed.'};
+    }
     if (webSearch && call.namespace == 'web' && call.name == 'run') {
       return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};
     }

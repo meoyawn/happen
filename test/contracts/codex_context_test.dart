@@ -79,6 +79,11 @@ String text(Json item) => item['content'] is String ? item['content'] as String
       timings.add({'path': path, 'kind': 'script', 'unit': 'seconds', 'value': double.parse(status[2]!)});
       return text.replaceFirst('Wall time ${status[2]} seconds', 'Wall time <ELAPSED> seconds');
     }
+    final sleep = RegExp(r'^Wall time: ([0-9.]+) seconds\nSleep (completed|interrupted by new input)\.$').firstMatch(text);
+    if (sleep != null) {
+      timings.add({'path': path, 'kind': 'sleep', 'unit': 'seconds', 'value': double.parse(sleep[1]!)});
+      return text.replaceFirst('Wall time: ${sleep[1]} seconds', 'Wall time: <ELAPSED> seconds');
+    }
     try {
       final decoded = jsonDecode(text);
       if (decoded is Map && decoded['chunk_id'] is String && decoded['wall_time_seconds'] is num && decoded['output'] is String) {
@@ -86,6 +91,17 @@ String text(Json item) => item['content'] is String ? item['content'] as String
         printed.remove('chunk_id');
         if (printed['session_id'] is int) printed.remove('session_id');
         takeTime(printed, 'wall_time_seconds', path, 'shell', 'seconds');
+        return jsonEncode(printed);
+      }
+      if (decoded is Map && decoded.containsKey('completionBudgetReport') && decoded.containsKey('remainingTokens')) {
+        final printed = jsonObject(decoded);
+        if (printed['goal'] is Map) {
+          final goal = jsonObject(printed['goal'])..remove('threadId');
+          takeTime(goal, 'createdAt', '$path.goal', 'timestamp', 'seconds');
+          takeTime(goal, 'updatedAt', '$path.goal', 'timestamp', 'seconds');
+          takeTime(goal, 'timeUsedSeconds', '$path.goal', 'goal', 'seconds');
+          printed['goal'] = goal;
+        }
         return jsonEncode(printed);
       }
     } on FormatException { /* Ordinary tool prose is preserved byte-for-byte. */ }
@@ -138,7 +154,7 @@ String baseInstructionId(String thread, String instructions) {
 
 bool itemIdContract(List<Json> items, {String? thread, Map<String, String> modelIds = const {}}) {
   const prefixes = {'message': 'msg', 'reasoning': 'rs', 'function_call': 'fc', 'custom_tool_call': 'ctc',
-    'function_call_output': 'fco', 'custom_tool_call_output': 'ctco', 'compaction': 'cmp'};
+    'function_call_output': 'fco', 'custom_tool_call_output': 'ctco', 'compaction': 'cmp', 'web_search_call': 'ws'};
   final seen = <String>{};
   for (var index = 0; index < items.length; index++) {
     final item = items[index], kind = item['type'] ?? (item.containsKey('role') ? 'message' : null);
@@ -328,7 +344,7 @@ model = "$model"
 model_catalog_json = ${jsonEncode(catalog)}
 model_provider = "context_contract"
 model_reasoning_effort = "low"
-web_search = "disabled"
+web_search = "live"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 cli_auth_credentials_store = "file"
@@ -351,9 +367,8 @@ deferred_tool_world_state = true
 incremental_tools = true
 multi_agent = false
 multi_agent_v2 = false
-sleep_tool = false
 memories = false
-goals = false
+goals = true
 plugins = false
 apps = false
 shell_snapshot = false
@@ -366,7 +381,7 @@ env_key = "CONTEXT_CONTRACT_KEY"
 remote_compaction = "v2"
 ''');
   final happenConfig = <String, dynamic>{'providers': {'openai': {'model': model,
-    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'disabled'}}}};
+    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'live'}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
     config.clear();
@@ -398,7 +413,7 @@ remote_compaction = "v2"
     endpoint: '$endpoint/happen/responses', apiKeyEnv: 'CONTEXT_CONTRACT_UNUSED_${newId()}', telemetry: false);
   final client = AgentClient.local(host);
   try {
-    final timedLoop = {'skill', 'search', 'compaction', 'shell', 'image', 'audio'}.contains(scenario['workflow']);
+    final timedLoop = {'skill', 'search', 'compaction', 'shell', 'image', 'audio', 'web'}.contains(scenario['workflow']);
     for (var iteration = -1; iteration < samples; iteration++) {
       final runPath = '$output/run-${iteration < 0 ? 'warmup' : iteration}';
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
@@ -523,6 +538,15 @@ remote_compaction = "v2"
             parts[3]['text'] == 'audio-after';
           checks['${pair.$1}:audio_bytes_not_counted_as_prose:run-$iteration'] = pair.$2.length == 2 &&
             pair.$2.every((request) => (request['input'] as List).last['type'] != 'compaction_trigger');
+        }
+      }
+      if (scenario['workflow'] == 'web') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final input = (pair.$2.last['input'] as List).map(jsonObject).toList();
+          checks['${pair.$1}:hosted_search_result_retained:run-$iteration'] = input.any((item) =>
+            item['type'] == 'web_search_call' && item['status'] == 'completed' && item['action']?['query'] == 'context-contract web fixture');
+          checks['${pair.$1}:hosted_search_citation_retained:run-$iteration'] = input.any((item) => item['role'] == 'assistant' &&
+            jsonEncode(item['content']).contains('https://example.test/context-contract'));
         }
       }
       if (scenario['workflow'] == 'compaction') {

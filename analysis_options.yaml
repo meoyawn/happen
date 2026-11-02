@@ -3,3 +3,4 @@ analyzer:
   exclude:
     - '**/native/quickjs/**'
     - 'third_party/http/**'
+    - 'third_party/flutter/**'

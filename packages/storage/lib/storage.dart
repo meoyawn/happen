@@ -14,6 +14,7 @@ export 'src/session_reader.dart' show readSession;
 export 'src/session_list.dart' show listSessions;
 
 part 'src/session.dart';
+part 'src/goals.dart';
 
 /// Access this object only from its dedicated SQLite owner isolate.
 class TaskStore {
@@ -58,6 +59,7 @@ class TaskStore {
   }
   final String directory, taskId;
   late final Database db;
+  Json goal(String method, Json arguments) => _goalOperation(this, method, arguments);
   int get lastSequence =>
       db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').first['seq']
           as int;

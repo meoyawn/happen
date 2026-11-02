@@ -74,7 +74,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
           final wide = bounds.maxWidth >= 768;
           final gutter = ((bounds.maxWidth - 1048) / 2).clamp(0.0, double.infinity);
           final content = SingleChildScrollView(controller: _scroll,
-            padding: EdgeInsets.fromLTRB(wide ? 4 : 24, wide ? 48 : 24, 24, 80),
+            padding: EdgeInsets.fromLTRB(wide ? 4 : 24, wide ? 48 : 24, wide ? 4 : 24, 80),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Text(page.label, style: const TextStyle(fontSize: 15, height: 20 / 15,
                 fontWeight: FontWeight.w600, color: opencodeInk)),
@@ -165,10 +165,36 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         _choice('Project icons', widget.session.projectAvatarStyle, const {'letters': 'Letters', 'generated': 'Generated'},
           (value) => widget.run(() => widget.session.chooseProjectAvatarStyle(value))),
       ])),
+    for (final project in widget.session.projects.where((project) => !project.removing))
+      _settingsRow(project.name, project.path, Row(mainAxisSize: MainAxisSize.min, children: [
+        ProjectAvatar(project: project, size: 24, generated: widget.session.projectAvatarStyle == 'generated'),
+        const SizedBox(width: 16),
+        SizedBox(width: 244, child: Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.end, children: [
+          for (final color in opencodeProjectColors.keys) _projectColor(project, color),
+        ])),
+      ])),
   ]);
+
+  Widget _projectColor(Project project, String color) {
+    final selected = (project.avatarColor ?? 'gray') == color;
+    return Tooltip(message: 'Use $color for ${project.name}', child: Semantics(selected: selected,
+      child: DecoratedBox(
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), boxShadow: selected ? const [
+          BoxShadow(color: opencodeInk, spreadRadius: 4),
+          BoxShadow(color: Color(0xfffafafa), spreadRadius: 2),
+        ] : null),
+        child: InkWell(borderRadius: BorderRadius.circular(6),
+          onTap: () => unawaited(widget.run(() => widget.session.chooseProjectAvatarColor(project, selected ? null : color))),
+          child: SizedBox.square(dimension: 20, child: Stack(alignment: Alignment.center, children: [
+            ProjectAvatar(project: project, color: color, label: '', size: 20),
+            if (selected) const Icon(Icons.check, size: 14, color: Colors.white),
+          ]))),
+      )));
+  }
 }
 
 ButtonStyle _navStyle({bool selected = false}) => TextButton.styleFrom(
+  visualDensity: VisualDensity.standard,
   alignment: Alignment.centerLeft,
   foregroundColor: selected ? opencodeInk : opencodeMuted,
   backgroundColor: selected ? const Color(0xffeeeeee) : Colors.transparent,
@@ -204,12 +230,13 @@ Widget _settingsRow(String title, String description, Widget control) => Padding
 
 Widget _choice(String label, String value, Map<String, String> options, ValueChanged<String> onChanged) =>
   Semantics(label: label, child: Container(
+    height: 28,
     padding: const EdgeInsets.symmetric(horizontal: 8),
     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6),
       border: Border.all(color: const Color(0x1f000000), width: .5)),
     child: DropdownButtonHideUnderline(child: DropdownButton<String>(
       value: value, isDense: true, borderRadius: BorderRadius.circular(6),
-      padding: const EdgeInsets.symmetric(vertical: 7),
+      padding: EdgeInsets.zero,
       dropdownColor: Colors.white,
       style: const TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13, color: opencodeInk),
       icon: const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.keyboard_arrow_down, size: 14, color: opencodeMuted)),

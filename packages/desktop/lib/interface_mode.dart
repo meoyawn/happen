@@ -10,14 +10,20 @@ class OpenCodeInterfacePicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    const Text('Interface', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+    const Text('Interface', style: TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500)),
     const SizedBox(height: 12),
     LayoutBuilder(builder: (context, constraints) {
       final columns = constraints.maxWidth >= 684 ? 3 : constraints.maxWidth >= 452 ? 2 : 1;
-      final width = (constraints.maxWidth - (columns - 1) * 12) / columns;
-      return Wrap(spacing: 12, runSpacing: 12, children: [
-        for (final mode in OpenCodeLayout.values)
-          SizedBox(width: width, child: _option(mode)),
+      return Column(children: [
+        for (var start = 0; start < OpenCodeLayout.values.length; start += columns)
+          Padding(padding: EdgeInsets.only(bottom: start + columns < OpenCodeLayout.values.length ? 12 : 0),
+            child: IntrinsicHeight(child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              for (var column = 0; column < columns; column++) ...[
+                if (column > 0) const SizedBox(width: 12),
+                Expanded(child: start + column < OpenCodeLayout.values.length
+                  ? _option(OpenCodeLayout.values[start + column]) : const SizedBox.shrink()),
+              ],
+            ]))),
       ]);
     }),
   ]);

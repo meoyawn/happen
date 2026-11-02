@@ -1,6 +1,50 @@
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': {}, 'contains': [], 'absent': []},
   {
+    'id': 'web-search', 'workflow': 'web',
+    'prompt': 'Search the web for the context-contract fixture, cite its source, and record the receipt.',
+    'files': {}, 'contains': [], 'absent': [],
+    'responses': [
+      [
+        {'type': 'web_search_call', 'action': {'type': 'search', 'query': 'context-contract web fixture'}},
+        {'type': 'message', 'role': 'assistant', 'phase': 'commentary', 'content': [{
+          'type': 'output_text', 'text': 'The fixture value is mango-47.',
+          'annotations': [{'type': 'url_citation', 'start_index': 0, 'end_index': 28,
+            'url': 'https://example.test/context-contract', 'title': 'Deterministic context-contract source'}],
+        }]},
+        {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'web_receipt',
+          'input': 'text("WEB_CONTEXT_RECEIPT");'},
+      ],
+      [_ready],
+    ],
+    'result': 'WEB_CONTEXT_RECEIPT',
+  },
+  {
+    'id': 'clock-sleep', 'workflow': 'sleep', 'prompt': 'Pause briefly using clock.sleep, then reply READY.',
+    'files': {}, 'contains': [], 'absent': [],
+    'responses': [
+      [{'type': 'function_call', 'namespace': 'clock', 'name': 'sleep', 'call_id': 'invalid_sleep', 'arguments': '{"duration_ms":0}'}],
+      [{'type': 'function_call', 'namespace': 'clock', 'name': 'sleep', 'call_id': 'clock_sleep', 'arguments': '{"duration_ms":1}'}],
+      [_ready],
+    ],
+    'result': 'Sleep completed.',
+  },
+  {
+    'id': 'goal-lifecycle', 'workflow': 'goal',
+    'prompt': 'Explicitly create a goal named GOAL_CONTEXT_RECEIPT with a 1000-token budget. Inspect it, mark it complete, then inspect the completed goal.',
+    'files': {}, 'contains': [], 'absent': [],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_lifecycle',
+        'input': 'text(await tools.get_goal({})); '
+          'text(await tools.create_goal({objective:"GOAL_CONTEXT_RECEIPT",token_budget:1000})); '
+          'text(await tools.get_goal({}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_complete',
+        'input': 'text(await tools.get_goal({})); text(await tools.update_goal({status:"complete"})); text(await tools.get_goal({}));'}],
+      [_ready],
+    ],
+    'result': 'GOAL_CONTEXT_RECEIPT',
+  },
+  {
     'id': 'agents-precedence', 'cwd': 'nested', 'prompt': 'Reply READY.',
     'global_instructions': 'EVAL_GLOBAL_RULE: use the fixture only.\n',
     'files': {

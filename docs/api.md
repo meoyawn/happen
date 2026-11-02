@@ -406,8 +406,13 @@ limits, so retaining large results increases the memory needed by later cells.
 
 ## Web search
 
-OpenAI exposes Codex-style `web.run` and `tools.web__run` in code mode, using
-the pinned OpenAI parameter schema:
+OpenAI defaults to Codex's provider-hosted `web_search` tool. The provider handles
+the search inside Responses; native search calls and answer citations are retained
+in durable history and subsequent model input. Set `providers.openai.settings.web_search`
+to `disabled` to omit it; the default is `live`.
+
+The optional `providers.openai.settings.standalone_web_search: true` mode exposes
+`web.run` and `tools.web__run` instead, using the OpenAI parameter schema:
 `search_query`, `image_query`, `open`, `click`, `find`, `screenshot`, `finance`,
 `weather`, `sports`, `time`, and optional `response_length` (`short`, `medium`,
 or `long`). The schema, including field descriptions and required fields, lives
@@ -424,11 +429,11 @@ is reported to the model so it can choose an available configured search tool.
 There is no embedded MCP client or automatic search-provider fallback.
 
 OpenCode search uses the requested result count (default 8). Its page tools fetch
-public text/HTML directly without Console credentials. OpenAI can also use opaque
+public text/HTML directly without Console credentials. Standalone OpenAI search can also use opaque
 references returned by its hosted reader and forwards its full command set to
 that service. Neither provider advertises the other's web interface.
 
-When OpenAI's reader reports that a requested source URL is inaccessible,
+When the standalone OpenAI reader reports that a requested source URL is inaccessible,
 `open` and `find` try a direct HTTP GET for text/HTML. Recovered results identify
 the source URL and direct retrieval, with zero-based lines and absolute links.
 Use that URL for follow-up reads; these lines belong to the directly retrieved
@@ -442,6 +447,20 @@ original hosted error remains visible.
 endpoint at server startup. All MCP servers, including optional search MCPs,
 must be declared under `mcp_servers` in the global configuration. They use the
 ordinary MCP namespaces and discovery; no MCP server is built into either lab.
+
+## Clock and goal tools
+
+OpenAI exposes `clock.sleep` directly, outside JavaScript code mode, following the
+current Codex model-driven default. `duration_ms` must be an integer in
+`1..43200000`. Steering interrupts sleep with a successful interruption receipt;
+Stop cancels the turn. `providers.openai.settings.sleep_tool: false` disables it.
+
+Goal tools are enabled by default: `get_goal`, `create_goal`, and `update_goal`
+are available inside `functions.exec`. Goals require an explicit user request.
+Their objectives, status, optional token budget, noncached token usage, and active
+elapsed time are persisted by the task's existing storage owner. Unfinished goals
+cannot be overwritten, and pausing cannot bypass an exhausted budget.
+`providers.openai.settings.goals: false` omits these tools.
 
 ## Repository instructions
 

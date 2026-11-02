@@ -204,10 +204,11 @@ class ToolDefinition {
     this.format = 'json',
     this.parameters = const {},
     this.grammar,
+    this.native = const {},
   });
   final String name, description, format;
   final String? namespace, namespaceDescription, grammar;
-  final Json parameters;
+  final Json parameters, native;
   factory ToolDefinition.fromJson(Json json) => ToolDefinition(
     name: requiredString(json, 'name'),
     description: json['description'] as String? ?? '',
@@ -216,6 +217,7 @@ class ToolDefinition {
     format: json['format'] as String? ?? 'json',
     parameters: jsonObject(json['parameters'] ?? {}),
     grammar: json['grammar'] as String?,
+    native: jsonObject(json['native'] ?? {}),
   );
   Json toJson() => {
     'name': name,
@@ -225,6 +227,7 @@ class ToolDefinition {
     if (namespaceDescription != null) 'namespace_description': namespaceDescription,
     if (parameters.isNotEmpty) 'parameters': parameters,
     if (grammar != null) 'grammar': grammar,
+    if (native.isNotEmpty) 'native': native,
   };
 }
 

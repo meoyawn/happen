@@ -5,3 +5,7 @@
 	path = third_party/http
 	url = https://github.com/meoyawn/http.git
 	branch = happen/http2-late-data
+[submodule "third_party/flutter"]
+	path = third_party/flutter
+	url = https://github.com/meoyawn/flutter.git
+	branch = happen/stable

@@ -48,8 +48,10 @@ wait
           'args': [File('test/fixtures/mcp_stdio.dart').absolute.path], 'legacy_fallback': false}},
       }));
       int? session;
+      final modelRequests = <Json>[];
       provider.listen((request) async {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        modelRequests.add(body);
         final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
         final user = input.lastIndexWhere((item) => item['role'] == 'user');
         final prompt = openAIMessageText(input[user]);
@@ -57,7 +59,10 @@ wait
           ? ['custom_tool_call_output', 'function_call_output'].contains(item['type']) : item['role'] == 'tool');
         String? name;
         Object? arguments;
-        if (!called && prompt == 'mcp') {
+        if (!called && prompt == 'sleep' && lab == 'openai') {
+          name = 'sleep';
+          arguments = {'duration_ms': 120000};
+        } else if (!called && prompt == 'mcp') {
           name = lab == 'openai' ? 'exec' : 'execute';
           arguments = lab == 'openai'
             ? 'await Promise.all([tools.mcp__local__probe({action: "wait"}), tools.mcp__local__probe({action: "wait"})]);'
@@ -89,7 +94,9 @@ wait
           request.response.write('data: ${jsonEncode({
             'type': 'response.completed', 'response': {
               'status': 'completed', 'usage': {'input_tokens': 100, 'output_tokens': 10},
-              'output': [if (name != null) {
+              'output': [if (name == 'sleep') {
+                'type': 'function_call', 'namespace': 'clock', 'name': name, 'arguments': jsonEncode(arguments), 'call_id': newId(),
+              } else if (name != null) {
                 'type': 'custom_tool_call', 'namespace': 'functions', 'name': name, 'input': arguments, 'call_id': newId(),
               } else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'ready'}]}],
             },
@@ -158,6 +165,26 @@ wait
       }
       siblingToken.cancel(); await sibling;
       await _until(() async => (await probe())['waiting'] == 0);
+      if (lab == 'openai') {
+        for (final steer in [true, false]) {
+          final started = client.events.stream.firstWhere((event) => event['task_id'] == id &&
+            event['type'] == 'tool.started' && event['data']['name'] == 'sleep');
+          final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
+            ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
+          await client.request('task.send', {'task_id': id, 'prompt': 'sleep'});
+          await started.timeout(const Duration(seconds: 3));
+          if (steer) {
+            await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+          } else {
+            await client.request('task.cancel', {'task_id': id});
+          }
+          expect((await terminal.timeout(const Duration(seconds: 3)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
+          if (steer) {
+            expect((modelRequests.last['input'] as List).where((item) => item['type'] == 'function_call_output')
+              .any((item) => item['output'] is String && (item['output'] as String).endsWith('Sleep interrupted by new input.')), isTrue);
+          }
+        }
+      }
       for (final steer in [true, false]) {
         final started = client.events.stream.firstWhere((event) => event['task_id'] == id && event['type'] == 'tool.started');
         final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&

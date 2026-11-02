@@ -1498,6 +1498,8 @@ void main() {
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
     final archived = DesktopTask('archived', 'Old conversation')..archived = true..loaded = true;
     session.project!.tasks.add(archived);
+    final otherProject = Project('other-checkout', '/other', '/other');
+    session.projects.add(otherProject);
     late Directory root;
     late IsolateOwner database;
     await tester.runAsync(() async {
@@ -1505,6 +1507,7 @@ void main() {
       directory = root;
       database = await openDesktopDatabase(root.path);
       await callIsolate(database.port, 'project.add', {'checkout_key': 'checkout', 'identity': '/project', 'path': '/project'});
+      await callIsolate(database.port, 'project.add', {'checkout_key': 'other-checkout', 'identity': '/other', 'path': '/other'});
       await callIsolate(database.port, 'task.add', {'id': archived.id, 'checkout_key': 'checkout', 'title': archived.title});
       await callIsolate(database.port, 'task.archive', {'task_id': archived.id, 'archived': true});
       final previous = session;
@@ -1563,20 +1566,51 @@ void main() {
       'On stop', () => session.dictationMode == 'on_stop');
     await tester.tap(find.widgetWithText(TextButton, 'Appearance'));
     await tester.pumpAndSettle();
-    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, false);
-    expect(find.descendant(of: find.byType(ProjectAvatar), matching: find.text('P')), findsOneWidget);
+    final preview = find.byType(ProjectAvatar).first;
+    expect(find.descendant(of: preview, matching: find.text('P')), findsOneWidget);
+    BoxDecoration surface() => tester.widget<DecoratedBox>(
+      find.descendant(of: preview, matching: find.byType(DecoratedBox))).decoration as BoxDecoration;
+    expect(surface().gradient!.colors.last, const Color(0xff5c5c5c));
     await choose(find.byType(DropdownButton<String>), 'Generated', () => session.projectAvatarStyle == 'generated');
-    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, true);
+    expect(find.descendant(of: preview, matching: find.text('P')), findsNothing);
+    Future<void> color(String name, String? expected) async {
+      await tester.tap(find.byTooltip('Use $name for project'));
+      for (var attempt = 0; session.project!.avatarColor != expected && session.error == null && attempt < 100; attempt++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(session.project!.avatarColor, expected, reason: session.error);
+    }
+    await color('blue', 'blue');
+    expect(find.descendant(of: preview, matching: find.text('P')), findsOneWidget,
+      reason: 'A chosen color overrides Generated, as in OpenCode.');
+    expect(surface().gradient!.colors.last, const Color(0xff3250df));
+    expect(surface().border!.top.color, const Color(0xff2c47c8));
+    expect(otherProject.avatarColor, isNull);
+    await color('blue', null);
+    expect(find.descendant(of: preview, matching: find.text('P')), findsNothing);
+    await color('blue', 'blue');
     await choose(find.byType(DropdownButton<String>), 'Letters', () => session.projectAvatarStyle == 'letters');
     await tester.runAsync(() async {
       final saved = jsonObject(await callIsolate(database.port, 'load', {}));
       expect(saved['settings']['project_avatar_style'], 'letters');
       expect(saved['settings']['dictation_mode'], 'on_stop');
+      final restored = DesktopSession(_Client()..providers = session.providers, await openDesktopDatabase(root.path));
+      try {
+        await restored.load();
+        expect(restored.projects.singleWhere((project) => project.checkoutKey == 'checkout').avatarColor, 'blue');
+        expect(restored.projects.singleWhere((project) => project.checkoutKey == 'other-checkout').avatarColor, isNull);
+      } finally {
+        await restored.close();
+      }
     });
     await tester.pumpAndSettle();
-    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, false);
+    expect(find.descendant(of: preview, matching: find.text('P')), findsOneWidget);
     tester.view.physicalSize = const Size(640, 900);
     await tester.pumpAndSettle();
+    expect(find.byTooltip('Use blue for project'), findsOneWidget);
+    expect(tester.takeException(), isNull);
     expect(find.byTooltip('Settings pages'), findsOneWidget);
     await tester.tap(find.byTooltip('Settings pages'));
     await tester.pumpAndSettle();
@@ -1636,6 +1670,8 @@ void main() {
     });
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
+    await tester.runAsync(() => session.select(session.project!, archived));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('opencode-tab:archived')), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Archive session'));
@@ -1655,6 +1691,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Task archived'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() async {
+      await callIsolate(database.port, 'load', {});
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    });
+    await tester.pump();
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }
 

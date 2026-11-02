@@ -21,7 +21,7 @@ class Project {
     : tasks = tasks ?? [];
   final String checkoutKey, path;
   String id;
-  String? branch;
+  String? branch, avatarColor;
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
   String get name => path.split(Platform.pathSeparator).last;
@@ -248,6 +248,14 @@ class DesktopSession extends ChangeNotifier {
     if (!{'letters', 'generated'}.contains(style)) throw ArgumentError('Invalid project avatar style');
     await _setting('project_avatar_style', style);
     projectAvatarStyle = style;
+    notifyListeners();
+  }
+
+  Future<void> chooseProjectAvatarColor(Project target, String? color) async {
+    if (color != null && !opencodeProjectColors.containsKey(color)) throw ArgumentError('Invalid project avatar color');
+    if (!projects.contains(target) || target.removing) return;
+    await _setting('project_avatar_color:${target.checkoutKey}', color ?? '');
+    target.avatarColor = color;
     notifyListeners();
   }
 
@@ -768,7 +776,8 @@ class DesktopSession extends ChangeNotifier {
                 )..archived = t['archived'] == 1
                   ..lastActivity = t['last_activity'] as int? ?? 0,
           ],
-        ),
+        )..avatarColor = opencodeProjectColors.containsKey(settings['project_avatar_color:$key'])
+          ? settings['project_avatar_color:$key'] as String : null,
       );
     }
     await _checkProjectAvailability();
