@@ -168,7 +168,8 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
         for (final part in item['content'] as List? ?? []) {
           if (part['type'] == 'text' || part['type'] == 'reasoning') {
             add('session.${part['type']}.ended', {'assistantMessageID': assistant(), 'ordinal': ordinal++,
-              'text': part['text'] ?? '', if (part['native'] != null) 'native': part['native']});
+              'text': part['text'] ?? '', if (part['native'] != null) 'native': part['native'],
+              if (part['time'] != null) 'time': part['time']});
           } else if (part['type'] == 'tool_call') {
             toolStart(part['id'] as String, '${part['namespace'] == null ? '' : '${part['namespace']}.'}${part['name']}', part['input']);
             ordinal++;
@@ -257,16 +258,19 @@ List<Json> applySessionEvent(Map<String, Json> messages, Json event, Json state)
       final item = state.remove(data['inboxID']) as Json?;
       if (item != null) put({...base('user', data['inboxID'] as String),
         'time': {'created': item['created']}, 'text': item['text'] ?? '', 'files': item['files'] ?? []});
-      for (final previous in messages.values.toList()) {
-        if (previous['type'] == 'assistant' && previous['time']?['streamed'] == null && previous['content'] is List &&
-            (previous['content'] as List).isNotEmpty) put({...previous, 'content': <Json>[]});
-      }
     case 'session.inbox.cancelled':
       state.remove(data['inboxID']);
     case 'session.step.started':
+      final existing = assistant();
+      if (existing != null) {
+        put({...existing, 'agent': data['agent'], 'model': data['model'],
+          'time': {'created': data['started'] ?? created}});
+        break;
+      }
       for (final previous in messages.values.toList()) {
-        if (previous['type'] == 'assistant' && previous['time']?['streamed'] == null && previous['content'] is List &&
-            (previous['content'] as List).isNotEmpty) put({...previous, 'content': <Json>[]});
+        if (previous['type'] == 'assistant' && previous['time']?['completed'] == null) {
+          put({...previous, 'time': {...jsonObject(previous['time']), 'completed': created}});
+        }
       }
       put({...base('assistant', data['assistantMessageID'] as String), 'agent': data['agent'], 'model': data['model'], 'content': <Json>[]});
     case 'session.text.ended':
@@ -276,14 +280,14 @@ List<Json> applySessionEvent(Map<String, Json> messages, Json event, Json state)
       final previous = ordinal < parts.length ? parts[ordinal] : null;
       content({'type': event['type'] == 'session.text.ended' ? 'text' : 'reasoning',
         'text': data['text'], if (data['native'] != null) 'native': data['native'],
-        if (event['type'] == 'session.reasoning.ended') 'time': {
+        if (event['type'] == 'session.reasoning.ended') 'time': data['time'] ?? {
           'created': previous?['time']?['created'] ?? assistant()?['time']?['created'] ?? created,
           'completed': created,
         }}, ordinal: ordinal);
     case 'session.text.delta':
     case 'session.reasoning.delta':
       final message = assistant();
-      if (message == null || message['time']?['streamed'] != null) break;
+      if (message == null || message['time']?['streamed'] != null || message['time']?['completed'] != null) break;
       final ordinal = data['ordinal'] as int;
       final parts = message['content'] as List;
       final previous = ordinal < parts.length ? parts[ordinal]['text'] as String? ?? '' : '';

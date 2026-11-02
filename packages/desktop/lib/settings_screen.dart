@@ -32,20 +32,21 @@ const _pages = [
 class DesktopSettingsScreen extends StatefulWidget {
   const DesktopSettingsScreen({super.key, required this.session, required this.accounts,
     required this.archived, required this.run, this.addProject, this.openProject,
-    this.removeProject, this.windowControls = true});
+    this.removeProject, this.windowControls = true, this.initialPage = 'preferences'});
   final DesktopSession session;
   final Widget accounts, archived;
   final Future<void> Function(Future<void> Function()) run;
   final Future<void> Function()? addProject;
   final Future<void> Function(Project)? openProject, removeProject;
   final bool windowControls;
+  final String initialPage;
 
   @override
   State<DesktopSettingsScreen> createState() => _DesktopSettingsScreenState();
 }
 
 class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
-  String _page = 'preferences';
+  late String _page = widget.initialPage;
   Project? _project;
   String _projectQuery = '';
   final _projectSearch = TextEditingController();
@@ -94,7 +95,11 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         child: Material(color: Colors.white, child: LayoutBuilder(builder: (context, bounds) {
           final wide = bounds.maxWidth >= 768;
           final gutter = ((bounds.maxWidth - 1048) / 2).clamp(0.0, double.infinity);
-          final content = SingleChildScrollView(controller: _scroll,
+          final content = _page == 'archived'
+            ? Padding(
+                padding: EdgeInsets.fromLTRB(wide ? 4 : 24, wide ? 48 : 24, wide ? 4 : 24, 24),
+                child: widget.archived)
+            : SingleChildScrollView(controller: _scroll,
             padding: EdgeInsets.fromLTRB(wide ? 4 : 24, wide ? 48 : 24, wide ? 4 : 24, 80),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               if (_page == 'projects' && project != null) ...[
@@ -134,7 +139,6 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 'appearance' => _appearance(),
                 'projects' => project == null ? _projects() : _ProjectSettings(
                   key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run),
-                'archived' => widget.archived,
                 _ => _preferences(),
               },
               if (widget.session.error case final error?)
@@ -299,6 +303,7 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
   late final _name = TextEditingController(text: widget.project.name);
   final _nameFocus = FocusNode();
   final _lifetime = CancellationToken();
+  int _pendingNameSaves = 0;
   bool _loadingIcon = false, _receivingIcon = false, _dragOver = false;
 
   @override
@@ -313,8 +318,15 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
 
   void _saveName() {
     final value = _name.text.trim();
-    if (value == widget.project.name) return;
-    unawaited(widget.run(() => widget.session.renameProject(widget.project, value)));
+    if (value == widget.project.name && _pendingNameSaves == 0) return;
+    _pendingNameSaves++;
+    unawaited(widget.run(() async {
+      try {
+        await widget.session.renameProject(widget.project, value);
+      } finally {
+        _pendingNameSaves--;
+      }
+    }));
   }
 
   @override

@@ -17,7 +17,7 @@ class HttpReply extends StreamView<List<int>> {
 /// One instance belongs to the network owner and is shared by both providers.
 /// ALPN chooses HTTP/2; an origin choosing HTTP/1.1 uses the existing IO pool.
 class HttpConnections {
-  HttpConnections({HttpClient? http, this.context, this.connectTimeout = const Duration(seconds: 30),
+  HttpConnections({HttpClient? http, this.context, this.connectTimeout = const Duration(seconds: 10),
     this.idleTimeout = const Duration(minutes: 5)}) : _reuseFallback = http != null && HttpOverrides.current == null {
     // The owner supplies a newly created IO client; its factory also serves
     // WebSocket upgrades, which continue to negotiate HTTP/1.1.

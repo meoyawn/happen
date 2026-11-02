@@ -8,6 +8,8 @@ import 'package:protocol/protocol.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import 'conversation.dart';
+import 'command_menu.dart';
+import 'archived_sessions.dart';
 import 'conversation_data.dart';
 import 'appearance.dart';
 import 'composer_dictation.dart';
@@ -19,6 +21,7 @@ import 'panel_state.dart';
 import 'session_panels.dart';
 import 'dictation.dart';
 import 'dictation_controls.dart';
+import 'desktop_toast.dart';
 import 'file_autocomplete.dart';
 import 'model_picker.dart';
 import 'new_session.dart';
@@ -43,6 +46,7 @@ class _DesktopViewState extends State<DesktopView> {
   static const _desktop = MethodChannel('happen/desktop');
   DesktopSession get session => widget.session;
   bool _picking = false, _settingsOpen = false;
+  bool _commandMenuOpen = false;
   bool get _homeOpen => !session.viewingConversation;
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
   String? _nativeLayout;
@@ -103,7 +107,7 @@ class _DesktopViewState extends State<DesktopView> {
     super.dispose();
   }
 
-  Future<void> _settings() async {
+  Future<void> _settings({String page = 'preferences'}) async {
     if (_settingsOpen || !mounted) return;
     _settingsOpen = true;
     try {
@@ -116,6 +120,7 @@ class _DesktopViewState extends State<DesktopView> {
           listenable: _viewChanges,
           builder: (context, _) => DesktopSettingsScreen(
             session: session, run: _run,
+            initialPage: page,
             addProject: _addProject,
             openProject: (project) async {
               Navigator.pop(context);
@@ -126,7 +131,7 @@ class _DesktopViewState extends State<DesktopView> {
             accounts: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               for (final provider in session.providers) _accountCard(provider),
             ]),
-            archived: _archivedTasks(context),
+            archived: ArchivedSessions(session: session, run: _run),
           ),
         ),
       ));
@@ -137,6 +142,56 @@ class _DesktopViewState extends State<DesktopView> {
     }
   }
 
+  Future<void> _commandMenu() async {
+    if (_commandMenuOpen || !mounted) return;
+    _commandMenuOpen = true;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final task = session.task;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierColor: const Color(0x22000000),
+        builder: (context) => CommandMenu(
+          session: session,
+          actions: [
+            (title: 'New session', keywords: 'new chat task', icon: Icons.edit_square,
+              shortcut: null, run: () => unawaited(_run(_newChat))),
+            (title: 'Home', keywords: 'all sessions', icon: Icons.grid_view_outlined,
+              shortcut: null, run: _showHome),
+            (title: 'Archived sessions', keywords: 'archive chats tasks restore unarchive',
+              icon: Icons.archive_outlined, shortcut: null,
+              run: () => unawaited(_settings(page: 'archived'))),
+            (title: 'Open project', keywords: 'add folder directory', icon: Icons.create_new_folder_outlined,
+              shortcut: null, run: () => unawaited(_addProject())),
+            (title: 'Settings', keywords: 'preferences appearance accounts interface', icon: Icons.settings_outlined,
+              shortcut: mac ? '⌘ ,' : null, run: () => unawaited(_settings())),
+            if (_canOpenTerminal)
+              (title: 'Open terminal', keywords: 'shell console', icon: Icons.terminal_outlined,
+                shortcut: mac ? '⌘ J' : 'Ctrl J', run: _openTerminal),
+            if (_hasSidebar)
+              (title: 'Toggle sidebar', keywords: 'show hide navigation', icon: Icons.view_sidebar_outlined,
+                shortcut: mac ? '⌘ ⇧ B' : 'Ctrl Shift B',
+                run: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)))),
+            if (task != null && !_homeOpen) ...[
+              (title: 'Toggle side panel', keywords: 'context files changes', icon: Icons.vertical_split_outlined,
+                shortcut: mac ? '⌘ B' : 'Ctrl B', run: _toggleSidePanel),
+              if (session.connected && !task.archiving)
+                (title: task.archived ? 'Unarchive current session' : 'Archive current session',
+                  keywords: 'archive restore task', icon: task.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+                  shortcut: null, run: () => unawaited(_run(() => _archiveTask(task, !task.archived)))),
+            ],
+          ],
+          onOpen: (project, task) => unawaited(_run(() async {
+            await _selectProject(project, task);
+            if (mounted && !task.archived) _focusComposer();
+          })),
+        ),
+      );
+    } finally {
+      _commandMenuOpen = false;
+    }
+  }
+
   Future<void> _signIn(String provider) async {
     final success = await session.signIn(provider, (url) async {
       if (await _desktop.invokeMethod<bool>('openLoginUrl', url) != true) {
@@ -144,53 +199,6 @@ class _DesktopViewState extends State<DesktopView> {
       }
     });
     if (success && mounted) await _desktop.invokeMethod<void>('activate');
-  }
-
-  Widget _archivedTasks(BuildContext settingsContext) {
-    final archived = [
-      for (final project in session.projects)
-        for (final task in project.tasks)
-          if (task.archived) (project, task),
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Archived tasks (${archived.length})', style: const TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        if (archived.isEmpty)
-          const Text('No archived tasks.', style: TextStyle(fontSize: 12, color: Colors.black54))
-        else ...[
-          const Text('Select a task to view its conversation. Restore to continue it.', style: TextStyle(fontSize: 12, color: Colors.black54)),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: (archived.length * 80.0).clamp(80.0, 240.0),
-            width: double.maxFinite,
-            child: ListView.builder(
-              itemCount: archived.length,
-              itemBuilder: (context, index) {
-                final (project, task) = archived[index];
-                return ListTile(
-                  key: ValueKey('archived:${task.id}'),
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(task.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  subtitle: Tooltip(message: project.path, child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  onTap: task.archiving ? null : () {
-                    Navigator.pop(settingsContext);
-                    unawaited(_run(() => _selectProject(project, task)));
-                  },
-                  trailing: TextButton(
-                    onPressed: session.connected && !task.archiving
-                        ? () => _run(() => session.setArchived(task, false))
-                        : null,
-                    child: Text(task.archiving ? 'Restoring…' : 'Restore'),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ],
-    );
   }
 
   Widget _accountCard(Json provider) {
@@ -319,6 +327,11 @@ class _DesktopViewState extends State<DesktopView> {
     final keyboard = HardwareKeyboard.instance;
     final primary = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isMetaPressed : keyboard.isControlPressed;
     final other = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isControlPressed : keyboard.isMetaPressed;
+    if (event.logicalKey == LogicalKeyboardKey.keyK && primary && !other &&
+        !keyboard.isShiftPressed && !keyboard.isAltPressed) {
+      if (event is KeyDownEvent) unawaited(_commandMenu());
+      return KeyEventResult.handled;
+    }
     if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
         keyboard.isShiftPressed && !keyboard.isAltPressed && _hasSidebar) {
       if (event is KeyDownEvent) unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)));
@@ -349,20 +362,24 @@ class _DesktopViewState extends State<DesktopView> {
   void _selectAdjacentTask(int offset) {
     final inbox = session.openCodeLayout == OpenCodeLayout.inbox;
     final sections = inbox ? inboxSections(session) : null;
+    final pinned = sections?.pinned.where((entry) =>
+      !session.collapsedSidebarSections.contains('pinned') || !_homeOpen && session.task == entry.$2).toList() ?? <(Project, DesktopTask)>[];
     final working = sections?.working.where((entry) =>
       session.inboxWorkingExpanded || !_homeOpen && session.task == entry.$2).toList() ?? <(Project, DesktopTask)>[];
     final tasks = sections == null ? session.openTasks : [
+      ...pinned,
       ...working,
       ...sections.needs,
       ...sections.recent,
     ];
     final ids = inbox ? [
+      ...pinned.map((entry) => entry.$2.id),
       ...working.map((entry) => entry.$2.id),
       for (final id in session.openTabIds)
         if (session.sessionDrafts.any((draft) => draft.id == id)) id,
       ...sections!.needs.map((entry) => entry.$2.id),
       ...sections.recent.map((entry) => entry.$2.id),
-    ] : session.openTabIds;
+    ] : session.navigationTabIds;
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
     if (next < 0 || next >= ids.length) { return; }
@@ -385,14 +402,9 @@ class _DesktopViewState extends State<DesktopView> {
 
   bool get _hasSidebar => session.openCodeLayout != OpenCodeLayout.top;
 
-  void _showHome({bool search = false}) {
+  void _showHome() {
     session.showHome();
     unawaited(_run(session.refreshSessions));
-    if (search) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _homeOpen) _sessionSearchFocus.requestFocus();
-      });
-    }
   }
 
   void _openTask(Project project, DesktopTask task) {
@@ -458,7 +470,7 @@ class _DesktopViewState extends State<DesktopView> {
     if (!_hasSidebar) {
       return ColoredBox(color: const Color(0xfff9f9f9), child: Column(children: [
         OpenCodeTopBar(session: session, home: _homeOpen, leadingInset: _trafficInset,
-          onHome: _showHome, onSearch: () => _showHome(search: true),
+          onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
           onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
           onSelect: _openTask, onDraft: _activateDraft,
           onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived)))),
@@ -472,7 +484,7 @@ class _DesktopViewState extends State<DesktopView> {
       onToggle: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
       unread: session.openTasks.any((entry) => !entry.$2.running && entry.$2.lastActivity > (session.viewedTasks[entry.$2.id] ?? -1)),
       sidebar: OpenCodeSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
-            onHome: _showHome, onSearch: () => _showHome(search: true),
+            onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
             onSelect: _openTask, onDraft: _activateDraft,
             onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
@@ -566,6 +578,7 @@ class _DesktopViewState extends State<DesktopView> {
               ]),
               if (home) OpenCodeHome(session: session, focusNode: _sessionSearchFocus,
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
+                onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
           )),
@@ -579,12 +592,9 @@ class _DesktopViewState extends State<DesktopView> {
     await session.setArchived(task, archived);
     if (!mounted) return;
     if (archived) {
-      ScaffoldMessenger.of(context)..clearSnackBars()..showSnackBar(SnackBar(
-        content: const Text('Task archived'),
+      showDesktopToast(context, 'Task archived', icon: Icons.check_rounded,
         duration: const Duration(seconds: 3),
-        persist: false,
-        action: SnackBarAction(label: 'Undo', onPressed: () => _run(() => _archiveTask(task, false))),
-      ));
+        actionLabel: 'Undo', onAction: () => unawaited(_run(() => _archiveTask(task, false))));
     }
   }
 

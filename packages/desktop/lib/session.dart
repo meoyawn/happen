@@ -49,6 +49,7 @@ class DesktopTask {
   bool reasoningUpdates = false;
   num? contextLimit;
   int lastActivity = 0;
+  int? runStartedAt;
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending, _legacyRecords;
   Object? _conversationState;
@@ -209,6 +210,9 @@ class DesktopSession extends ChangeNotifier {
         if (existing == null) project.tasks.add(target);
         if (!target.loaded) target.running = active.containsKey(id);
         target.projectionState['summary'] = info;
+        final busy = info['time']?['busy'] as int?;
+        final idle = info['time']?['idle'] as int?;
+        target.runStartedAt = busy != null && (idle == null || busy >= idle) ? busy : null;
         if (!target.archiving) target.archived = info['time']?['archived'] != null;
         final updated = info['time']?['updated'] as int? ?? info['time']?['created'] as int? ?? 0;
         if (updated > target.lastActivity) target.lastActivity = updated;
@@ -410,8 +414,21 @@ class DesktopSession extends ChangeNotifier {
     await _setting('inbox_working_expanded', expanded.toString());
   }
 
+  List<String> get navigationTabIds => [
+    ...openTabIds.where(pinnedTaskIds.contains),
+    ...openTabIds.where((id) => !pinnedTaskIds.contains(id)),
+  ];
+
+  List<(Project, DesktopTask)> get pinnedTasks => [
+    for (final id in pinnedTaskIds)
+      for (final project in projects)
+        if (!project.removing)
+          for (final task in project.tasks)
+            if (task.id == id && !task.archived) (project, task),
+  ];
+
   List<(Project, DesktopTask)> get openTasks => [
-    for (final id in openTabIds)
+    for (final id in navigationTabIds)
       for (final project in projects)
         if (!project.removing)
           for (final task in project.tasks)
@@ -431,15 +448,16 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _removeArchivedTab(DesktopTask target) {
-    final index = openTabIds.indexOf(target.id);
+    final index = navigationTabIds.indexOf(target.id);
     if (index == -1) return;
-    openTabIds.removeAt(index);
+    openTabIds.remove(target.id);
     _saveNavigation('open_tabs', jsonEncode(openTabIds));
     if (task != target || !viewingConversation) return;
     // OpenCode's removeSessions skips drafts, preferring the next session.
     final remaining = {for (final entry in openTasks) entry.$2.id: entry};
-    final next = openTabIds.skip(index).map((id) => remaining[id]).nonNulls.firstOrNull ??
-      openTabIds.take(index).map((id) => remaining[id]).nonNulls.lastOrNull;
+    final ids = navigationTabIds;
+    final next = ids.skip(index).map((id) => remaining[id]).nonNulls.firstOrNull ??
+      ids.take(index).map((id) => remaining[id]).nonNulls.lastOrNull;
     if (next == null) {
       showHome();
     } else {
@@ -473,9 +491,9 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> closeTab(DesktopTask target) async {
-    final index = openTabIds.indexOf(target.id);
+    final index = navigationTabIds.indexOf(target.id);
     if (index == -1) return;
-    openTabIds.removeAt(index);
+    openTabIds.remove(target.id);
     if (task == target) {
       await _selectTabNear(index);
     }
@@ -506,11 +524,21 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> _pin(String setting, List<String> ids, String id, bool pinned) async {
+    if (ids.contains(id) == pinned) return;
+    final previous = ids.toList();
     final next = ids.where((value) => value != id).toList();
     if (pinned) next.add(id);
-    await _setting(setting, jsonEncode(next));
     ids..clear()..addAll(next);
     notifyListeners();
+    try {
+      await _setting(setting, jsonEncode(next));
+    } catch (_) {
+      if (listEquals(ids, next)) {
+        ids..clear()..addAll(previous);
+        notifyListeners();
+      }
+      rethrow;
+    }
   }
 
   List<(Project, DesktopTask)> get recentTasks {
@@ -686,7 +714,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> closeDraft(SessionDraft draft) async {
     if (submitting || !sessionDrafts.remove(draft)) return;
-    final index = openTabIds.indexOf(draft.id);
+    final index = navigationTabIds.indexOf(draft.id);
     openTabIds.remove(draft.id);
     drafts.remove(draft.id);
     fileDrafts.remove(draft.id);
@@ -706,7 +734,8 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> _selectTabNear(int index) async {
-    final next = openTabIds.isEmpty ? null : openTabIds[index.clamp(0, openTabIds.length - 1)];
+    final ids = navigationTabIds;
+    final next = ids.isEmpty ? null : ids[index.clamp(0, ids.length - 1)];
     final draft = sessionDrafts.where((draft) => draft.id == next).firstOrNull;
     final existing = openTasks.where((entry) => entry.$2.id == next).firstOrNull;
     if (draft != null) { openDraft(draft); }
@@ -991,15 +1020,20 @@ class DesktopSession extends ChangeNotifier {
     ]);
   }
 
-  Future<void> loadHistory(DesktopTask target) async {
+  Future<void> loadHistory(DesktopTask target, {CancellationToken? cancellation}) async {
     if (target.loading) return;
+    final read = cancellation?.merge(_lifetime) ?? _lifetime;
+    read.throwIfCancelled();
     target.loading = true;
     target.loadError = null;
     notifyListeners();
     try {
       target.liveEvents.clear();
-      final page = jsonObject(await _request('session.message.list', {'sessionID': target.id, 'limit': 100}));
+      final page = await client.sessionRead('session.message.list', {'sessionID': target.id, 'limit': 100},
+        cancellation: read);
+      read.throwIfCancelled();
       target.running = page['running'] == true;
+      if (!target.running) target.runStartedAt = null;
       target.pending
         ..clear()
         ..addEntries((page['pending'] as List? ?? []).map((raw) {
@@ -1049,16 +1083,19 @@ class DesktopSession extends ChangeNotifier {
     target.historyBefore = page['cursor']?['next'] as String?;
   }
 
-  Future<void> loadEarlier(DesktopTask target) async {
+  Future<void> loadEarlier(DesktopTask target, {CancellationToken? cancellation}) async {
     final before = target.historyBefore;
     if (before == null || target.loadingEarlier || target.loading) return;
+    final read = cancellation?.merge(_lifetime) ?? _lifetime;
+    read.throwIfCancelled();
     target.loadingEarlier = true;
     target.loadError = null;
     notifyListeners();
     try {
-      final page = jsonObject(await _request('session.message.list', {
+      final page = await client.sessionRead('session.message.list', {
         'sessionID': target.id, 'cursor': before, 'limit': 100,
-      }));
+      }, cancellation: read);
+      read.throwIfCancelled();
       _mergeHistory(target, page);
     } on CancelledException {
       rethrow;
@@ -1358,12 +1395,13 @@ class DesktopSession extends ChangeNotifier {
         target.reasoningUpdates = data['metadata']?['reasoningUpdates'] == true;
       case 'session.execution.started':
       case 'session.step.started':
+        if (event['type'] == 'session.execution.started') target.runStartedAt = event['created'] as int?;
         target.running = true;
         target.streamingText = '';
         target.retryStatus = null;
       case 'session.text.delta':
         final message = target.messages[data['assistantMessageID']];
-        if (message?['time']?['streamed'] != null) break;
+        if (message?['time']?['streamed'] != null || message?['time']?['completed'] != null) break;
         final parts = message?['content'] as List? ?? [];
         final ordinal = data['ordinal'] as int;
         target.streamingText = ordinal < parts.length ? parts[ordinal]['text'] as String? ?? '' : '';
@@ -1374,6 +1412,7 @@ class DesktopSession extends ChangeNotifier {
         target.retryStatus = null;
       case 'session.status':
         target.running = data['status']['type'] != 'idle';
+        if (!target.running) target.runStartedAt = null;
         target.retryStatus = data['status']['type'] == 'retry' ? data['status']['message'] as String? : null;
         if (target.retryStatus != null) target.streamingText = '';
       case 'session.model.selected':
@@ -1401,6 +1440,7 @@ class DesktopSession extends ChangeNotifier {
       case 'session.execution.failed':
       case 'session.execution.interrupted':
         target.running = false;
+        target.runStartedAt = null;
         target.streamingText = '';
         target.retryStatus = null;
     }
@@ -1511,6 +1551,7 @@ List<ChatEntry> conversation(DesktopTask task) {
   final result = <ChatEntry>[];
   final messages = task.messages.values.toList()..sort((a, b) =>
     (a['metadata']?['seq'] as int? ?? 0).compareTo(b['metadata']?['seq'] as int? ?? 0));
+  final activeMessage = messages.where((message) => {'user', 'assistant', 'idle'}.contains(message['type'])).lastOrNull;
   DateTime? at(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value) : null;
   final tools = <String, ToolActivity>{};
   DateTime? started;
@@ -1531,7 +1572,6 @@ List<ChatEntry> conversation(DesktopTask task) {
     }
     responseImageRows.clear();
   }
-  var liveTextPart = false;
   for (final message in messages) {
     final id = message['id'] as String, created = at(message['time']['created']);
     switch (message['type']) {
@@ -1546,14 +1586,16 @@ List<ChatEntry> conversation(DesktopTask task) {
         activeAssistant = id;
         final imageOwners = <String, String>{};
         final imageRows = <String, List<Json>>{};
+        final content = (message['content'] as List? ?? []).map(jsonObject).toList();
         var ordinal = 0;
-        for (final part in (message['content'] as List? ?? []).map(jsonObject)) {
+        for (final part in content) {
           final partID = '$id:${ordinal++}';
           if (part['type'] == 'tool') {
             final status = jsonObject(part['state']);
             final tool = ToolActivity(part['id'] as String, part['name'] as String,
               status['input'], formatInput: true, startedAt: at(part['time']?['created']));
-            tool.status = switch (status['status']) {'completed' => 'done', 'error' => 'failed', _ => task.running ? 'running' : 'interrupted'};
+            tool.status = switch (status['status']) {'completed' => 'done', 'error' => 'failed',
+              _ => task.running && identical(message, activeMessage) ? 'running' : 'interrupted'};
             tool.endedAt = at(part['time']?['completed']);
             final outputImages = <Json>[];
             if (status['content'] is List) {
@@ -1584,8 +1626,8 @@ List<ChatEntry> conversation(DesktopTask task) {
           } else if (part['type'] == 'text' || part['type'] == 'reasoning') {
             if ((part['text'] as String? ?? '').isEmpty) continue;
             final reasoning = part['type'] == 'reasoning';
-            final streaming = task.running && message['time']?['streamed'] == null && part['time']?['completed'] == null;
-            liveTextPart |= streaming && !reasoning;
+            final streaming = task.running && identical(message, activeMessage) && ordinal == content.length &&
+              message['time']?['streamed'] == null && message['time']?['completed'] == null && part['time']?['completed'] == null;
             result.add(ChatEntry(partID, part['type'] == 'text' ? 'Happen' : 'Reasoning', part['text'] as String,
               timestamp: reasoning ? at(part['time']?['completed']) ?? created : created,
               startedAt: reasoning ? at(part['time']?['created']) ?? created : null, streaming: streaming));
@@ -1619,9 +1661,6 @@ List<ChatEntry> conversation(DesktopTask task) {
         turnFirstRow = result.length;
         activeAssistant = null;
     }
-  }
-  if (task.streamingText.isNotEmpty && !liveTextPart && !result.any((entry) => entry.compaction?.status == 'running')) {
-    result.add(ChatEntry('${activeAssistant ?? task.id}:streaming', 'Happen', task.streamingText, streaming: true));
   }
   finishImages();
   for (final entry in task.pending.entries) {

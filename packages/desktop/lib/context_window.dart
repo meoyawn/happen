@@ -9,6 +9,7 @@ import 'package:server/server.dart' show readContextSnapshot;
 import 'appearance.dart';
 import 'code_highlight.dart';
 import 'conversation_markdown.dart';
+import 'desktop_toast.dart';
 import 'inference_request.dart';
 import 'session.dart';
 import 'session_export.dart';
@@ -69,10 +70,10 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       final file = await saveSessionExport(inferenceRequest(snapshot),
         title: widget.task.title, sessionID: widget.task.id,
         downloadsDirectory: widget.downloadsDirectory, cancellation: _lifetime);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved to ${file.path}')));
+      if (mounted) showDesktopToast(context, 'Session exported', description: 'Saved to ${file.path}', icon: Icons.check_rounded);
     } on CancelledException { /* The caller owns the export lifetime. */ }
     catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not export session: $error')));
+      if (mounted) showDesktopToast(context, 'Could not export session', description: '$error');
     }
     finally { if (mounted) setState(() => _exporting = false); }
   }

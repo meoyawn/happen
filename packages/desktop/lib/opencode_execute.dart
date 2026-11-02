@@ -27,7 +27,7 @@ String _code(Object? value) {
 String _outputText(Object? value) => (value as String? ?? '')
   .replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   .replaceFirst(RegExp(r'^Script (?:completed|failed)\nWall time [^\n]+\nOutput:\n'), '')
-  .replaceFirst(RegExp(r'^Script error:\s*'), '').trim();
+  .trim().replaceFirst(RegExp(r'^Script error:\s*'), '').trim();
 
 String _errorText(String output) {
   final error = output.replaceFirst(RegExp(r'^Error:\s*'), '').trim();

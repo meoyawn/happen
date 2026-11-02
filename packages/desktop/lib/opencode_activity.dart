@@ -38,7 +38,8 @@ final _shapes = [for (final dot in _dots) () {
 }()];
 
 class OpenCodeActivityIndicator extends StatefulWidget {
-  const OpenCodeActivityIndicator({super.key});
+  const OpenCodeActivityIndicator({super.key, this.color = opencodeMuted});
+  final Color color;
 
   @override
   State<OpenCodeActivityIndicator> createState() => _OpenCodeActivityIndicatorState();
@@ -62,13 +63,14 @@ class _OpenCodeActivityIndicatorState extends State<OpenCodeActivityIndicator> w
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(child: SizedBox.square(dimension: 16,
-    child: CustomPaint(painter: _RadarPainter(_animation, MediaQuery.disableAnimationsOf(context)))));
+    child: CustomPaint(painter: _RadarPainter(_animation, MediaQuery.disableAnimationsOf(context), widget.color))));
 }
 
 class _RadarPainter extends CustomPainter {
-  _RadarPainter(this.animation, this.still) : super(repaint: animation);
+  _RadarPainter(this.animation, this.still, this.color) : super(repaint: animation);
   final Animation<double> animation;
   final bool still;
+  final Color color;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -79,7 +81,7 @@ class _RadarPainter extends CustomPainter {
     for (var i = 0; i < _dots.length; i++) {
       final dot = _dots[i];
       final level = _level(_shapes[i], _fraction(phase - _round(dot.at)) * 100);
-      paint.color = opencodeMuted.withValues(alpha: _round(.2 + .8 * level));
+      paint.color = color.withValues(alpha: _round(.2 + .8 * level));
       canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(7 + dot.x * 3, 7 + dot.y * 3, 2, 2),
         const Radius.circular(.48)), paint);
     }
@@ -87,5 +89,6 @@ class _RadarPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_RadarPainter oldDelegate) => oldDelegate.still != still || oldDelegate.animation != animation;
+  bool shouldRepaint(_RadarPainter oldDelegate) =>
+    oldDelegate.still != still || oldDelegate.animation != animation || oldDelegate.color != color;
 }

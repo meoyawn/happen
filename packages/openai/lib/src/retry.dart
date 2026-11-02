@@ -5,10 +5,9 @@ import 'dart:math';
 import 'package:ai/ai.dart' show ModelFailure;
 import 'package:protocol/protocol.dart';
 
-// Codex 67f0994b, codex-client/retry.rs and core/responses_retry.rs: four request
-// retries, five stream retries, and a separate wait for unavailable networks.
-const requestMaxRetries = 4;
-const streamMaxRetries = 5;
+// Share one small budget across connection, HTTP, and stream failures.
+const maxRetries = 2;
+const maxRetryDelay = Duration(seconds: 5);
 
 typedef RetryAdvice = ({Duration delay, Stopwatch elapsed});
 
@@ -47,25 +46,35 @@ bool transportFailure(Object error) => switch (error) {
 
 class ResponseFailure extends ModelFailure {
   const ResponseFailure(super.code, super.message, {
-    this.status, this.retryAfter, this.retryStream = false,
+    this.status, this.retryAfter, this.retryable = false,
   });
   final int? status;
   final RetryAdvice? retryAfter;
-  final bool retryStream;
+  final bool retryable;
 }
 
-Future<T> retryRequest<T>(Future<T> Function() send, CancellationToken cancellation) async {
+Future<T> retryRequest<T>(Future<T> Function() send, CancellationToken cancellation, {
+  void Function(Json)? onEvent,
+}) async {
   for (var retries = 0; ; retries++) {
     cancellation.throwIfCancelled();
     try {
       return await send();
     } catch (error) {
       cancellation.throwIfCancelled();
-      final retryable = transportFailure(error) ||
-          error is ResponseFailure && error.status != null && error.status! >= 500 && error.status! <= 599;
-      if (!retryable || retries >= requestMaxRetries) rethrow;
+      final retryable = transportFailure(error) || switch (error) {
+        ResponseFailure(:final retryable) => retryable,
+        ModelFailure(:final code) => {'stream_disconnected', 'stream_idle_timeout'}.contains(code),
+        _ => false,
+      };
+      if (!retryable || retries >= maxRetries) rethrow;
       final advice = error is ResponseFailure ? error.retryAfter : null;
-      await cancellableDelay(advice == null ? retryBackoff(retries) : remainingDelay(advice), cancellation);
+      final delay = advice == null ? retryBackoff(retries) : remainingDelay(advice);
+      // Respect a long server cooldown by returning the error, never retry early.
+      if (delay > maxRetryDelay) rethrow;
+      onEvent?.call({'type': 'model.retrying', 'attempt': retries + 1, 'max_retries': maxRetries,
+        'delay_ms': delay.inMilliseconds, 'message': 'Reconnecting… ${retries + 1}/$maxRetries'});
+      await cancellableDelay(advice == null ? delay : remainingDelay(advice), cancellation);
     }
   }
 }

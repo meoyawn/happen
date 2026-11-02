@@ -28,13 +28,23 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
     rows.add((id: 'activity:${activity.first.id}', entry: null, activity: activity, status: null));
     activity = [];
   }
+  var working = false;
+  void addWorking() {
+    rows.add((id: 'working', entry: null, activity: const [], status: null));
+    working = true;
+  }
   for (final entry in entries) {
+    if (!working && {'Queued', 'Steer pending'}.contains(entry.role)) {
+      flush();
+      addWorking();
+    }
     if (entry.tool != null || entry.role == 'Reasoning') { activity.add(entry); continue; }
     flush();
     if (entry.role == 'Status' && entry.text == 'Completed') continue;
     rows.add((id: entry.id, entry: entry, activity: const [], status: null));
   }
   flush();
+  if (!working) addWorking();
   return rows;
 }
 
@@ -211,19 +221,20 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final compacting = entries.any((entry) => entry.compaction?.status == 'running');
     final rows = _transcriptRows(entries);
     final latest = entries.where((entry) => !{'Queued', 'Steer pending'}.contains(entry.role)).lastOrNull;
-    final activeGroup = task.running && rows.isNotEmpty && rows.last.activity.isNotEmpty &&
-      identical(rows.last.activity.last, latest);
-    final thinkingGroup = activeGroup && rows.last.activity.every((entry) => entry.role == 'Reasoning');
+    final workingIndex = rows.indexWhere((row) => row.id == 'working');
+    final activeRow = workingIndex > 0 ? rows[workingIndex - 1] : null;
+    final activeGroup = task.running && activeRow != null && activeRow.activity.isNotEmpty &&
+      identical(activeRow.activity.last, latest);
+    final thinkingGroup = activeGroup && activeRow!.activity.every((entry) => entry.role == 'Reasoning');
     final thinking = task.running && !compacting && !thinkingGroup;
-    final count = rows.length + 1;
+    final count = rows.length;
     _visibleRows = count;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _scroll.hasClients) _loadEarlier(_scroll.position);
     });
     final historyOffset = task.historyBefore != null ? 1 : 0;
     final itemCount = count + historyOffset;
-    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: itemCount - 1 - (i + historyOffset),
-      'working': 0};
+    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: itemCount - 1 - (i + historyOffset)};
     final activeMessages = task.messages.values.where((message) => message['type'] == 'assistant' || message['type'] == 'idle').toList()
       ..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
     final lastIdle = activeMessages.lastIndexWhere((message) => message['type'] == 'idle');
@@ -267,17 +278,17 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                       ],
                     );
                     index -= historyOffset;
-                    if (index == rows.length) return thinking
+                    final row = rows[index];
+                    if (row.id == 'working') return thinking
                       ? _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus)
                       : const SizedBox(key: ValueKey('working'), height: 36);
-                    final row = rows[index];
                     final entry = row.entry;
                     return Padding(
                       key: ValueKey(row.id),
                       padding: EdgeInsets.only(top: index == 0 ? 0 : row.activity.isNotEmpty || entry?.tool != null || entry?.role == 'Reasoning' ? 8 : 16),
                       child: entry == null ? _ActivityGroup(
                         key: PageStorageKey(row.id), entries: row.activity, status: row.status,
-                        active: activeGroup && index == rows.length - 1,
+                        active: activeGroup && index == workingIndex - 1,
                         directory: widget.directory, onExpand: () => _following = false,
                       ) : switch (entry.role) {
                         'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),

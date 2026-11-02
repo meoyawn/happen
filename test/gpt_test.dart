@@ -226,7 +226,7 @@ void main() {
   }
 
   for (final transport in ['http', 'websocket']) {
-    test('GPT $transport resets its idle limit, retries silence five times, and remains cancellable', () async {
+    test('GPT $transport resets its idle limit, bounds retries, and remains cancellable', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final http = HttpClient();
       final sockets = <WebSocket>[];
@@ -240,8 +240,8 @@ void main() {
           return;
         }
         for (var i = 0; i < 2; i++) {
-          // The client clock runs 600x faster: 380 ms is between the previous
-          // three-minute limit and Codex's five-minute event-idle limit.
+          // The client clock runs 100x faster: each gap stays below the idle
+          // limit, while the whole response lasts longer than that limit.
           await Future<void>.delayed(const Duration(milliseconds: 380));
           await send({'type': 'response.output_text.delta', 'delta': 'tick'});
         }
@@ -313,7 +313,7 @@ void main() {
           },
         ),
         zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
-          parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 600
+          parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 100
               : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
       );
       expect((await run('active')).text, 'Long response finished');
@@ -323,15 +323,15 @@ void main() {
       await expectLater(run('silent'), throwsA(isA<ModelFailure>().having(
         (error) => error.code, 'code', 'stream_idle_timeout',
       )));
-      expect(retries, [1, 2, 3, 4, 5]);
-      expect(progress, [for (var attempt = 0; attempt < 6; attempt++) ...[
-        'model.connected', if (attempt < 5) 'model.retrying',
+      expect(retries, [1, 2]);
+      expect(progress, [for (var attempt = 0; attempt < 3; attempt++) ...[
+        'model.connected', if (attempt < 2) 'model.retrying',
       ]], reason: 'Accepted retries must report recovery even before the first text delta');
       expect((await run('active')).text, 'Long response finished');
-      expect(requests, 8, reason: 'Retry exhaustion must not close the shared pool');
+      expect(requests, 5, reason: 'Retry exhaustion must not close the shared pool');
       cancelOnRetry = true;
       await expectLater(run('silent'), throwsA(isA<CancelledException>()));
-      expect(requests, 9, reason: 'Cancellation during backoff must not send another request');
+      expect(requests, 6, reason: 'Cancellation during backoff must not send another request');
     });
   }
 

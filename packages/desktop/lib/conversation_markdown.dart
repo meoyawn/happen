@@ -13,6 +13,7 @@ import 'inline_reference.dart';
 import 'image_preview.dart';
 import 'inline_image.dart';
 import 'conversation_data.dart';
+import 'desktop_toast.dart';
 
 const conversationInk = Color(0xff1a1c1f);
 const conversationMuted = Color(0xff8b8e95);
@@ -272,9 +273,7 @@ class _ConversationCopyButtonState extends State<ConversationCopyButton> {
       });
     } on PlatformException {
       if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          const SnackBar(content: Text('Could not copy to the clipboard.')),
-        );
+        showDesktopToast(context, 'Could not copy to the clipboard.');
       }
     }
   }
@@ -319,9 +318,7 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
     }
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('This link could not be opened.')),
-      );
+      showDesktopToast(context, 'This link could not be opened.');
     }
   }
 }

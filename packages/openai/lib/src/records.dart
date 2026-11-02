@@ -6,7 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'response_ids.dart';
 
 /// Converts provider output into durable conversation items.
-ConversationItem gptItemFromNative(Json wire) {
+ConversationItem gptItemFromNative(Json wire, {Map<String, Json> reasoningTimes = const {}}) {
   final type = wire['type'];
   final state = {...wire};
   switch (type) {
@@ -28,18 +28,20 @@ ConversationItem gptItemFromNative(Json wire) {
         role: 'assistant',
         native: {'gpt': state},
         content: [
-          for (final part in summary)
+          for (final (index, part) in summary.indexed)
             {
               'type': 'reasoning',
               'text': part['text'] ?? '',
+              if (reasoningTimes['${wire['id']}:summary:$index'] case final time?) 'time': time,
               'native': {
                 'gpt': {'channel': 'summary', ...part..remove('text')},
               },
             },
-          for (final part in content)
+          for (final (index, part) in content.indexed)
             {
               'type': 'reasoning',
               'text': part['text'] ?? '',
+              if (reasoningTimes['${wire['id']}:content:$index'] case final time?) 'time': time,
               'native': {
                 'gpt': {'channel': 'content', ...part..remove('text')},
               },

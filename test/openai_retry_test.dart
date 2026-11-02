@@ -10,28 +10,30 @@ import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('connection resets wait beyond five retries, cap at 60s, and preserve the stream budget', () {
-    fakeAsync((time) {
-      final transport = _Transport((attempt, body) {
-        if (attempt <= 35) throw const SocketException('Connection reset by peer', osError: OSError('Connection reset by peer', 54));
-        return _events(attempt <= 40 ? [] : [_completed]);
+  for (final compaction in [false, true]) {
+    test('${compaction ? 'compaction' : 'sampling'} shares two retries across connection, HTTP, and stream failures', () {
+      fakeAsync((time) {
+        final transport = _Transport((attempt, _) => switch (attempt) {
+          1 => throw const SocketException('Connection reset by peer'),
+          2 => _json(503, {}),
+          _ => _events([]),
+        });
+        final events = <Json>[];
+        final reply = _settle(time, _respond(_client(transport),
+          input: compaction ? [{'type': 'compaction_trigger'}] : [], onEvent: events.add));
+        expect(reply.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_disconnected'));
+        expect(transport.bodies, hasLength(3));
+        expect(events.map((event) => event['attempt']), [1, 2]);
+        expect(events.every((event) => event['max_retries'] == 2), isTrue);
+        expect(events.map((event) => event['delay_ms']), [
+          inInclusiveRange(180, 220), inInclusiveRange(360, 440),
+        ]);
+        expect(transport.bodies.every((body) => jsonEncode(body) == jsonEncode(transport.bodies.first)), isTrue);
       });
-      final client = _client(transport);
-      final events = <Json>[];
-      final reply = _settle(time, _respond(client, onEvent: events.add));
-      expect(reply.error, isNull);
-      expect(reply.value!.text, 'Recovered');
-      expect(transport.bodies, hasLength(41));
-      final offline = events.where((event) => event['reason'] == 'connection_failed').toList();
-      expect(offline.map((event) => event['delay_ms']), [5000, 10000, 20000, 40000, 60000, 60000, 60000]);
-      expect(offline.map((event) => event['attempt']), [1, 2, 3, 4, 5, 6, 7]);
-      expect(offline.every((event) => !event.containsKey('max_retries')), isTrue);
-      expect(events.where((event) => event['max_retries'] == 5).map((event) => event['attempt']), [1, 2, 3, 4, 5]);
-      expect(transport.bodies.every((body) => jsonEncode(body) == jsonEncode(transport.bodies.first)), isTrue);
     });
-  });
+  }
 
-  test('cancelling a network wait stops retries and leaves the shared pool usable', () {
+  test('cancelling a connection backoff stops retries and leaves the shared pool usable', () {
     fakeAsync((time) {
       var offline = true;
       final transport = _Transport((_, _) {
@@ -42,49 +44,35 @@ void main() {
       final token = CancellationToken();
       final events = <Json>[];
       final pending = _respond(client, cancellation: token, onEvent: events.add);
-      // Four request backoffs finish well before the first 5-second network wait.
-      time.elapse(const Duration(seconds: 4));
-      expect(events.single['reason'], 'connection_failed');
+      time.flushMicrotasks();
+      expect(events.single['attempt'], 1);
       token.cancel();
       expect(_settle(time, pending).error, isA<CancelledException>());
-      expect(transport.bodies, hasLength(5));
+      expect(transport.bodies, hasLength(1));
       offline = false;
       expect(_settle(time, _respond(client)).value!.text, 'Recovered');
-      expect(transport.bodies, hasLength(6));
-    });
-  });
-
-  test('compaction connection failures keep the bounded retry policy', () {
-    fakeAsync((time) {
-      final transport = _Transport((_, _) => throw const SocketException('offline'));
-      final events = <Json>[];
-      final result = _settle(time, _respond(_client(transport),
-        input: [{'type': 'compaction_trigger'}], onEvent: events.add));
-      expect(result.error, isA<SocketException>());
-      expect(transport.bodies, hasLength(30));
-      expect(events.map((event) => event['attempt']), [1, 2, 3, 4, 5]);
-      expect(events.every((event) => event['max_retries'] == 5), isTrue);
+      expect(transport.bodies, hasLength(2));
     });
   });
 
   for (final search in [false, true]) {
-    test('${search ? 'search' : 'responses'} retry transient 5xx four times before accepting a reply', () async {
-      final transport = _Transport((attempt, _) => attempt < 5
+    test('${search ? 'search' : 'responses'} recover from transient 5xx within two retries', () async {
+      final transport = _Transport((attempt, _) => attempt < 3
         ? _json(503, {'error': {'code': 'server_error'}})
         : search ? _json(200, {'output': 'Recovered'}) : _events([_completed]));
       final client = _client(transport);
       final events = <Json>[];
       await _fast(() => search ? _search(client) : _respond(client, onEvent: events.add));
-      expect(transport.bodies, hasLength(5));
-      expect(events, isEmpty, reason: 'Request retries do not consume stream retries');
+      expect(transport.bodies, hasLength(3));
+      expect(events.map((event) => event['attempt']), search ? isEmpty : [1, 2]);
       expect(transport.paths.toSet(), {search ? '/alpha/search' : '/responses'});
     });
 
-    test('${search ? 'search' : 'responses'} exhaust the correct request and stream budgets', () async {
+    test('${search ? 'search' : 'responses'} stop after three failed requests', () async {
       final transport = _Transport((_, _) => _json(500, {}));
       final client = _client(transport);
       await expectLater(_fast(() => search ? _search(client) : _respond(client)), throwsA(isA<ModelFailure>()));
-      expect(transport.bodies, hasLength(search ? 5 : 30));
+      expect(transport.bodies, hasLength(3));
     });
 
     test('${search ? 'search' : 'responses'} cancellation interrupts a request backoff', () async {
@@ -105,18 +93,40 @@ void main() {
       expect(refreshes, [false, true]);
       expect(transport.bodies, hasLength(2));
     });
+
+    test('${search ? 'search' : 'responses'} return long server cooldowns without waiting or retrying early', () {
+      fakeAsync((time) {
+        final transport = _Transport((_, _) => _json(503, {}, headers: {'retry-after': '60'}));
+        final client = _client(transport);
+        expect(_settle(time, search ? _search(client) : _respond(client)).error, isA<ModelFailure>());
+        expect(transport.bodies, hasLength(1));
+      });
+    });
+
+    test('${search ? 'search' : 'responses'} bound stalled response headers', () {
+      fakeAsync((time) {
+        final transport = _Transport((_, _) => Completer<HttpReply>().future);
+        final client = _client(transport);
+        final result = _settle(time, search ? _search(client) : _respond(client),
+          within: const Duration(seconds: 31));
+        expect(result.error, search
+          ? isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_timeout')
+          : isA<TimeoutException>());
+        expect(transport.bodies, hasLength(3));
+      });
+    });
   }
 
-  test('search connection resets use four request retries and remain bounded', () {
+  test('search connection resets stop within a second', () {
     fakeAsync((time) {
       final transport = _Transport((_, _) => throw const SocketException('Connection reset by peer'));
       expect(_settle(time, _search(_client(transport))).error,
         isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_transport'));
-      expect(transport.bodies, hasLength(5));
+      expect(transport.bodies, hasLength(3));
     });
   });
 
-  test('a socket reset after headers consumes the stream budget, not network waits', () {
+  test('a socket reset after headers uses the same bounded recovery', () {
     fakeAsync((time) {
       final transport = _Transport((_, _) {
         final source = StreamController<List<int>>(onCancel: () => Future<void>.value());
@@ -127,29 +137,78 @@ void main() {
       final events = <Json>[];
       final result = _settle(time, _respond(_client(transport), onEvent: events.add));
       expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_disconnected'));
-      expect(transport.bodies, hasLength(6));
-      expect(events.map((event) => event['attempt']), [1, 2, 3, 4, 5]);
-      expect(events.every((event) => event['max_retries'] == 5), isTrue);
+      expect(transport.bodies, hasLength(3));
+      expect(events.map((event) => event['attempt']), [1, 2]);
+      expect(events.every((event) => event['max_retries'] == 2), isTrue);
     });
   });
 
-  test('HTTP Retry-After controls both request and stream waits', () async {
-    final transport = _Transport((attempt, _) => attempt <= 5
+  test('short HTTP Retry-After controls the shared retry waits', () async {
+    final transport = _Transport((attempt, _) => attempt <= 2
       ? _json(503, {}, headers: {'retry-after': '2'}) : _events([_completed]));
-    final waits = <Duration>[];
-    expect((await _fast(() => _respond(_client(transport)), onWait: waits.add)).text, 'Recovered');
-    expect(transport.bodies, hasLength(6));
-    expect(waits, hasLength(5), reason: 'Four request waits and one stream wait');
-    expect(waits.every((delay) => delay.inMilliseconds >= 1900 && delay.inMilliseconds <= 2000), isTrue);
+    final events = <Json>[];
+    expect((await _respond(_client(transport), onEvent: events.add)).text, 'Recovered');
+    expect(transport.bodies, hasLength(3));
+    expect(events, hasLength(2));
+    expect(events.every((event) => (event['delay_ms'] as int) >= 1900 && (event['delay_ms'] as int) <= 2000), isTrue);
   });
 
   test('time spent reading an error body counts toward the original retry deadline', () async {
     final transport = _Transport((attempt, _) => attempt == 1 ? HttpReply(
       Stream.fromFuture(Future.delayed(const Duration(milliseconds: 40), () => utf8.encode('{}'))),
       503, {'retry-after': '1'}, '2') : _events([_completed]));
-    final waits = <Duration>[];
-    expect((await _fast(() => _respond(_client(transport)), onWait: waits.add)).text, 'Recovered');
-    expect(waits.single.inMilliseconds, inInclusiveRange(100, 970));
+    final events = <Json>[];
+    expect((await _respond(_client(transport), onEvent: events.add)).text, 'Recovered');
+    expect(events.single['delay_ms'], inInclusiveRange(100, 970));
+  });
+
+  for (final status in [400, 503]) {
+    test('a stalled HTTP $status body preserves the status and closes before recovery', () {
+      fakeAsync((time) {
+        var closed = 0;
+        final transport = _Transport((_, _) => HttpReply(StreamController<List<int>>(
+          onCancel: () { closed++; return Future<void>.value(); },
+        ).stream, status, {}, '2'));
+        final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 7));
+        expect(result.error, isA<ResponseFailure>().having((error) => error.status, 'status', status));
+        expect(transport.bodies, hasLength(status == 400 ? 1 : 3));
+        expect(closed, transport.bodies.length);
+      });
+    });
+  }
+
+  test('silent streams reconnect after 60 seconds and close every abandoned body', () {
+    fakeAsync((time) {
+      var closed = 0;
+      final transport = _Transport((_, _) => HttpReply(StreamController<List<int>>(
+        onCancel: () { closed++; return Future<void>.value(); },
+      ).stream, 200, {}, '2'));
+      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 181));
+      expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_idle_timeout'));
+      expect(transport.bodies, hasLength(3));
+      expect(closed, 3);
+    });
+  });
+
+  test('SSE heartbeats keep long reasoning alive without a response deadline', () {
+    fakeAsync((time) {
+      final transport = _Transport((_, _) {
+        late Timer heartbeat;
+        var ticks = 0;
+        final source = StreamController<List<int>>(onCancel: () {
+          heartbeat.cancel();
+          return Future<void>.value();
+        });
+        heartbeat = Timer.periodic(const Duration(seconds: 25), (_) {
+          source.add(utf8.encode(++ticks < 4 ? ': keep-alive\n\n' : 'data: ${jsonEncode(_completed)}\n\n'));
+        });
+        return HttpReply(source.stream, 200, {}, '2');
+      });
+      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 101));
+      expect(result.error, isNull);
+      expect(result.value!.text, 'Recovered');
+      expect(transport.bodies, hasLength(1));
+    });
   });
 
   test('rate limit messages supply the retry delay in milliseconds and seconds', () async {
@@ -249,7 +308,7 @@ Stream<List<int>> _bytes(String body) {
 
 class _Transport extends HttpConnections {
   _Transport(this.reply);
-  HttpReply Function(int attempt, Json body) reply;
+  FutureOr<HttpReply> Function(int attempt, Json body) reply;
   final bodies = <Json>[];
   final paths = <String>[];
 
@@ -260,7 +319,7 @@ class _Transport extends HttpConnections {
     cancellation.throwIfCancelled();
     bodies.add(jsonObject(jsonDecode(utf8.decode(body))));
     paths.add(uri.path);
-    return reply(bodies.length, bodies.last);
+    return Future<HttpReply>.sync(() => reply(bodies.length, bodies.last)).asCancellable(cancellation);
   }
 }
 
@@ -282,20 +341,22 @@ Future<ResponsesReply> _respond(ResponsesClient client, {
 Future<String> _search(ResponsesClient client, [CancellationToken? cancellation]) => client.search(
   model: 'gpt-6.1-sol', sessionId: 'fixture', commands: {}, input: [], cancellation: cancellation ?? CancellationToken());
 
-({T? value, Object? error}) _settle<T>(FakeAsync time, Future<T> future) {
+({T? value, Object? error}) _settle<T>(FakeAsync time, Future<T> future, {
+  Duration within = const Duration(seconds: 1),
+}) {
   T? value;
   Object? error;
   var settled = false;
   future.then((result) { value = result; settled = true; }, onError: (Object failure) { error = failure; settled = true; });
   time.flushMicrotasks();
-  time.elapse(const Duration(minutes: 10));
+  time.elapse(within);
   expect(settled, isTrue, reason: 'Retry operation did not settle');
   return (value: value, error: error);
 }
 
 Future<T> _fast<T>(Future<T> Function() run, {void Function(Duration)? onWait}) => runZoned(run,
   zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) {
-    final backoff = duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 7);
+    final backoff = duration >= const Duration(milliseconds: 100) && duration <= const Duration(milliseconds: 450);
     if (backoff) onWait?.call(duration);
     return parent.createTimer(zone, backoff ? Duration.zero : duration, callback);
   }));

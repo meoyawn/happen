@@ -41,6 +41,13 @@ need attention, with collapsible **Archived** and **Working** sections. The
 **Working** section stays below the scrolling list. Tab order, layout, read
 markers, and sidebar choices are saved.
 
+Press **⌘K** (**Ctrl+K** on Windows/Linux), or click **Search sessions**, to
+search commands and active sessions. Use **↑/↓** and **Enter** to open a result,
+or **Escape** to close the menu. **Archived sessions** opens Settings directly
+to the archive page; archived chats stay out of command-menu search results.
+The archive list uses the full available height. Select a chat to preview its
+conversation inside Settings, then go back to the archive or restore it.
+
 Saved sessions come from the server's durable session list, not the live-agent
 registry or a desktop-only sidebar entry. After a crash, histories are rediscovered
 automatically when Happen opens; interrupted work is not restarted. Home and project
@@ -49,6 +56,17 @@ Inbox keeps interrupted sessions under **Needs attention** even though their
 agents are no longer running; opening their history does not resume execution.
 
 Right-click an Inbox session to archive or restore it, or use its hover action.
+Hover a session to pin or unpin it with the pin button, or choose **Pin session**
+or **Unpin session** from its right-click menu. Pins are saved across launches.
+Inbox keeps them in a **Pinned** section; Home and top/side tabs show them first.
+Closing a tab keeps its session pinned. Archived sessions leave the pinned list
+until restored.
+
+Session status uses a blue animated **Working** indicator, a neutral idle ring
+with its age, and distinct **Done**, **Failed**, and **Interrupted** cues.
+Pins remain neutral and visible alongside activity; the selected session uses
+a neutral background. These cues are shared by Inbox, tabs, and Home.
+
 Archiving works even when the conversation history cannot load; saved history is
 kept. **Settings → Archived tasks** also lets you restore an archived session.
 Archiving the selected session switches to the next open session to its right,

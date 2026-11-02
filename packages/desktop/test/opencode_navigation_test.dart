@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:desktop/appearance.dart';
+import 'package:desktop/database.dart';
 import 'package:desktop/opencode_navigation.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
@@ -78,6 +81,75 @@ void main() {
     expect(opened, false, reason: 'Archiving must not select or load the broken conversation');
     expect(tester.takeException(), isNull);
   });
+
+  final pinView = ValueVariant<String>({'inbox', 'side', 'top', 'home'});
+  testWidgets('sessions pin on hover and unpin by right click without opening history', (tester) async {
+    late DesktopSession session;
+    await tester.runAsync(() async {
+      final root = await Directory.systemTemp.createTemp('desktop-pinning-');
+      addTearDown(() => root.delete(recursive: true));
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      addTearDown(() => tester.runAsync(session.close));
+    });
+    final view = pinView.currentValue!;
+    session.openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == view).firstOrNull ?? OpenCodeLayout.top;
+    final older = DesktopTask('older', 'Older session')..loadError = 'History unavailable'..lastActivity = 1;
+    final newer = DesktopTask('newer', 'Newer session')..lastActivity = 2;
+    newer.projectionState['summary'] = {'time': {'idle': 2}, 'outcome': 'succeeded'};
+    session.projects.add(Project('project', '/project', '/project', [newer, older]));
+    session.openTabIds.addAll([newer.id, older.id]);
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
+    var opened = false;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ListenableBuilder(
+      listenable: session, builder: (context, _) => switch (view) {
+        'home' => OpenCodeHome(session: session, focusNode: focus,
+          onSelect: (_, _) => opened = true, onNew: (_) => opened = true,
+          onAddProject: () => opened = true, onArchive: (_, _) => opened = true),
+        'inbox' => SizedBox(width: 276, child: OpenCodeSidebar(session: session, home: true, windowControls: false,
+          onHome: () {}, onSearch: () {}, onNew: () {}, onSettings: () {},
+          onSelect: (_, _) => opened = true, onDraft: (_) => opened = true, onArchive: (_, _) => opened = true)),
+        _ => SizedBox(height: view == 'top' ? 44 : 200, width: 276,
+          child: OpenCodeTabStrip(session: session, vertical: view == 'side', home: true,
+            onSelect: (_, _) => opened = true, onDraft: (_) => opened = true, onArchive: (_, _) => opened = true)),
+      },
+    ))));
+    await tester.pumpAndSettle();
+    Finder row(String id) => find.byKey(ValueKey('${view == 'home' ? 'home' : view == 'inbox' ? 'inbox' : 'opencode-tab'}:$id'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1000, 700));
+    addTearDown(mouse.removePointer);
+    expect(find.byKey(const ValueKey('pin:older')), findsNothing);
+    await mouse.moveTo(tester.getCenter(row(older.id)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: row(older.id), matching: find.byTooltip('Pin session')).hitTestable());
+    await tester.runAsync(() async {
+      final saved = jsonObject(await callIsolate(session.database.port, 'load', {}));
+      expect(jsonDecode(saved['settings']['sidebar_pinned_tasks'] as String), [older.id]);
+    });
+    await mouse.moveTo(const Offset(1000, 700));
+    await tester.pumpAndSettle();
+    expect(row(older.id), findsOneWidget);
+    expect(session.pinnedTaskIds, [older.id]);
+    if (view == 'inbox') expect(find.text('Pinned'), findsOneWidget);
+    if (view == 'top') {
+      expect(tester.getTopLeft(row(older.id)).dx, lessThan(tester.getTopLeft(row(newer.id)).dx));
+    } else {
+      expect(tester.getTopLeft(row(older.id)).dy, lessThan(tester.getTopLeft(row(newer.id)).dy));
+    }
+    await tester.tap(row(older.id), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Unpin session'));
+    await tester.runAsync(() async {
+      final saved = jsonObject(await callIsolate(session.database.port, 'load', {}));
+      expect(jsonDecode(saved['settings']['sidebar_pinned_tasks'] as String), isEmpty);
+    });
+    await tester.pumpAndSettle();
+    expect(session.pinnedTaskIds, isEmpty);
+    expect(opened, false, reason: 'Pinning never selects, archives, or opens the broken conversation');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: pinView);
 }
 
 class _Client implements AgentClient {
