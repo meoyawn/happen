@@ -60,8 +60,8 @@ Future<({String stdout, int microseconds})> run(List<String> command, Map<String
 String text(Json item) => item['content'] is String ? item['content'] as String
   : (item['content'] as List? ?? []).whereType<Map>().map((part) => part['text'] ?? '').join('\n');
 
-/// One shared preparation for every case: remove scoped IDs and extract known
-/// timings. No other fields, encodings, values or array positions are changed.
+/// Every case excludes Codex's client telemetry, removes scoped IDs and extracts
+/// known timings. All remaining fields, encodings and array positions are strict.
 ({Json request, List<Json> timings}) prepareComparison(Json received) {
   final request = jsonObject(jsonDecode(jsonEncode(received)));
   final timings = <Json>[];
@@ -71,20 +71,8 @@ String text(Json item) => item['content'] is String ? item['content'] as String
     object.remove(key);
     timings.add({'path': '$path.$key', 'kind': kind, 'unit': unit, 'value': value});
   }
-  void ids(Json object, List<String> keys) { for (final key in keys) { object.remove(key); } }
   request.remove('prompt_cache_key');
-  if (request['client_metadata'] is Map) {
-    final metadata = request['client_metadata'] as Json;
-    ids(metadata, ['x-codex-installation-id', 'turn_id', 'thread_id', 'session_id',
-      'root_turn_id', 'parent_turn_id', 'x-codex-window-id']);
-    if (metadata['x-codex-turn-metadata'] case final String encoded) {
-      final turn = jsonObject(jsonDecode(encoded));
-      ids(turn, ['installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id',
-        'context_window_id', 'root_turn_id', 'parent_turn_id']);
-      takeTime(turn, 'turn_started_at_unix_ms', 'client_metadata.x-codex-turn-metadata', 'timestamp', 'milliseconds');
-      metadata['x-codex-turn-metadata'] = jsonEncode(turn);
-    }
-  }
+  request.remove('client_metadata');
   String outputText(String text, String path) {
     final status = RegExp(r'^Script (completed|failed|terminated|running with cell ID [1-9][0-9]*)\nWall time ([0-9.]+) seconds\nOutput:\n$').firstMatch(text);
     if (status != null) {
@@ -275,8 +263,8 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         event({'type': 'response.output_item.done', 'output_index': i, 'item': output[i]});
       }
       event({'type': 'response.completed', 'response': response});
-      http.response.headers.contentType = ContentType('text', 'event-stream');
-      http.response.write(stream.toString());
+      http.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
+      http.response.add(utf8.encode(stream.toString()));
       if (output.any((item) => item['type'] == 'message') &&
           output.every((item) => !{'function_call', 'custom_tool_call'}.contains(item['type']))) {
         final watch = watches.remove(clock)!..stop();
@@ -456,6 +444,7 @@ remote_compaction = "v2"
       }
       checks['same_model_calls:run-$iteration'] = a.length == b.length && a.isNotEmpty;
       checks['same_selected_model:run-$iteration'] = [...a, ...b].every((request) => request['model'] == model);
+      checks['happen:no_client_metadata:run-$iteration'] = b.isNotEmpty && b.every((request) => !request.containsKey('client_metadata'));
       if (a.isNotEmpty && b.isNotEmpty) {
         final comparison = await compare(a.last, b.last, runPath);
         checks['final_request_equal:run-$iteration'] = comparison.equal;

@@ -26,7 +26,7 @@ import 'mcp_conversation.dart';
 import 'session.dart';
 import 'sidebar_frame.dart';
 import 'sidebar_resizer.dart';
-import 'interface_mode.dart';
+import 'settings_screen.dart';
 import 'opencode_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
@@ -43,7 +43,7 @@ class _DesktopViewState extends State<DesktopView> {
   static const _desktop = MethodChannel('happen/desktop');
   DesktopSession get session => widget.session;
   bool _picking = false, _settingsOpen = false;
-  bool _homeOpen = false;
+  bool get _homeOpen => !session.viewingConversation;
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
   String? _nativeLayout;
   final _sessionSearchFocus = FocusNode();
@@ -109,82 +109,18 @@ class _DesktopViewState extends State<DesktopView> {
     try {
       await session.dictation.cancel();
       if (!mounted) return;
-      await Navigator.of(context).push<void>(MaterialPageRoute(
-        builder: (context) => ListenableBuilder(
+      await Navigator.of(context).push<void>(PageRouteBuilder(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (context, _, _) => ListenableBuilder(
           listenable: _viewChanges,
-          builder: (context, _) => Scaffold(
-            appBar: AppBar(automaticallyImplyLeading: false, titleSpacing: 0,
-              toolbarHeight: _hasSidebar ? 64 : 44,
-              title: DesktopWindowDragRegion(child: Row(children: [
-                SizedBox(width: _trafficInset == 0 ? 8 : _trafficInset),
-                const BackButton(), const SizedBox(width: 8), const Text('Settings'),
-              ]))),
-            body: Align(alignment: Alignment.topCenter, child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(32, 20, 32, 40),
-              child: SizedBox(
-              width: 640,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (session.loginSucceeded) ...[
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(color: const Color(0xffe3f1e8), borderRadius: BorderRadius.circular(12)),
-                      child: Row(children: [
-                        const Icon(Icons.check_circle, color: Color(0xff296748)),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text('Signed in to ${session.loginProvider == 'openai' ? 'ChatGPT' : 'OpenCode'}. Your account is connected.')),
-                      ]),
-                    ),
-                    const SizedBox(height: 20),
-                  ],
-                  OpenCodeInterfacePicker(selected: session.openCodeLayout,
-                    onSelected: (layout) => unawaited(_run(() => session.chooseOpenCodeLayout(layout)))),
-                  const Padding(padding: EdgeInsets.symmetric(vertical: 28), child: Divider(height: 1)),
-                  const Text('Accounts', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
-                  for (final provider in session.providers) _accountCard(provider),
-                  const SizedBox(height: 24),
-                  const Text('Messages sent while a task is working', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'steer', label: Text('Steer')),
-                      ButtonSegment(value: 'queue', label: Text('Queue')),
-                    ],
-                    selected: {session.deliveryMode},
-                    onSelectionChanged: (value) => _run(() => session.chooseDeliveryMode(value.single)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(session.deliveryMode == 'steer'
-                      ? 'Guide the current turn at the next model step.'
-                      : 'Wait for the current turn to finish, then start the next one.',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                  const SizedBox(height: 24),
-                  const Text('Dictation', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'live', label: Text('Live')),
-                      ButtonSegment(value: 'on_stop', label: Text('On stop')),
-                    ],
-                    selected: {session.dictationMode},
-                    onSelectionChanged: (value) => _run(() => session.chooseDictationMode(value.single)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(session.dictationMode == 'live'
-                      ? 'Show text while you speak. If live dictation is unavailable, transcribe when you stop.'
-                      : 'Record first, then insert the transcription when you stop.',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                  const SizedBox(height: 24),
-                  _archivedTasks(context),
-                  if (session.error case final error?)
-                    Padding(padding: const EdgeInsets.only(top: 20), child: SelectableText(error,
-                      style: TextStyle(color: Theme.of(context).colorScheme.error))),
-                ],
-              ),
-            ))),
+          builder: (context, _) => DesktopSettingsScreen(
+            session: session, run: _run,
+            windowControls: defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen,
+            accounts: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              for (final provider in session.providers) _accountCard(provider),
+            ]),
+            archived: _archivedTasks(context),
           ),
         ),
       ));
@@ -258,15 +194,21 @@ class _DesktopViewState extends State<DesktopView> {
     final connected = {'signed_in', 'refresh_required'}.contains(status);
     final working = session.signingIn && session.loginProvider == id;
     final available = session.connected && !session.signingIn && session.signingOut == null;
+    final buttonStyle = ButtonStyle(
+      minimumSize: const WidgetStatePropertyAll(Size(0, 28)),
+      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: const WidgetStatePropertyAll(TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13)),
+      shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))));
     return Container(
       key: ValueKey('account:$id'),
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: const Color(0xfffcfcfd), border: Border.all(color: const Color(0xffe8e9eb)), borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(color: const Color(0xfffafafa), border: Border.all(color: const Color(0x14000000), width: .5), borderRadius: BorderRadius.circular(8)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+            Text(name, style: const TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500, color: opencodeInk)),
             if (provider['auth'] == 'opencode') const Text('DeepSeek models', style: TextStyle(fontSize: 12, color: Colors.black54)),
           ])),
           Icon(connected ? Icons.check_circle : Icons.circle_outlined, size: 15, color: connected ? const Color(0xff296748) : Colors.black38),
@@ -282,17 +224,17 @@ class _DesktopViewState extends State<DesktopView> {
           ]),
           if (session.loginCode case final code?) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 18))),
           Row(children: [
-            TextButton(onPressed: session.loginUrl == null ? null : session.openLoginBrowser, child: const Text('Open browser')),
-            TextButton(onPressed: () => _run(session.cancelLogin), child: const Text('Cancel')),
+            TextButton(style: buttonStyle, onPressed: session.loginUrl == null ? null : session.openLoginBrowser, child: const Text('Open browser')),
+            TextButton(style: buttonStyle, onPressed: () => _run(session.cancelLogin), child: const Text('Cancel')),
           ]),
         ] else
           Wrap(spacing: 8, children: [
             if (!connected)
-              FilledButton(onPressed: available ? () => _run(() => _signIn(id)) : null, child: Text('Sign in to $name'))
+              FilledButton(style: buttonStyle, onPressed: available ? () => _run(() => _signIn(id)) : null, child: Text('Sign in to $name'))
             else
-              OutlinedButton(onPressed: available ? () => session.signOut(id) : null, child: Text(session.signingOut == id ? 'Signing out…' : 'Sign out')),
+              OutlinedButton(style: buttonStyle, onPressed: available ? () => session.signOut(id) : null, child: Text(session.signingOut == id ? 'Signing out…' : 'Sign out')),
             if (connected)
-              TextButton(onPressed: available ? () => _run(() => _signIn(id)) : null, child: const Text('Switch account')),
+              TextButton(style: buttonStyle, onPressed: available ? () => _run(() => _signIn(id)) : null, child: const Text('Switch account')),
           ]),
         if (session.loginProvider == id && session.loginError != null)
           Padding(padding: const EdgeInsets.only(top: 8), child: Text(session.loginError!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12))),
@@ -323,8 +265,7 @@ class _DesktopViewState extends State<DesktopView> {
         if (mounted && paths != null && paths.isNotEmpty) {
           await session.addProject(paths.first.path);
           if (!mounted) return;
-          session.viewingConversation = true;
-          setState(() => _homeOpen = false);
+          setState(() => session.viewingConversation = true);
           _focusComposer();
         }
       } finally {
@@ -425,14 +366,10 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
-    if (_homeOpen) setState(() => _homeOpen = false);
-    session.viewingConversation = true;
     return session.select(project, task);
   }
 
   Future<void> _newChat([Project? owner]) async {
-    if (_homeOpen) setState(() => _homeOpen = false);
-    session.viewingConversation = true;
     session.newSession(owner);
     if (mounted) _focusComposer();
   }
@@ -440,8 +377,7 @@ class _DesktopViewState extends State<DesktopView> {
   bool get _hasSidebar => session.openCodeLayout != OpenCodeLayout.top;
 
   void _showHome({bool search = false}) {
-    session.viewingConversation = false;
-    setState(() => _homeOpen = true);
+    session.showHome();
     unawaited(_run(session.refreshSessions));
     if (search) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -451,13 +387,10 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _openTask(Project project, DesktopTask task) {
-    session.viewingConversation = true;
-    setState(() => _homeOpen = false);
     unawaited(_run(() => session.select(project, task)));
   }
 
   void _openDraft(Project project) {
-    setState(() => _homeOpen = false);
     unawaited(_run(() async {
       await _selectProject(project);
       if (mounted) _focusComposer();
@@ -465,8 +398,6 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _activateDraft(SessionDraft draft) {
-    setState(() => _homeOpen = false);
-    session.viewingConversation = true;
     session.openDraft(draft);
     _focusComposer();
   }
@@ -486,7 +417,7 @@ class _DesktopViewState extends State<DesktopView> {
   void _openTerminal() {
     final project = session.project;
     if (!_canOpenTerminal || project == null) return;
-    if (_homeOpen) setState(() => _homeOpen = false);
+    if (_homeOpen) setState(() => session.viewingConversation = true);
     session.terminals.open(_terminalScope!, project.path);
   }
 
@@ -510,7 +441,6 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
-    session.viewingConversation = !_homeOpen;
     final minSidebarWidth = 136.0;
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0).toDouble();
     final savedWidth = session.openCodeSidebarWidth;
@@ -561,7 +491,7 @@ class _DesktopViewState extends State<DesktopView> {
             session: session, task: home ? null : session.task,
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
             child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
-              Offstage(offstage: home, child: Column(children: [
+              if (!home) Column(children: [
                 _header(context),
                 if (session.task == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
@@ -624,7 +554,7 @@ class _DesktopViewState extends State<DesktopView> {
                   else if (session.project != null)
                     _Composer(key: _composer, session: session),
                 ],
-              ])),
+              ]),
               if (home) OpenCodeHome(session: session, focusNode: _sessionSearchFocus,
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
                 onAddProject: () => unawaited(_addProject())),
@@ -639,9 +569,7 @@ class _DesktopViewState extends State<DesktopView> {
     if (project == null || project.removing) return;
     await session.setArchived(task, archived);
     if (!mounted) return;
-    if (!archived) {
-      await _selectProject(project, task);
-    } else {
+    if (archived) {
       ScaffoldMessenger.of(context)..clearSnackBars()..showSnackBar(SnackBar(
         content: const Text('Task archived'),
         duration: const Duration(seconds: 3),

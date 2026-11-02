@@ -52,13 +52,13 @@ class OpenCodeInterfacePicker extends StatelessWidget {
               Container(width: 14, height: 14, decoration: BoxDecoration(shape: BoxShape.circle,
                 border: Border.all(color: checked ? opencodeInk : const Color(0xffb5b5b5), width: checked ? 4 : 1))),
               const SizedBox(width: 8),
-              Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: opencodeInk)),
-              if (mode == OpenCodeLayout.inbox) ...[
-                const SizedBox(width: 6),
-                Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              Expanded(child: Wrap(spacing: 6, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: opencodeInk)),
+                if (mode == OpenCodeLayout.inbox)
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                   decoration: BoxDecoration(color: const Color(0xffeeeeee), borderRadius: BorderRadius.circular(4)),
                   child: const Text('Experimental', style: TextStyle(fontSize: 11, color: opencodeMuted))),
-              ],
+              ])),
             ]),
             Padding(padding: const EdgeInsets.only(left: 22, top: 4),
               child: Text(description, style: const TextStyle(fontSize: 13, height: 1.5, color: opencodeMuted))),

@@ -103,6 +103,7 @@ class DesktopSession extends ChangeNotifier {
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
+  String projectAvatarStyle = 'letters';
   OpenCodeLayout openCodeLayout = OpenCodeLayout.top;
   bool sidebarOpen = true, inboxWorkingExpanded = true;
   bool inboxArchivedExpanded = true;
@@ -240,6 +241,13 @@ class DesktopSession extends ChangeNotifier {
     if (!{'live', 'on_stop'}.contains(mode)) throw ArgumentError('Invalid dictation mode');
     await _setting('dictation_mode', mode);
     dictationMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> chooseProjectAvatarStyle(String style) async {
+    if (!{'letters', 'generated'}.contains(style)) throw ArgumentError('Invalid project avatar style');
+    await _setting('project_avatar_style', style);
+    projectAvatarStyle = style;
     notifyListeners();
   }
 
@@ -711,6 +719,7 @@ class DesktopSession extends ChangeNotifier {
     final settings = jsonObject(saved['settings'] ?? {});
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
+    projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
     openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == settings['opencode_layout']).firstOrNull ?? OpenCodeLayout.top;
     sidebarOpen = settings['sidebar_open'] != 'false';
     inboxWorkingExpanded = settings['inbox_working_expanded'] != 'false';

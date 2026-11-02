@@ -6,18 +6,30 @@ import 'package:flutter/material.dart';
 
 import 'session.dart';
 
-// OpenCode: ui/src/data-display/project-avatar/generated.ts (mesh, version 1).
-// Keep the seed, palettes and float32 noise identical to OpenCode's generator.
+// OpenCode: ui/src/data-display/project-avatar/{project-avatar.tsx,project-avatar.css}.
 class ProjectAvatar extends StatelessWidget {
-  const ProjectAvatar({super.key, required this.project, this.size = 16});
+  const ProjectAvatar({super.key, required this.project, this.size = 16, this.generated = false});
   final Project project;
   final double size;
+  final bool generated;
 
   @override
-  Widget build(BuildContext context) => SizedBox.square(dimension: size,
-    child: RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id))));
+  Widget build(BuildContext context) => SizedBox.square(dimension: size, child: generated
+    ? RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id)))
+    : DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          gradient: const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Color(0xff767676), Color(0xff5c5c5c)]),
+          border: Border.all(color: const Color(0xff3a3a3a), width: .5)),
+        child: Center(child: Text(project.name.characters.firstOrNull?.toUpperCase() ?? '',
+          style: TextStyle(fontSize: size * 11 / 16, height: 1, fontWeight: FontWeight.w500,
+            letterSpacing: .05, color: Colors.white,
+            shadows: const [Shadow(color: Color(0x33000000), blurRadius: 4)]))),
+      ));
 }
 
+// OpenCode's optional mesh generator (generated.ts, version 1).
 final _pictures = <String, ui.Picture>{};
 final _float = Float32List(1);
 double _f(double value) { _float[0] = value; return _float[0]; }

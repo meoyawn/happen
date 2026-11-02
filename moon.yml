@@ -67,9 +67,21 @@ tasks:
       shell: false
       outputStyle: stream
 
+  prepare-flutter:
+    description: Apply the exception-safe mouse tracker fix to the development Flutter SDK
+    command: dart packages/desktop/tool/prepare_flutter.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
   dev:
     description: Run one Flutter desktop in the foreground with stateful hot reload
     command: python3 packages/desktop/tool/run_flutter.py
+    deps:
+      - '~:prepare-flutter'
     preset: server
     inputs: []
     options:

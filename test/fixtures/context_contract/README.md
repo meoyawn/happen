@@ -69,15 +69,18 @@ return that exact tool and its declaration.
 
 Only actual requests received by the shared OpenAI endpoint are compared. At
 the end of each session, the final complete inference request uses deep JSON
-equality after removing explicitly scoped generated protocol/transport IDs and
-extracting known numeric timing fields:
+equality after excluding the top-level `client_metadata` telemetry field,
+removing explicitly scoped generated protocol/transport IDs and extracting known
+numeric timing fields:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
 Tool declarations,
 printed values, roles, message boundaries, dates, settings, and tool results are
-not discarded. Client metadata is not discarded wholesale; only its generated
-identity and numeric timing fields are removed. Every extracted timing value
-is retained separately in the report, with its request path, kind and units.
+not discarded. Happen deliberately does not send Codex's `client_metadata`;
+every case independently asserts its absence in Happen's received requests before
+the shared comparison excludes it. Raw captures retain Codex's telemetry unchanged.
+Every extracted timing value is retained separately in the report, with its
+request path, kind and units.
 There is no similarity threshold, judge,
 golden copied from Happen, or expected-failure bypass. An unsupported Codex
 capability is a real failure to fix or configure consistently, not a passing

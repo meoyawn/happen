@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:ai/ai.dart';
-import 'package:code_mode/code_mode.dart' show truncateTokenText;
+import 'package:code_mode/code_mode.dart' show truncateTextOutput;
 import 'package:protocol/protocol.dart';
 
 import 'package:tool_runtime/tool_runtime.dart';
@@ -146,7 +146,7 @@ class HostTools {
         'wall_time_seconds': watch.elapsedMicroseconds / 1000000,
         if (code != null) 'exit_code': code else 'session_id': id,
         'original_token_count': (utf8.encode(text).length + 3) ~/ 4,
-        'output': truncateTokenText(text, maxTokens: tokens),
+        'output': truncateTextOutput(text, maxTokens: tokens),
       };
     } finally {
       link.dispose();

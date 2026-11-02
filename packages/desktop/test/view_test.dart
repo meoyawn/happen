@@ -4,13 +4,17 @@ import 'dart:io';
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:desktop/app.dart';
+import 'package:desktop/composer_editor.dart';
 import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/conversation.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/inline_reference.dart';
+import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
+import 'package:desktop/settings_screen.dart';
 import 'package:desktop_drop/src/native_transport.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
@@ -1489,7 +1493,9 @@ void main() {
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('Settings lists archived tasks, opens their history, and restores them', (tester) async {
+  testWidgets('Settings opens instantly, saves appearance and preferences, and restores archived tasks', (tester) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
     final archived = DesktopTask('archived', 'Old conversation')..archived = true..loaded = true;
     session.project!.tasks.add(archived);
     late Directory root;
@@ -1513,34 +1519,87 @@ void main() {
     await open(tester);
     expect(find.text('Old conversation'), findsNothing);
     expect(find.text('Archived'), findsNothing);
-    await tester.enterText(find.byType(TextField), 'Keep my draft');
-    await tester.tap(find.byTooltip('App settings'));
-    await tester.pumpAndSettle();
+    tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text = 'Keep my draft';
+    await tester.pump();
+    Future<void> openSettings() async {
+      await tester.runAsync(() => tester.tap(find.byTooltip('App settings')));
+      await tester.pumpAndSettle();
+      for (var attempt = 0; find.byType(DesktopSettingsScreen).evaluate().isEmpty && attempt < 100; attempt++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      expect(find.byType(DesktopSettingsScreen), findsOneWidget, reason: session.error);
+      await tester.pumpAndSettle();
+    }
+    await openSettings();
     expect(find.byType(AlertDialog), findsNothing);
-    expect(find.byType(AppBar), findsOneWidget);
+    final route = ModalRoute.of(tester.element(find.byType(DesktopSettingsScreen)))!;
+    expect(route.transitionDuration, Duration.zero);
+    expect(route.reverseTransitionDuration, Duration.zero);
+    expect(find.byType(AppBar), findsNothing);
     expect(find.byType(TextField), findsNothing);
     expect(find.text('Default provider'), findsNothing);
     expect(find.byType(DropdownButtonFormField<String>), findsNothing);
     expect(find.text('DeepSeek API'), findsNothing);
+    await tester.tap(find.widgetWithText(TextButton, 'Providers'));
+    await tester.pumpAndSettle();
     expect(find.text('ChatGPT'), findsOneWidget);
     expect(find.descendant(of: find.byKey(const ValueKey('account:opencode')), matching: find.text('OpenCode')), findsOneWidget);
-    expect(find.text('Live'), findsOneWidget);
-    expect(find.text('On stop'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Preferences'));
+    await tester.pumpAndSettle();
+    Future<void> choose(Finder control, String label, bool Function() applied) async {
+      await tester.tap(control);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label).last);
+      await tester.pumpAndSettle();
+      for (var attempt = 0; !applied() && session.error == null && attempt < 100; attempt++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      expect(applied(), true, reason: session.error);
+      await tester.pumpAndSettle();
+    }
+    await choose(find.byWidgetPredicate((widget) => widget is DropdownButton<String> && widget.value == 'live'),
+      'On stop', () => session.dictationMode == 'on_stop');
+    await tester.tap(find.widgetWithText(TextButton, 'Appearance'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, false);
+    expect(find.descendant(of: find.byType(ProjectAvatar), matching: find.text('P')), findsOneWidget);
+    await choose(find.byType(DropdownButton<String>), 'Generated', () => session.projectAvatarStyle == 'generated');
+    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, true);
+    await choose(find.byType(DropdownButton<String>), 'Letters', () => session.projectAvatarStyle == 'letters');
     await tester.runAsync(() async {
-      await tester.tap(find.text('On stop'));
-      await callIsolate(database.port, 'load', {});
+      final saved = jsonObject(await callIsolate(database.port, 'load', {}));
+      expect(saved['settings']['project_avatar_style'], 'letters');
+      expect(saved['settings']['dictation_mode'], 'on_stop');
     });
     await tester.pumpAndSettle();
-    expect(session.dictationMode, 'on_stop');
+    expect(tester.widget<ProjectAvatar>(find.byType(ProjectAvatar)).generated, false);
+    tester.view.physicalSize = const Size(640, 900);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Settings pages'), findsOneWidget);
+    await tester.tap(find.byTooltip('Settings pages'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Preferences'));
+    await tester.pumpAndSettle();
+    expect(find.text('Interface'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    tester.view.physicalSize = const Size(1200, 900);
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep my draft');
-    await tester.tap(find.byTooltip('App settings'));
+    expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, 'Keep my draft');
+    await openSettings();
+    await tester.tap(find.widgetWithText(TextButton, 'Providers'));
     await tester.pumpAndSettle();
     expect(find.text('Sign out'), findsOneWidget);
     expect(find.text('Sign in to OpenCode'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Preferences'));
+    await tester.pumpAndSettle();
     expect(find.text('Steer'), findsOneWidget);
-    expect(find.text('Queue'), findsOneWidget);
+    expect(find.text('On stop'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Archived tasks'));
+    await tester.pumpAndSettle();
     final row = find.byKey(const ValueKey('archived:archived'));
     await tester.ensureVisible(row);
     await tester.pumpAndSettle();
@@ -1552,7 +1611,8 @@ void main() {
     expect(session.task, same(archived));
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('Restore task to continue'), findsOneWidget);
-    await tester.tap(find.byTooltip('App settings'));
+    await openSettings();
+    await tester.tap(find.widgetWithText(TextButton, 'Archived tasks'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(row);
     await tester.pumpAndSettle();
@@ -1561,6 +1621,10 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await callIsolate(database.port, 'load', {});
     });
+    for (var attempt = 0; archived.archiving && attempt < 100; attempt++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump();
+    }
     await tester.pumpAndSettle();
     expect(client.restored, [archived.id]);
     expect(find.text('Archived tasks (0)'), findsOneWidget);
@@ -1572,12 +1636,9 @@ void main() {
     });
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
-    await tester.tap(find.descendant(
-      of: find.byKey(const ValueKey('projects:archived')),
-      matching: find.byType(PopupMenuButton<String>),
-    ));
+    await tester.tap(find.byKey(const ValueKey('opencode-tab:archived')), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Archive task'));
+    await tester.tap(find.text('Archive session'));
     await tester.pump();
     await tester.runAsync(() async {
       await Future<void>.delayed(Duration.zero);
@@ -1635,9 +1696,9 @@ class _Client implements AgentClient {
       cancelled.add(params['task_id'] as String);
       return {};
     }
-    if (method == 'task.unarchive' || method == 'task.archive') {
-      if (method == 'task.unarchive') restored.add(params['task_id'] as String);
-      return {'task_id': params['task_id'], 'archived': method == 'task.archive'};
+    if (method == 'session.unarchive' || method == 'session.archive') {
+      if (method == 'session.unarchive') restored.add(params['sessionID'] as String);
+      return {'sessionID': params['sessionID'], 'archived': method == 'session.archive'};
     }
     if (method != 'task.send') throw StateError('Unexpected request: $method');
     sent.add(params);

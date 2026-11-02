@@ -122,9 +122,11 @@ trace reducers, or reconstructed inference files.
 The parity harness captures both harnesses' actual HTTP bodies at the same
 receiving OpenAI endpoint. At the end of each session it compares their final
 full inference requests with strict deep JSON equality, preserving array order.
-Only explicitly scoped generated IDs and numeric timing fields are removed;
-the original timing values are reported separately. Message shapes and other
-metadata remain strict. Codex's built-in compaction
+The top-level `client_metadata` telemetry field is excluded explicitly: Happen
+does not send it, and every case checks that omission on the received requests.
+Scoped generated IDs and numeric timing fields are removed; the original timing
+values are reported separately. Message shapes and all other fields remain
+strict. Codex's built-in compaction
 trace omits transport fields and is not used. The app's internal read-only
 context snapshot remains available for inspection; it is not comparison evidence.
 Request files contain full context and tool results; authorization headers and

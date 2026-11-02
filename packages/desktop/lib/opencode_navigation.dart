@@ -155,7 +155,7 @@ class OpenCodeSidebar extends StatelessWidget {
           onTap: () => onSelect(project, task), child: Opacity(opacity: task.archived && !selected ? .5 : status == 'working' && !selected ? .7 : 1,
             child: Padding(padding: const EdgeInsets.all(6), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                ProjectAvatar(project: project), const SizedBox(width: 6),
+                ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated'), const SizedBox(width: 6),
                 Expanded(child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, height: 16 / 12, color: opencodeFaint))),
                 const SizedBox(width: 6),
@@ -309,7 +309,7 @@ class OpenCodeTabStrip extends StatelessWidget {
               color: selected ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(6),
               child: InkWell(borderRadius: BorderRadius.circular(6), onTap: () => onSelect(project, task),
                 child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6), child: Row(children: [
-                  ProjectAvatar(project: project), const SizedBox(width: 6),
+                  ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated'), const SizedBox(width: 6),
                   Expanded(child: Tooltip(message: '${task.title}\n${project.path}', child: Column(
                     mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -387,7 +387,7 @@ class _OpenCodeHomeState extends State<OpenCodeHome> {
           : ListView.builder(itemCount: entries.length, itemBuilder: (context, index) {
               final (project, task) = entries[index];
               return ListTile(key: ValueKey('home:${task.id}'), contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                leading: ProjectAvatar(project: project),
+                leading: ProjectAvatar(project: project, generated: widget.session.projectAvatarStyle == 'generated'),
                 title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: opencodeInk)),
                 subtitle: Text(project.name, style: const TextStyle(fontSize: 12, color: opencodeFaint)),
                 trailing: Text(_age(task.lastActivity), style: const TextStyle(fontSize: 12, color: opencodeFaint)),
@@ -415,7 +415,8 @@ Widget _draftTab(DesktopSession session, SessionDraft draft, {required bool vert
     color: selected ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(6),
     child: InkWell(borderRadius: BorderRadius.circular(6), onTap: onTap,
       child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6), child: Row(children: [
-        if (project != null) ProjectAvatar(project: project) else const Icon(Icons.edit_outlined, size: 16, color: opencodeFaint),
+        if (project != null) ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated')
+        else const Icon(Icons.edit_outlined, size: 16, color: opencodeFaint),
         const SizedBox(width: 6),
         Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('New session', maxLines: 1, overflow: TextOverflow.ellipsis,

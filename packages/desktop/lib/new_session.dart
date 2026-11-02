@@ -49,13 +49,14 @@ class NewSessionScreen extends StatelessWidget {
                             side: const BorderSide(color: opencodeBorder)))),
                         menuChildren: [Builder(builder: (context) => _ProjectPicker(
                           projects: session.projects.where((project) => !project.removing).toList(), selected: project,
+                          generated: session.projectAvatarStyle == 'generated',
                           onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
                           onAdd: () { MenuController.maybeOf(context)?.close(); onAddProject(); }))],
                         builder: (context, controller, _) => Tooltip(message: 'Select project', child: TextButton(
                           onPressed: picking || session.submitting ? null : () => controller.isOpen ? controller.close() : controller.open(),
                           style: buttonStyle,
                           child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            if (project != null) ProjectAvatar(project: project)
+                            if (project != null) ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated')
                             else const Icon(Icons.folder_open_outlined, size: 16),
                             const SizedBox(width: 6),
                             Flexible(child: Text(project?.name ?? 'Select project', maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -101,11 +102,13 @@ class NewSessionScreen extends StatelessWidget {
 }
 
 class _ProjectPicker extends StatefulWidget {
-  const _ProjectPicker({required this.projects, required this.selected, required this.onSelect, required this.onAdd});
+  const _ProjectPicker({required this.projects, required this.selected, required this.onSelect, required this.onAdd,
+    required this.generated});
   final List<Project> projects;
   final Project? selected;
   final ValueChanged<Project> onSelect;
   final VoidCallback onAdd;
+  final bool generated;
 
   @override
   State<_ProjectPicker> createState() => _ProjectPickerState();
@@ -168,7 +171,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
           child: ListView(controller: _scroll, padding: const EdgeInsets.all(4), itemExtent: 48, children: [
               for (var index = 0; index < projects.length; index++)
                 _row(projects[index].name, projects[index].available ? projects[index].path : 'Folder unavailable · ${projects[index].path}',
-                  ProjectAvatar(project: projects[index], size: 20), active: _active == index,
+                  ProjectAvatar(project: projects[index], size: 20, generated: widget.generated), active: _active == index,
                   selected: projects[index] == widget.selected, enabled: projects[index].available,
                   onTap: () => widget.onSelect(projects[index])),
             ]))),
