@@ -41,6 +41,7 @@ void main() {
           {
             'type': 'reasoning',
             'id': 'reasoning-1',
+            'content': null,
             'summary': [
               {'type': 'summary_text', 'text': 'Planning ✓'},
             ],
@@ -92,12 +93,19 @@ void main() {
               'delta': 'Done ✓',
             }),
           );
+          for (var index = 0; index < output.length; index++) {
+            send(jsonEncode({'type': 'response.output_item.done',
+              if (bodies.length.isOdd) 'output_index': index, 'item': output[index]}));
+          }
           send(
             jsonEncode({
               'type': 'response.completed',
               'response': {
                 'status': 'completed',
-                'output': output,
+                'end_turn': bodies.length != 1,
+                // The completion packet is a summary, not a second delivery of
+                // the completed items. ChatGPT can leave this array empty.
+                'output': [],
                 'usage': {
                   'input_tokens': 128,
                   'output_tokens': 20,
@@ -159,6 +167,7 @@ void main() {
           cancellation: CancellationToken(),
         );
         expect(first.calls.single.input, 'text("✓");');
+        expect(first.endTurn, isFalse);
         expect(first.usage.cachedInputTokens, 64);
         // Cross the actual durable record encoding before the next provider request.
         final restored =

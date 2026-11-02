@@ -608,6 +608,9 @@ prefixes are obsolete and rejected for inference, without migration or fallback.
 Initial repository, environment, skill and deferred-tool context precedes the
 real user prompt in both the model buffer and durable history.
 Synthetic messages preserve their model role and harness context classification.
+Completed Responses stream items are retained even when the terminal completion
+packet has an empty output summary. `end_turn: false` continues inference after
+commentary instead of completing the session before its tool calls run.
 The desktop inspector fetches every page of one agent snapshot and serializes
 it through the inference adapter. Its JSON export contains only that request:
 OpenAI Responses `input`, native `tools`, and request settings, including the

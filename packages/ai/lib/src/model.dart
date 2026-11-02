@@ -255,9 +255,10 @@ class ModelUsage {
 }
 
 class ModelReply {
-  const ModelReply(this.output, this.usage);
+  const ModelReply(this.output, this.usage, {this.endTurn = true});
   final List<ConversationItem> output;
   final ModelUsage usage;
+  final bool endTurn;
   List<ToolCall> get calls => output.expand((item) => item.calls).toList();
   String get text => output
       .where((item) => item.role == 'assistant')
@@ -269,10 +270,12 @@ class ModelReply {
         .map((item) => ConversationItem.fromJson(jsonObject(item)))
         .toList(),
     ModelUsage.fromJson(jsonObject(json['usage'])),
+    endTurn: json['end_turn'] as bool? ?? true,
   );
   Json toJson() => {
     'output': output.map((item) => item.toJson()).toList(),
     'usage': usage.toJson(),
+    if (!endTurn) 'end_turn': false,
   };
 }
 

@@ -14,9 +14,10 @@ import 'request.dart';
 typedef Credentials = Future<Json> Function({bool refresh});
 
 class ResponsesReply {
-  const ResponsesReply(this.output, this.usage);
+  const ResponsesReply(this.output, this.usage, {this.endTurn = true});
   final List<Json> output;
   final Json usage;
+  final bool endTurn;
   String get text => output
       .where((item) => item['type'] == 'message')
       .expand((item) => (item['content'] as List? ?? []).whereType<Map>())
@@ -381,7 +382,7 @@ class ResponsesClient {
               onEvent?.call({'type': 'reasoning.delta', 'delta': '\n\n'});
             }
           case 'response.output_item.done':
-            items[(event['output_index'] as num).toInt()] = jsonObject(
+            items[(event['output_index'] as num?)?.toInt() ?? items.length] = jsonObject(
               event['item'],
             );
           case 'response.failed':
@@ -400,10 +401,12 @@ class ResponsesClient {
               throw _failure(response);
             }
             final indexes = items.keys.toList()..sort();
-            final output = response['output'] is List
-                ? (response['output'] as List).map(jsonObject).toList()
-                : indexes.map((index) => items[index]!).toList();
-            return ResponsesReply(output, jsonObject(response['usage'] ?? {}));
+            // Completed stream items are authoritative. The terminal packet can
+            // contain only usage/end-turn metadata and an empty output summary.
+            final output = items.isNotEmpty
+                ? indexes.map((index) => items[index]!).toList()
+                : (response['output'] as List? ?? []).map(jsonObject).toList();
+            return ResponsesReply(output, jsonObject(response['usage'] ?? {}), endTurn: response['end_turn'] != false);
         }
       }
       throw const ModelFailure(

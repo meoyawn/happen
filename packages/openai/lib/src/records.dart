@@ -188,7 +188,7 @@ List<Json> _gptItems(ConversationItem item) {
         'id': 'rs_${item.id}',
         ...native,
         'summary': summary,
-        if (content.isNotEmpty) 'content': content,
+        'content': content.isEmpty ? null : content,
       },
     ];
   }

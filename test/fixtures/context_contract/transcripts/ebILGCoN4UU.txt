@@ -1,0 +1,583 @@
+[14:01] is almost misleadingly simple. The
+[14:04] harness tells the LLM, "Hey, here is a
+[14:07] special syntax we have that you can
+[14:10] respond with to make me go do things. If
+[14:13] you respond in this syntax, I will read
+[14:16] a file for you. If you respond in this
+[14:18] syntax, I will edit a file for you. If
+[14:22] you respond in this syntax, I will push
+[14:24] up to GitHub or run a command or access
+[14:26] your memory or go cost you a bunch of
+[14:29] money on some API. For the LM to do
+[14:31] something, it needs a syntax it can
+[14:33] respond in that a harness can
+[14:35] understand, too. An LLM without a
+[14:38] harness is like a chef in an empty
+[14:40] kitchen. They can tell you what they
+[14:41] would do, but they can't do anything.
+[14:43] And the harness is what allows the LLM
+[14:45] to do things. So, let's play a fun game.
+[14:48] I'm going to name some products and you
+[14:50] guys are going to tell me where they
+[14:52] fall here. Are they an interface or are
+[14:55] they a harness? Let's start with an easy
+[14:57] one. Twitch TV. Is Twitch an interface
+[15:00] or a harness? Interface. Awesome. Nice
+[15:04] and easy. So, a Twitch is an interface.
+[15:06] As you can guess, so is YouTube. Let's
+[15:09] do another easy one. The Claude Code
+[15:12] Agent SDK. Is this an interface or a
+[15:15] harness?
+[15:17] harness. Awesome. Great job, chat. If
+[15:19] you're not familiar with the agent SDK,
+[15:21] the point of the agent SDK is to give
+[15:24] your LLM, well, specifically Claude, all
+[15:27] of the things it needs in order to
+[15:29] build, work on a computer, edit code,
+[15:32] etc. It describes it here as an agent's
+[15:33] an application that completes tasks by
+[15:35] planning its own steps and calling tools
+[15:37] that read files, run commands, or edit
+[15:39] code. The agent SDK gives you the same
+[15:41] tools, agent loop and context management
+[15:43] that power claimable in Python and
+[15:46] TypeScript. So here is where the
+[15:49] controversial question comes. What is
+[15:51] cloud code? Is cloud code a harness or
+[15:54] an interface? A lot of y'all are saying
+[15:56] both.
+[15:58] Handful are saying interface. I would
+[16:01] argue quad code is an interface that
+[16:04] bundles a harness. And the harness it
+[16:07] bundles, at least in the desktop app, is
+[16:09] agent SDK. So the claude app on your
+[16:12] computer is an interface. And the
+[16:14] interface plugs into the agent SDK,
+[16:17] which is a harness. And if you don't
+[16:19] believe me here, let's look at
+[16:20] anthropics own words. If you want to
+[16:22] embed cloud codes agent into your own
+[16:24] Python TypeScript app and a process you
+[16:26] own, use the Asian SDK, the library that
+[16:28] runs the cloud code binary, yada yada
+[16:29] yada. But then we have if you want to do
+[16:32] interactive development or run one-off
+[16:33] tasks from a terminal, they recommend
+[16:35] Cloud Code the CLI because it's a
+[16:37] terminal interface built for daily
+[16:39] interactive use. The thing that makes
+[16:41] this confusing is the Cloud Code binary
+[16:43] bit, but the Cloud Code binary, that's a
+[16:46] harness. The Asian SDK makes it easier
+[16:48] to use that harness, but it's still just
+[16:50] a harness. The Cloud Code CLI, that
+[16:53] without a question is an interface.
+[16:55] Don't forget about this hierarchy thing
+[16:56] because I promise we are coming back to
+[16:58] this. It's probably the most important
+[17:00] part of the video arguably because for
+[17:02] this next part to make sense, I'm going
+[17:04] to have to zoom out a little more
+[17:06] because a lot of people are confused
+[17:07] about T3 code specifically. This is a
+[17:10] big part of why I'm making this video
+[17:12] because of the volume of confusion
+[17:14] around what T3 code is because T3 code
+[17:17] is not a harness. It's an interface. It
+[17:19] does give some things to the harness. It
+[17:22] does change how it works in some ways,
+[17:24] but T3 code is not a harness. I will
+[17:28] explain in a bit. First, I want to talk
+[17:30] about tools, though, because that's a
+[17:32] big part of what makes harnesses useful
+[17:33] is the tools that they expose to agents.
+[17:36] And up here, I've drawn a line
+[17:38] separating the row with the humans and
+[17:40] the LLMs from this row I referred to as
+[17:42] the tool plane. This is the things that
+[17:44] the harness exposes to the LLM. Also
+[17:47] worth noting, I I delayed this in my
+[17:49] article that I wrote about everything,
+[17:50] which by the way, if you have co-workers
+[17:51] that you're too embarrassed to send
+[17:52] videos to, the what is a harness blog is
+[17:55] on t3.gg GG now and I explain all of
+[17:57] this there for the most part. So for
+[17:59] your co-workers that may not be into me
+[18:02] or my videos, maybe send that to them
+[18:04] for them to read this because I have
+[18:06] been amazed at how many devs just don't
+[18:09] understand what a harness is. Funny
+[18:10] enough, this all started because a Nyx
+[18:13] Foundation member didn't know what a
+[18:14] harness was and was trying to dunk on me
+[18:16] for building a harness when I'm not.
+[18:19] Anyways, the thing I didn't rush to in
+[18:22] this article, I actually went so out of
+[18:23] my way in my article to delay this word
+[18:26] until the very end. It's the word agent.
+[18:28] An agent is a combo of a harness and an
+[18:32] LLM. The agent is an LLM that has the
+[18:35] ability to complete tasks that are
+[18:37] scoped or unscoped via a harness that
+[18:40] provides it the tools, the context, the
+[18:43] system prompt that describes the role
+[18:45] and all of those types of things in
+[18:46] order to allow the LLM to do more. And
+[18:49] it is the combo of a harness and an LLM
+[18:51] that becomes an agent. Anyways, now that
+[18:53] we understand that, let's talk about
+[18:54] these tools. Most harnesses come with
+[18:56] some tools built in, some more than
+[18:58] others. Pi has basically no tools
+[19:01] included. It's basically just bash.
+[19:02] Claude code and claude agent SDK come
+[19:04] with a lot more. They have a spawn sub
+[19:06] aent tool. They have read file, edit
+[19:08] file, read skill, create artifact, bash
+[19:10] of course, and so many other things. But
+[19:12] you can also bring tools in from other
+[19:14] places. Like if you install the
+[19:15] TypeScript plugin in Cloud Code, you'll
+[19:18] get some useful helper tools like go to
+[19:20] definition or find reference. If you
+[19:22] install KUA for example, which is a
+[19:24] shared computer use control system
+[19:26] that's open source that will be in T3
+[19:28] code very soon. And if all goes well,
+[19:30] that will introduce tools like
+[19:31] screenshot, click, and type that will
+[19:34] allow for your agent to trigger things
+[19:36] on your computer. Does the inclusion of
+[19:38] tools mean that Typescript is a harness?
+[19:41] No, obviously not. Typescript is just a
+[19:44] plugin for your harness that introduces
+[19:46] additional tools that your agent can
+[19:47] use. Same with the Kua bindings and
+[19:50] drivers. Kua is not a harness. Kua is a
+[19:53] set of tools that you can include in
+[19:54] your harness that enable your agents to
+[19:56] do more things. So, where does T3 code
+[19:58] fit here? We don't really add new tools
+[20:01] because we're more focused on the other
+[20:03] side here, what I call the data plane.
+[20:05] This is interfaces you give your agent
+[20:07] to access things outside of the harness.
+[20:11] Technically speaking, you could build a
+[20:13] lot of these things in as tools, but the
+[20:15] point is that the the thing, so to
+[20:17] speak, lives outside of the harness.
+[20:19] When you add a tool to the harness,
+[20:21] you're putting something in the kitchen.
+[20:23] Whereas with the MCP and data plane
+[20:25] stuff, I think of this more like a
+[20:27] cookbook that you're leaving in the
+[20:28] kitchen. The LLM has the option to read
+[20:31] the cookbook and decide if it wants to
+[20:33] do the things in it or not, or it can
+[20:34] just leave it outright and not touch it,
+[20:36] not care. But that's up to the LM if
+[20:38] it's going to bother reading the book or
+[20:39] not. It obviously can ignore the tools
+[20:41] in the kitchen as well, but the tools
+[20:43] are tools. They're just all around. The
+[20:45] point of the MCP is that you're bringing
+[20:47] in external information and interfacing
+[20:49] with other things, so to speak. This
+[20:51] makes a lot of sense for things like the
+[20:53] Superbase MCP or the Postthog MCP
+[20:55] because the point of these is to give
+[20:57] your agent access to data that is
+[20:59] somewhere else. Whether it is your
+[21:00] Superbase product database or your
+[21:02] analytics on Post Hog, MCP is a way for
+[21:05] your agents to access that. So why the
+[21:06] hell is T3 code here? Tools are very
+[21:09] harness specific. When you create a
+[21:11] tool, you have to do it the way the
+[21:12] harness expects. You have to support the
+[21:14] syntax and capabilities the harness
+[21:16] expects. And that code that you write,
+[21:18] it kind of lives in the harness. You're
+[21:21] effectively shipping a binary that runs
+[21:23] inside of the harness. It could just be
+[21:26] TypeScript. It could just be JavaScript.
+[21:27] It could just be something even simpler
+[21:29] like Python or it could be an
+[21:30] executable, a bash script, a very thin
+[21:33] three lines of code that hits an
+[21:34] external API. But you're shipping the
+[21:36] code when you ship a tool. MCPs are
+[21:39] bindings. They're not code. Could we
+[21:41] have taken all the things the T3 code
+[21:43] MCP provides and make them custom tools
+[21:46] that exist for every harness?
+[21:48] Hypothetically, yes, we could. But by
+[21:50] putting it in the MCP like this, we are
+[21:53] able to have all the code be in T3 code,
+[21:55] and we're effectively just letting the
+[21:57] agent interface with that through a
+[22:00] agreed upon contract where instead of
+[22:02] the harness executing code, the harness
+[22:05] is giving T3 code instructions to
+[22:07] execute code instead. This allows us to
+[22:10] build our tools and our systems in ways
+[22:11] that are much more generic and not as
+[22:14] much interfering with how the harnesses
+[22:15] work by default. And this is why the T3
+[22:17] code MCP is so cool. Since we're not
+[22:20] interfering with the tools built in to
+[22:22] your harness, if you have Cloud Code
+[22:24] installed and you're signed up for the
+[22:25] $200 plan or the $100, even the $20, if
+[22:28] you have Cloud Code installed in your
+[22:29] computer and then you install T3 Code,
+[22:32] Claude Code will just work in T3 Code
+[22:34] with your sub the way that you're used
+[22:36] to. All your skills, all your plugins,
+[22:37] all your everything will just work. But
+[22:39] it does add something. It adds the T3
+[22:42] Code MCP. So all the things you normally
+[22:44] do with claude are there. But if you
+[22:46] want to do something it can't normally
+[22:47] do like spin up another thread with
+[22:49] codeex or have a sub agent that's using
+[22:51] anti-gravity or grock build or something
+[22:54] like that, that's what the T3 code MCP
+[22:56] provides. It allows your agent to search
+[22:58] through your T3 code history and find
+[23:00] things from other harnesses. It allows
+[23:01] it to send messages to other threads or
+[23:03] spin up sub aents with whatever harness
+[23:05] you want. If we let those tools live in
+[23:08] the harness, we're kind of stuck at that
+[23:10] layer. If we think of this as like the
+[23:11] LM at the bottom, then the harness, then
+[23:14] the interface, then the thing that we're
+[23:15] building. If we put everything in the
+[23:17] harness, then we can't go deeper. Since
+[23:19] we built this a different layer higher
+[23:22] up with this MCP layer, we're able to
+[23:25] let one harness control another harness
+[23:27] because it's not really controlling that
+[23:29] other harness. It is telling us in this
+[23:31] MCP layer that we should go spawn this
+[23:34] other harness and then we can be the
+[23:36] broker and pass messages between the
+[23:37] things. This leaves us with an important
+[23:39] question. T3 code is not a harness. Then
+[23:41] what is T3 code? I will answer this in a
+[23:44] second because we already have another
+[23:45] cliffhanger. As I mentioned before with
+[23:47] the things mattering less and less as we
+[23:49] go up the chain, engineers tend to get
+[23:52] really into the layer above the one that
+[23:56] died nearest to them getting into
+[23:58] things. Sure, we've all heard the
+[24:00] classic comment that your music taste is
+[24:03] highly reflective of what you were into
+[24:05] in high school. Most humans that have
+[24:07] favorite musicians have very similar
+[24:10] favorite musicians at 16 and 36. Even
+[24:13] though they've more than doubled their
+[24:14] age, you kind of during like high school
+[24:17] and college, the thing you're into then
+[24:19] it sticks. Engineers are similar.
+[24:21] Whatever layer stopped being cool when
+[24:24] you got into engineering, the layer just
+[24:26] above you're going to be really into. If
+[24:30] you want a good example of this, you're
+[24:32] looking at one. When I got into software
+[24:34] dev, we were moving away from the
+[24:36] endless language wars towards a new era
+[24:39] of framework wars. As Typescript became
+[24:42] the industry standard, like everyone was
+[24:44] using it, we shifted from fighting over
+[24:46] different flavors and syntaxes of JS to
+[24:49] the frameworks we were building our
+[24:50] stuff with. When my YouTube started to
+[24:52] blow up, the hot topic was Nex.js versus
+[24:55] speltkit versus solidjs versus nux. And
+[24:59] it feels like decades ago. That was like
+[25:01] two years ago, not even. And I cared a
+[25:04] lot about that because that was the
+[25:06] layer that was getting more interesting
+[25:08] as I was getting really into software
+[25:10] dev. The thing that was cool when I was
+[25:12] in college was languages, but they were
+[25:14] kind of on the way out. And by the time
+[25:15] I got a job, frameworks were the
+[25:17] conversation. So that was where I was so
+[25:20] focused. That's where I talked about
+[25:22] things the most. So much so that my
+[25:23] roommate was annoyed and I started
+[25:25] making YouTube videos just to vent about
+[25:26] these things. But thankfully, for
+[25:29] whatever reason, I'm pretty sure it's
+[25:30] ADHD, I really like when these changes
+[25:33] happen. When the focus shifts in the
+[25:36] industry up a layer, it excites me a
+[25:38] whole bunch because I love abstractions.
+[25:39] I love feeling dumb. I love learning new
+[25:41] things. So when the focus shifted away
+[25:43] from React versus Solid and started
+[25:45] shifting towards how we defined our
+[25:47] infrastructure alongside our front-end
+[25:49] frameworks, things like Next and Server
+[25:51] components versus all the crazy RPC
+[25:53] stuff everybody else was trying, server
+[25:55] rendering, SSR, RSC, ISR, PPR, all these
+[25:59] things, that was so fun for me. And then
+[26:01] the abstraction became working with AI
+[26:04] and agents and all those other details
+[26:06] started to fall. I was uniquely prepared
+[26:08] for this because I was into webdev where
+[26:11] things shift all the time. I had
+[26:12] transitioned from a back-end dev doing
+[26:14] Python, Ruby, and Elixir for Twitch and
+[26:17] AWS to a front-end TypeScript front
+[26:20] functional programming nerd teaching all
+[26:21] of Twitch to do more FP on the front end
+[26:24] to doing YouTube videos and
+[26:25] infrastructure and all these other crazy
+[26:26] things. And now one of the funniest
+[26:28] moments I had uh recently, I have no
+[26:30] other place I can put this. I'm just
+[26:31] going to put it in this video. Why not?
+[26:32] Thanks for watching. Also, red button
+[26:34] underneath if you haven't hit it. Helps
+[26:35] us out a bunch.
+[26:37] I was chatting with Boris, the creator
+[26:40] of Claude Code, a few days ago. We had
+[26:42] never met before. He absolutely knew who
+[26:45] I was. I obviously knew who he was. I
+[26:47] told him I wanted to talk about some
+[26:48] webdev stuff and he was very confused.
+[26:50] He was one of the OG React team guys and
+[26:53] was at Meta in the early crazy days of
+[26:55] React. He was close with a lot of the
+[26:57] original TypeScript team as well. I knew
+[26:59] him from his history in the web dev
+[27:01] world. He had no idea at all that I was
+[27:05] a webdev. He thought I was just the AI
+[27:07] dev guy. No concept in his head that I
+[27:11] used to be the like webdev content
+[27:14] creator guy and that I had been working
+[27:16] with the React core team for years at
+[27:18] that point. Like the the number of
+[27:20] mutual friends we had is crazy. The
+[27:22] number of my close friends that he had
+[27:25] interviewed and hired at Meta was
+[27:26] hilarious and he just had no idea
+[27:29] because that's just not the topic right
+[27:32] now. But this also in some ways shows
+[27:34] the thing that is crazy here, which is
+[27:36] somebody else who was in my space with
+[27:38] me and we both left it. Like neither of
+[27:41] us are known for webdev stuff nowadays.
+[27:43] The fact that someone that important in
+[27:46] that space, like a actual hero of mine
+[27:48] from that era, had no idea I was in that
+[27:51] space was very weird and jarring, but
+[27:53] also I think showcases how quick these
+[27:57] transitions happen. where I went from
+[27:59] the guy who couldn't shut up about
+[28:00] server components to the point where
+[28:01] like I was explaining server components
+[28:03] to my goddamn mother. Like I just I
+[28:05] cared too much about these things and I
+[28:06] just did a call with my mom a few days
+[28:08] ago where I was trying to explain why
+[28:09] Gemini is so far behind. What I'm into
+[28:11] is what I'm into. And what I'm into
+[28:13] right now is this. I bring this up
+[28:15] because this has always made me get
+[28:18] along poorly with a lot of engineers, a
+[28:21] lot of really talented engineers even.
+[28:23] Because when I see the abstraction
+[28:25] happen, I get hyped. Because all that
+[28:27] time I've spent living in the layer I'm
+[28:29] in, as fun and exciting as it was,
+[28:32] doesn't matter anymore because there's a
+[28:34] new layer that has a high chance of
+[28:36] wiping out the layer before, which means
+[28:38] I get to learn again. I get to do the
+[28:39] thing from scratch again. I learned this
+[28:42] love in a weird place. Skateboarding. I
+[28:45] am going to do one last weird tangent
+[28:48] analogy. I'm sorry, but entertain me,
+[28:51] okay? Okay, cuz when I make a video
+[28:52] about skateboarding, nobody cares. So,
+[28:53] if I can sneak in a 30 secondond to
+[28:55] minute long rant about it, I'm going to
+[28:56] do it when I have the opportunity. Okay,
+[28:58] ones in chat. If you've ever run track
+[29:01] and field before, even if just like once
+[29:04] or twice in high school, have you run a
+[29:07] around on a track? A lot of y'all have,
+[29:09] of course, right? Okay.
+[29:12] Twos. If you've ever jumped over a
+[29:14] hurdle, you know, the big stand things.
+[29:17] things. I know a lot of y'all aren't
+[29:18] native English speakers, but like the
+[29:19] big like flat thing that you jump over
+[29:22] when you're running in a track. Seen a
+[29:23] lot of twos. So, a lot of y'all have
+[29:25] jumped over a hurdle before. I want you
+[29:27] to imagine in your head how that felt.
+[29:31] Just stare at the hurdle and imagine
+[29:34] yourself jumping over it. Just get the
+[29:37] the image in your head. Think about
+[29:39] which leg you jump off, which leg goes
+[29:42] in front, how your shoulders are
+[29:44] positioned, how your body feels as you
+[29:47] fly over this thing. You have that in
+[29:49] your head. Now, now that you have that
+[29:51] in your head, swap the legs. If you were
+[29:53] launching off the left with your right
+[29:54] in front, mentally switch to your left
+[29:57] leg in front and launching off right.
+[29:59] Vice versa if you're the opposite.
+[30:02] Imagine in your head, how would it feel
+[30:04] to swap the legs? One's in chat if you
+[30:07] think that's normal. twos in chat if
+[30:09] like it hurts your brain to even imagine
+[30:11] using the wrong leg. Thank you guys.
+[30:13] Lots of twos. I could go really in depth
+[30:16] around the mentality of like which leg
+[30:18] matters and all of this, but I'm going
+[30:20] to tell you a fun thing. This isn't
+[30:21] lefty or righty where like if you're a
+[30:23] righty, you use your right leg, and if
+[30:24] you're a lefty, you use your left leg or
+[30:26] something like that. Righty versus lefty
+[30:28] is like six to one split. Right leg or
+[30:31] left leg is a 50/50 split. like it is
+[30:35] straight up even split which leg you
+[30:37] jump off of. Everyone's different. In
+[30:39] skateboarding, we have the same thing.
+[30:42] So, in skateboarding, I'm goofy footed,
+[30:44] which means I skate with my right foot
+[30:47] forward. But a thing's going to happen
+[30:48] here. I did a 180. Now, I'm skating
+[30:52] backwards. You can see how uncomfortable
+[30:53] my shoulders are. But I could still do a
+[30:56] laser flip, which is one of the hardest
+[30:57] flip tricks. I did that switch this
+[31:00] trick as well, cuz I'm normally right
+[31:02] foot forward. That was a switch Casper
+[31:04] flip because I love doing goofy tricks.
+[31:06] Not goofy as in like my stance, but
+[31:08] silly tricks in the wrong stance. The
+[31:11] reason it's called Goofy is rumored to
+[31:13] be because there was a video a long time
+[31:15] ago of Goofy from Disney and Mickey
+[31:18] Mouse riding a surfboard with his right
+[31:21] leg forwards. They started calling it
+[31:22] Goofy stance. The reason I bring this up
+[31:26] is because of a weird phenomena in
+[31:28] skateboarding. In most sports,
+[31:30] especially things like track, it's your
+[31:32] goal to be as good as possible at all
+[31:35] costs at the thing. So, if there's one
+[31:38] leg that you're better at jumping off
+[31:39] of, you should always use that leg. In
+[31:41] skateboarding, you are rewarded for
+[31:44] learning things both ways. We call it
+[31:47] switch. So, when you learn a trick in
+[31:49] your regular stance, learning it in your
+[31:52] switch stance is like a flex. It's
+[31:54] similar to like being a basketball
+[31:56] player and learning how to get
+[31:57] three-pointers with both your hands for
+[31:59] fun. But in basketball, we would just
+[32:02] laugh at you for that. That's not worth
+[32:03] it. But in skateboarding, that is
+[32:06] rewarded heavily. Like it is one of the
+[32:08] most disciplined things you can do in
+[32:09] skating is have tricks in both stances.
+[32:12] People outside of skating will see that
+[32:14] and not care. They won't understand that
+[32:16] you just made the thing four times
+[32:18] harder by doing it backwards. But for
+[32:21] those of us who do care, it's the
+[32:23] coolest thing ever. Like I can tell so
+[32:25] quickly watching a skater doing a trick
+[32:28] if that's their regular stance or not.
+[32:29] It's just intuitive for me. If you've
+[32:32] been programming for a while, you can do
+[32:34] something similar to this. You take a
+[32:36] programmer who has written JavaScript
+[32:38] their whole life and you make them write
+[32:39] an app in Go. They probably can do it.
+[32:42] They'll have to Google search a bunch.
+[32:44] And most importantly, you'll know
+[32:46] because the syntax they write is going
+[32:47] to look a lot more like JavaScript than
+[32:49] most Go code does. The analogy also
+[32:51] holds for people outside of our world
+[32:53] where if somebody built a really cool
+[32:55] website and they told their friend and
+[32:57] their friend's like, "That's awesome.
+[32:59] Can you build me a thing for my Windows
+[33:01] computer?" And you're like, "No, sorry.
+[33:03] I only know how to build iPhone apps."
+[33:05] That's going to be really confusing to
+[33:06] your friend because they don't see a
+[33:08] difference between doing the thing for
+[33:10] an iPhone and doing the thing for a
+[33:11] Windows computer. They just see you as a
+[33:13] builder. In skateboarding, somebody
+[33:15] could do a trick with their right foot
+[33:17] forward and then do the same trick with
+[33:18] their left foot forward. And to most
+[33:20] people it wouldn't look any different,
+[33:21] but to skaters it's like, "Oh my
+[33:23] god, that is so insane." And if a
+[33:25] programmer wrote the same app by hand in
+[33:27] five programming languages, nobody
+[33:29] outside of the devil world would give a
+[33:31] but we would be like, "Oh my god,
+[33:32] that person's a wizard." If they could
+[33:33] rewrite the same thing in five
+[33:35] languages, they know their I bring
+[33:37] this up because it's not practical. As a
+[33:39] software dev, you would make way more
+[33:41] money becoming an industry leader at one
+[33:44] specific technology or thing than you
+[33:46] would being a more general person. If
+[33:49] you got really good at JavaScript,
+[33:51] didn't know anything about servers,
+[33:52] you're probably going to make 500k a
+[33:54] year at a fang company until you decide
+[33:55] to retire. Same the other way. Some of
+[33:58] the most talented and more importantly,
+[33:59] best paid devs I know seem like they've
+[34:02] never written code before if you put
+[34:03] them in a React codebase. But you put
+[34:05] them in some like ancient C++ hellscape,
+[34:09] they will fix it. They will make it
+[34:10] faster. They will thrive in that
+[34:13] environment. So why did I go down the
+[34:14] skateboarding tangent for so long? It's
+[34:16] cuz skateboarding taught me to love
+[34:18] stuff that makes no sense. Things that
+[34:20] do not matter outside of my own
+[34:22] enjoyment of them. When I learn a trick
+[34:25] switch, I'm not doing that for anything
+[34:27] but me. And more importantly, I'm not
+[34:29] doing it for anything other than the
+[34:30] feeling of doing something more
+[34:33] difficult, of doing it despite the fact
+[34:35] that it feels unnatural. And I grew to
+[34:38] love this feeling of unnatural. Because
+[34:40] no matter how good you are at a kick
+[34:42] flip, you can do a million kick flips,
+[34:45] if you've never tried a switch flip, you
+[34:46] still have to learn from scratch. You
+[34:48] actually get to a point where the more
+[34:49] you do normal kick flips, the harder it
+[34:52] is for you to rewire your brain to do it
+[34:53] backwards. there's a a very rough point
+[34:55] you get in the journey of mastering a
+[34:58] thing where you've mastered it so much

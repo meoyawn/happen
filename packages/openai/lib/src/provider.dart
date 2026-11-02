@@ -192,6 +192,7 @@ class OpenAIProvider implements ModelProvider {
     return ModelReply(
       reply.output.map(gptItemFromNative).toList(),
       _usage(reply.usage),
+      endTurn: reply.endTurn,
     );
   }
 

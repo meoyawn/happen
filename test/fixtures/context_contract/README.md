@@ -54,9 +54,18 @@ extra user, bundled, or plugin skill fails the isolation assertion.
 
 **Only the Responses API is synthetic.** `cases.dart` supplies native output
 arrays. The local HTTP peer emits real Responses SSE and advances a scripted
-step only after the previous call IDs have actual tool results. File operations,
-JavaScript, SQLite, instruction discovery, skills, tool search, and MCP execution
-are real. The web case supplies deterministic hosted `web_search_call` results and
+step only after the previous call IDs have actual tool results. Completed output
+items arrive through `response.output_item.done`; the terminal completion packet
+contains an empty output summary, matching the ChatGPT streaming path. File
+operations, JavaScript, SQLite, instruction discovery, skills, tool search, and
+MCP execution are real.
+
+The `streamed-continuation` case additionally omits stream indexes and sends
+commentary with `end_turn: false`. Neither harness may stop there: both must make
+the next inference, actually read the fixture file through the shell, and return
+its receipt in the final request. The fixture advances past commentary only when
+the next received request retains the commentary item IDs it actually issued.
+The web case supplies deterministic hosted `web_search_call` results and
 URL citations through that same Responses stream, then verifies their retention
 in the next actual inference request. It needs no live internet query or a second
 fake search implementation. Sleep is exercised directly, including invalid zero
@@ -75,6 +84,21 @@ broad query does not select `vm_service` among the default eight in either
 harness. A second targeted `dart vm_service evaluate expression` query must
 return that exact tool and its declaration.
 
+The `tldw-youtube` case is derived from the supplied
+`tldw-https-www-youtube-com-watch-v-ebilgcon4uu-b4b0ca13.json` export. It combines
+introductory commentary, parallel `Promise.allSettled` shell receipts, hosted
+YouTube open/search items, four opaque reasoning items with summaries, and a
+truncated transcript read followed by a timestamp-filtered reread. Commentary and
+the final reasoning-only step must continue to inference rather than ending the
+turn. Every emitted model item must survive in order through the seventh request.
+The transcript fixture preserves the export's 14:01–34:58 excerpt byte-for-byte.
+Cached-file discovery replaces network transcription, paths are fixture-local,
+encrypted reasoning uses distinct sentinels, and the initial shell budget is
+lowered to truncate the excerpt without truncating the surrounding JSON receipt.
+No YouTube request, Bun script, personal instruction tree, or user MCP is used.
+Reasoning without raw content is replayed as `content: null`, matching Codex's
+wire encoding rather than omitting the field.
+
 ## Assertions and evidence
 
 Only actual requests received by the shared OpenAI endpoint are compared. At
@@ -91,6 +115,9 @@ every case independently asserts its absence in Happen's received requests befor
 the shared comparison excludes it. Raw captures retain Codex's telemetry unchanged.
 Every extracted timing value is retained separately in the report, with its
 request path, kind and units.
+Shell IDs and timings inside indexed fulfilled `Promise.allSettled` receipts use
+the same validation/extraction as direct shell results; settlement, index, and
+all remaining nested fields stay strict.
 There is no similarity threshold, judge,
 golden copied from Happen, or expected-failure bypass. An unsupported Codex
 capability is a real failure to fix or configure consistently, not a passing

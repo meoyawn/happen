@@ -1,5 +1,21 @@
+import 'tldw.dart';
+
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': {}, 'contains': [], 'absent': []},
+  {
+    'id': 'streamed-continuation', 'workflow': 'continuation',
+    'prompt': 'Read receipt.txt using a tool after the introductory commentary, then reply READY.',
+    'files': {'receipt.txt': 'STREAMED_TOOL_RECEIPT=mango-47\n'},
+    'contains': [], 'absent': ['STREAMED_TOOL_RECEIPT'], 'continue_after': [0], 'indexless_stream': true,
+    'responses': [
+      [{'type': 'message', 'role': 'assistant', 'phase': 'commentary',
+        'content': [{'type': 'output_text', 'text': "I'll check the requested tools."}]}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'streamed_receipt',
+        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt",login:false}));'}],
+      [_ready],
+    ],
+    'result': 'STREAMED_TOOL_RECEIPT',
+  },
   {
     'id': 'web-search', 'workflow': 'web',
     'prompt': 'Search the web for the context-contract fixture, cite its source, and record the receipt.',
@@ -19,6 +35,7 @@ const contextCases = <Map<String, dynamic>>[
     ],
     'result': 'WEB_CONTEXT_RECEIPT',
   },
+  tldwYoutubeCase,
   {
     'id': 'clock-sleep', 'workflow': 'sleep', 'prompt': 'Pause briefly using clock.sleep, then reply READY.',
     'files': {}, 'contains': [], 'absent': [],

@@ -722,6 +722,7 @@ class _Agent {
         if (calls.isEmpty) {
           if (await takeSteering()) continue;
           if (await takeNotifications()) continue;
+          if (!reply.endTurn) continue;
           if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
           await finish(reply.text);
           return;
