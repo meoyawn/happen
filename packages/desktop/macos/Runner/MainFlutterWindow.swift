@@ -1,10 +1,12 @@
 import Cocoa
 import FlutterMacOS
+import IOKit.hidsystem
 
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var desktopChannel: FlutterMethodChannel?
   private var dictationAudio: DictationAudioBridge?
   private var clipboard: ClipboardBridge?
+  private var shortcutModifierCompatibility: SyntheticCommandModifierCompatibility?
   private var statusItem: NSStatusItem?
   private var fullscreenCloseObserver: NSObjectProtocol?
   private let windowControls = WindowControlsView()
@@ -166,6 +168,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     RegisterGeneratedPlugins(registry: flutterViewController)
     dictationAudio = DictationAudioBridge(messenger: flutterViewController.engine.binaryMessenger)
     clipboard = ClipboardBridge(messenger: flutterViewController.engine.binaryMessenger)
+    shortcutModifierCompatibility = SyntheticCommandModifierCompatibility(window: self)
 
     let channel = FlutterMethodChannel(
       name: "happen/desktop", binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -233,6 +236,33 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   deinit {
     if let observer = fullscreenCloseObserver { NotificationCenter.default.removeObserver(observer) }
     if let item = statusItem { NSStatusBar.system.removeStatusItem(item) }
+  }
+}
+
+/// VoiceInk supplies generic Command flags; Flutter synchronizes the left/right
+/// device bits. Normalize before AppKit and Flutter process key equivalents.
+private final class SyntheticCommandModifierCompatibility {
+  private var monitor: Any?
+
+  init(window: NSWindow) {
+    monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak window] event in
+      guard let window = window,
+            event.window === window || (event.window == nil && NSApplication.shared.keyWindow === window) else { return event }
+      return Self.normalize(event)
+    }
+  }
+
+  private static func normalize(_ event: NSEvent) -> NSEvent {
+    let commandSides = UInt(NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK)
+    guard event.modifierFlags.contains(.command),
+          event.modifierFlags.rawValue & commandSides == 0,
+          let copied = event.cgEvent?.copy() else { return event }
+    copied.flags.insert(CGEventFlags(rawValue: UInt64(NX_DEVICELCMDKEYMASK)))
+    return NSEvent(cgEvent: copied) ?? event
+  }
+
+  deinit {
+    if let monitor = monitor { NSEvent.removeMonitor(monitor) }
   }
 }
 

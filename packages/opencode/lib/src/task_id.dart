@@ -1,6 +1,6 @@
 import 'dart:math';
 
-// SessionID.create -> "ses_" + Identifier.descending() in the pinned schema.
+// OpenCode SessionID.create -> "ses_" + Identifier.descending().
 class TaskIds {
   TaskIds({int Function()? clock, Random? random})
       : _clock = clock ?? (() => DateTime.now().millisecondsSinceEpoch),

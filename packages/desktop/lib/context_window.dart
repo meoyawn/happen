@@ -7,11 +7,13 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart' show readContextSnapshot;
 
 import 'appearance.dart';
+import 'code_highlight.dart';
 import 'conversation_markdown.dart';
+import 'inference_request.dart';
 import 'session.dart';
 import 'session_export.dart';
 
-/// Inspects a read-only snapshot of the agent's actual model buffer.
+/// Inspects the inference request built from a frozen agent snapshot.
 class SessionContextWindow extends StatefulWidget {
   const SessionContextWindow({super.key, required this.session, required this.task, this.downloadsDirectory});
   final DesktopSession session;
@@ -27,7 +29,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   Json? _snapshot;
   String? _error;
   bool _exporting = false;
-  bool _loading = false, _loadingMore = false;
+  bool _loading = false;
+  bool _messagesExpanded = true;
+  final _expanded = <String>{};
 
   @override
   void initState() {
@@ -46,9 +50,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final through = widget.task.through;
     setState(() => _error = null);
     try {
-      final snapshot = await widget.session.client.sessionRead('session.context', {
-        'sessionID': widget.task.id,
-      }, cancellation: _lifetime);
+      final snapshot = await readContextSnapshot(widget.session.client, widget.task.id, cancellation: _lifetime);
       if (mounted) setState(() => _snapshot = snapshot);
     } on CancelledException { /* Closing the panel cancels its reads. */ }
     catch (error) { if (mounted) setState(() => _error = error.toString()); }
@@ -58,34 +60,15 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     }
   }
 
-  Future<void> _more() async {
-    final snapshot = _snapshot;
-    if (_loading || _loadingMore || snapshot?['cursor']?['next'] == null) return;
-    setState(() => _loadingMore = true);
-    try {
-      final page = await widget.session.client.sessionRead('session.context', {
-        'sessionID': widget.task.id, 'cursor': snapshot!['cursor']['next'],
-      }, cancellation: _lifetime);
-      if (mounted && identical(_snapshot, snapshot)) {
-        setState(() {
-          _snapshot = {...snapshot, 'input': [...snapshot['input'] as List, ...page['input'] as List], 'cursor': page['cursor']};
-        });
-      }
-    } on CancelledException { /* Closing the panel owns this read. */ }
-    catch (error) { if (mounted && identical(_snapshot, snapshot)) setState(() => _error = error.toString()); }
-    finally { if (mounted) setState(() => _loadingMore = false); }
-  }
-
   Future<void> _export() async {
-    if (_exporting) return;
+    // Export exactly what this panel is inspecting, including every input page.
+    final snapshot = _snapshot;
+    if (_exporting || snapshot == null) return;
     setState(() => _exporting = true);
     try {
-      final snapshot = await readContextSnapshot(widget.session.client, widget.task.id, cancellation: _lifetime);
-      _lifetime.throwIfCancelled();
-      final file = await saveSessionExport({
-        'info': {'id': widget.task.id, 'title': widget.task.title},
-        'context': snapshot,
-      }, downloadsDirectory: widget.downloadsDirectory, cancellation: _lifetime);
+      final file = await saveSessionExport(inferenceRequest(snapshot),
+        title: widget.task.title, sessionID: widget.task.id,
+        downloadsDirectory: widget.downloadsDirectory, cancellation: _lifetime);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved to ${file.path}')));
     } on CancelledException { /* The caller owns the export lifetime. */ }
     catch (error) {
@@ -107,7 +90,10 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
 
   Widget _content() {
     final snapshot = _snapshot!;
-    final input = (snapshot['input'] as List).map(jsonObject).toList();
+    final request = inferenceRequest(snapshot);
+    final inputField = request.containsKey('input') ? 'input' : 'messages';
+    final input = (request[inputField] as List).map(jsonObject).toList();
+    final settings = {...request}..remove(inputField)..remove('tools');
     final tokens = snapshot['tokens'] as Json?;
     final total = tokens == null ? null : sessionTokenTotal(tokens);
     final limit = snapshot['limit'] as num?;
@@ -116,13 +102,21 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final providers = widget.session.providers.where((provider) => provider['id'] == model?['providerID']);
     final provider = providers.firstOrNull;
     final modelInfo = (provider?['models'] as List? ?? []).where((item) => item['id'] == model?['id']).firstOrNull;
-    final system = snapshot['instructions'] as String? ?? '';
-    final counts = jsonObject(snapshot['counts']);
+    final system = (snapshot['instructions'] as String? ?? '').trim();
+    final counts = <String, int>{};
+    for (final item in input) {
+      if (item['role'] case final String role) counts[role] = (counts[role] ?? 0) + 1;
+    }
     String number(Object? value) => value is num ? value.round().toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},') : '—';
-    String time(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value).toLocal().toString().split('.').first : '—';
+    String time(Object? value) {
+      if (value is! int || value == 0) return '—';
+      final date = DateTime.fromMillisecondsSinceEpoch(value).toLocal();
+      final labels = MaterialLocalizations.of(context);
+      return '${labels.formatShortDate(date)}, ${labels.formatTimeOfDay(TimeOfDay.fromDateTime(date))}';
+    }
     final stats = <(String, String)>[
       ('Session', widget.task.title),
-      ('Context items', number(snapshot['inputCount'])),
+      ('Context items', number(input.length)),
       ('Provider', provider?['name'] as String? ?? model?['providerID'] as String? ?? '—'),
       ('Model', modelInfo?['name'] as String? ?? model?['id'] as String? ?? '—'),
       ('Context Limit', number(limit)), ('Total Tokens', number(total)),
@@ -130,61 +124,112 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       ('Input Tokens', number(tokens?['input'])), ('Output Tokens', number(tokens?['output'])),
       ('Reasoning Tokens', number(tokens?['reasoning'])),
       ('Cache Tokens (read/write)', '${number(tokens?['cache']?['read'])} / ${number(tokens?['cache']?['write'])}'),
-      ('User Messages', number(counts['user'])), ('Assistant Messages', number(counts['assistant'])),
+      ('User Messages', number(counts['user'] ?? 0)), ('Assistant Messages', number(counts['assistant'] ?? 0)),
       ('Session Created', time(snapshot['created'])), ('Last Activity', time(snapshot['updated'])),
     ];
-    return ListView(key: PageStorageKey('context:${widget.task.id}'), padding: const EdgeInsets.fromLTRB(24, 16, 24, 40), children: [
-      Row(children: [
-        const Expanded(child: Text('Context usage', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-        IconButton(tooltip: 'Refresh context', onPressed: _load, icon: const Icon(Icons.refresh_rounded, size: 16)),
-      ]),
-      LayoutBuilder(builder: (context, bounds) => Wrap(spacing: 16, runSpacing: 16, children: [for (final (label, value) in stats)
-        SizedBox(width: bounds.maxWidth >= 464 ? (bounds.maxWidth - 16) / 2 : bounds.maxWidth,
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: const TextStyle(fontSize: 12, color: opencodeFaint)),
-          const SizedBox(height: 4), SelectableText(value, style: const TextStyle(fontSize: 12, color: opencodeInk)),
-        ])),
-      ])),
-      if (used != null) Padding(padding: const EdgeInsets.only(top: 20), child: LinearProgressIndicator(
-        value: used.clamp(0, 1).toDouble(), minHeight: 3, color: opencodeMuted, backgroundColor: opencodeLayer)),
-      const SizedBox(height: 28),
-      if (system.isNotEmpty) ...[
-        ExpansionTile(
-          key: PageStorageKey('context-system:${widget.task.id}'),
-          shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
-          childrenPadding: const EdgeInsets.only(top: 8),
-          title: Row(children: [const Expanded(child: Text('System Prompt', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-            ConversationCopyButton(text: system, label: 'Copy system prompt', compact: true)]),
-          children: [Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xfffafafa),
-            border: Border.all(color: opencodeBorder, width: .5), borderRadius: BorderRadius.circular(6)),
-            child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))],
-        ),
-        const SizedBox(height: 28),
-      ],
-      _raw('Tools', snapshot['tools'] ?? []),
-      _raw('Model settings', snapshot['settings'] ?? {}),
-      const SizedBox(height: 20),
-      Row(children: [const Expanded(child: Text('Raw context', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-        TextButton.icon(onPressed: _exporting ? null : _export, icon: const Icon(Icons.download_rounded, size: 14),
-          label: Text(_exporting ? 'Exporting…' : 'Export session JSON', style: const TextStyle(fontSize: 12)))]),
-      for (final item in input) _raw('${item['role'] ?? item['kind']} • ${item['id']}', item),
-      if (snapshot['cursor']?['next'] != null) TextButton(onPressed: _loadingMore ? null : _more,
-        child: Text(_loadingMore ? 'Loading…' : 'Load more context items')),
-    ]);
+    final desktop = MediaQuery.sizeOf(context).width >= 768;
+    final inset = desktop ? 24.0 : 16.0, gap = desktop ? 40.0 : 24.0;
+    return LayoutBuilder(builder: (context, bounds) => CustomScrollView(
+      key: PageStorageKey('context:${widget.task.id}'), slivers: [
+      SliverPadding(padding: EdgeInsets.fromLTRB(inset, 16, inset, gap), sliver: SliverToBoxAdapter(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Wrap(spacing: 16, runSpacing: 16, children: [for (final (label, value) in stats)
+            SizedBox(width: bounds.maxWidth >= 512 ? (bounds.maxWidth - inset * 2 - 16) / 2 : bounds.maxWidth - inset * 2,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(label, style: const TextStyle(fontSize: 12, height: 4 / 3, color: opencodeFaint)),
+                const SizedBox(height: 4), SelectableText(value, style: const TextStyle(
+                  fontSize: 12, height: 4 / 3, fontWeight: FontWeight.w500, color: opencodeInk)),
+              ])),
+          ]),
+          if (system.isNotEmpty) ...[
+            SizedBox(height: gap),
+            ExpansionTile(
+              key: PageStorageKey('context-system:${widget.task.id}'),
+              shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
+              minTileHeight: 32, childrenPadding: const EdgeInsets.only(top: 8),
+              title: Row(children: [const Expanded(child: Text('System Prompt',
+                style: TextStyle(fontSize: 12, color: opencodeFaint))),
+                ConversationCopyButton(text: system, label: 'Copy system prompt', compact: true)]),
+              children: [Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(color: const Color(0xfffafafa),
+                  border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(6)),
+                child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))]),
+          ],
+          SizedBox(height: gap),
+          _raw('Tools', request['tools'] ?? []),
+          _raw('Model settings', settings),
+        ]))),
+      SliverPadding(padding: EdgeInsets.fromLTRB(inset, 0, inset, 8), sliver: SliverToBoxAdapter(
+        child: Row(children: [Expanded(child: InkWell(
+          onTap: () => setState(() => _messagesExpanded = !_messagesExpanded),
+          child: Semantics(button: true, expanded: _messagesExpanded, child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(children: [const Expanded(child: Text('Raw messages', maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: opencodeFaint))),
+              const SizedBox(width: 8), Icon(_messagesExpanded ? Icons.expand_less : Icons.expand_more,
+                size: 16, color: opencodeFaint)]))))),
+          TextButton.icon(onPressed: _exporting ? null : _export,
+            style: TextButton.styleFrom(foregroundColor: opencodeFaint, minimumSize: const Size(0, 24),
+              padding: const EdgeInsets.symmetric(horizontal: 8), textStyle: const TextStyle(fontSize: 12)),
+            icon: const Icon(Icons.file_download_outlined, size: 16),
+            label: Text(_exporting ? 'Exporting…' : 'Export session'))]))),
+      if (_messagesExpanded) for (var index = 0; index < input.length; index++)
+          SliverPadding(padding: EdgeInsets.symmetric(horizontal: inset), sliver: _message(input[index],
+            id: input[index]['id'] as String? ?? '$inputField[$index]',
+            label: index == 0 && system.isNotEmpty && {'system', 'developer'}.contains(input[index]['role'])
+              ? 'System Prompt' : null,
+            first: index == 0, last: index == input.length - 1)),
+      SliverToBoxAdapter(child: SizedBox(height: gap)),
+    ]));
   }
 
   Widget _raw(String title, Object value) => ExpansionTile(
     key: PageStorageKey('context-raw:${widget.task.id}:$title'),
     shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
     title: Text(title, style: const TextStyle(fontSize: 12, color: opencodeMuted), maxLines: 1, overflow: TextOverflow.ellipsis),
-    children: [_ContextJson(value: value)],
+    minTileHeight: 32,
+    childrenPadding: const EdgeInsets.all(12),
+    // The text's scroll offset must not share the tile's expanded-state key.
+    children: [_ContextJson(key: const PageStorageKey('json-selection'), value: value)],
   );
+
+  Widget _message(Json item, {required String id, String? label, required bool first, required bool last}) {
+    final expanded = _expanded.contains(id);
+    final radius = BorderRadius.vertical(top: first ? const Radius.circular(8) : Radius.zero,
+      bottom: last && !expanded ? const Radius.circular(8) : Radius.zero);
+    return SliverMainAxisGroup(key: ValueKey(id), slivers: [
+      PinnedHeaderSliver(child: SizedBox(height: 32,
+        child: Material(color: Colors.white, shape: RoundedRectangleBorder(borderRadius: radius,
+          side: const BorderSide(color: opencodeBorder)), clipBehavior: Clip.antiAlias,
+          child: InkWell(onTap: () => setState(() {
+            if (expanded) { _expanded.remove(id); } else { _expanded.add(id); }
+          }), child: Semantics(button: true, expanded: expanded, child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(children: [
+              Expanded(child: Text.rich(TextSpan(children: [
+                TextSpan(text: '${item['role'] ?? item['type']} '),
+                TextSpan(text: '• ${label == null ? '' : '$label • '}$id', style: const TextStyle(color: opencodeMuted)),
+              ]), maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: opencodeInk))),
+              const SizedBox(width: 12),
+              const Icon(Icons.unfold_more_rounded, size: 16, color: opencodeFaint),
+            ]))))))),
+      if (expanded) SliverToBoxAdapter(child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(color: Colors.white,
+          border: const Border(left: BorderSide(color: opencodeBorder), right: BorderSide(color: opencodeBorder),
+            bottom: BorderSide(color: opencodeBorder)),
+          borderRadius: last ? const BorderRadius.vertical(bottom: Radius.circular(8)) : null),
+        child: _ContextJson(key: PageStorageKey('json-selection:$id'), value: item))),
+    ]);
+  }
 }
 
 class _ContextJson extends StatelessWidget {
-  const _ContextJson({required this.value});
+  const _ContextJson({super.key, required this.value});
   final Object value;
   @override
-  Widget build(BuildContext context) => ConversationCode(
-    source: const JsonEncoder.withIndent('  ').convert(value), language: 'json');
+  Widget build(BuildContext context) => SelectableText.rich(
+    highlightedCode(const JsonEncoder.withIndent('  ').convert(value), language: 'json'),
+    style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, height: 2, color: opencodeInk));
 }

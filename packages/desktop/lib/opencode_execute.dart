@@ -34,11 +34,71 @@ String _summary(ToolActivity call) {
   return '';
 }
 
+/// Use executed child calls, never JavaScript source, to identify skill reads.
+List<({String name, String path})> toolSkillReads(ToolActivity call) {
+  final input = _decode(call.rawInput);
+  if (input is! Map || input.containsKey(r'$part')) return const [];
+  final tool = call.name.split('.').last;
+  if (tool == 'skill') {
+    final name = input['name'] ?? input['id'];
+    return name is String && name.isNotEmpty ? [(name: name, path: name)] : const [];
+  }
+  final paths = <String>{};
+  if ({'read', 'read_file'}.contains(tool)) {
+    final path = input['path'] ?? input['filePath'] ?? input['file_path'];
+    if (path is String && path.replaceAll(r'\', '/').split('/').last == 'SKILL.md') paths.add(path);
+  } else if ({'exec_command', 'shell_command', 'bash', 'shell'}.contains(tool)) {
+    final command = input['cmd'] ?? input['command'];
+    if (command is String) {
+      for (final read in RegExp(r'''(?:^|[;&|\n])\s*(?:cat|head|tail|sed)\s+([^;&|\n]+)''').allMatches(command)) {
+        for (final token in RegExp(r'''"([^"]*)"|'([^']*)'|([^\s"'<>]+)''').allMatches(read[1]!)) {
+          final path = token[1] ?? token[2] ?? token[3]!;
+          if (path.replaceAll(r'\', '/').split('/').last == 'SKILL.md') paths.add(path);
+        }
+      }
+    }
+  }
+  return [for (final path in paths) () {
+    final segments = path.replaceAll(r'\', '/').split('/');
+    final workdir = input['workdir'] ?? input['cwd'];
+    final name = segments.length > 1 && !{'.', '..'}.contains(segments[segments.length - 2])
+      ? segments[segments.length - 2] : workdir is String ? workdir.replaceAll(r'\', '/').split('/').last : 'SKILL.md';
+    return (name: name, path: path);
+  }()];
+}
+
+Iterable<String> toolSkillNames(ToolActivity tool) sync* {
+  for (final read in toolSkillReads(tool)) { yield read.name; }
+  for (final child in tool.children) { yield* toolSkillNames(child); }
+}
+
+class SkillReadRows extends StatelessWidget {
+  const SkillReadRows({super.key, required this.tool});
+  final ToolActivity tool;
+
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    for (final read in toolSkillReads(tool)) Tooltip(message: read.path, child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: DefaultTextStyle(style: const TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13,
+        letterSpacing: -.04, color: opencodeInk), child: Row(mainAxisSize: MainAxisSize.min, spacing: 6, children: [
+        Text(tool.status == 'failed' ? 'Failed to read' : tool.status == 'running' ? 'Reading'
+          : tool.name.split('.').last == 'skill' ? 'Loaded' : 'Read',
+          style: const TextStyle(fontVariations: [FontVariation('wght', 530)])),
+        Flexible(child: tool.status == 'running' ? ThinkingLabel(label: read.name, fontSize: 13)
+          : Text(read.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        const Text('skill', style: TextStyle(color: opencodeMuted)),
+      ])),
+    )),
+  ]);
+}
+
 /// OpenCode's execute renderer: compact call rows inline, source in View code.
 /// See session-ui/src/tools/tool-renderer.tsx (execute / ExecuteDetails).
 class OpenCodeExecute extends StatelessWidget {
-  const OpenCodeExecute({super.key, required this.tool, required this.onExpand});
+  const OpenCodeExecute({super.key, required this.tool, required this.onExpand, this.directory = ''});
   final ToolActivity tool;
+  final String directory;
   final VoidCallback onExpand;
 
   void _viewCode(BuildContext context) {
@@ -52,7 +112,7 @@ class OpenCodeExecute extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ConversationDisclosure(
+  Widget build(BuildContext context) => ConversationImageGroup(child: ConversationDisclosure(
     key: PageStorageKey('tool:${tool.id}'), label: 'JavaScript', fontSize: 13,
     shimmer: tool.status == 'running', initiallyExpanded: true, onExpand: onExpand,
     icon: tool.status == 'running' ? const OpenCodeActivityIndicator() : null,
@@ -64,7 +124,8 @@ class OpenCodeExecute extends StatelessWidget {
     builder: (context) => DefaultTextStyle(style: _codeStyle, child: Column(
       crossAxisAlignment: CrossAxisAlignment.start, children: [
         for (final call in tool.children) Padding(padding: const EdgeInsets.only(bottom: 6),
-          child: _ExecuteCall(key: PageStorageKey('execute-call:${call.id}'), call: call, onExpand: onExpand)),
+          child: _ExecuteCall(key: PageStorageKey('execute-call:${call.id}'), call: call, directory: directory, onExpand: onExpand)),
+        if (tool.images.isNotEmpty) ConversationImageParts(parts: tool.images, directory: directory),
         ConversationData(value: tool.rawOutput, builder: (context, value) {
           final output = value == null ? '' : conversationDataText(value).trim();
           if (output.isEmpty) return const SizedBox.shrink();
@@ -73,12 +134,13 @@ class OpenCodeExecute extends StatelessWidget {
         }),
       ],
     )),
-  );
+  ));
 }
 
 class _ExecuteCall extends StatefulWidget {
-  const _ExecuteCall({super.key, required this.call, required this.onExpand});
+  const _ExecuteCall({super.key, required this.call, required this.directory, required this.onExpand});
   final ToolActivity call;
+  final String directory;
   final VoidCallback onExpand;
 
   @override
@@ -90,15 +152,17 @@ class _ExecuteCallState extends State<_ExecuteCall> {
 
   @override
   Widget build(BuildContext context) {
-    _open ??= PageStorage.maybeOf(context)?.readState(context, identifier: 'execute-call-open') as bool? ?? false;
+    _open ??= PageStorage.maybeOf(context)?.readState(context, identifier: ('execute-call', widget.call.id)) as bool? ?? false;
     final call = widget.call;
     final failed = call.status == 'failed';
     final summary = _summary(call);
+    if (call.name.split('.').last == 'skill' && toolSkillReads(call).isNotEmpty) return SkillReadRows(tool: call);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (toolSkillReads(call).isNotEmpty) SkillReadRows(tool: call),
       Semantics(button: true, expanded: _open, child: InkWell(
         onTap: () {
           setState(() => _open = !_open!);
-          PageStorage.maybeOf(context)?.writeState(context, _open, identifier: 'execute-call-open');
+          PageStorage.maybeOf(context)?.writeState(context, _open, identifier: ('execute-call', call.id));
           widget.onExpand();
         },
         child: Row(children: [
@@ -123,6 +187,7 @@ class _ExecuteCallState extends State<_ExecuteCall> {
           child: ConversationData(value: call.rawInput, builder: (context, value) {
             final input = _decode(value);
             return SelectionArea(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (call.images.isNotEmpty) ConversationImageParts(parts: call.images, directory: widget.directory),
               if (input is Map) for (final entry in input.entries) Padding(padding: const EdgeInsets.only(bottom: 2),
                 child: Text.rich(TextSpan(children: [
                   TextSpan(text: '${entry.key}: ', style: const TextStyle(color: opencodeMuted)),

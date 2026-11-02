@@ -4,10 +4,32 @@ import 'package:ai/ai.dart';
 import 'declarations.dart';
 import 'history_tools.dart';
 import 'web_search.dart';
+import 'image_generation.dart';
 
-ToolDefinition codeDefinition({required bool deferredTools}) => ToolDefinition(
+ToolDefinition codeDefinition({required bool deferredTools, bool imageGeneration = false}) => ToolDefinition(
   name: 'exec', namespace: 'functions', format: 'text',
-  description: _codeDescription(deferredTools), grammar: _codeGrammar,
+  description: _codeDescription(deferredTools, imageGeneration), grammar: _codeGrammar,
+);
+
+const waitDefinition = ToolDefinition(
+  name: 'wait', namespace: 'functions',
+  description: 'Waits on a yielded `exec` cell and returns new output or completion.\n'
+    '- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n'
+    '- `cell_id` identifies the running `exec` cell to resume.\n'
+    '- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.\n'
+    '- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.\n'
+    '- `terminate: true` stops the running cell; false or omitted waits for output.\n'
+    '- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n'
+    '- If the cell is still running, `wait` may yield again with the same `cell_id`.\n'
+    '- If the cell has already finished, `wait` returns the completed result and closes the cell.',
+  parameters: {
+    'type': 'object', 'properties': {
+      'cell_id': {'type': 'string', 'description': 'Identifier of the running exec cell.'},
+      'max_tokens': {'type': 'number', 'description': 'Output token budget for this wait call. Defaults to 10000 tokens.'},
+      'terminate': {'type': 'boolean', 'description': 'True stops the running exec cell; false or omitted waits for output.'},
+      'yield_time_ms': {'type': 'number', 'description': 'Wait before yielding more output. Defaults to 10000 ms.'},
+    }, 'required': ['cell_id'], 'additionalProperties': false,
+  },
 );
 
 const toolSearchDefinition = ToolDefinition(
@@ -24,6 +46,16 @@ const toolSearchDefinition = ToolDefinition(
   },
 );
 
+const _searchGuidance = r'''Use `await tools.tool_search({query: "...", limit: 8})` for BM25-ranked discovery of deferred tools (up to `limit` matches; 8 by default). It returns `{tools: [{name, description}]}` with callable names and full TypeScript declarations. Print results with `text()` and inspect unfamiliar declarations before calling `tools[result.name](arguments)` in a later execution.''';
+Json get toolSearchCatalog => {
+  ...toolSearchDefinition.toJson(), 'description': _searchGuidance,
+  'output_schema': {'type': 'object', 'properties': {
+    'tools': {'type': 'array', 'items': {'type': 'object', 'properties': {
+      'name': {'type': 'string'}, 'description': {'type': 'string'},
+    }, 'required': ['name', 'description'], 'additionalProperties': false}},
+  }, 'required': ['tools'], 'additionalProperties': false},
+};
+
 // Codex 0.164 wire names and grammar; see docs/decisions.md.
 const _codeGrammar = r'''
 
@@ -38,45 +70,85 @@ SOURCE: /[\s\S]+/
 
 // Codex code-mode-protocol/description.rs renders eager nested declarations
 // into exec itself; tool_search only indexes the deferred external catalog.
-String _codeDescription(bool deferredTools) {
+String _codeDescription(bool deferredTools, bool imageGeneration) {
   final enabled = [
-    ...hostCatalog.where((tool) => tool['name'] != 'web__run'),
-    ...historyCatalog, ...mcpResourceCatalog,
-    if (deferredTools) {...toolSearchDefinition.toJson(), 'format': 'json'},
-  ].map(describeTool).toList()..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+    // Happen-only extensions remain callable and discoverable in ALL_TOOLS,
+    // but do not inflate the shared Codex eager declaration on every request.
+    ...hostCatalog.where((tool) => !{'web__run', 'shell_command'}.contains(tool['name'])),
+    ...mcpResourceCatalog,
+    if (deferredTools) toolSearchCatalog,
+    if (imageGeneration) imageGenerationCatalog,
+  ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList()
+    ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
   return [
-    'Run JavaScript code to orchestrate tool calls. Use raw JavaScript, not JSON or a markdown code fence. Top-level await is supported. Print outputs with text(value). Output defaults to 10000 tokens; override with a first-line // @exec: {"max_output_tokens": 20000} pragma. Oversized text is truncated, preserving its beginning and end.',
-    r'''All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers.
-Nested tool methods take either a string or an object as their input argument.
-Nested tools return either an object or a string, based on the description.
-Each execution uses a fresh JavaScript context. Use the host tools for file, process, and network access.
-
-Global helpers:
-- `text(value)`: Appends a text item. Non-string values are stringified with JSON.stringify when possible.
-- `image(value, detail?)`: Appends an image for you to inspect with vision. Accepts a base64 image data URL, an object with image_url, or an MCP image content block. For MCP screenshots, use `for (const part of result.content ?? []) { if (part.type === "image") image(part); else if (part.type === "text") text(part.text); }`. Use `image(await tools.view_image({path: "/absolute/path.png"}))` for a local image. Optional detail accepts "auto", "low", "high", or "original". Images are separate from the text output budget. Inspect images directly with these helpers; opening an image in the user's browser does not give you its pixels.
-- `store(key: string, value: any)`: stores a serializable value under a string key for later exec calls in the same session.
-- `load(key: string)`: returns the stored value for a string key, or undefined if it is missing.
-- `ALL_TOOLS`: metadata for the enabled nested tools as { name, description } entries.''',
+    _codeRuntimeDescription,
     r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`.
 
 Tool availability can change between calls.''',
-    if (deferredTools) r'''Use `await tools.tool_search({query: "...", limit: 8})` for BM25-ranked discovery of deferred tools (up to `limit` matches; 8 by default). It returns `{tools: [{name, description}]}` with callable names and full TypeScript declarations. Print results with `text()` and inspect unfamiliar declarations before calling `tools[result.name](arguments)` in a later execution.''',
-    for (final tool in enabled) '### `${tool['name']}`\n${tool['description']}',
+    'Shared MCP Types:\n```ts\n$sharedMcpTypes\n```',
+    for (final tool in enabled.where((tool) => tool['namespace'] == null)) '### `${tool['name']}`\n${tool['description']}',
+    for (final tool in enabled.where((tool) => tool['namespace'] != null)) ...[
+      '## ${tool['namespace']}\n${tool['namespace_description']}',
+      '### `${tool['name']}`\n${tool['description']}',
+    ],
   ].join('\n\n');
 }
+
+// Upstream model-facing compatibility payload (including upstream engine naming),
+// just like the Codex base instructions. Execution remains QuickJS, implementing
+// the async-module/helper contract; this is not a V8 dependency or backend claim.
+const _codeRuntimeDescription = r'''Run JavaScript code to orchestrate/compose tool calls
+- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
+- All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
+- Nested tool methods take either a string or an object as their input argument.
+- Nested tools return either an object or a string, based on the description.
+- Runs raw JavaScript -- no Node, no file system, no network access, no console.
+- Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
+- You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
+- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 30000 ms.
+- `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
+- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
+
+- Global helpers:
+- `exit()`: Immediately ends the current script successfully (like an early return from the top level).
+- `text(value: string | number | boolean | undefined | null)`: Appends a text item. Non-string values are stringified with `JSON.stringify(...)` when possible.
+- `image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null } | ImageContent, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item. `image_url` should be a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`. MCP image blocks may request detail with `_meta: { "codex/imageDetail": "original" }`. When provided, the second `detail` argument overrides any detail embedded in the first argument.
+- `audio(audioUrlOrItem: string | { audio_url: string } | AudioContent)`: Appends an audio item. `audio_url` should be a base64-encoded `data:` URL. To forward an MCP tool audio block, pass an individual `AudioContent` block from `result.content`, for example `audio(result.content[0])`.
+- `generatedImage(result: { image_url: string; output_hint?: string })`: Appends an image-generation result and its optional output hint. HTTP(S) URLs are not supported.
+- `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
+- `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.
+- `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.
+- `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id. Pending timeouts do not keep `exec` alive by themselves; await an explicit promise if you need to wait for one.
+- `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
+- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
+- `yield_control()`: yields the accumulated output to the model immediately while the script keeps running.''';
 
 const hostCatalog = <Json>[
   webSearchHost,
   {
+    'name': 'curr_time', 'tool_name': 'curr_time', 'namespace': 'clock',
+    'namespace_description': 'Tools for reading and waiting on time.',
+    'description': 'Return the current time in UTC.',
+    'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': false},
+    'output_schema': {'type': 'object', 'properties': {
+      'current_time': {'type': 'string', 'description': 'Current UTC time formatted as YYYY-MM-DD HH:MM:SS UTC.'},
+    }, 'required': ['current_time'], 'additionalProperties': false},
+  },
+  {
     'name': 'view_image',
-    'description': 'View a local image with your vision. Returns image_url and detail; pass the result to image(await tools.view_image(...)) to inspect it. Relative paths resolve from the task working directory. This does not open a browser or external application.',
+    'description': 'View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.',
     'parameters': {
       'type': 'object', 'properties': {
-        'path': {'type': 'string', 'description': 'Path to the image file.'},
-        'detail': {'type': 'string', 'enum': ['high', 'original'], 'description': 'Defaults to high. Use original to preserve more image detail.'},
+        'path': {'type': 'string', 'description': 'Local filesystem path to an image file.'},
+        'detail': {'type': 'string', 'enum': ['high', 'original'], 'description': 'Image detail level. Defaults to `high`; use `original` to preserve exact resolution.'},
       }, 'required': ['path'], 'additionalProperties': false,
     },
+    'output_schema': {'type': 'object', 'properties': {
+      'image_url': {'type': 'string', 'description': 'Data URL for the loaded image.'},
+      'detail': {'type': 'string', 'enum': ['high', 'original'],
+        'description': 'Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.'},
+    }, 'required': ['detail', 'image_url'], 'additionalProperties': false},
   },
   {
     'name': 'shell_command',
@@ -94,24 +166,30 @@ const hostCatalog = <Json>[
   },
   {
     'name': 'exec_command',
-    'description': 'Start a task-owned shell session, for example a development server. It survives cell cancellation, steering, Stop, and later turns. Hibernating or archiving the task closes it. Use shell_command for short calls that must stop with their caller. Arguments: cmd (required), workdir, shell, login (default true), yield_time_ms (default 10000, 250..30000), max_output_tokens (default 10000), tty (currently false only). Returns output, wall_time_seconds, exit_code or session_id. Poll a session with write_stdin.',
+    'description': 'Runs a command in a PTY, returning output or a session ID for ongoing interaction.',
     'parameters': {
       'type': 'object',
       'properties': {
         'cmd': {'type': 'string', 'description': 'Shell command to execute.'},
         'workdir': {'type': 'string', 'description': 'Working directory for the command. Defaults to the turn cwd.'},
-        'tty': {'type': 'boolean', 'description': 'Only false or omitted is supported; commands use plain pipes.'},
+        'tty': {'type': 'boolean', 'description': 'True allocates a PTY for the command; false or omitted uses plain pipes.'},
         'yield_time_ms': {'type': 'number', 'description': 'Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.'},
         'max_output_tokens': {'type': 'number', 'description': 'Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.'},
         'shell': {'type': 'string', 'description': "Shell binary to launch. Defaults to the user's default shell."},
-        'login': {'type': 'boolean', 'description': 'True starts a login shell (-l); false omits -l. Defaults to true.'},
+        'login': {'type': 'boolean', 'description': 'True runs the shell with -l/-i semantics; false disables them. Defaults to true.'},
+        'justification': {'type': 'string', 'description': 'User-facing approval question for `require_escalated`; omit otherwise.'},
+        'prefix_rule': {'type': 'array', 'items': {'type': 'string'},
+          'description': 'Reusable approval prefix for `cmd`, only with `sandbox_permissions: "require_escalated"`; for example ["git", "pull"].'},
+        'sandbox_permissions': {'type': 'string', 'enum': ['use_default', 'require_escalated'],
+          'description': 'Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.'},
       },
       'required': ['cmd'], 'additionalProperties': false,
     },
+    'output_schema': _commandOutput,
   },
   {
     'name': 'write_stdin',
-    'description': 'Write to a running command. Arguments: session_id (required), chars (default empty), yield_time_ms, max_output_tokens. Returns output, wall_time_seconds, exit_code or session_id.',
+    'description': 'Writes characters to an existing unified exec session and returns recent output.',
     'parameters': {
       'type': 'object', 'properties': {
         'session_id': {'type': 'number', 'description': 'Identifier of the running unified exec session.'},
@@ -120,10 +198,22 @@ const hostCatalog = <Json>[
         'max_output_tokens': {'type': 'number', 'description': 'Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.'},
       }, 'required': ['session_id'], 'additionalProperties': false,
     },
+    'output_schema': _commandOutput,
   },
   {
     'name': 'apply_patch',
     'format': 'text',
-    'description': 'Apply a patch. Takes the raw patch STRING, not JSON. Format: *** Begin Patch, then *** Add File: path with +lines; *** Update File: path with @@ context hunks and space/-/+ lines; *** Delete File: path; optional *** Move to: path; then *** End Patch.',
+    'description': 'The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.',
   },
 ];
+
+const _commandOutput = <String, dynamic>{
+  'type': 'object', 'properties': {
+    'chunk_id': {'type': 'string', 'description': 'Chunk identifier included when the response reports one.'},
+    'exit_code': {'type': 'number', 'description': 'Process exit code when the command finished during this call.'},
+    'original_token_count': {'type': 'number', 'description': 'Approximate token count before output truncation.'},
+    'output': {'type': 'string', 'description': 'Command output text, possibly truncated.'},
+    'session_id': {'type': 'number', 'description': 'Session identifier to pass to write_stdin when the process is still running.'},
+    'wall_time_seconds': {'type': 'number', 'description': 'Elapsed wall time spent waiting for output in seconds.'},
+  }, 'required': ['output', 'wall_time_seconds'], 'additionalProperties': false,
+};

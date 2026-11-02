@@ -1,7 +1,7 @@
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
-// OpenCode e8238bae packages/core/src/tool/plugin/skill.ts and src/skill.ts.
+// OpenCode packages/core/src/tool/plugin/skill.ts and src/skill.ts.
 const skillDefinition = ToolDefinition(
   name: 'skill',
   description: "Load a specialized skill's instructions and resources into the current conversation when the task at hand matches its description.\n\n"

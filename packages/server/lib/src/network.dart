@@ -153,6 +153,7 @@ void _networkMain(List<Object?> args) async {
   var loadedConfigPath = startup['loaded_config_path'] as String?;
   String? appliedMcp = jsonEncode(global['mcp_servers'] ?? {});
   String? configError;
+  final configReader = ConfigReader();
   Future<void> reloads = initialized.catchError((Object _) {});
   void configEvent(String type, Json data) {
     if (closing) return;
@@ -166,7 +167,7 @@ void _networkMain(List<Object?> args) async {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
       try {
-        final updated = await loadConfig(
+        final updated = await configReader.load(
           configPath,
           // Once YAML has been selected, deleting it must not restore an old
           // legacy config during an editor's delete/rename save sequence.
@@ -574,6 +575,13 @@ void _networkMain(List<Object?> args) async {
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],
         };
         final settings = provider.resolveSettings(selected, model: model);
+        if (lab == 'openai' && settings['image_generation'] == true) {
+          try {
+            final credentials = await gptCredentials().asCancellable(cancellation);
+            if (credentials['plan_type'] == 'free') settings['image_generation'] = false;
+          } on CancelledException { rethrow; }
+          catch (_) { settings['image_generation'] = false; }
+        }
         final info = lab == 'openai' ? GptModel(model) : null;
         // PersistentModeState is separate developer context in Codex, enabled
         // only for persistent reasoning. This runtime does not offer that mode.
@@ -609,7 +617,7 @@ void _networkMain(List<Object?> args) async {
         reply?.send({'result': settings});
         return;
       }
-      if (!{'respond', 'compact', 'web.search'}.contains(request['method'])) {
+      if (!{'respond', 'compact', 'web.search', 'image.generate'}.contains(request['method'])) {
         throw StateError('Unknown network operation');
       }
       final lab = requiredString(params, 'provider');
@@ -629,6 +637,10 @@ void _networkMain(List<Object?> args) async {
       final Object? result;
       if (request['method'] == 'web.search') {
         result = await provider.webSearch(input, jsonObject(params['commands']), cancellation: cancellation);
+      } else if (request['method'] == 'image.generate') {
+        if (provider is! OpenAIProvider) throw ArgumentError('Provider does not support image generation');
+        result = await provider.generateImage(input, jsonObject(params['arguments']), outputRoot: directory,
+          callId: requiredString(params, 'call_id'), turnId: requiredString(params, 'turn_id'), cancellation: cancellation);
       } else if (request['method'] == 'compact') {
         result = (await provider.compact(
           input,

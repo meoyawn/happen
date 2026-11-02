@@ -82,6 +82,18 @@ void main() {
       expect(session.task!.provider, id);
       expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
     }
+    final ids = session.project!.tasks.map((task) => task.id).toSet();
+    final requestCount = requests.length;
+    await session.close();
+    final freshDirectory = await Directory('${root.path}/fresh-desktop').create();
+    final recovered = desktop = DesktopSession(await AgentClient.connect(server.uri),
+      await openDesktopDatabase(freshDirectory.path));
+    await recovered.load();
+    await recovered.addProject(root.path);
+    expect(recovered.project!.tasks.map((task) => task.id).toSet(), ids,
+      reason: 'The server catalog, not a desktop-only sidebar reference, discovers saved sessions');
+    expect(recovered.project!.tasks.every((task) => !task.running), true);
+    expect(requests, hasLength(requestCount), reason: 'Discovering histories never resumes inference');
   });
 
   test('remote desktop prepares a 100 MiB image before transport and preserves originals for retry', () async {

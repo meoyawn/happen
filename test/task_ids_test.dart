@@ -1,6 +1,5 @@
 import 'dart:math';
 
-import 'package:openai/src/task_id.dart' as openai;
 import 'package:opencode/src/task_id.dart' as opencode;
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
@@ -9,7 +8,7 @@ void main() {
   test('Codex task IDs are UUIDv7 and remain ordered within a millisecond and after clock rollback', () {
     // Timestamp from uuid 1.20.0's v7 test_new, pinned by Codex.
     var time = 1645557742000;
-    final ids = openai.TaskIds(clock: () => time, random: Random(7));
+    final ids = UuidV7Ids(clock: () => time, random: Random(7));
     final generated = List.generate(2000, (_) => ids.create());
     expect(generated, everyElement(matches(r'^017f22e2-79b0-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')));
     time -= 1000;
@@ -37,7 +36,7 @@ void main() {
   });
 
   test('task ID validation accepts provider and legacy IDs while rejecting unsafe path components', () {
-    for (final id in [newId(), openai.TaskIds().create(), opencode.TaskIds().create()]) {
+    for (final id in [newId(), UuidV7Ids().create(), opencode.TaskIds().create()]) {
       expect(() => validateTaskId(id), returnsNormally);
     }
     for (final id in ['', '.', '..', '../escape', r'..\escape', '/absolute', 'a/b', 'a\nb', 'a' * 129]) {

@@ -438,7 +438,7 @@ class AgentServer {
         await client.attachments.release(claimed.ids, committed: committed);
       }
     }
-    if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+    if ({'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
       final operation = CancellationToken();
       client.sessionReads[requestId] = operation;
       try { return await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey); }
@@ -490,8 +490,10 @@ class AgentServer {
       }, cancellation: client.cancellation);
     }
     switch (method) {
-      case 'debug.prompt-input':
-        return _promptContext(params, cancellation);
+      case 'session.list':
+        return listSessions(directory, params, cancellation: cancellation);
+      case 'session.active':
+        return {'data': {for (final task in _tasks.values) if (task.busy) task.id: {'type': 'running'}}};
       case 'ping':
         return {'version': '0.1.0'};
       case 'files.search':
@@ -577,6 +579,9 @@ class AgentServer {
           params['prompt'] as String,
           settings: {...params, 'sent_at': receivedAt}..remove('settings'),
         );
+        // Publish the durable session before acknowledging creation. Discovery
+        // must not depend on the creating desktop saving a sidebar reference.
+        await task.ready!.future.asCancellable(client.cancellation);
         return {identityKey: id};
       case 'history.import':
         final targetDirectory = directory;
@@ -608,13 +613,13 @@ class AgentServer {
         }
         // Lazy image/tool reads can arrive together. Queue behind the current
         // SQLite owner instead of rejecting a second reader during its close.
-        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.event.list', 'task.send', 'task.compact'}.contains(method)) {
+        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.event.list', 'session.inbox', 'session.inbox.update', 'session.inbox.cancel', 'task.send', 'task.compact'}.contains(method)) {
           while (task.maintenance) {
             await task.maintenanceDone!.future.asCancellable(cancellation);
             task = _tasks[id] ?? _Task(id, null);
           }
         }
-        if ({'session.message.list', 'session.event.list'}.contains(method)) {
+        if ({'session.message.list', 'session.event.list', 'session.inbox'}.contains(method)) {
           client.sessionSubscriptions.add(id);
           if (task.busy && task.writer == null) await task.ready?.future.asCancellable(cancellation);
           var page = File('$directory/tasks/$id/history.sqlite').existsSync()
@@ -630,7 +635,56 @@ class AgentServer {
             page = await readSession(directory, id, method, params, cancellation: cancellation);
           }
           final current = _tasks[id] ?? task;
-          return {...page, 'running': current.busy, 'pending': current.pending};
+          return {...page, 'running': current.busy};
+        }
+        if (method == 'session.inbox.update' || method == 'session.inbox.cancel') {
+          final inboxID = requiredString(params, 'inboxID');
+          final delivery = method == 'session.inbox.update' ? requiredString(params, 'delivery') : null;
+          if (delivery != null && !{'steer', 'queue'}.contains(delivery)) {
+            throw ArgumentError('Delivery must be steer or queue');
+          }
+          if (task.busy && task.writer == null) await task.ready?.future.asCancellable(cancellation);
+          if (task.startingInputID == inboxID) throw StateError('Message is already starting');
+          Json? starting;
+          await _withWriter(task, (writer) async {
+            final changed = await callIsolate(writer.port, 'session.inbox.update', {
+              'inboxID': inboxID, 'delivery': delivery,
+            }, cancellation: cancellation);
+            if (changed != null) _broadcast(id, jsonObject(changed));
+            final sourceID = inboxID.replaceFirst(RegExp(r'^msg_'), '');
+            final index = task.pending.indexWhere((item) => item['id'] == sourceID);
+            task.offered.remove(sourceID);
+            if (index >= 0) {
+              if (delivery == null) {
+                task.pending.removeAt(index);
+              } else {
+                final updated = task.pending[index] = {...task.pending[index], 'delivery': delivery};
+                if (task.busy) _offerSteering(task, updated);
+              }
+            }
+            if (!task.busy && delivery == 'steer') {
+              final inbox = await readSession(directory, id, 'session.inbox', {}, cancellation: cancellation);
+              task.pending
+                ..clear()
+                ..addAll((inbox['data'] as List).map(jsonObject));
+              starting = task.pending.where((item) => 'msg_${item['id']}' == inboxID).firstOrNull;
+              if (starting != null) task.startingInputID = inboxID;
+            }
+            return null;
+          });
+          if (starting case final item?) {
+            try {
+              _begin(task, item['prompt'] as String, settings: {
+                'message_id': item['id'], 'sent_at': item['created_at'],
+                if (item['attachments'] != null) 'attachments': item['attachments'],
+                if (item['reasoning'] != null) 'reasoning': item['reasoning'],
+              });
+            } catch (_) {
+              task.startingInputID = null;
+              rethrow;
+            }
+          }
+          return null;
         }
         if (method == 'tools.register') {
           return _clientTools.register(
@@ -790,29 +844,6 @@ class AgentServer {
           }
         }
         throw StateError('Unknown method: $method');
-    }
-  }
-
-  Future<Json> _promptContext(Json params, CancellationToken cancellation) async {
-    final config = await _config(params);
-    final id = await _newTaskId(config, cancellation);
-    IsolateOwner? writer, agent;
-    Json? failure;
-    try {
-      writer = await startStore(directory, id, ephemeral: true);
-      agent = await startAgent(taskId: id, config: config, writer: writer.port,
-        network: network.port, clientTools: _clientTools.port, taskTools: _taskTools.port, codeInterrupt: 0);
-      await callIsolate(agent.port, 'prepare', {'prompt': params['prompt'] ?? ''},
-        cancellation: cancellation, onEvent: (event) {
-          if (event['type'] == 'turn.failed' || event['type'] == 'turn.cancelled') failure = event;
-        });
-      if (failure != null) throw StateError(failure!['data']['error'] as String);
-      return jsonObject(await callIsolate(agent.port, 'context', {}, cancellation: cancellation));
-    } finally {
-      await agent?.close();
-      await writer?.close();
-      await _taskTools.release(id);
-      await callIsolate(network.port, 'agents.forget', {'task_id': id});
     }
   }
 
@@ -1134,6 +1165,7 @@ class AgentServer {
     task.ready = Completer<void>();
     _tasks[task.id] = task;
     task.cancelled = false;
+    task.startingInputID = settings['message_id'] == null ? null : 'msg_${settings['message_id']}';
     _activity.add(activeTaskCount);
     telemetry.add('turns_started');
     task.running = _run(task, prompt, compact: compact, settings: effective);
@@ -1159,10 +1191,13 @@ class AgentServer {
         // Commit admission before cancellation can stop the agent's first turn.
         // An immediately archived or stopped task must still be resumable.
         final config = {...task.config!, 'task_id': task.id};
+        final attachments = settings['attachments'] as List? ?? [];
+        final title = prompt.trim().isNotEmpty ? prompt.trim().split('\n').first
+          : attachments.firstOrNull?['name'] as String? ?? 'New session';
         final created = jsonObject(await callIsolate(task.writer!.port, 'append', {
           'type': 'task.created',
           'data': config,
-          'metadata': {'config': config},
+          'metadata': {'config': config, 'title': title},
         }));
         _broadcast(task.id, created);
       }
@@ -1201,6 +1236,7 @@ class AgentServer {
         onEvent: (event) {
           if (event['type'] == 'input.committed') {
             final id = event['data']?['message_id'];
+            if (task.startingInputID == 'msg_$id') task.startingInputID = null;
             task.pending.removeWhere((message) => message['id'] == id);
             task.offered.remove(id);
           }
@@ -1253,6 +1289,7 @@ class AgentServer {
       task.busy = false;
       task.finishing = false;
       task.offered.clear();
+      task.startingInputID = null;
       if (terminal != null) {
         telemetry.add(terminal!['type'] as String);
         _broadcast(task.id, terminal!);
@@ -1430,6 +1467,7 @@ class _Task {
   final String id;
   Json? config;
   String? assistantMessageID;
+  String? startingInputID;
   int streamOrdinal = 0;
   String? streamPartType;
   bool busy = false, maintenance = false, cancelled = false, finishing = false;
@@ -1607,7 +1645,7 @@ class AgentClient {
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
-    if (!{'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+    if (!{'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
       throw ArgumentError('Unknown session read');
     }
     return jsonObject(await _request(method, params, cancellation: cancellation));

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 
+import 'response_ids.dart';
+
 /// Converts provider output into durable conversation items.
 ConversationItem gptItemFromNative(Json wire) {
   final type = wire['type'];
@@ -105,16 +107,18 @@ ConversationItem gptItemFromNative(Json wire) {
   }
 }
 
-List<Json> withGptInstructions(String instructions, List<Json> input) => [
-  if (instructions.isNotEmpty) {'role': 'developer', 'content': instructions},
+List<Json> withGptInstructions(String instructions, List<Json> input, {String? sessionId}) => [
+  if (instructions.isNotEmpty) {
+    if (sessionId != null) 'id': instructionsId(sessionId, instructions),
+    'type': 'message', 'role': 'developer', 'content': [{'type': 'input_text', 'text': instructions}],
+  },
   ...input,
 ];
 
-List<Json> gptPromptInput(String instructions, Iterable<ConversationItem> items) =>
-  withGptInstructions(instructions, gptInput(items));
-
 List<Json> gptInput(Iterable<ConversationItem> items) {
   final output = <Json>[];
+  final notifications = <String, List<Json>>{};
+  final completedCalls = <String>{};
   ConversationItem? previous;
   bool context(ConversationItem? item) => item?.kind == 'message' &&
     {'agents_md', 'environment', 'skills', 'tool_catalog'}.contains(item?.native['harness']?['context']);
@@ -122,18 +126,30 @@ List<Json> gptInput(Iterable<ConversationItem> items) {
     ? [{'type': 'input_text', 'text': item['content']}] : (item['content'] as List).map(jsonObject).toList();
   for (final item in items) {
     for (final wire in _gptItems(item)) {
+      // notify() is delivered durably as it arrives. Codex admits its queued
+      // injection after the observing exec result, before the next inference.
+      final call = wire['call_id'] as String?;
+      if (item.native['gpt']?['notification'] == true && call != null && !completedCalls.contains(call)) {
+        (notifications[call] ??= []).add(wire);
+        continue;
+      }
       if (context(item) && context(previous) && output.isNotEmpty &&
           output.last['role'] == wire['role'] && output.last.containsKey('content') && wire.containsKey('content')) {
         output.last['content'] = [...parts(output.last), ...parts(wire)];
       } else { output.add(wire); }
+      if (call != null && {'custom_tool_call_output', 'function_call_output'}.contains(wire['type'])) {
+        completedCalls.add(call);
+        output.addAll(notifications.remove(call) ?? []);
+      }
     }
     previous = item;
   }
+  for (final queued in notifications.values) { output.addAll(queued); }
   return output;
 }
 
 List<Json> _gptItems(ConversationItem item) {
-  final native = jsonObject(item.native['gpt'] ?? {});
+  final native = jsonObject(item.native['gpt'] ?? {})..remove('notification');
   switch (item.kind) {
     case 'configuration':
       return <Json>[
@@ -152,7 +168,7 @@ List<Json> _gptItems(ConversationItem item) {
           'GPT compaction state is missing',
         );
       }
-      return <Json>[native];
+      return <Json>[{'id': 'cmp_${item.id}', ...native}];
   }
   if (native['type'] == 'reasoning') {
     final summary = <Json>[], content = <Json>[];
@@ -166,6 +182,7 @@ List<Json> _gptItems(ConversationItem item) {
     }
     return <Json>[
       {
+        'id': 'rs_${item.id}',
         ...native,
         'summary': summary,
         if (content.isNotEmpty) 'content': content,
@@ -195,6 +212,7 @@ List<Json> _gptItems(ConversationItem item) {
       case 'tool_call':
         final call = ToolCall.fromJson(part);
         output.add({
+          'id': '${call.format == 'text' ? 'ctc' : 'fc'}_${item.id}',
           ...meta,
           'type': call.format == 'text' ? 'custom_tool_call' : 'function_call',
           'call_id': call.id,
@@ -206,20 +224,25 @@ List<Json> _gptItems(ConversationItem item) {
             'arguments': call.input,
         });
       case 'tool_result':
+        final inlineImages = meta.remove('inline_images') == true;
+        final images = inlineImages ? const <dynamic>[] : part['images'] as List? ?? [];
         final content = meta.remove('content_items') == true
           ? (jsonDecode(part['output'] as String) as List).map(jsonObject).toList() : null;
+        final singleText = content?.length == 1 && content!.single['type'] == 'input_text' &&
+          images.isEmpty ? content.single['text'] as String : null;
         output.add({
+          'id': '${part['format'] == 'text' ? 'ctco' : 'fco'}_${item.id}',
           ...meta,
           'type': part['format'] == 'text'
               ? 'custom_tool_call_output'
               : 'function_call_output',
           'call_id': part['call_id'],
-          'output': content == null && (part['images'] as List? ?? []).isEmpty ? part['output'] : [
+          'output': singleText ?? (content == null && images.isEmpty ? part['output'] : [
             if (content != null) ...content
             else if ((part['output'] as String).isNotEmpty) {'type': 'input_text', 'text': part['output']},
-            for (final image in (part['images'] as List? ?? []).map(jsonObject))
+            for (final image in images.map(jsonObject))
               {'type': 'input_image', 'image_url': attachmentDataUrl(image), 'detail': image['detail'] ?? 'high'},
-          ],
+          ]),
         });
       case 'reasoning':
         throw const ModelFailure(
@@ -230,11 +253,11 @@ List<Json> _gptItems(ConversationItem item) {
   }
   if (textParts.isNotEmpty) {
     output.insert(0, {
+      'id': 'msg_${item.id}',
       ...native,
+      'type': 'message',
       'role': item.role,
-      'content': item.role == 'assistant' || native.isNotEmpty || item.content.any((part) => part['type'] == 'image' || part['type'] == 'file')
-          ? textParts
-          : textParts.map((p) => p['text']).join('\n'),
+      'content': textParts,
     });
   }
   return output;

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
+import 'package:pty2/pty2.dart';
 
 String get defaultShell => Platform.environment['AGENT_SHELL'] ??
     Platform.environment['SHELL'] ?? (Platform.isWindows ? 'cmd.exe' : 'fish');
@@ -22,11 +23,12 @@ class CommandRunner {
     required String directory,
     required CancellationToken cancellation,
     Duration? timeout,
+    bool tty = false,
   }) {
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
     if (_closing != null) throw StateError('Command runner is closed');
-    final operation = _start(executable, arguments, directory, cancellation, timeout);
+    final operation = _start(executable, arguments, directory, cancellation, timeout, tty);
     _starting.add(operation);
     unawaited(operation.then<void>((_) => _starting.remove(operation),
       onError: (Object _, StackTrace _) { _starting.remove(operation); }));
@@ -34,19 +36,31 @@ class CommandRunner {
   }
 
   Future<RunningCommand> _start(String executable, List<String> arguments,
-    String directory, CancellationToken cancellation, Duration? timeout) async {
+    String directory, CancellationToken cancellation, Duration? timeout, bool tty) async {
     final folder = Directory('${Directory.systemTemp.path}/happen-tool-output');
     await folder.create(recursive: true);
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
     // A supervisor owns a separate POSIX job group. Killing just the requested
     // shell can otherwise leave curl, git, or a pipeline holding its pipes open.
-    final process = await Process.start(
-      Platform.isWindows ? executable : '/bin/bash',
-      Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _supervisor, 'happen-command', executable, ...arguments],
-      workingDirectory: directory,
-    );
-    final command = RunningCommand._(process, File('${folder.path}/${newId()}.txt'), timeout);
+    final file = File('${folder.path}/${newId()}.txt');
+    final RunningCommand command;
+    if (tty) {
+      final status = File('${folder.path}/${newId()}.status');
+      final terminal = PseudoTerminal.start(Platform.isWindows ? executable : '/bin/bash',
+        Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _ptySupervisor, 'happen-pty', status.path, executable, ...arguments], workingDirectory: directory,
+        environment: {...Platform.environment, 'TERM': 'xterm-256color'});
+      terminal.resize(80, 24);
+      command = RunningCommand._terminal(terminal, file, Platform.isWindows ? null : status, timeout,
+        cancellation.merge(this.cancellation));
+    } else {
+      final process = await Process.start(
+        Platform.isWindows ? executable : '/bin/bash',
+        Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _supervisor, 'happen-command', executable, ...arguments],
+        workingDirectory: directory,
+      );
+      command = RunningCommand._(process, file, timeout);
+    }
     _commands.add(command);
     final hook = CancellationHook(cancellation.merge(this.cancellation), command.kill);
     unawaited(command.done.then<void>((_) {
@@ -87,8 +101,40 @@ result=$?
 exit "$result"
 ''';
 
+// Native PTY children are not registered Dart Processes. The VM's SIGCHLD
+// collector may consume their wait status; preserve the command's real status
+// on a private channel, never in stdout or stderr. Children do not inherit it.
+const _ptySupervisor = r'''
+exec 3>"$1"
+shift
+trap 'result=$?; printf "%s" "$result" >&3; exec 3>&-' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+"$@" 3>&-
+exit "$?"
+''';
+
+Future<int> _ptyExit(PseudoTerminal terminal, File? status, CancellationToken cancellation) async {
+  int native;
+  try { native = await terminal.exitCode.asCancellable(cancellation, onCancel: () => terminal.kill(ProcessSignal.sigkill)); }
+  on CancelledException { native = await terminal.exitCode; }
+  if (status == null) return native;
+  try {
+    final recorded = int.tryParse(await status.readAsString());
+    return recorded != null && recorded >= 0 && recorded <= 255 ? recorded : native;
+  } on FileSystemException { return native; }
+  finally { try { await status.delete(); } on FileSystemException { /* Spawn failure or an already released status. */ } }
+}
+
 class RunningCommand {
-  RunningCommand._(this._process, this.outputFile, Duration? timeout) {
+  RunningCommand._(Process process, this.outputFile, Duration? timeout) : _process = process, _terminal = null {
+    _capture([process.stdout, process.stderr], process.exitCode, timeout);
+  }
+  RunningCommand._terminal(PseudoTerminal terminal, this.outputFile, File? status, Duration? timeout, CancellationToken cancellation) : _terminal = terminal, _process = null {
+    _capture([terminal.out.map(utf8.encode)], _ptyExit(terminal, status, cancellation), timeout);
+  }
+  void _capture(List<Stream<List<int>>> streams, Future<int> status, Duration? timeout) {
     final sink = outputFile.openWrite();
     void append(String value) {
       final available = maxToolOutputBytes - _output.length;
@@ -97,17 +143,18 @@ class RunningCommand {
     }
     final timer = timeout == null ? null : Timer(timeout, () { timedOut = true; kill(); });
     done = Future.wait([
-      for (final stream in [_process.stdout, _process.stderr]) stream.map((bytes) {
+      for (final stream in streams) stream.map((bytes) {
         sink.add(bytes); return bytes;
       }).transform(const Utf8Decoder(allowMalformed: true)).forEach(append),
-      _process.exitCode,
+      status,
     ]).then((results) async {
       await sink.close();
       exitCode = results.last as int;
     }).whenComplete(() async { timer?.cancel(); await sink.close(); });
     unawaited(done.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
   }
-  final Process _process;
+  final Process? _process;
+  final PseudoTerminal? _terminal;
   final File outputFile;
   late final Future<void> done;
   int? exitCode;
@@ -118,20 +165,35 @@ class RunningCommand {
 
   Future<void> write(String chars, {required CancellationToken cancellation}) async {
     cancellation.throwIfCancelled();
-    if (chars == '\u0003') { _process.kill(ProcessSignal.sigint); return; }
-    _process.stdin.write(chars);
-    await _process.stdin.flush().asCancellable(cancellation);
+    if (_terminal case final terminal?) {
+      // Keep large writes cooperative between bounded terminal input chunks.
+      for (var offset = 0; offset < chars.length;) {
+        cancellation.throwIfCancelled();
+        var end = (offset + 1024).clamp(0, chars.length);
+        if (end < chars.length && chars.codeUnitAt(end - 1) >= 0xd800 && chars.codeUnitAt(end - 1) <= 0xdbff) end--;
+        terminal.write(chars.substring(offset, end));
+        offset = end;
+        await cancellableDelay(Duration.zero, cancellation);
+      }
+      return;
+    }
+    final process = _process!;
+    if (chars == '\u0003') { process.kill(ProcessSignal.sigint); return; }
+    process.stdin.write(chars);
+    await process.stdin.flush().asCancellable(cancellation);
   }
   void kill() {
     if (_killed) return;
     _killed = true;
+    if (_terminal case final terminal?) { terminal.kill(ProcessSignal.sigkill); return; }
+    final process = _process!;
     if (Platform.isWindows) {
-      unawaited(Process.run('taskkill', ['/PID', '${_process.pid}', '/T', '/F']).then<void>((result) {
-        if (result.exitCode != 0) _process.kill();
+      unawaited(Process.run('taskkill', ['/PID', '${process.pid}', '/T', '/F']).then<void>((result) {
+        if (result.exitCode != 0) process.kill();
       },
-        onError: (Object _, StackTrace _) { _process.kill(); }));
+        onError: (Object _, StackTrace _) { process.kill(); }));
     } else {
-      _process.kill(ProcessSignal.sigterm);
+      process.kill(ProcessSignal.sigterm);
     }
   }
   String takeOutput() {

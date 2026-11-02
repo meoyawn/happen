@@ -61,6 +61,14 @@ Future<Json> readSession(String directory, String sessionID, String method, Json
       final config = configRow.isEmpty ? <String, dynamic>{} : decode(configRow.single['value']);
       final projection = decode(db.select('SELECT data FROM session_projection').single['data']);
       final through = projection['eventSeq'] as int? ?? 0;
+      List<Json> pending() => [
+        for (final row in db.select('SELECT * FROM session_inbox ORDER BY enqueued_seq')) {
+          'id': (row['id'] as String).replaceFirst(RegExp(r'^msg_'), ''),
+          'prompt': decode(row['payload'])['text'], 'attachments': decode(row['payload'])['files'],
+          'delivery': row['delivery'], 'reasoning': decode(row['payload'])['metadata']?['reasoning'],
+          'created_at': DateTime.fromMillisecondsSinceEpoch(row['time_created'] as int).toUtc().toIso8601String(),
+        },
+      ];
       if (method == 'session.event.list') {
         final after = params['after'] as int? ?? 0;
         if (after < 0) throw const FormatException('Invalid session event sequence');
@@ -78,19 +86,13 @@ Future<Json> readSession(String directory, String sessionID, String method, Json
         return {'data': data, 'through': through, 'cursor': {if (last < through) 'next': last}};
       }
       if (method == 'session.inbox') {
-        return {'data': [
-          for (final row in db.select('SELECT * FROM session_inbox ORDER BY enqueued_seq')) {
-            'id': (row['id'] as String).replaceFirst(RegExp(r'^msg_'), ''),
-            'prompt': decode(row['payload'])['text'], 'attachments': decode(row['payload'])['files'],
-            'delivery': row['delivery'], 'reasoning': decode(row['payload'])['metadata']?['reasoning'],
-            'created_at': DateTime.fromMillisecondsSinceEpoch(row['time_created'] as int).toUtc().toIso8601String(),
-          },
-        ]};
+        return {'data': pending()};
       }
       return {
         ...messagePage(),
         'through': through, 'configuration': config, 'reasoning': projection['reasoning'],
         'state': projection['inbox'] ?? {},
+        'pending': pending(),
         'archived': db.select("SELECT value FROM metadata WHERE key = 'archived_at' AND value != 'null'").isNotEmpty,
       };
     } finally { db.close(); }

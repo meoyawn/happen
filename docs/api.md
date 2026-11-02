@@ -47,6 +47,25 @@ exits. Build a distributable CLI with its native libraries using:
 dart build cli --target=packages/cli/bin/happen.dart --output=build/happen
 ```
 
+### Saved sessions
+
+The server's `session.list` RPC discovers durable session databases independently
+of live agent isolates and desktop sidebar references. It returns `{data, cursor}`;
+each entry contains `id`, `title`, `location.directory`, `model`, `time`, and an
+optional `parentID` and last completed `outcome`. `time.busy` and `time.idle` retain
+the most recent execution's start and completion, separately from live activity.
+Supported filters are `directory`, `parentID` (including null
+for root sessions), `archived`, `search`, and `order` (`asc`/`desc`, default `desc`).
+`limit` defaults to 50, with a maximum of 5,000. Opaque `cursor.previous` and
+`cursor.next` retain their original filters and order by updated time and ID.
+
+`session.active` separately returns `{data: {SESSION_ID: {type: "running"}}}` for
+live executions only. Listing saved sessions never resumes inference or tools.
+Creation is acknowledged after the session history is durable. Existing histories,
+including interrupted sessions, need no registration or migration: they are the
+inventory's source of truth. The desktop refreshes its local sidebar cache from
+the server at startup, when adding a project, returning to Home, and on resume.
+
 Keep the resulting `bundle/bin` and `bundle/lib` directories together. For a
 single-file macOS arm64 release, use the Moon target instead:
 
@@ -74,24 +93,16 @@ extraction and repair, and executes a fixture-backed task through SQLite and
 Code Mode. Reports are written next to the executable. This release target
 currently supports macOS arm64 and uses ad-hoc code signing.
 
-## Context JSON and deterministic comparisons
+## OpenAI request JSON and deterministic comparisons
 
 ```sh
-# Build initial model input through the real agent, without calling a model.
-dart run packages/cli/bin/happen.dart debug prompt-input --cwd /path/to/repo -o input.json "task"
-
-# Export the complete immutable model buffer after a turn, or inspect it later.
-dart run packages/cli/bin/happen.dart exec --context-output context.json "task"
-dart run packages/cli/bin/happen.dart debug context SESSION -o context.json
-
 # A local Responses API endpoint needs no ChatGPT login.
 dart run packages/cli/bin/happen.dart exec --endpoint http://127.0.0.1:8080/v1/responses "task"
 
-# Opt-in native OpenAI request/response evidence, then local reduction.
+# Opt-in exact outbound OpenAI request JSON, one file per transport attempt.
 HAPPEN_ROLLOUT_TRACE_ROOT=.local/traces dart run packages/cli/bin/happen.dart exec "task"
-dart run packages/cli/bin/happen.dart debug trace-reduce .local/traces/BUNDLE
 
-# Real Codex against the in-process agent; only Responses API output is synthetic.
+# Real Codex against the in-process agent; no Happen CLI build required.
 moon run test-e2e
 ```
 
@@ -101,22 +112,23 @@ variable selected with `--api-key-env`; an unauthenticated local endpoint is
 also supported. ChatGPT credentials are never forwarded to that endpoint.
 Endpoint selection applies to this CLI process; supply it again when resuming.
 
-`debug prompt-input` returns prepared native OpenAI history items, like Codex's
-command. Under Standard Responses the base prompt and request-level tools are
-assembled later; use context export for the buffer plus envelope, or native
-tracing for the complete wire request.
-`debug context` and `exec --context-output` use exactly the same
-`readContextSnapshot` mechanism as desktop JSON export: all pages of one
-immutable actor snapshot, with its envelope and usage, never a transcript projection.
-Reading a saved session neither starts a model turn nor refreshes its context.
+Tracing is off unless `HAPPEN_ROLLOUT_TRACE_ROOT` is set. CLI and in-process
+execution use the same capture. A private directory per transport client holds
+ordered UUIDv7-named `.json` files. Each file contains exactly the serialized
+Responses HTTP body or WebSocket message passed to the transport, including
+retries and compaction. There are no prepared-input exports, response dumps,
+trace reducers, or reconstructed inference files.
 
-Tracing is off unless `HAPPEN_ROLLOUT_TRACE_ROOT` is set. Each recorded session
-in a CLI process gets a private bundle with `manifest.json`, `trace.jsonl`, and
-raw JSON bodies under `payloads/`. `trace-reduce` assembles `inference_calls`
-in `state.json` inside the supplied bundle; `-o FILE` selects another output.
-Happen's reduced schema is deliberately smaller than Codex's runtime graph.
-These artifacts contain full context and tool results; authorization headers
-and credential values are not recorded. See [the context contract](../test/fixtures/context_contract/README.md)
+The parity harness captures both harnesses' actual HTTP bodies at the same
+receiving OpenAI endpoint. At the end of each session it compares their final
+full inference requests with strict deep JSON equality, preserving array order.
+Only explicitly scoped generated IDs and numeric timing fields are removed;
+the original timing values are reported separately. Message shapes and other
+metadata remain strict. Codex's built-in compaction
+trace omits transport fields and is not used. The app's internal read-only
+context snapshot remains available for inspection; it is not comparison evidence.
+Request files contain full context and tool results; authorization headers and
+credential values are not recorded. See [the context contract](../test/fixtures/context_contract/README.md)
 for strict comparisons, isolated configs, real Dart MCP, and timing assertions.
 
 ## Desktop development
@@ -493,7 +505,7 @@ providers:
 
 Then run `dart run packages/cli/bin/happen.dart exec --provider opencode "Complete this task"`.
 The route uses Chat Completions, with a 200,000-token context and a maximum output
-of 32,000 tokens from the pinned OpenCode catalog. The exact free model is required;
+of 32,000 tokens from the recorded OpenCode catalog. The exact free model is required;
 there is no automatic paid fallback. Native DeepSeek remains available with
 `backend: native` (the default), `deepseek-flash`, and `DEEPSEEK_API_KEY`.
 The earlier `providers.deepseek.backend: opencode` configuration remains valid
@@ -528,6 +540,17 @@ below. Existing `task.*` clients retain their event contract.
 | `session.context` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Reads the agent's actual normalized model buffer and request envelope. Returns chronological `input`, `instructions`, `tools`, frozen `settings`, `effectiveReasoning`, `inputCount`, counts, token/cache usage, context limit, `through`, `sourceThrough`, `windowID`, and `snapshotID`. `cursor.next` appends the next input page from the same immutable snapshot, even if execution or compaction changes the live context. |
 | `session.read.cancel` | `request_id` of a pending session read on this connection. Cancels snapshot/replay work without interrupting the session writer or execution. |
 
+| Inbox operation | Parameters and behavior |
+| --- | --- |
+| `session.inbox` | `sessionID`. Reads durable pending inputs in admission order. |
+| `session.inbox.update` | `sessionID`, `inboxID`, `delivery` (`steer` or `queue`). Changes a pending input in place and emits `session.inbox.delivery.changed`. Steering an idle session starts that input. |
+| `session.inbox.cancel` | `sessionID`, `inboxID`. Deletes only that pending input and emits `session.inbox.cancelled`, without stopping the active execution. |
+
+Inbox mutations reject inputs that have already started or been delivered.
+The writer rechecks steering offers before committing them, so a late mailbox
+offer cannot deliver an input that was deleted or moved to the queue. Changes
+preserve attachments, creation time, reasoning choice, and admission order.
+
 Each session stores its event log, normalized messages/parts, and durable inbox in
 one `tasks/<sessionID>/history.sqlite`. Its writer updates them in one transaction.
 Independent read-only connections take WAL snapshots without acquiring a writer.
@@ -558,9 +581,11 @@ prefixes are obsolete and rejected for inference, without migration or fallback.
 Initial repository, environment, skill and deferred-tool context precedes the
 real user prompt in both the model buffer and durable history.
 Synthetic messages preserve their model role and harness context classification.
-The desktop JSON export fetches every page of one agent snapshot and stores the
-ordered bodies once in `context.input`, alongside its envelope and accounting.
-It does not embed a second, projected `messages` transcript.
+The desktop inspector fetches every page of one agent snapshot and serializes
+it through the inference adapter. Its JSON export contains only that request:
+OpenAI Responses `input`, native `tools`, and request settings, including the
+base prompt as the first developer message. Internal snapshot accounting and
+transcript projections are not included in the desktop export.
 
 Task operations acknowledge admission before emitting their durable events;
 wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outcome.

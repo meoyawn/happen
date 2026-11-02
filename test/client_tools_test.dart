@@ -6,6 +6,8 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 
+import 'support/openai_output.dart';
+
 const browserTool = {
   'name': 'browser_title',
   'description': 'Return the title of a client browser tab.',
@@ -50,7 +52,7 @@ void main() {
           final lastUser = input.lastIndexWhere(
             (item) => item['role'] == 'user',
           );
-          final prompt = input[lastUser]['content'];
+          final prompt = openAIMessageText(input[lastUser]);
           final outputs = input
               .skip(lastUser + 1)
               .where(
@@ -221,8 +223,8 @@ void main() {
           jsonEncode(removal),
           contains('Removed deferred tool namespaces:'),
         );
-        expect(removal['content'], contains('- client: Tools in the client namespace.'));
-        expect(removal['content'], contains('No deferred tool namespaces remain.'));
+        expect(openAIMessageText(removal as Map), contains('- client: Tools in the client namespace.'));
+        expect(openAIMessageText(removal as Map), contains('No deferred tool namespaces remain.'));
 
         // Reattachment starts a new ownership lifetime with the same stable names.
         await observer.request('tools.register', {

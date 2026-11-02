@@ -9,12 +9,10 @@ Future<IsolateOwner> startStore(
   String directory,
   String id, {
   bool create = true,
-  bool ephemeral = false,
 }) => IsolateOwner.start(_storeMain, {
   'directory': directory,
   'task_id': id,
   'create': create,
-  'ephemeral': ephemeral,
 });
 
 Future<String> importHistory(
@@ -46,7 +44,6 @@ void _storeMain(List<Object?> args) async {
           config['directory'] as String,
           config['task_id'] as String,
           create: config['create'] as bool,
-          ephemeral: config['ephemeral'] == true,
         );
   final port = ReceivePort(), queue = StreamController<Json>();
   final operations = <String, CancellationToken>{};
@@ -83,12 +80,15 @@ void _storeMain(List<Object?> args) async {
       final cancellation = operations[id]!;
       try {
         cancellation.throwIfCancelled();
-        if (store != null && {'append', 'append_batch', 'archive', 'context', 'session.prepare', 'session.inbox.cancel'}.contains(request['method'])) {
+        if (store != null && {'append', 'append_batch', 'context', 'session.prepare', 'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
           await store.prepareSession(cancellation: cancellation);
         }
         final Object? result = switch (request['method']) {
           'session.prepare' => null,
           'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
+          'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
+          'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),
+            effort: requiredString(params, 'effort'), reasoningUpdates: params['reasoningUpdates'] == true),
           'append' => store!.append(
             params['type'] as String,
             jsonObject(params['data']),

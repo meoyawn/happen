@@ -54,7 +54,7 @@ tasks:
       outputStyle: stream
 
   test-e2e:
-    description: Compare in-process agent context and timings against Codex
+    description: Compare real outbound OpenAI requests and timings against Codex
     command: dart run tool/test_e2e.dart
     preset: utility
     inputs:

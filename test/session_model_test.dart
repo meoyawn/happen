@@ -133,6 +133,43 @@ void main() {
     } finally { await writer.close(); }
   });
 
+  test('pending changes survive reopen and stale offers cannot deliver removed or queued input', () async {
+    var writer = await startStore(root.path, id);
+    try {
+      for (final name in ['queued', 'deleted', 'delivered']) {
+        await callIsolate(writer.port, 'append', {'type': 'input.pending', 'data': {
+          'id': name, 'prompt': name, 'delivery': 'steer',
+          'reasoning': name == 'delivered' ? 'medium' : 'high',
+          'attachments': [{'type': 'file', 'name': '$name.txt', 'path': '/$name.txt'}],
+        }});
+      }
+      await callIsolate(writer.port, 'session.inbox.update', {'inboxID': 'msg_queued', 'delivery': 'queue'});
+      await callIsolate(writer.port, 'session.inbox.update', {'inboxID': 'msg_deleted'});
+      await writer.close();
+      writer = await startStore(root.path, id, create: false);
+      final commits = await callIsolate(writer.port, 'session.inbox.commit', {
+        'ids': ['queued', 'deleted', 'delivered', 'delivered'], 'effort': 'low', 'reasoningUpdates': true,
+      }) as List;
+      expect(commits.where((event) => event['type'] == 'input.committed').map((event) => event['data']['message_id']), ['delivered']);
+      final snapshot = await read();
+      expect((snapshot['data'] as List).where((message) => message['type'] == 'user').map((message) => message['text']), ['delivered']);
+      expect(snapshot['reasoning'], 'medium', reason: 'A withdrawn prompt must not change reasoning');
+      expect(snapshot['pending'].single['id'], 'queued');
+      expect(snapshot['state']['msg_queued']['delivery'], 'queue');
+      expect((await read('session.inbox'))['data'].single, containsPair('delivery', 'queue'));
+      await expectLater(callIsolate(writer.port, 'session.inbox.update', {'inboxID': 'msg_delivered'}),
+        throwsA(isA<RemoteFailure>().having((error) => error.toString(), 'message', contains('Message is no longer pending'))));
+      await callIsolate(writer.port, 'session.inbox.update', {'inboxID': 'msg_queued', 'delivery': 'steer'});
+      await callIsolate(writer.port, 'session.inbox.commit', {
+        'ids': ['queued'], 'effort': 'medium', 'reasoningUpdates': true,
+      });
+      expect((await read())['pending'], isEmpty);
+      final queued = (await read())['data'].singleWhere((message) => message['id'] == 'msg_queued');
+      expect(queued['files'].single['path'], '/queued.txt');
+      expect((await read())['reasoning'], 'high');
+    } finally { await writer.close(); }
+  });
+
   test('existing histories rebuild in the writer and opaque pagination tolerates new messages', () async {
     final store = TaskStore(root.path, id);
     addTearDown(store.close);

@@ -30,7 +30,7 @@ List<Json> readModelContext(Database db, {int maxBytes = maxContextBytes}) {
     SELECT type, data FROM events WHERE seq > ? AND type IN (
       'input.committed', 'configuration.updated', 'instructions.updated',
       'environment.updated', 'tools.updated', 'agents.updated', 'mcp.updated',
-      'client_tools.updated', 'skills.updated', 'model.completed', 'tool.completed'
+      'client_tools.updated', 'skills.updated', 'model.completed', 'tool.completed', 'tool.notified'
     ) ORDER BY seq
   ''');
   try {

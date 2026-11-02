@@ -6,6 +6,8 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 
+import 'support/openai_output.dart';
+
 void main() {
   for (final lab in ['openai', 'opencode']) {
     test('$lab cancels foreground tools and preserves task sessions until hibernation, archive, or shutdown', () async {
@@ -50,7 +52,7 @@ wait
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
         final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
         final user = input.lastIndexWhere((item) => item['role'] == 'user');
-        final prompt = input[user]['content'];
+        final prompt = openAIMessageText(input[user]);
         final called = input.skip(user + 1).any((item) => lab == 'openai'
           ? ['custom_tool_call_output', 'function_call_output'].contains(item['type']) : item['role'] == 'tool');
         String? name;

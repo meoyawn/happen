@@ -8,7 +8,6 @@ import 'package:opencode/opencode.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:cli/debug.dart';
 
 ArgParser parser() {
   final parser = ArgParser()
@@ -38,7 +37,6 @@ ArgParser parser() {
       ..addOption('endpoint', help: 'Local Responses API URL (including /responses); no ChatGPT login needed')
       ..addOption('api-key-env', defaultsTo: 'OPENAI_API_KEY')
       ..addOption('resume')
-      ..addOption('context-output', help: 'Save the complete model context snapshot as JSON')
       ..addFlag('json', negatable: false)
       ..addFlag('telemetry', defaultsTo: true),
   );
@@ -51,7 +49,6 @@ ArgParser parser() {
   mcp.addCommand('login', ArgParser()..addFlag('no-browser', negatable: false,
     help: 'Print the sign-in link and accept the final callback URL without opening a browser'));
   mcp.addCommand('logout', ArgParser());
-  addDebugCommands(parser);
   return parser;
 }
 
@@ -74,15 +71,12 @@ Future<void> run(List<String> arguments) async {
   }
   if (parsed['help'] == true || command == null) {
     stdout.writeln(
-      'Happen\n\n  happen login [--device | --from-codex | --provider opencode]\n  happen exec "task" [--context-output FILE]\n  happen debug prompt-input [PROMPT]\n  happen debug context SESSION [--output FILE]\n  happen mcp list [--verbose | --json]\n  happen mcp login SERVER [--no-browser]\n  happen mcp logout SERVER\n  happen request METHOD \'{"parameter":"value"}\'\n  happen config-schema\n\n${options.usage}',
+      'Happen\n\n  happen login [--device | --from-codex | --provider opencode]\n  happen exec "task"\n  happen mcp list [--verbose | --json]\n  happen mcp login SERVER [--no-browser]\n  happen mcp logout SERVER\n  happen request METHOD \'{"parameter":"value"}\'\n  happen config-schema\n\n${options.usage}',
     );
     return;
   }
   final directory = Directory(parsed['data-dir'] as String).absolute.path;
   switch (command.name) {
-    case 'debug':
-      await debug(command, directory, parsed['config'] as String?);
-      return;
     case 'mcp':
       await _mcp(command, directory, parsed['config'] as String?);
       return;
@@ -155,7 +149,7 @@ Future<void> run(List<String> arguments) async {
       final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
         .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
       try {
-        final endpoint = localResponsesEndpoint(command);
+        final endpoint = _localResponsesEndpoint(command);
         if (endpoint != null && command.wasParsed('provider') && !{'openai', 'gpt'}.contains(command['provider'])) {
           throw ArgumentError('--endpoint is only available for the OpenAI provider');
         }
@@ -207,9 +201,6 @@ Future<void> run(List<String> arguments) async {
         );
         taskId = result['task_id'] as String;
         final completed = await terminal.future.asCancellable(cancellation);
-        if (command['context-output'] case final String path) {
-          await writeContextJson(await readContextSnapshot(client, taskId, cancellation: cancellation), path);
-        }
         if (command['json'] == false) {
           if (completed['type'] == 'turn.completed') {
             stdout.writeln(completed['data']?['text'] ?? '');
@@ -251,6 +242,21 @@ Future<void> run(List<String> arguments) async {
     default:
       throw ArgumentError('Unknown command');
   }
+}
+
+String? _localResponsesEndpoint(ArgResults command) {
+  final endpoint = command['endpoint'] as String?;
+  if (endpoint == null) {
+    if (command.wasParsed('api-key-env')) throw ArgumentError('--api-key-env requires --endpoint');
+    return null;
+  }
+  final uri = Uri.tryParse(endpoint);
+  if (uri == null || !{'http', 'https'}.contains(uri.scheme) || uri.userInfo.isNotEmpty || uri.hasFragment ||
+      !(uri.host == 'localhost' || (InternetAddress.tryParse(uri.host)?.isLoopback ?? false))) {
+    throw ArgumentError('--endpoint must be an HTTP(S) loopback Responses API URL');
+  }
+  if ((command['api-key-env'] as String).isEmpty) throw ArgumentError('--api-key-env must not be empty');
+  return endpoint;
 }
 
 Future<void> _mcp(ArgResults command, String directory, String? configPath) async {

@@ -2,7 +2,7 @@ import 'package:protocol/protocol.dart';
 
 import 'signatures.dart';
 
-// CodeModeCatalog and CodeModeInstructions at the pinned OpenCode revision.
+// OpenCode CodeModeCatalog and CodeModeInstructions; see tools/UPSTREAM.md.
 // One global budget covers every namespace; pinned entries always remain shown.
 Json summarizeToolCatalog(List<Json> catalog, {int budget = 2000}) {
   final groups = <String, List<Json>>{};

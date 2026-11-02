@@ -1,7 +1,8 @@
 # OpenCode compatibility gaps
 
-Target: OpenCode `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944` in
-`/Users/meoyawn/Developer/github/opencode`.
+Target: the current HEAD of `/Users/meoyawn/Developer/github/opencode`.
+OpenCode is a moving target; recorded revisions identify evidence, not a version
+to pin. Recheck the relevant current source when assessing a gap.
 
 These are outstanding differences and verification gaps. Passing the captured
 search cases does not establish complete OpenCode compatibility.
@@ -10,6 +11,7 @@ search cases does not establish complete OpenCode compatibility.
 
 | Area | Current difference | Evidence and completion condition |
 | --- | --- | --- |
+| Resource helper declarations | Both providers include the two resource helpers and select the same 11/14 inline Dart listings with them present. Happen omits both helpers' output schemas, rendering `Promise<unknown>` instead of upstream's structured return types; its read-helper description also differs. The shared listing count is not a bug, but the scoped provider prompt is not equal. | `lib/src/tool_interface.dart` versus current upstream `packages/core/src/tool/plugin/mcp-resource.ts` and `packages/schema/src/mcp.ts`. The real-Dart-catalog comparison with both helper inventories fails strict declaration/context equality. Match supported output contracts and guidance without claiming unimplemented media behavior. |
 | Unknown tool diagnostics | The execution proxy returns a generic unknown-tool message. Upstream distinguishes an unknown namespace, an unknown tool with a ranked suggestion, and a namespace that is not callable. | `lib/src/code_mode.dart` versus upstream `packages/codemode/src/tool-runtime.ts` (`namespaceKeys` and `resolve`). Capture these execution failures upstream and match their kinds, text, and suggestions. |
 | External tool validation | The Code Mode adapter forwards external tool arguments and results without running upstream ToolRuntime's complete schema validation path. Native tool validation and search-argument validation do not establish external tool input/output parity. | `lib/src/code_mode.dart` versus upstream `ToolRuntime.make` and `Tool.make`. Capture invalid inputs, invalid outputs, argument counts, and structured diagnostics, then verify the Dart bridge. |
 | Date instructions | Upstream emits `Today's date:` initially and `Today's date is now:` when the observed day changes. Happen's provider has no corresponding date instruction. | `lib/src/instructions.dart` versus upstream `packages/core/src/instructions/builtins.ts`, instruction key `core/date`. Test initial dates, midnight transitions, resume, and compaction against the upstream observation/rendering path. |
@@ -23,10 +25,14 @@ search cases does not establish complete OpenCode compatibility.
 
 Portable fixtures contain 58 search/validation/signature cases, nine catalog and
 update cases, and 37 file/MCP instruction cases. They execute the Dart port
-against expected results captured from pinned upstream TypeScript with Effect
+against expected results captured from upstream TypeScript with Effect
 4.1.0 and diff 8.0.4 under Bun. The search capture ran the actual
 `ToolRuntime.prepare`/`make`/`search` path; the catalog and instruction captures
 used upstream pure functions with minimal service adapters.
+
+Capture revisions and source hashes remain in the fixtures for reproducibility.
+They do not freeze the compatibility target or replace a comparison against the
+current reference checkout. Keep strict assertions when refreshing evidence.
 
 These cases cover selected inputs, not the complete OpenCode application or
 every registry, schema, and instruction lifecycle. Integration tests verify the

@@ -11,6 +11,8 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 
+import 'support/openai_output.dart';
+
 // Codex 2681f8c, literature_search_web_run_schema.snap without its optional
 // literature extension. Hash sorted JSON independently of wire property order.
 const _codexWebSchemaHash = 'de3be87e7abfe9b67ba757f27804d4206b51c2a8de9e9799fa7db9ef4abe3539';
@@ -108,7 +110,7 @@ void main() {
           return;
         }
         final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
-        final resumed = input[lastUser]['content'] == 'Continue';
+        final resumed = openAIMessageText(input[lastUser]) == 'Continue';
         final results = input.skip(lastUser + 1).where((item) => lab == 'openai'
             ? {'function_call_output', 'custom_tool_call_output'}.contains(item['type'])
             : item['role'] == 'tool').toList();

@@ -12,6 +12,16 @@ import '../auth.dart';
 
 typedef DeepSeekCredentials = Future<String> Function();
 
+/// Serialize frozen request settings with the inference adapter.
+Json openCodeRequest(ModelRequest request, {bool console = true, String transport = 'chat'}) {
+  final catalog = _Catalog(request.tools, request.input, openCode: console);
+  return switch (transport) {
+    'messages' => OpenCodeProvider._messages(request, request.settings, catalog),
+    'chat' => OpenCodeProvider._chat(request, request.settings, catalog, console: console),
+    _ => throw ArgumentError('Unsupported DeepSeek transport'),
+  };
+}
+
 /// DeepSeek Messages, with an explicit OpenAI-compatible route for gateways.
 /// The network owner supplies the HTTP pool and resolves credentials per request.
 class OpenCodeProvider implements ModelProvider {
@@ -213,13 +223,11 @@ class OpenCodeProvider implements ModelProvider {
     final catalog = _Catalog(request.tools, request.input, openCode: _console != null);
     final body = transport == 'messages'
         ? _messages(request, settings, catalog)
-        : _chat(request, settings, catalog);
+        : _chat(request, settings, catalog, console: _console != null);
     return _exchange(request, body, catalog, cancellation, onEvent);
   }
 
-  String _instructions(ModelRequest request, Json settings) => request.instructions;
-
-  Json _messages(ModelRequest request, Json settings, _Catalog catalog) {
+  static Json _messages(ModelRequest request, Json settings, _Catalog catalog) {
     final messages = <Json>[];
     final updates = <Json>[];
     final initialSystem = <String>[];
@@ -359,7 +367,7 @@ class OpenCodeProvider implements ModelProvider {
     }
     final effort = settings['reasoning'];
     final instructions = [
-      _instructions(request, settings),
+      request.instructions,
       ...initialSystem,
     ].where((value) => value.isNotEmpty).join('\n\n');
     return {
@@ -395,8 +403,8 @@ class OpenCodeProvider implements ModelProvider {
     };
   }
 
-  Json _chat(ModelRequest request, Json settings, _Catalog catalog) {
-    final instructions = _instructions(request, settings);
+  static Json _chat(ModelRequest request, Json settings, _Catalog catalog, {required bool console}) {
+    final instructions = request.instructions;
     final messages = <Json>[
       if (instructions.isNotEmpty) {'role': 'system', 'content': instructions},
     ];
@@ -497,7 +505,7 @@ class OpenCodeProvider implements ModelProvider {
       'stream': true,
       'stream_options': {'include_usage': true},
       'max_tokens': settings['max_output_tokens'],
-      if (_console == null || settings['reasoning'] == 'off')
+      if (!console || settings['reasoning'] == 'off')
         'thinking': {
           'type': settings['reasoning'] == 'off' ? 'disabled' : 'enabled',
         },

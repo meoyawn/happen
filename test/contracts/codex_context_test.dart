@@ -5,10 +5,9 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:ai/ai.dart';
 import 'package:crypto/crypto.dart';
-import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -61,84 +60,169 @@ Future<({String stdout, int microseconds})> run(List<String> command, Map<String
 String text(Json item) => item['content'] is String ? item['content'] as String
   : (item['content'] as List? ?? []).whereType<Map>().map((part) => part['text'] ?? '').join('\n');
 
-/// Ignore transport identity only. Never omit tools, prompts or message boundaries.
-Object? canonical(Object? value) {
-  if (value is List) return value.map(canonical).toList();
-  if (value is Map) {
-    final map = Map<String, dynamic>.from(value);
-    final item = {'message', 'function_call', 'custom_tool_call',
-      'function_call_output', 'custom_tool_call_output', 'reasoning', 'compaction'}.contains(map['type']) ||
-      map.containsKey('role') && map.containsKey('content');
-    if (item) {
-      map.remove('id');
-      map.remove('internal_chat_message_metadata_passthrough');
+/// One shared preparation for every case: remove scoped IDs and extract known
+/// timings. No other fields, encodings, values or array positions are changed.
+({Json request, List<Json> timings}) prepareComparison(Json received) {
+  final request = jsonObject(jsonDecode(jsonEncode(received)));
+  final timings = <Json>[];
+  void takeTime(Json object, String key, String path, String kind, String unit) {
+    final value = object[key];
+    if (value is! num || !value.isFinite || value < 0) return;
+    object.remove(key);
+    timings.add({'path': '$path.$key', 'kind': kind, 'unit': unit, 'value': value});
+  }
+  void ids(Json object, List<String> keys) { for (final key in keys) { object.remove(key); } }
+  request.remove('prompt_cache_key');
+  if (request['client_metadata'] is Map) {
+    final metadata = request['client_metadata'] as Json;
+    ids(metadata, ['x-codex-installation-id', 'turn_id', 'thread_id', 'session_id',
+      'root_turn_id', 'parent_turn_id', 'x-codex-window-id']);
+    if (metadata['x-codex-turn-metadata'] case final String encoded) {
+      final turn = jsonObject(jsonDecode(encoded));
+      ids(turn, ['installation_id', 'session_id', 'thread_id', 'turn_id', 'window_id',
+        'context_window_id', 'root_turn_id', 'parent_turn_id']);
+      takeTime(turn, 'turn_started_at_unix_ms', 'client_metadata.x-codex-turn-metadata', 'timestamp', 'milliseconds');
+      metadata['x-codex-turn-metadata'] = jsonEncode(turn);
     }
-    if ({'custom_tool_call_output', 'function_call_output'}.contains(map['type']) && map['output'] is List) {
-      map['output'] = [for (final raw in map['output'] as List) () {
-        final part = jsonObject(raw);
-        if (part['type'] != 'input_text' || part['text'] is! String) return part;
-        final text = part['text'] as String;
-        if (RegExp(r'^Script (completed|failed)\nWall time [0-9.]+ seconds\nOutput:\n$').hasMatch(text)) {
-          return {...part, 'text': text.replaceFirst(RegExp(r'Wall time [0-9.]+ seconds'), 'Wall time <DURATION> seconds')};
-        }
-        try {
-          final printed = jsonDecode(text);
-          if (printed is Map && printed['chunk_id'] is String && printed['wall_time_seconds'] is num && printed['output'] is String) {
-            return {...part, 'text': jsonEncode({...printed, 'chunk_id': '<CHUNK_ID>', 'wall_time_seconds': '<DURATION>'})};
-          }
-        } on FormatException { /* Ordinary printed prose remains byte-for-byte. */ }
-        return part;
-      }()];
+  }
+  String outputText(String text, String path) {
+    final status = RegExp(r'^Script (completed|failed|terminated|running with cell ID [1-9][0-9]*)\nWall time ([0-9.]+) seconds\nOutput:\n$').firstMatch(text);
+    if (status != null) {
+      timings.add({'path': path, 'kind': 'script', 'unit': 'seconds', 'value': double.parse(status[2]!)});
+      return text.replaceFirst('Wall time ${status[2]} seconds', 'Wall time <ELAPSED> seconds');
     }
-    if (map.containsKey('role') && map.containsKey('content')) {
-      map['type'] ??= 'message';
-      if (map['content'] is String) {
-        map['content'] = [{'type': map['role'] == 'assistant' ? 'output_text' : 'input_text', 'text': map['content']}];
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map && decoded['chunk_id'] is String && decoded['wall_time_seconds'] is num && decoded['output'] is String) {
+        final printed = jsonObject(decoded);
+        printed.remove('chunk_id');
+        if (printed['session_id'] is int) printed.remove('session_id');
+        takeTime(printed, 'wall_time_seconds', path, 'shell', 'seconds');
+        return jsonEncode(printed);
+      }
+    } on FormatException { /* Ordinary tool prose is preserved byte-for-byte. */ }
+    return text;
+  }
+  final input = request['input'] as List;
+  for (var index = 0; index < input.length; index++) {
+    final item = input[index] as Json, path = 'input[$index]';
+    item.remove('id');
+    if (item['internal_chat_message_metadata_passthrough'] is Map) {
+      final metadata = item['internal_chat_message_metadata_passthrough'] as Json;
+      metadata.remove('turn_id');
+      takeTime(metadata, 'create_time', '$path.internal_chat_message_metadata_passthrough', 'timestamp', 'seconds');
+    }
+    if (!{'custom_tool_call_output', 'function_call_output'}.contains(item['type'])) continue;
+    if (item['output'] case final String output) { item['output'] = outputText(output, '$path.output'); }
+    else if (item['output'] case final List output) {
+      for (var part = 0; part < output.length; part++) {
+        if (output[part]['type'] == 'input_text') output[part]['text'] = outputText(output[part]['text'] as String, '$path.output[$part].text');
       }
     }
-    final keys = map.keys.toList()..sort();
-    return {for (final key in keys) key: canonical(map[key])};
+  }
+  return (request: request, timings: timings);
+}
+
+/// Object-key sorting is for readable differences, never array reordering.
+Object? sortedKeys(Object? value) {
+  if (value is List) return value.map(sortedKeys).toList();
+  if (value is Map) {
+    final keys = value.keys.cast<String>().toList()..sort();
+    return {for (final key in keys) key: sortedKeys(value[key])};
   }
   return value;
 }
 
-Future<Json> compare(List<Json> reference, List<Json> actual, String path) async {
-  final left = canonical(reference), right = canonical(actual);
-  await save('$path/codex.json', reference);
-  await save('$path/happen.json', actual);
-  await save('$path/codex.canonical.json', left);
-  await save('$path/happen.canonical.json', right);
-  final a = encoder.convert(left).split('\n'), b = encoder.convert(right).split('\n');
+bool uuid7(Object? id) => id is String && RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$').hasMatch(id);
+
+String baseInstructionId(String thread, String instructions) {
+  // Independent RFC 9562 v5 derivation from Codex client.rs. The provider's
+  // renderer is deliberately not used to produce the expected identity.
+  List<int> hash(List<int> namespace, String name) {
+    final bytes = sha1.convert([...namespace, ...utf8.encode(name)]).bytes.take(16).toList();
+    bytes[6] = (bytes[6] & 15) | 0x50; bytes[8] = (bytes[8] & 63) | 0x80;
+    return bytes;
+  }
+  const oid = [0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8];
+  final value = hash(hash(oid, thread), instructions).map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+  return 'msg_${value.substring(0, 8)}-${value.substring(8, 12)}-${value.substring(12, 16)}-${value.substring(16, 20)}-${value.substring(20)}';
+}
+
+bool itemIdContract(List<Json> items, {String? thread, Map<String, String> modelIds = const {}}) {
+  const prefixes = {'message': 'msg', 'reasoning': 'rs', 'function_call': 'fc', 'custom_tool_call': 'ctc',
+    'function_call_output': 'fco', 'custom_tool_call_output': 'ctco', 'compaction': 'cmp'};
+  final seen = <String>{};
+  for (var index = 0; index < items.length; index++) {
+    final item = items[index], kind = item['type'] ?? (item.containsKey('role') ? 'message' : null);
+    final prefix = prefixes[kind];
+    if (prefix == null) continue;
+    final id = item['id'];
+    if (id is! String || !seen.add(id)) return false;
+    if (modelIds[id] == kind) continue; // Preserve IDs actually emitted by the synthetic upstream.
+    if (index == 0 && thread != null && item['role'] == 'developer') {
+      if (id != baseInstructionId(thread, text(item))) return false;
+    } else if (!id.startsWith('${prefix}_') || !uuid7(id.substring(prefix.length + 1))) { return false; }
+  }
+  return true;
+}
+
+bool shellIdContract(List<Json> input) {
+  for (final item in input.where((item) => {'function_call_output', 'custom_tool_call_output'}.contains(item['type']))) {
+    for (final part in item['output'] is List ? (item['output'] as List).whereType<Map>() : const <Map>[]) {
+      try {
+        final value = jsonDecode(part['text'] as String? ?? '');
+        if (value is! Map || !value.containsKey('chunk_id') || !value.containsKey('wall_time_seconds')) continue;
+        if (value['chunk_id'] is! String || !RegExp(r'^[0-9a-f]{6}$').hasMatch(value['chunk_id'] as String)) return false;
+        if (value.containsKey('session_id') && (value['session_id'] is! int || value['session_id'] < 1000 || value['session_id'] >= 100000)) return false;
+      } on FormatException { /* Non-JSON prose. */ }
+    }
+  }
+  return true;
+}
+
+Future<({bool equal, Json timings})> compare(Json reference, Json actual, String path) async {
+  final left = prepareComparison(reference), right = prepareComparison(actual);
+  final equal = equals(left.request).matches(right.request, {});
+  final a = encoder.convert(sortedKeys(left.request)).split('\n'), b = encoder.convert(sortedKeys(right.request)).split('\n');
   var index = 0;
   while (index < a.length && index < b.length && a[index] == b[index]) { index++; }
-  final equal = index == a.length && index == b.length;
   if (!equal) {
+    await Directory(path).create(recursive: true);
     await File('$path/first-difference.txt').writeAsString('Line ${index + 1}\n'
       'Codex: ${index < a.length ? a[index] : '<end>'}\n'
       'Happen: ${index < b.length ? b[index] : '<end>'}\n');
   }
-  return {'equal': equal, if (!equal) 'firstDifferentLine': index + 1};
+  return (equal: equal, timings: {'codex': left.timings, 'happen': right.timings});
 }
 
 Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json>> requests,
-  List<String> errors, Map<String, List<int>> loops, Map<String, List<List<int>>> arrivals})>
-    responsesPeer(Json scenario, CancellationToken cancellation) async {
+  Map<String, List<String>> files, List<String> errors, Map<String, List<int>> loops,
+  Map<String, List<List<int>>> arrivals, Map<String, Map<String, String>> modelIds})>
+    responsesPeer(Json scenario, String outputPath, CancellationToken cancellation) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   Future<void>? closing;
   Future<void> close() => closing ??= server.close(force: true);
   final hook = CancellationHook(cancellation, () => unawaited(close()));
   final requests = <String, List<Json>>{}, errors = <String>[];
+  final files = <String, List<String>>{};
+  for (final engine in ['codex', 'happen']) { await Directory('$outputPath/$engine-requests').create(recursive: true); }
   final watches = <String, Stopwatch>{}, loops = <String, List<int>>{};
   final arrivals = <String, List<List<int>>>{};
+  final currentArrivals = <String, List<int>>{};
+  final modelIds = <String, Map<String, String>>{};
   server.listen((http) async {
     try {
-      final body = jsonObject(jsonDecode(await utf8.decoder.bind(http).join()));
+      final chunks = await http.fold<BytesBuilder>(BytesBuilder(copy: false), (buffer, chunk) => buffer..add(chunk));
+      final bytes = chunks.takeBytes();
+      final body = jsonObject(jsonDecode(utf8.decode(bytes)));
       final engine = http.uri.pathSegments.first;
-      final watch = watches.putIfAbsent(engine, () {
-        arrivals.putIfAbsent(engine, () => []).add([]);
+      final clock = '$engine:${body['prompt_cache_key']}';
+      final watch = watches.putIfAbsent(clock, () {
+        final samples = currentArrivals[clock] = <int>[];
+        arrivals.putIfAbsent(engine, () => []).add(samples);
         return Stopwatch()..start();
       });
-      arrivals[engine]!.last.add(watch.elapsedMicroseconds);
+      currentArrivals[clock]!.add(watch.elapsedMicroseconds);
       if (engine == 'happen') {
         final key = scenario['endpoint_key'];
         if (http.headers.value(HttpHeaders.authorizationHeader) != (key == null ? null : 'Bearer $key') ||
@@ -147,9 +231,16 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         }
       }
       final captured = requests.putIfAbsent(engine, () => [])..add(body);
+      // The endpoint owns the single authoritative capture for both harnesses.
+      // Save the received bytes, never a re-encoded or reconstructed body.
+      final file = File('$outputPath/$engine-requests/${captured.length.toString().padLeft(6, '0')}.json');
+      await file.writeAsBytes(bytes, flush: true);
+      files.putIfAbsent(engine, () => []).add(file.path);
       final completed = {for (final item in (body['input'] as List).map(jsonObject))
         if (['custom_tool_call_output', 'function_call_output'].contains(item['type'])) item['call_id']};
-      final steps = scenario['responses'] as List? ?? [[{
+      final messages = scenario['messages'] as List? ?? [];
+      final prelude = messages.length > 1 && messages.take(messages.length - 1).contains(text(jsonObject((body['input'] as List).last)));
+      final steps = (prelude ? null : scenario['responses'] as List?) ?? [[{
         'type': 'message', 'role': 'assistant',
         'content': [{'type': 'output_text', 'text': 'READY', 'annotations': []}],
       }]];
@@ -170,29 +261,36 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         output.clear();
         output.add({'type': 'compaction', 'encrypted_content': 'context-contract-native-checkpoint'});
       }
-      final inputTokens = scenario['workflow'] == 'compaction' && !compact && !restored ? 21000 : 100;
+      for (final item in output) {
+        if (item['id'] case final String id) (modelIds[engine] ??= {})[id] = item['type'] as String;
+      }
+      final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored ? 21000 : 100;
       final response = {'id': 'resp_fixture_${captured.length}', 'object': 'response', 'status': 'completed',
         'output': output, 'usage': {'input_tokens': inputTokens, 'output_tokens': 10, 'total_tokens': inputTokens + 10}};
-      http.response.headers.contentType = ContentType('text', 'event-stream');
-      void event(Json value) => http.response.write('data: ${jsonEncode(value)}\n\n');
+      final stream = StringBuffer();
+      void event(Json value) => stream.write('data: ${jsonEncode(value)}\n\n');
       event({'type': 'response.created', 'response': {...response, 'status': 'in_progress', 'output': []}});
       for (var i = 0; i < output.length; i++) {
         event({'type': 'response.output_item.added', 'output_index': i, 'item': output[i]});
         event({'type': 'response.output_item.done', 'output_index': i, 'item': output[i]});
       }
       event({'type': 'response.completed', 'response': response});
+      http.response.headers.contentType = ContentType('text', 'event-stream');
+      http.response.write(stream.toString());
       if (output.any((item) => item['type'] == 'message') &&
           output.every((item) => !{'function_call', 'custom_tool_call'}.contains(item['type']))) {
-        final watch = watches.remove(engine)!..stop();
+        final watch = watches.remove(clock)!..stop();
+        currentArrivals.remove(clock);
         loops.putIfAbsent(engine, () => []).add(watch.elapsedMicroseconds);
       }
-    } catch (error) {
-      errors.add(error.toString());
-      http.response.statusCode = 500;
+    } catch (error, stack) {
+      errors.add('$error\n$stack');
+      await File('$outputPath/peer-errors.log').writeAsString('$error\n$stack\n', mode: FileMode.append);
+      try { http.response.statusCode = 500; } on StateError { /* Preserve the primary error after a peer disconnect. */ }
     } finally { await http.response.close(); }
   });
   return (server: server, close: () async { hook.dispose(); await close(); },
-    requests: requests, errors: errors, loops: loops, arrivals: arrivals);
+    requests: requests, files: files, errors: errors, loops: loops, arrivals: arrivals, modelIds: modelIds);
 }
 
 double median(List<int> values) {
@@ -217,6 +315,16 @@ Future<Json> scenario(Json scenario, String model, String codex, String output, 
     await file.parent.create(recursive: true);
     await file.writeAsString(entry.value as String);
   }
+  for (final entry in jsonObject(scenario['binary_files'] ?? {}).entries) {
+    final file = File('$work/${entry.key}');
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(base64Decode(entry.value as String));
+  }
+  for (final entry in jsonObject(scenario['binary_sources'] ?? {}).entries) {
+    final file = File('$work/${entry.key}');
+    await file.parent.create(recursive: true);
+    await File('${fixtures.path}/${entry.value}').copy(file.path);
+  }
   final cwd = '$work/${scenario['cwd'] ?? '.'}';
   await Directory(cwd).create(recursive: true);
   final env = isolatedEnvironment(home, codexHome);
@@ -225,7 +333,7 @@ Future<Json> scenario(Json scenario, String model, String codex, String output, 
     for (final path in [codexHome, data]) { await File('$path/AGENTS.md').writeAsString(instructions); }
   }
   final peer = await responsesPeer(jsonObject(jsonDecode(
-    jsonEncode(scenario).replaceAll('{{WORK_URI}}', Directory(work).uri.toString()))), cancellation);
+    jsonEncode(scenario).replaceAll('{{WORK_URI}}', Directory(work).uri.toString()))), output, cancellation);
   final endpoint = 'http://127.0.0.1:${peer.server.port}';
   final config = StringBuffer('''
 model = "$model"
@@ -270,8 +378,8 @@ env_key = "CONTEXT_CONTRACT_KEY"
 remote_compaction = "v2"
 ''');
   final happenConfig = <String, dynamic>{'providers': {'openai': {'model': model,
-    'settings': <String, dynamic>{'reasoning': 'low', 'web_search': 'disabled'}}}};
-  if (scenario['workflow'] == 'compaction') {
+    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'disabled'}}}};
+  if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
     config.clear();
     config.write('model_context_window = 100000\nmodel_auto_compact_token_limit = 20000\n$text');
@@ -295,47 +403,18 @@ remote_compaction = "v2"
   final prompt = scenario['prompt'] as String;
   final command = [codex, '-C', cwd];
   final times = {'codex': <int>[], 'happen': <int>[]};
+  final loopTimes = {'codex': <int>[], 'happen': <int>[]};
+  final requestTimings = <Json>[];
   final checks = <String, bool>{};
   final host = await AgentServer.startLocal(directory: data, configPath: '$data/config.yaml', skillsHome: home,
     endpoint: '$endpoint/happen/responses', apiKeyEnv: 'CONTEXT_CONTRACT_UNUSED_${newId()}', telemetry: false);
   final client = AgentClient.local(host);
   try {
-    for (var sample = 0; sample <= samples; sample++) {
-      final inputs = <String, List<Json>>{};
-      for (final engine in sample.isEven ? ['codex', 'happen'] : ['happen', 'codex']) {
-        final path = '$output/sample-$sample/$engine';
-        if (engine == 'codex') {
-          final result = await run([...command, 'debug', 'prompt-input', prompt], codexEnv, '$path/process.log', cancellation);
-          if (sample > 0) times[engine]!.add(result.microseconds);
-          inputs[engine] = (jsonDecode(result.stdout) as List).map(jsonObject).toList();
-        } else {
-          final watch = Stopwatch()..start();
-          final snapshot = jsonObject(await client.request('debug.prompt-input', {
-            'cwd': cwd, 'provider': 'openai', 'model': model, 'prompt': prompt,
-          }).asCancellable(cancellation));
-          inputs[engine] = gptInput((snapshot['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))));
-          watch.stop();
-          if (sample > 0) times[engine]!.add(watch.elapsedMicroseconds);
-        }
-      }
-      final comparison = await compare(inputs['codex']!, inputs['happen']!, '$output/sample-$sample/initial');
-      checks['initial_context_equal:$sample'] = comparison['equal'] == true;
-      for (final engine in inputs.keys) {
-        final serialized = jsonEncode(inputs[engine]!.take(inputs[engine]!.length - 1).toList());
-        checks['$engine:prompt_last:$sample'] = text(inputs[engine]!.last) == prompt;
-        for (final marker in scenario['contains'] as List) { checks['$engine:contains:$marker:$sample'] = serialized.contains(marker as String); }
-        for (final marker in scenario['absent'] as List) { checks['$engine:absent:$marker:$sample'] = !jsonEncode(inputs[engine]).contains(marker as String); }
-        final catalogText = inputs[engine]!.map(text).join('\n');
-        final listed = RegExp(r'^- ([^:\n]+):[^\n]*\(file: ', multiLine: true)
-          .allMatches(catalogText).map((match) => match[1]!).toSet();
-        final expected = (scenario['catalog_skills'] as List? ?? []).cast<String>().toSet();
-        checks['$engine:only_fixture_skills:$sample'] = listed.length == expected.length && listed.containsAll(expected);
-      }
-    }
-    final timedLoop = {'skill', 'search', 'compaction'}.contains(scenario['workflow']);
-    for (var iteration = 0; iteration < (timedLoop ? samples : 1); iteration++) {
-      final runPath = '$output/run-$iteration';
+    final timedLoop = {'skill', 'search', 'compaction', 'shell', 'image', 'audio'}.contains(scenario['workflow']);
+    for (var iteration = -1; iteration < samples; iteration++) {
+      final runPath = '$output/run-${iteration < 0 ? 'warmup' : iteration}';
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
+      final loopStarts = {for (final engine in ['codex', 'happen']) engine: peer.loops[engine]?.length ?? 0};
       String? taskID;
       Future<void> turn(String prompt) async {
         final terminal = client.events.stream.firstWhere((event) =>
@@ -349,46 +428,71 @@ remote_compaction = "v2"
         if (completed['type'] != 'session.execution.succeeded') throw StateError('Agent turn failed: ${completed['data']}');
       }
       for (final engine in iteration.isEven ? ['codex', 'happen'] : ['happen', 'codex']) {
-        if (engine == 'codex') {
-          await run([...command, 'exec', '--json', '--skip-git-repo-check', prompt], codexEnv, '$runPath/$engine.events.jsonl', cancellation);
-          if (scenario['workflow'] == 'resume') {
-            await run([...command, 'exec', 'resume', '--last', '--json', 'Continue and reply READY.'],
-              codexEnv, '$runPath/$engine.resume.jsonl', cancellation);
+        final watch = Stopwatch()..start();
+        final messages = (scenario['messages'] as List? ?? [prompt,
+          if (scenario['workflow'] == 'resume') 'Continue and reply READY.']).cast<String>();
+        for (var message = 0; message < messages.length; message++) {
+          if (engine == 'codex') {
+            await run([...command, 'exec',
+              if (message == 0) '--skip-git-repo-check' else ...['resume', '--last'],
+              '--json', messages[message]], codexEnv, '$runPath/$engine.message-$message.jsonl', cancellation);
+          } else {
+            await turn(messages[message]);
           }
-        } else {
-          await turn(prompt);
-          if (scenario['workflow'] == 'resume') await turn('Continue and reply READY.');
-          await save('$runPath/context.json', await readContextSnapshot(client, taskID!, cancellation: cancellation));
         }
+        watch.stop();
+        if (iteration >= 0) times[engine]!.add(watch.elapsedMicroseconds);
       }
       final a = (peer.requests['codex'] ?? []).skip(starts['codex']!).toList();
       final b = (peer.requests['happen'] ?? []).skip(starts['happen']!).toList();
-      await save('$runPath/codex.requests.json', a);
-      await save('$runPath/happen.requests.json', b);
+      await save('$runPath/received-request-files.json', {
+        for (final engine in ['codex', 'happen']) engine: (peer.files[engine] ?? []).skip(starts[engine]!).toList(),
+      });
+      if (iteration >= 0) {
+        for (final engine in ['codex', 'happen']) {
+          final observed = (peer.loops[engine] ?? []).skip(loopStarts[engine]!).toList();
+          if (observed.isNotEmpty) loopTimes[engine]!.add(observed.last);
+        }
+      }
       checks['same_model_calls:run-$iteration'] = a.length == b.length && a.isNotEmpty;
       checks['same_selected_model:run-$iteration'] = [...a, ...b].every((request) => request['model'] == model);
+      if (a.isNotEmpty && b.isNotEmpty) {
+        final comparison = await compare(a.last, b.last, runPath);
+        checks['final_request_equal:run-$iteration'] = comparison.equal;
+        requestTimings.add({'run': iteration, ...comparison.timings});
+      } else { checks['final_request_equal:run-$iteration'] = false; }
+      for (final pair in [('codex', a), ('happen', b)]) {
+        checks['${pair.$1}:thread_id_contract:run-$iteration'] = pair.$2.isNotEmpty &&
+          pair.$2.every((request) => uuid7(request['prompt_cache_key']) && request['prompt_cache_key'] == pair.$2.first['prompt_cache_key']);
+        final input = pair.$2.isEmpty ? <Json>[] : (pair.$2.first['input'] as List).map(jsonObject).toList();
+        final serialized = jsonEncode(input.isEmpty ? [] : input.take(input.length - 1).toList());
+        checks['${pair.$1}:prompt_last:run-$iteration'] = input.isNotEmpty && text(input.last) == prompt;
+        for (final marker in scenario['contains'] as List) { checks['${pair.$1}:contains:$marker:run-$iteration'] = serialized.contains(marker as String); }
+        for (final marker in scenario['absent'] as List) { checks['${pair.$1}:absent:$marker:run-$iteration'] = !jsonEncode(input).contains(marker as String); }
+        final listed = RegExp(r'^- ([^:\n]+):[^\n]*\(file: ', multiLine: true)
+          .allMatches(input.map(text).join('\n')).map((match) => match[1]!).toSet();
+        final expected = (scenario['catalog_skills'] as List? ?? []).cast<String>().toSet();
+        checks['${pair.$1}:only_fixture_skills:run-$iteration'] = listed.length == expected.length && listed.containsAll(expected);
+      }
+      checks['happen:admitted_thread_id:run-$iteration'] = b.isNotEmpty && b.first['prompt_cache_key'] == taskID;
       for (var i = 0; i < a.length && i < b.length; i++) {
-        await save('$runPath/request-$i/codex.envelope.json', {...a[i]}..remove('input')..remove('prompt_cache_key'));
-        await save('$runPath/request-$i/happen.envelope.json', {...b[i]}..remove('input')..remove('prompt_cache_key'));
+        for (final pair in [('codex', a[i]), ('happen', b[i])]) {
+          final items = (pair.$2['input'] as List).map(jsonObject).toList();
+          checks['${pair.$1}:request_item_id_contract:$i:run-$iteration'] = itemIdContract(items,
+            thread: pair.$2['prompt_cache_key'] as String?, modelIds: peer.modelIds[pair.$1] ?? {});
+          checks['${pair.$1}:shell_id_contract:$i:run-$iteration'] = shellIdContract(items);
+        }
         final referenceTools = (a[i]['tools'] as List).map(jsonObject).toList();
         final actualTools = (b[i]['tools'] as List).map(jsonObject).toList();
-        await save('$runPath/request-$i/tool-discrepancies.json', {
-          'missing': referenceTools.map((tool) => tool['name']).toSet().difference(actualTools.map((tool) => tool['name']).toSet()).toList(),
-          'extra': actualTools.map((tool) => tool['name']).toSet().difference(referenceTools.map((tool) => tool['name']).toSet()).toList(),
-          'changed': [for (final reference in referenceTools)
-            for (final actual in actualTools)
-              if (reference['name'] == actual['name'] && jsonEncode(canonical(reference)) != jsonEncode(canonical(actual))) reference['name']],
-        });
-        for (final pair in [('codex', referenceTools), ('happen', actualTools)]) {
-          for (final tool in pair.$2.where((tool) => tool['name'] == 'exec')) {
-            await File('$runPath/request-$i/${pair.$1}.exec-description.txt').writeAsString(tool['description'] as String);
-          }
+        final referenceExec = referenceTools.where((tool) => tool['name'] == 'exec').firstOrNull;
+        final actualExec = actualTools.where((tool) => tool['name'] == 'exec').firstOrNull;
+        const nestedMarker = 'Shared MCP Types:';
+        String? nested(Json? tool) {
+          final description = tool?['description'] as String? ?? '';
+          final start = description.indexOf(nestedMarker);
+          return start < 0 ? null : description.substring(start);
         }
-        final comparison = await compare((a[i]['input'] as List).map(jsonObject).toList(),
-          (b[i]['input'] as List).map(jsonObject).toList(), '$runPath/request-$i');
-        checks['request_context_equal:$i:run-$iteration'] = comparison['equal'] == true;
-        checks['request_envelope_equal:$i:run-$iteration'] = jsonEncode(canonical({...a[i]}..remove('input')..remove('prompt_cache_key')..remove('client_metadata'))) ==
-          jsonEncode(canonical({...b[i]}..remove('input')..remove('prompt_cache_key')..remove('client_metadata')));
+        checks['nested_tool_context_equal:$i:run-$iteration'] = nested(referenceExec) != null && nested(referenceExec) == nested(actualExec);
         checks['codex_parallel_tool_calls:$i:run-$iteration'] = a[i]['parallel_tool_calls'] == true;
         checks['happen_parallel_tool_calls:$i:run-$iteration'] = b[i]['parallel_tool_calls'] == true;
         checks['standard_reasoning_context:$i:run-$iteration'] = !jsonObject(a[i]['reasoning']).containsKey('context') &&
@@ -407,6 +511,31 @@ remote_compaction = "v2"
             .any((item) => jsonEncode(item).contains(marker));
         }
       }
+      if (scenario['workflow'] == 'image') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
+            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'image_result').toList();
+          final parts = outputs.length == 1 && outputs.single['output'] is List
+            ? (outputs.single['output'] as List).map(jsonObject).toList() : <Json>[];
+          checks['${pair.$1}:generated_image_content_order:run-$iteration'] =
+            jsonEncode(parts.map((part) => part['type']).toList()) == jsonEncode(['input_text', 'input_text', 'input_image', 'input_text', 'input_text']) &&
+            parts[1]['text'] == 'image-before' && parts[3]['text'] == 'image-output-hint' && parts[4]['text'] == 'image-after';
+        }
+      }
+      if (scenario['workflow'] == 'audio') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
+            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'audio_result').toList();
+          final parts = outputs.length == 1 && outputs.single['output'] is List
+            ? (outputs.single['output'] as List).map(jsonObject).toList() : <Json>[];
+          checks['${pair.$1}:recorded_audio_content_order:run-$iteration'] =
+            jsonEncode(parts.map((part) => part['type']).toList()) == jsonEncode(['input_text', 'input_text', 'input_text', 'input_text']) &&
+            parts[1]['text'] == 'audio-before' && parts[2]['text'] == 'audio content omitted because you do not support audio input' &&
+            parts[3]['text'] == 'audio-after';
+          checks['${pair.$1}:audio_bytes_not_counted_as_prose:run-$iteration'] = pair.$2.length == 2 &&
+            pair.$2.every((request) => (request['input'] as List).last['type'] != 'compaction_trigger');
+        }
+      }
       if (scenario['workflow'] == 'compaction') {
         for (final engine in ['codex', 'happen']) {
           final requests = engine == 'codex' ? a : b;
@@ -420,27 +549,112 @@ remote_compaction = "v2"
           final restoredText = following.isEmpty ? '' : (following.last['input'] as List).map((item) => text(jsonObject(item))).join('\n');
           checks['$engine:instructions_restored_once:run-$iteration'] = RegExp('COMPACTION_REPOSITORY_RULE').allMatches(restoredText).length == 1;
           checks['$engine:skills_restored_once:run-$iteration'] = RegExp('- fixture-global:').allMatches(restoredText).length == 1;
+          if (scenario['messages'] case final List messages) {
+            final before = compactions.length == 1 ? (compactions.single['input'] as List).map(jsonObject).toList() : <Json>[];
+            final after = following.isNotEmpty ? (following.last['input'] as List).map(jsonObject).toList() : <Json>[];
+            final retained = [for (final item in after)
+              if (item['type'] == 'compaction') '<CHECKPOINT>'
+              else if (item['role'] == 'user' && messages.contains(text(item))) text(item)];
+            checks['$engine:multiple_users_entered_compaction_in_order:run-$iteration'] =
+              equals(messages).matches([for (final item in before)
+                if (item['role'] == 'user' && messages.contains(text(item))) text(item)], {});
+            checks['$engine:retained_users_precede_checkpoint_in_order:run-$iteration'] =
+              equals([...messages, '<CHECKPOINT>']).matches(retained, {});
+          }
         }
       }
+      for (final discovery in jsonObject(scenario['discovery_calls'] ?? {}).entries) {
+        final expected = jsonObject(discovery.value);
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
+            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == discovery.key).toList();
+          final found = <Json>[];
+          for (final output in outputs) {
+            for (final part in output['output'] is List ? (output['output'] as List).map(jsonObject) : <Json>[]) {
+              try {
+                final value = jsonDecode(part['text'] as String? ?? '');
+                if (value is Map && value['tools'] is List) found.addAll((value['tools'] as List).map(jsonObject));
+              } on FormatException { /* The separate script status is ordinary prose. */ }
+            }
+          }
+          checks['${pair.$1}:${discovery.key}:nonempty:run-$iteration'] = found.isNotEmpty && found.length <= (expected['limit'] as int);
+          checks['${pair.$1}:${discovery.key}:dart_names:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
+            (tool['name'] as String).startsWith('mcp__dart__'));
+          checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
+            (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
+          if (expected['names'] case final List names) {
+            checks['${pair.$1}:${discovery.key}:selected_tools:run-$iteration'] = jsonEncode(found.map((tool) => tool['name']).toList()) == jsonEncode(names);
+          }
+        }
+      }
+      if (scenario['workflow'] == 'cells') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
+            .where((item) => {'custom_tool_call_output', 'function_call_output'}.contains(item['type'])).toList();
+          final printed = outputs.map((item) => jsonEncode(item['output'])).join('\n');
+          checks['${pair.$1}:cell_ids_are_session_counters:run-$iteration'] = printed.contains('Script running with cell ID 1') &&
+            printed.contains('Script running with cell ID 2');
+          checks['${pair.$1}:wait_terminated:run-$iteration'] = printed.contains('Script terminated') && !printed.contains('UNEXPECTED_AFTER_TERMINATE');
+          checks['${pair.$1}:native_exit_completed:run-$iteration'] = printed.contains('BEFORE_EXIT') && !printed.contains('UNEXPECTED_AFTER_EXIT') &&
+            outputs.any((item) => item['call_id'] == 'exit_cell' && jsonEncode(item['output']).contains('Script completed'));
+          checks['${pair.$1}:notification_delivered:run-$iteration'] = outputs.where((item) =>
+            jsonEncode(item['output']).contains('CELL_NOTICE')).length == 1;
+          checks['${pair.$1}:clock_format:run-$iteration'] = outputs.any((item) => jsonEncode(item['output']).contains(r'{\"clock\":true}'));
+        }
+      }
+    }
+    if (timedLoop) {
+      checks['agent_loop_not_slower_than_codex'] = loopTimes.values.every((times) => times.isNotEmpty) &&
+        median(loopTimes['happen']!) <= median(loopTimes['codex']!);
+    }
+    for (final engine in ['codex', 'happen']) {
+      final ids = (peer.requests[engine] ?? []).map((request) => request['prompt_cache_key']).toSet().cast<String>().toList();
+      checks['$engine:thread_ids_monotonic'] = ids.isNotEmpty &&
+        [for (var i = 1; i < ids.length; i++) ids[i - 1].compareTo(ids[i]) < 0].every((value) => value);
+    }
+    if (scenario['id'] == 'empty') {
+      // Real concurrent turns exercise ID allocation and delivery; no debug-only
+      // preparation or generator endpoint stands in for the production owner.
+      final completed = <String>{}, done = Completer<void>();
+      final subscription = client.events.stream.listen((event) {
+        if (event['type'] == 'session.execution.succeeded') {
+          completed.add(requiredString(jsonObject(event['data']), 'sessionID'));
+          if (completed.length == 16 && !done.isCompleted) done.complete();
+        } else if ({'session.execution.failed', 'session.execution.interrupted'}.contains(event['type']) && !done.isCompleted) {
+          done.completeError(StateError('Concurrent turn failed: $event'));
+        }
+      });
+      try {
+        final admitted = await Future.wait(List.generate(16, (_) => client.request('session.create', {
+          'cwd': cwd, 'provider': 'openai', 'model': model, 'prompt': prompt,
+        }).asCancellable(cancellation)));
+        await done.future.asCancellable(cancellation);
+        final ids = admitted.map((value) => jsonObject(value)['sessionID']).toList();
+        checks['happen:concurrent_thread_ids_uuid7'] = ids.every(uuid7);
+        checks['happen:concurrent_thread_ids_unique'] = ids.toSet().length == ids.length;
+        checks['happen:concurrent_thread_ids_monotonic'] = [for (var i = 1; i < ids.length; i++)
+          (ids[i - 1] as String).compareTo(ids[i] as String) < 0].every((value) => value);
+        checks['happen:concurrent_threads_reached_inference'] = ids.every((id) =>
+          peer.requests['happen']!.any((request) => request['prompt_cache_key'] == id));
+      } finally { await subscription.cancel(); }
     }
     checks['no_fixture_errors'] = peer.errors.isEmpty;
   } finally {
     await client.close();
     await host.close();
-    await save('$output/captured-requests.json', peer.requests);
     await peer.close();
   }
   final referenceTime = median(times['codex']!), actualTime = median(times['happen']!);
   checks['not_slower_than_codex'] = actualTime <= referenceTime;
-  if ({'skill', 'search', 'compaction'}.contains(scenario['workflow'])) {
-    checks['agent_loop_not_slower_than_codex'] = (peer.loops['codex']?.isNotEmpty ?? false) &&
-      (peer.loops['happen']?.isNotEmpty ?? false) && median(peer.loops['happen']!) <= median(peer.loops['codex']!);
-  }
   return {'scenario': scenario['id'], 'passed': checks.values.every((value) => value), 'checks': checks,
-    'timing': {'unit': 'microseconds', 'codexMeasurement': 'CLI prompt-input wall time',
-      'happenMeasurement': 'in-process prompt preparation wall time', 'codex': times['codex'], 'happen': times['happen'],
+    'timing': {'unit': 'microseconds', 'codexMeasurement': 'CLI exec/resume session wall time',
+      'happenMeasurement': 'in-process real session wall time', 'codex': times['codex'], 'happen': times['happen'],
       'codexMedian': referenceTime, 'happenMedian': actualTime, 'ratio': actualTime / referenceTime,
-      'agentLoopMeasurement': 'first model request through final synthetic SSE', 'agentLoop': peer.loops,
+      'fasterHarness': actualTime == referenceTime ? 'equal' : actualTime < referenceTime ? 'happen' : 'codex',
+      'differenceMicroseconds': (actualTime - referenceTime).abs(), 'requestTimings': requestTimings,
+      'agentLoopMeasurement': 'last turn: first model request through final synthetic SSE', 'agentLoop': loopTimes,
+      'allObservedAgentLoops': peer.loops,
+      'warmupAgentLoop': {for (final engine in peer.loops.keys) engine: peer.loops[engine]!.first},
       'requestArrivals': peer.arrivals}, 'fixtureErrors': peer.errors};
 }
 
@@ -460,7 +674,7 @@ void main() {
         Platform.environment['PUB_CACHE'] != '$isolatedHome/.pub-cache') {
       throw StateError('Run moon run test-e2e so real Happen children inherit an isolated environment');
     }
-    output = '${root.path}/.local/context-contract/${DateTime.now().microsecondsSinceEpoch}';
+    output = Platform.environment['CONTEXT_CONTRACT_OUTPUT']!;
     await Directory(output).create(recursive: true);
     final env = isolatedEnvironment('$output/home', '$output/codex-home');
     await Directory(env['HOME']!).create(recursive: true);

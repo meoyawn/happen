@@ -8,7 +8,6 @@ executables:
   happen:
 dependencies:
   args: ^2.7.0
-  ai: any
   config: any
   openai: any
   opencode: any

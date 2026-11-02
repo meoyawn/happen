@@ -108,8 +108,11 @@ void _databaseMain(List<Object?> args) async {
             );
           case 'task.add':
             db.execute(
-              'INSERT INTO tasks(id, checkout_key, title, last_activity) VALUES (?, ?, ?, ?)',
-              [params['id'], params['checkout_key'], params['title'], params['last_activity'] ?? DateTime.now().millisecondsSinceEpoch],
+              'INSERT INTO tasks(id, checkout_key, title, archived, last_activity) VALUES (?, ?, ?, ?, ?) '
+              'ON CONFLICT(id) DO UPDATE SET checkout_key = excluded.checkout_key, title = excluded.title, '
+              'archived = excluded.archived, last_activity = MAX(tasks.last_activity, excluded.last_activity)',
+              [params['id'], params['checkout_key'], params['title'], params['archived'] == true ? 1 : 0,
+                params['last_activity'] ?? DateTime.now().millisecondsSinceEpoch],
             );
           case 'task.activity':
             db.execute('UPDATE tasks SET last_activity = MAX(last_activity, ?) WHERE id IS ?', [params['last_activity'], params['task_id']]);

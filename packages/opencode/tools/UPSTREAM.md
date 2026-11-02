@@ -1,7 +1,10 @@
 # OpenCode tool and instruction contracts
 
-Pinned repository: [anomalyco/opencode](https://github.com/anomalyco/opencode/tree/e8238bae9b807b72ecfc75afd3a9fe2e6b07b944),
-revision `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944`.
+Reference repository: [anomalyco/opencode](https://github.com/anomalyco/opencode),
+using the current HEAD of `/Users/meoyawn/Developer/github/opencode`.
+OpenCode is a moving target, not a version-pinned compatibility contract. Record
+the revision and source hashes used for each comparison as evidence; do not
+check out an older revision to make a comparison pass.
 
 The provider follows these upstream sources:
 
@@ -25,10 +28,14 @@ Codex names, declarations, or instructions. The process runner, patch engine,
 and JavaScript engine are reused with OpenAI. Tool paths retain hyphens and use
 bracket notation when necessary; shared transport identifiers remain internal.
 
-Fixtures were captured by executing the pinned TypeScript search/catalog and
-instruction renderers under Bun with Effect 4.1.0 and diff 8.0.4. Expected results
-are independent of Dart. Source hashes, cases, and reproduction details live in
-`test/fixtures/tool_search/` at the workspace root.
+Existing fixtures were captured by executing upstream TypeScript search/catalog
+and instruction renderers under Bun with Effect 4.1.0 and diff 8.0.4. Their
+recorded revisions are capture provenance, not the current compatibility target.
+Expected results remain independent of Dart. Source hashes, cases, and
+reproduction details live in `test/fixtures/tool_search/` at the workspace root.
+Compare new behavior against the reference checkout's current source and retain
+exact ordering, declarations, prompt text, and error checks. Historical fixture
+success alone does not establish compatibility with current upstream.
 
 Upstream MIT text is in `OPENCODE-LICENSE`;
 the Dart instruction-diff port's BSD notice is in `JSDIFF-LICENSE`.

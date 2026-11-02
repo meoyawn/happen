@@ -9,7 +9,7 @@ const searchInput = <String, dynamic>{
   },
 };
 
-// Port of @opencode/codemode tool-runtime.ts at the pinned revision.
+// Port of @opencode/codemode tool-runtime.ts; see tools/UPSTREAM.md.
 Json searchCodeArguments(List<Json> catalog, List<Object?> arguments) {
   if (arguments.length > 1) throw const ToolRuntimeError('InvalidToolInput', "Tool 'search' expects at most one input object.");
   return searchCodeTools(catalog, arguments.isEmpty ? <String, dynamic>{} : arguments.single);

@@ -42,8 +42,6 @@ class GptModel {
   bool get reasoningUpdates =>
       data['supports_reasoning_effort_updates'] == true;
   String get verbosity => data['default_verbosity'] as String? ?? 'low';
-  String get reasoningSummary =>
-      data['default_reasoning_summary'] as String? ?? 'none';
   String get instructions => requiredString(
     jsonObject(data['model_messages']),
     'instructions_template',

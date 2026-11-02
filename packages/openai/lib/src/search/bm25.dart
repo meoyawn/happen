@@ -11,7 +11,7 @@ final _stopWords = englishStopWords.map(normalizeSearchText).toSet();
 /// bm25 2.3.2's fixed English tokenizer, after ASCII transliteration. Keeping
 /// identifier underscores and internal word punctuation follows Unicode words;
 /// camel-case splitting and exact-name boosts are not part of Codex search.
-List<String> searchTokens(String source) {
+List<String> searchTokens(String source, {Map<String, String>? stems}) {
   final text = normalizeSearchText(source).toLowerCase(), result = <String>[];
   bool letter(int index) => index >= 0 && index < text.length &&
     text.codeUnitAt(index) >= 97 && text.codeUnitAt(index) <= 122;
@@ -29,7 +29,10 @@ List<String> searchTokens(String source) {
       break;
     }
     final token = text.substring(start, index);
-    if (alphanumeric && !_stopWords.contains(token)) result.add(SnowballStemmer().stem(token));
+    if (alphanumeric && !_stopWords.contains(token)) {
+      result.add(stems == null ? SnowballStemmer().stem(token)
+        : stems.putIfAbsent(token, () => SnowballStemmer().stem(token)));
+    }
   }
   return result;
 }
@@ -51,7 +54,10 @@ int _hash(String token) {
 
 class BM25Index {
   BM25Index(List<String> documents) {
-    final corpus = documents.map(searchTokens).toList();
+    // Tool metadata repeats many words. Stem each distinct term once per build,
+    // without reusing the dependency's mutable stemmer state between words.
+    final stems = <String, String>{};
+    final corpus = documents.map((document) => searchTokens(document, stems: stems)).toList();
     final average = _f32(corpus.isEmpty ? 256 : corpus.fold<int>(0, (sum, doc) => sum + doc.length) / corpus.length);
     final avgdl = average <= 0 ? 256.0 : average, k1 = _f32(1.2), b = _f32(0.75);
     for (final tokens in corpus) {

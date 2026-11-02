@@ -7,6 +7,7 @@ import 'package:ai/ai.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 import 'support/openai_output.dart';
 
@@ -199,11 +200,11 @@ void main() {
       expect(requests.last.containsKey('instructions'), false);
       expect(requests.last['tools'], isNotEmpty);
       final input = (context['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))).toList();
-      expect(context['instructions'], requests.last['input'][0]['content']);
+      expect(requests.last['input'][0]['content'], [{'type': 'input_text', 'text': context['instructions']}]);
       expect(input.where((item) => item.native['harness']?['context'] == 'model'), isEmpty);
       expect(input.any((item) => item.text.contains('Session-specific instruction')), true);
       expect(input.where((item) => item.kind == 'tools'), isEmpty);
-      expect(gptPromptInput(context['instructions'] as String, input.take(input.length - 1)), requests.last['input']);
+      expect(withGptInstructions(context['instructions'] as String, gptInput(input.take(input.length - 1)), sessionId: id), requests.last['input']);
       expect(gptTools((context['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool)))), requests.last['tools']);
       expect(context['limit'], 100000);
       expect(context['tokens'], {'input': 10, 'output': 5, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}});
@@ -243,6 +244,58 @@ void main() {
       expect(snapshot['pending'], isEmpty);
       expect(snapshot['state'], isEmpty);
       expect(snapshot['running'], false);
+    });
+
+    test('pending actions cancel one prompt and steer another without stopping the session', () async {
+      final id = jsonObject(await client.request('session.create', {'cwd': work.path, 'prompt': 'stream'}))['sessionID'] as String;
+      await (() async {
+        while (streaming.isEmpty) { await Future<void>.delayed(const Duration(milliseconds: 10)); }
+      })().timeout(const Duration(seconds: 10));
+      final events = <Json>[];
+      final subscription = client.events.stream.listen(events.add);
+      addTearDown(subscription.cancel);
+      final removed = jsonObject(await client.request('session.prompt', {'sessionID': id, 'prompt': 'Never deliver', 'delivery': 'queue'}));
+      final next = jsonObject(await client.request('session.prompt', {'sessionID': id, 'prompt': 'calculate', 'delivery': 'queue'}));
+      await expectLater(client.request('session.inbox.update', {
+        'sessionID': id, 'inboxID': next['inboxID'], 'delivery': 'invalid',
+      }), throwsStateError);
+      await client.request('session.inbox.cancel', {'sessionID': id, 'inboxID': removed['inboxID']});
+      final snapshot = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect(snapshot['running'], true);
+      expect(snapshot['pending'].single['prompt'], 'calculate');
+      expect(requests, hasLength(1), reason: 'Deleting pending input must not interrupt inference');
+      expect(events.singleWhere((event) => event['type'] == 'session.inbox.cancelled')['data']['inboxID'], removed['inboxID']);
+      final finished = client.events.stream.firstWhere((event) => event['type'] == 'session.execution.succeeded');
+      await client.request('session.inbox.update', {'sessionID': id, 'inboxID': next['inboxID'], 'delivery': 'steer'});
+      await finished.timeout(const Duration(seconds: 15));
+      expect(events.singleWhere((event) => event['type'] == 'session.inbox.delivery.changed')['data']['delivery'], 'steer');
+      expect(events.where((event) => event['type'] == 'session.execution.interrupted'), isEmpty);
+      final saved = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect(saved['pending'], isEmpty);
+      expect((saved['data'] as List).where((message) => message['type'] == 'user').map((message) => message['text']), ['stream', 'calculate']);
+      await expectLater(client.request('session.inbox.cancel', {'sessionID': id, 'inboxID': next['inboxID']}), throwsStateError);
+    });
+
+    test('parked input is discovered after writer teardown and Send resumes it once', () async {
+      final completed = await turn('task.start', {'cwd': work.path, 'prompt': 'calculate'});
+      final id = completed['task_id'] as String;
+      await client.request('session.hibernate', {'sessionID': id});
+      final writer = await startStore(root.path, id, create: false);
+      try {
+        await callIsolate(writer.port, 'append', {'type': 'input.pending', 'data': {
+          'id': 'parked', 'prompt': 'continue', 'delivery': 'queue',
+        }});
+      } finally { await writer.close(); }
+      final before = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect(before['running'], false);
+      expect(before['pending'].single['id'], 'parked');
+      final finished = client.events.stream.firstWhere((event) => event['type'] == 'session.execution.succeeded');
+      await client.request('session.inbox.update', {'sessionID': id, 'inboxID': 'msg_parked', 'delivery': 'steer'});
+      await expectLater(client.request('session.inbox.cancel', {'sessionID': id, 'inboxID': 'msg_parked'}), throwsStateError);
+      await finished.timeout(const Duration(seconds: 15));
+      final after = jsonObject(await client.request('session.message.list', {'sessionID': id}));
+      expect(after['pending'], isEmpty);
+      expect((after['data'] as List).where((message) => message['id'] == 'msg_parked').map((message) => message['text']), ['continue']);
     });
 
     test('live task notifications include the frozen context limit and task identity', () async {
@@ -378,7 +431,7 @@ void main() {
         final input = (request['input'] as List).map(jsonObject).toList();
         final user = input.lastIndexWhere((item) => item['role'] == 'user');
         expect(input[user - 1], {'type': 'configuration_update', 'reasoning': {'effort': effort}});
-        expect(request['reasoning'], {'effort': 'low'});
+        expect(request['reasoning'], {'effort': 'low', 'summary': 'auto'});
         expect(input.take((requests[1]['input'] as List).length), requests[1]['input']);
       }
       expect(printedOpenAIOutput((requests[4]['input'] as List).last['output']), ['42']);
@@ -518,7 +571,8 @@ void main() {
         });
         expect(moved['type'], 'turn.completed', reason: moved.toString());
         for (final request in requests) {
-          final user = (request['input'] as List).firstWhere((item) => item['role'] == 'user' && item['content'] is List);
+          final user = (request['input'] as List).firstWhere((item) => item['role'] == 'user' &&
+            (item['content'] as List).any((part) => part['type'] == 'input_image'));
           final parts = user['content'] as List;
           expect(parts.where((part) => part['type'] == 'input_image').single['image_url'], 'data:image/png;base64,$image');
           expect(parts.where((part) => part['type'] == 'input_text').map((part) => part['text']).join('\n'), contains('${work.path}/numbers.txt'));

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/rendering.dart';
-import 'package:protocol/protocol.dart';
 
 import 'conversation_markdown.dart';
 import 'conversation_data.dart';
@@ -17,6 +16,7 @@ import 'opencode_execute.dart';
 import 'opencode_response.dart';
 
 typedef _TranscriptRow = ({String id, ChatEntry? entry, List<ChatEntry> activity, ChatEntry? status});
+typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
 
 bool _isJavaScriptCell(ToolActivity tool) => {'exec', 'functions.exec'}.contains(tool.name);
 
@@ -41,13 +41,14 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
 /// Task data is cached by the session; only the selected transcript is mounted.
 class ConversationDeck extends StatefulWidget {
   const ConversationDeck({super.key, required this.task, required this.tasks,
-    required this.directory, required this.empty, required this.onRetry, this.onLoadEarlier});
+    required this.directory, required this.empty, required this.onRetry, this.onLoadEarlier, this.onPendingAction});
   final DesktopTask? task;
   final Set<DesktopTask> tasks;
   final String directory;
   final Widget empty;
   final ValueChanged<DesktopTask> onRetry;
   final ValueChanged<DesktopTask>? onLoadEarlier;
+  final PendingMessageAction? onPendingAction;
 
   @override
   State<ConversationDeck> createState() => _ConversationDeckState();
@@ -63,16 +64,18 @@ class _ConversationDeckState extends State<ConversationDeck> {
       task: selected, directory: widget.directory,
       onRetry: () => widget.onRetry(selected),
       onLoadEarlier: widget.onLoadEarlier == null ? null : () => widget.onLoadEarlier!(selected),
+      onPendingAction: widget.onPendingAction,
     );
   }
 }
 
 class ConversationTranscript extends StatefulWidget {
-  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onLoadEarlier});
+  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onLoadEarlier, this.onPendingAction});
   final DesktopTask task;
   final String directory;
   final VoidCallback onRetry;
   final VoidCallback? onLoadEarlier;
+  final PendingMessageAction? onPendingAction;
 
   @override
   State<ConversationTranscript> createState() => _ConversationTranscriptState();
@@ -227,11 +230,10 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final started = activeMessages.skip(lastIdle + 1).firstOrNull?['time']?['created'] as int?;
     final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
     return Stack(children: [
-      Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: opencodeSessionWidth),
-          child: NotificationListener<ScrollMetricsNotification>(
+      LayoutBuilder(builder: (context, constraints) {
+        final sidePadding = 24.0 + (constraints.maxWidth > opencodeSessionWidth
+          ? (constraints.maxWidth - opencodeSessionWidth) / 2 : 0);
+        return NotificationListener<ScrollMetricsNotification>(
             onNotification: (notification) {
               if (notification.depth == 0) {
                 _follow();
@@ -248,7 +250,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                   controller: _scroll,
                   reverse: true,
                   cacheExtent: 0,
-                  padding: EdgeInsets.fromLTRB(24, 16, 24, 20),
+                  padding: EdgeInsets.fromLTRB(sidePadding, 16, sidePadding, 20),
                   itemCount: itemCount,
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
@@ -279,7 +281,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         directory: widget.directory, onExpand: () => _following = false,
                       ) : switch (entry.role) {
                         'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),
-                        'Image' => _ImageViewRow(entry: entry, directory: widget.directory, onExpand: () => _following = false),
                         'Compaction' => _CompactionRow(
                           entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
                           onExpand: () => _following = false,
@@ -288,6 +289,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         'Status' => _TurnStatus(entry: entry),
                         'Error' => _ErrorMessage(entry: entry),
                         _ => _Message(entry: entry, directory: widget.directory,
+                          running: task.running,
+                          onPendingAction: widget.onPendingAction == null ? null
+                            : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
                           liveText: entry.streaming ? task.liveText : null),
                       },
                     );
@@ -295,9 +299,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                 ),
               ),
             ),
-          ),
-        ),
-      ),
+          );
+      }),
       if (_showLatest) Positioned(
         bottom: 12, left: 0, right: 0,
         child: Center(child: FilledButton.tonalIcon(
@@ -326,10 +329,15 @@ class _ActivityGroup extends StatelessWidget {
     final running = tools.where((tool) => tool.status == 'running').lastOrNull;
     final thinking = active && tools.isEmpty;
     final names = tools.map(_toolLabel).toSet().join(', ');
+    final skills = tools.expand(toolSkillNames).toSet();
     final label = thinking ? 'Thinking' : tools.isEmpty ? 'Thought' : 'Used ${tools.length} $names';
     return ConversationDisclosure(
       key: PageStorageKey('disclosure:${entries.first.id}'),
       label: label, shimmer: thinking,
+      summary: thinking && entries.last.role == 'Reasoning' ? _reasoningTitle(entries.last.text)
+        : skills.isEmpty ? null : Text(skills.join(', ') + (skills.length == 1 ? ' skill' : ' skills'),
+          maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: opencodeMuted)),
+      summaryWhenCollapsed: true,
       icon: active || running != null ? const OpenCodeActivityIndicator() : null,
       labelContent: tools.isNotEmpty ? Text.rich(TextSpan(
         style: const TextStyle(fontSize: 13, height: 16 / 13, letterSpacing: -.04,
@@ -352,11 +360,8 @@ class _ActivityGroup extends StatelessWidget {
                       child: _ToolRow(key: ValueKey(tool.id), tool: tool, directory: directory, onExpand: onExpand)),
                 ])
               : entries[i].role == 'Reasoning'
-                ? thinking ? ConversationMarkdown(text: entries[i].text, directory: directory)
-                  : _ReasoningRow(entry: entries[i], directory: directory, onExpand: onExpand)
-                : entries[i].role == 'Image'
-                  ? _ImageViewRow(entry: entries[i], directory: directory, onExpand: onExpand)
-                  : _Message(entry: entries[i], directory: directory),
+                ? _ReasoningRow(entry: entries[i], directory: directory, onExpand: onExpand, initiallyExpanded: thinking)
+                : _Message(entry: entries[i], directory: directory),
           ),
         ]),
       ),
@@ -365,18 +370,55 @@ class _ActivityGroup extends StatelessWidget {
 }
 
 class _ReasoningRow extends StatelessWidget {
-  const _ReasoningRow({required this.entry, required this.directory, required this.onExpand});
+  const _ReasoningRow({required this.entry, required this.directory, required this.onExpand, this.initiallyExpanded = false});
   final ChatEntry entry;
   final String directory;
   final VoidCallback onExpand;
+  final bool initiallyExpanded;
 
   @override
   Widget build(BuildContext context) => ConversationDisclosure(
-    key: PageStorageKey('reasoning:${entry.id}'), label: 'Thought', fontSize: 13,
+    key: PageStorageKey('reasoning:${entry.id}'), label: entry.streaming ? 'Thinking' : 'Thought', fontSize: 13,
+    shimmer: entry.streaming, initiallyExpanded: initiallyExpanded,
+    summary: entry.streaming ? _reasoningTitle(entry.text)
+      : entry.startedAt != null && entry.timestamp != null ? Text(_duration(entry.startedAt!, entry.timestamp!),
+          style: const TextStyle(fontSize: 13, color: opencodeMuted)) : null,
+    summaryWhenCollapsed: entry.streaming,
     onExpand: onExpand,
     builder: (context) => Padding(padding: const EdgeInsets.only(top: 4, bottom: 8),
-      child: ConversationMarkdown(text: entry.text, directory: directory)),
+      child: ConversationMarkdown(text: entry.text, directory: directory, fontSize: 13, reasoning: true)),
   );
+}
+
+Widget? _reasoningTitle(String text) {
+  final title = _reasoningHeading(text);
+  return title == null ? null : Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+    style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeMuted));
+}
+
+// OpenCode session-ui/src/timeline/projection.ts: latest complete Markdown
+// heading, with setext headings as the fallback. Ordinary reasoning stays body text.
+String? _reasoningHeading(String text) {
+  text = text.replaceAll(RegExp(r'\r\n?'), '\n');
+  (int, String)? latest, setext;
+  for (final (pattern, html) in [
+    (RegExp(r'<h[1-6][^>]*>([\s\S]*?)</h[1-6]>', caseSensitive: false), true),
+    (RegExp(r'^\s{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$', multiLine: true), false),
+    (RegExp(r'^\s*(?:\*\*((?:(?!\*\*).)+)\*\*|__((?:(?!__).)+)__)\s*$', multiLine: true), false),
+    (RegExp(r'^([^\n]+)\n(?:=+|-+)\s*$', multiLine: true), false),
+  ]) {
+    for (final match in pattern.allMatches(text)) {
+      var value = match[1] ?? (match.groupCount > 1 ? match[2] : null) ?? '';
+      if (html) value = value.replaceAll(RegExp(r'<[^>]+>'), ' ');
+      value = value.replaceAllMapped(RegExp(r'`([^`]+)`'), (m) => m[1]!)
+        .replaceAllMapped(RegExp(r'\[([^\]]+)\]\([^)]+\)'), (m) => m[1]!)
+        .replaceAll(RegExp(r'[*_~]+'), '').trim();
+      if (value.isEmpty) continue;
+      if (pattern.pattern.startsWith(r'^([^\n]+)')) { setext = (match.start, value); }
+      else if (latest == null || match.start >= latest.$1) { latest = (match.start, value); }
+    }
+  }
+  return (latest ?? setext)?.$2;
 }
 
 String _toolLabel(ToolActivity tool) => switch (tool.name.split('.').last) {
@@ -399,10 +441,12 @@ String? _toolPreview(ToolActivity tool) {
 }
 
 class _Message extends StatefulWidget {
-  const _Message({required this.entry, required this.directory, this.liveText});
+  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.running = false});
   final ChatEntry entry;
   final String directory;
   final ValueListenable<String>? liveText;
+  final Future<void> Function(String action)? onPendingAction;
+  final bool running;
 
   @override
   State<_Message> createState() => _MessageState();
@@ -410,6 +454,26 @@ class _Message extends StatefulWidget {
 
 class _MessageState extends State<_Message> {
   bool _hovered = false, _focused = false;
+  bool _changing = false;
+
+  Future<void> _change(String action) async {
+    if (_changing || widget.onPendingAction == null) return;
+    setState(() => _changing = true);
+    try {
+      await widget.onPendingAction!(action);
+    } finally {
+      if (mounted) setState(() => _changing = false);
+    }
+  }
+
+  Widget _action(String action, String label, IconData icon) => SizedBox.square(
+    dimension: 20,
+    child: IconButton(tooltip: label, padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 20, height: 20),
+      visualDensity: VisualDensity.compact,
+      onPressed: _changing ? null : () => _change(action),
+      icon: Icon(icon, size: 14, color: conversationMuted)),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -418,13 +482,19 @@ class _MessageState extends State<_Message> {
     final pending = entry.role == 'Queued' || entry.role == 'Steer pending';
     final body = user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
       : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText);
-    return MouseRegion(
+    return ConversationImageGroup(child: MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: Focus(onFocusChange: (value) => setState(() => _focused = value), child: Column(
       crossAxisAlignment: user ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
-        if (user)
+        if (user && entry.attachments.isNotEmpty) ...[
+          LayoutBuilder(builder: (context, constraints) => Align(alignment: Alignment.centerRight,
+            child: ConstrainedBox(constraints: BoxConstraints(maxWidth: constraints.maxWidth * .82),
+              child: AttachmentRail(attachments: entry.attachments, directory: widget.directory)))),
+          if (entry.text.isNotEmpty) const SizedBox(height: 8),
+        ],
+        if (user && entry.text.isNotEmpty)
           LayoutBuilder(builder: (context, constraints) => Align(
             alignment: Alignment.centerRight,
             child: Container(
@@ -436,20 +506,16 @@ class _MessageState extends State<_Message> {
                 border: pending ? Border.all(color: conversationBorder) : null,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
-                if (entry.attachments.isNotEmpty) AttachmentRail(attachments: entry.attachments, directory: widget.directory),
-                if (entry.attachments.isNotEmpty && entry.text.isNotEmpty) const SizedBox(height: 10),
-                if (entry.text.isNotEmpty) body,
-              ]),
+              child: body,
             ),
           ))
-        else
+        else if (!user)
           body,
         if (!user) ...[
           if (entry.response != null) OpenCodeResponseFooter(entry: entry, visible: _hovered || _focused),
         ] else ...[
         SizedBox(height: 8),
-        SizedBox(height: 20, child: Opacity(opacity: _hovered || _focused || pending ? 1 : 0,
+        Opacity(opacity: _hovered || _focused || pending ? 1 : 0,
           alwaysIncludeSemantics: true, child: Wrap(
           spacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
@@ -458,13 +524,18 @@ class _MessageState extends State<_Message> {
             if (pending) const Icon(Icons.schedule_rounded, size: 13, color: conversationMuted),
             if (pending) Text(entry.role, style: const TextStyle(fontSize: 11, color: conversationMuted)),
             if (entry.timestamp case final at?) _Timestamp(at: at),
-            if (!entry.streaming) SizedBox(height: 20,
+            if (pending && widget.onPendingAction != null) ...[
+              if (entry.role == 'Steer pending') _action('queue', 'Move to queue', Icons.vertical_align_bottom_rounded)
+              else _action('steer', widget.running ? 'Steer' : 'Send', Icons.arrow_upward_rounded),
+              _action('delete', 'Delete', Icons.delete_outline_rounded),
+            ],
+            if (!entry.streaming && entry.text.isNotEmpty) SizedBox(height: 20,
               child: ConversationCopyButton(text: entry.text, label: user ? 'Copy message' : 'Copy response', compact: true)),
           ],
-        ))),
+        )),
         ],
       ],
-    )));
+    ))));
   }
 }
 
@@ -589,67 +660,6 @@ class _ErrorMessage extends StatelessWidget {
   );
 }
 
-class _ImageViewRow extends StatefulWidget {
-  const _ImageViewRow({required this.entry, required this.directory, required this.onExpand});
-  final ChatEntry entry;
-  final String directory;
-  final VoidCallback onExpand;
-
-  @override
-  State<_ImageViewRow> createState() => _ImageViewRowState();
-}
-
-class _ImageViewRowState extends State<_ImageViewRow> {
-  bool _expanded = false, _hovered = false, _focused = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _expanded = PageStorage.maybeOf(context)?.readState(context,
-      identifier: 'viewed-images:${widget.entry.id}') as bool? ?? false;
-  }
-
-  void _toggle() {
-    setState(() => _expanded = !_expanded);
-    PageStorage.maybeOf(context)?.writeState(context, _expanded,
-      identifier: 'viewed-images:${widget.entry.id}');
-    widget.onExpand();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final images = widget.entry.attachments;
-    final title = images.length == 1 ? 'Viewed an image' : 'Viewed ${images.length} images';
-    final color = _hovered || _focused ? conversationInk : conversationMuted;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Semantics(button: true, expanded: _expanded, child: InkWell(
-        borderRadius: BorderRadius.circular(6), onTap: _toggle,
-        onHover: (value) => setState(() => _hovered = value),
-        onFocusChange: (value) => setState(() => _focused = value),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.photo_library_outlined, size: 16, color: conversationMuted),
-          const SizedBox(width: 4),
-          Flexible(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 14, height: 1.625, color: color))),
-          const SizedBox(width: 4),
-          Icon(_expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded, size: 16, color: color),
-        ]),
-      )),
-      if (_expanded) Padding(padding: const EdgeInsets.only(top: 8, bottom: 4), child: SizedBox(height: 80, child: ListView.separated(
-        key: PageStorageKey('viewed-image-rail:${widget.entry.id}'),
-        primary: false, padding: EdgeInsets.zero,
-        scrollDirection: Axis.horizontal, itemCount: images.length,
-        physics: const ClampingScrollPhysics(),
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (context, index) => SizedBox(width: 106, height: 80,
-          child: ConversationData(value: images[index], builder: (context, value) => ConversationImage(
-            source: attachmentDataUrl(jsonObject(value)), label: 'Inspected image', directory: widget.directory, thumbnail: true,
-          ))),
-      ))),
-    ]);
-  }
-}
-
 class _ToolRow extends StatelessWidget {
   const _ToolRow({super.key, required this.tool, required this.directory, required this.onExpand, this.nested = false});
   final ToolActivity tool;
@@ -661,12 +671,13 @@ class _ToolRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final running = tool.status == 'running';
     final failed = tool.status == 'failed';
-    if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, onExpand: onExpand);
+    if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, directory: directory, onExpand: onExpand);
+    if (tool.name.split('.').last == 'skill' && toolSkillReads(tool).isNotEmpty) return SkillReadRows(tool: tool);
     final color = failed ? Theme.of(context).colorScheme.error : conversationMuted;
     final elapsed = tool.startedAt != null && tool.endedAt != null
         ? _duration(tool.startedAt!, tool.endedAt!) : null;
     final preview = _toolPreview(tool);
-    return ConversationDisclosure(
+    return ConversationImageGroup(child: ConversationDisclosure(
       key: PageStorageKey('tool:${tool.id}'),
       label: _toolLabel(tool), fontSize: 13,
       color: failed ? color : conversationInk,
@@ -678,6 +689,7 @@ class _ToolRow extends StatelessWidget {
         : elapsed == null ? null : Text(elapsed, style: TextStyle(fontSize: 12, color: color)),
       builder: (context) => Padding(padding: EdgeInsets.only(left: nested ? 8 : 12, bottom: 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (tool.images.isNotEmpty) ConversationImageParts(parts: tool.images, directory: directory),
         if (tool.startedAt case final at?) Align(alignment: Alignment.centerLeft,
           child: Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: _Timestamp(at: at))),
         ConversationData(value: tool.rawOutput, builder: (context, output) => Column(
@@ -691,7 +703,7 @@ class _ToolRow extends StatelessWidget {
           Padding(padding: const EdgeInsets.only(top: 8), child: _ToolRow(
             key: ValueKey(child.id), tool: child, directory: directory, nested: true, onExpand: onExpand)),
       ])),
-    );
+    ));
   }
 
   Widget _details(String? output) => ConversationData(value: tool.rawInput, builder: (context, input) => ConversationCode(

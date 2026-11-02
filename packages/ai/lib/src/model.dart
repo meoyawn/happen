@@ -13,7 +13,7 @@ class ConversationItem {
     this.settings = const {},
     this.tools = const [],
     this.native = const {},
-  }) : id = id ?? newId();
+  }) : id = id ?? newUuidV7();
 
   final String id, kind;
   final String? role;
@@ -90,6 +90,10 @@ class ConversationItem {
           if (part['output'] is! String) {
             throw const FormatException('Invalid tool output');
           }
+          if (part['output_token_estimate'] != null &&
+              (part['output_token_estimate'] is! int || (part['output_token_estimate'] as int) < 0)) {
+            throw const FormatException('Invalid native output token estimate');
+          }
           final images = inputAttachments(part['images']);
           if (images.any((image) => image['type'] != 'image' || image['path'] != null)) {
             throw const FormatException('Tool images must contain inline image bytes');
@@ -147,7 +151,7 @@ Iterable<ConversationItem> modelContextItems(String type, Json data) {
     'model.completed' => data['output'] as List,
     'input.committed' || 'configuration.updated' || 'instructions.updated' ||
     'environment.updated' || 'tools.updated' || 'agents.updated' ||
-    'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'tool.completed' =>
+    'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'tool.completed' || 'tool.notified' =>
       [if (data['item'] != null) data['item']],
     _ => const [],
   };
@@ -366,8 +370,16 @@ int estimateTokens(Iterable<ConversationItem> items) {
   for (final item in items) {
     visible.add({...item.toJson(), 'content': [
       for (final part in item.content)
-        if (part['type'] != 'image') {...part}..remove('images'),
+        if (part['type'] != 'image') {
+          ...part,
+          // Provider-native inline media is not ordinary base64 prose. Images
+          // attached alongside this output retain their separate image cost.
+          if (part['type'] == 'tool_result' && part['output_token_estimate'] is int) 'output': '',
+        }..remove('images'),
     ]});
+    for (final part in item.content) {
+      if (part['type'] == 'tool_result' && part['output_token_estimate'] is int) images += part['output_token_estimate'] as int;
+    }
     for (final part in item.content.expand((part) => [
       if (part['type'] == 'image') part,
       ...(part['images'] as List? ?? []).map(jsonObject),

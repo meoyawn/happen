@@ -3,6 +3,21 @@
 This is the decision record for this agent server. Measurements are observations on the
 listed environment, not capacity guarantees. Update entries as evidence changes.
 
+## 2026-11-02 — Pending message actions
+
+Match the current OpenCode checkout's `session-ui/src/message/message-content.tsx`,
+`schema/src/session-event.ts`, and `app/src/session/composer/region.tsx`, inspected
+at HEAD `bbd08b61de3094e6576825dcc5b2e6e45921a0af` (evidence, not a version pin).
+Pending steers expose Move to queue and Delete; queued input can switch to steering
+or be deleted. The footer stays visible for pending attachment-only messages.
+
+Inbox changes go through the session writer and emit the same delivery/cancellation
+events for live clients and replay. Changing delivery preserves the original ID,
+timestamp, attachments, reasoning selection, and admission position. Steering
+offers are rechecked against durable pending state in the same writer operation
+that commits them; stale offers cannot resurrect a deleted or queued prompt or
+apply its reasoning selection. Already starting/delivered messages reject changes.
+
 ## 2026-10-29 — Priorities and storage ownership
 
 Priority order: hundreds of concurrent tasks, occasional reasonably efficient
@@ -5073,3 +5088,87 @@ map, rather than individual project rows. Selections apply immediately in memory
 while their database writes complete asynchronously. Existing-task pending effort
 is still memory-only; the saved preference controls new tasks after relaunch.
 Other operating systems and crash/power-loss durability were not measured.
+
+## 2026-11-02 — OpenCode is a moving reference
+
+User requirement: do not pin OpenCode to a version in this workspace. Compare
+against the current HEAD of `/Users/meoyawn/Developer/github/opencode`. Existing
+revision IDs and source hashes in capture fixtures, catalog metadata, and older
+decision entries identify historical evidence only. They are not a compatibility
+target, and upstream must not be rolled back to make a check pass. Keep strict
+checks and independently captured expected results.
+
+The real Dart MCP 1.2.2 catalog was captured once through initialization and
+`tools/list`, then supplied to production `packages/opencode/` and the reference
+checkout's current CodeMode source. For the exact query
+`+mcp__dart evaluate expression flutter driver runtime errors`, all ordered
+results, 14 complete declarations, catalog/MCP instruction fragments, and
+model-visible search-result strings match exactly. Default limit 10 and explicit
+limits 8/100, pagination, and a separate targeted VM-service query were checked.
+The broad query ranks `vm_service` last in both; the targeted query returns it
+first. No discovered tool was called and no live app connection was attempted.
+
+This is scoped source/runtime evidence, not complete upstream-session envelope
+parity. The common Dart-only catalog shows 12/14 tools inline. A follow-up corrects
+the initial inventory caveat: upstream also includes the two resource helpers.
+Including their real declarations in both inventories selects the same 11/14
+Dart listings, so the count reduction is not a bug. All five ordered search-path
+lists and the default search results also match with those helpers present.
+
+That expanded strict comparison does expose a declaration/context gap: Happen
+advertises `Promise<unknown>` for both helpers instead of upstream's structured
+return types, and the read-helper description differs. The scoped provider
+context comparison fails and exits nonzero; it has not been bypassed or fixed.
+Other built-ins, permission filtering, and session instruction lifecycle were
+not compared. The unmodified OpenCode search and instruction contract tests pass
+all 105 selected checks; an unfiltered run of both provider contract files also
+passes all 229 tests. Those existing tests do not catch this helper gap. No app
+connection or hot reload was used; tracked Dart edits only change reference
+comments.
+
+## 2026-11-02 — Durable session discovery, separate from live execution
+
+Follow the current OpenCode checkout's server/client split, inspected at HEAD
+`bbd08b61de3094e6576825dcc5b2e6e45921a0af` (evidence, not a compatibility pin):
+`core/src/session.ts`, `core/src/session/store.ts`,
+`server/src/handlers/session.ts`, and `app/src/home/sessions/{index,queries}.ts`.
+OpenCode lists durable SQLite session metadata through `session.list`; its
+`session.active` endpoint is separate. Client session lists are caches, not
+registration authorities.
+
+Happen retains its independent per-session history databases. A cancellable
+storage worker reads their metadata for paginated `session.list`, with directory,
+archive, parent, title-search and ordering filters. It does not open agent owners,
+replay projections, or resume interrupted work. This removes the need for a
+separate registry file and a second registration commit that could be lost in a
+crash. `session.create` now waits for durable creation before acknowledging it;
+new titles are committed alongside configuration. Existing sessions are discovered
+without rewriting their histories. Forks, imports and CLI-created histories use
+the same inventory automatically.
+
+The desktop refreshes its idempotent sidebar cache from the server on launch,
+project selection, Home and resume. Local cache loss no longer loses sessions.
+Inbox uses the list's execution timestamps and outcome for its rows rather than
+loading every conversation merely to populate navigation; opening a session
+still loads its own history.
+Project membership and navigation preferences remain local. The live task-owner
+map still contains only running work, never dummy agents reconstructed from disk.
+
+A second visibility defect affected the two reported sessions: Inbox required
+either a running agent or a terminal message. After a crash they had neither,
+so they disappeared even though their sidebar references existed. Loaded sessions
+without a terminal message, or with a newer assistant message than their last
+terminal, now appear as Interrupted under Needs attention, independent of viewed
+markers. No failure event or live execution is fabricated.
+
+Regression evidence: the new session-list test originally failed on the missing
+API; a real-provider desktop fixture originally lost both sessions when reopened
+with a fresh desktop database; the Inbox widget regression originally omitted an
+interrupted row. All pass after the repairs, including metadata-only,
+crash-before-output and partial-output cases. Cursor tests cover tied timestamps, filter retention,
+backwards navigation, archived/child sessions, malformed cursors and a corrupt
+neighbouring database. Warm live read-only discovery returned both reported IDs
+in 348 ms; a competing startup read took 2.7 seconds. These are observations, not
+latency guarantees. After a controlled restart for the database-worker edit, Dart
+MCP's live widget tree contained both Inbox row keys. A later hot reload reported
+no runtime errors. Neither turn was resumed.

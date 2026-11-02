@@ -173,7 +173,7 @@ above and independently verify its files. If the service returns a quota or
 client-access denial, record the status and safe error category, respect its
 retry interval, and stop that live route check. A CLI success alone does not
 establish that Happen can use the hosted route. Do not change to a paid model.
-At the user's request, Console inference uses the pinned OpenCode client headers
+At the user's request, Console inference uses OpenCode-compatible client headers
 and provider-generated session IDs. Happen still owns its credentials. Start a
 new OpenCode task, or fork a task with an older Happen ID, to use that ID format.
 [Live verification](evidence/opencode-live.json) covers reasoning off/max, native

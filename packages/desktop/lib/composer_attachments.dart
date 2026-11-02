@@ -9,6 +9,7 @@ import 'package:protocol/protocol.dart';
 import 'conversation_markdown.dart';
 import 'conversation_data.dart';
 import 'file_icon.dart';
+import 'appearance.dart';
 
 class ComposerAttachment {
   ComposerAttachment({required this.name, required this.path, required this.image, this.ownedDirectory}) : id = newId();
@@ -159,51 +160,77 @@ Widget composerContextMenu(EditableTextState state, Future<void> Function(Select
     ]);
 
 class AttachmentRail extends StatelessWidget {
-  const AttachmentRail({super.key, required this.attachments, this.onRemove, this.directory = ''});
+  const AttachmentRail({super.key, required this.attachments, this.onRemove, this.directory = '', this.composer = false});
   final List<Json> attachments;
   final void Function(int index)? onRemove;
   final String directory;
+  final bool composer;
 
   @override
-  Widget build(BuildContext context) => Wrap(spacing: 8, runSpacing: 8, children: [
-    for (var index = 0; index < attachments.length; index++)
+  Widget build(BuildContext context) {
+    final tiles = [for (var index = 0; index < attachments.length; index++)
       SizedBox(key: ValueKey((index, attachments[index][r'$part'], attachments[index]['path'])),
-        width: attachments[index]['type'] == 'image' ? 120 : null,
-        height: attachments[index]['type'] == 'image' ? 116 : null,
-        child: ConversationData(value: attachments[index], builder: (context, value) =>
+        width: attachments[index]['type'] == 'image' ? 58 : 160,
+        height: attachments[index]['type'] == 'image' ? 46 : null,
+        child: ConversationData(
+        value: attachments[index], builder: (context, value) =>
         _AttachmentTile(attachment: jsonObject(value), directory: directory,
-          onRemove: onRemove == null ? null : () => onRemove!(index)))),
-  ]);
+          onRemove: onRemove == null ? null : () => onRemove!(index))))];
+    if (composer) {
+      return ConversationImageGroup(child: SingleChildScrollView(scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, spacing: 8, children: tiles)));
+    }
+    return ConversationImageGroup(child: Wrap(alignment: WrapAlignment.end, spacing: 8, runSpacing: 8, children: tiles));
+  }
 }
 
-class _AttachmentTile extends StatelessWidget {
+class _AttachmentTile extends StatefulWidget {
   const _AttachmentTile({required this.attachment, required this.directory, this.onRemove});
   final Json attachment;
   final String directory;
   final VoidCallback? onRemove;
 
   @override
+  State<_AttachmentTile> createState() => _AttachmentTileState();
+}
+
+class _AttachmentTileState extends State<_AttachmentTile> {
+  bool _hovered = false, _focused = false;
+
+  @override
   Widget build(BuildContext context) {
+    final attachment = widget.attachment;
     final name = attachment['name'] as String? ?? 'Image';
     final isImage = attachment['type'] == 'image';
-    return Tooltip(message: attachment['path'] as String? ?? name, child: Container(
-      width: isImage ? 120 : null,
-      constraints: const BoxConstraints(maxWidth: 240),
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(color: const Color(0xfff7f7f8), borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xffe8e9eb))),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        if (isImage) SizedBox(height: 78, width: 106, child: ConversationImage(
-          source: attachment['data'] is String ? attachmentDataUrl(attachment) : attachment['path'] as String,
-          label: name, directory: directory, thumbnail: true)),
-        Row(mainAxisSize: MainAxisSize.min, children: [
-          if (!isImage) Padding(padding: const EdgeInsets.only(right: 6), child: FileIcon(name)),
-          Flexible(child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12))),
-          if (onRemove != null) IconButton(tooltip: 'Remove $name', onPressed: onRemove,
-            constraints: const BoxConstraints.tightFor(width: 24, height: 24), padding: EdgeInsets.zero,
-            icon: const Icon(Icons.close, size: 14)),
-        ]),
-      ]),
-    ));
+    final suffix = name.split('.').last.toUpperCase();
+    final tile = Tooltip(message: attachment['path'] as String? ?? name,
+      child: isImage ? ConversationImage(
+        source: attachment['data'] is String ? attachmentDataUrl(attachment)
+          : (attachment['path'] as String? ?? '').startsWith('/') ? Uri.file(attachment['path'] as String).toString()
+          : attachment['path'] as String? ?? '',
+        label: name, directory: widget.directory, thumbnail: true)
+      : Container(width: 160, padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(color: const Color(0x07000000), borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: opencodeBorder, width: .5)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, height: 14 / 11,
+            letterSpacing: .05, color: opencodeInk, fontVariations: [FontVariation('wght', 530)])),
+          const SizedBox(height: 6),
+          Row(spacing: 4, children: [FileIcon(name, size: 12),
+            Flexible(child: Text(suffix == name.toUpperCase() ? 'File' : suffix, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, height: 14 / 11, letterSpacing: .05, color: opencodeMuted)))]),
+        ])));
+    return MouseRegion(onEnter: (_) => setState(() => _hovered = true), onExit: (_) => setState(() => _hovered = false),
+      child: Focus(onFocusChange: (value) => setState(() => _focused = value), child: Stack(clipBehavior: Clip.none, children: [
+        tile,
+        if (widget.onRemove != null) Positioned(top: -4, right: -4,
+          child: Opacity(opacity: _hovered || _focused ? 1 : 0,
+            child: IconButton(tooltip: 'Remove $name', onPressed: widget.onRemove,
+              style: IconButton.styleFrom(backgroundColor: opencodeFaint, foregroundColor: Colors.white,
+                minimumSize: const Size.square(16), maximumSize: const Size.square(16), padding: EdgeInsets.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap, side: const BorderSide(color: Colors.white)),
+              icon: const Icon(Icons.close, size: 12)))),
+      ])));
   }
 }

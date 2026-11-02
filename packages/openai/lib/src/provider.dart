@@ -5,7 +5,7 @@ import 'records.dart';
 import 'responses.dart';
 import 'catalog.dart';
 import 'web_search.dart';
-import 'task_id.dart';
+import 'image_generation.dart' as image_generation;
 
 class OpenAIProvider implements ModelProvider {
   OpenAIProvider(this.client);
@@ -13,7 +13,16 @@ class OpenAIProvider implements ModelProvider {
   @override
   String get id => 'openai';
   @override
-  String newTaskId() => taskIds.create();
+  String newTaskId() => newUuidV7();
+
+  Future<Json> generateImage(ModelRequest request, Json arguments, {
+    required String outputRoot, required String callId, required String turnId, required CancellationToken cancellation,
+  }) {
+    _validate(request);
+    if (request.settings['image_generation'] != true) throw const ModelFailure('image_generation_disabled', 'Image generation is not enabled for this provider');
+    return image_generation.generateImage(request, arguments, send: client.image, outputRoot: outputRoot,
+      callId: callId, turnId: turnId, cancellation: cancellation);
+  }
 
   @override
   Future<String> webSearch(
@@ -52,6 +61,7 @@ class OpenAIProvider implements ModelProvider {
       'compaction_headroom',
       'reasoning_summary',
       'web_search',
+      'image_generation',
     };
     if (selected.keys.any((key) => !allowed.contains(key))) {
       throw ArgumentError('Unsupported GPT setting');
@@ -68,12 +78,16 @@ class OpenAIProvider implements ModelProvider {
     if (!{'http', 'websocket'}.contains(transport)) {
       throw ArgumentError('Unsupported GPT transport');
     }
-    final summary = selected['reasoning_summary'] ?? info.reasoningSummary;
+    // OpenCode requests visible summaries alongside encrypted replay state.
+    final summary = selected['reasoning_summary'] ??
+        (info.data['supports_reasoning_summaries'] == true ? 'auto' : 'none');
     if (!{'none', 'concise', 'detailed', 'auto'}.contains(summary)) {
       throw ArgumentError('Unsupported GPT reasoning summary');
     }
     final webSearch = selected['web_search'] ?? 'live';
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
+    final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
+    if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
     final context = selected['context_limit'] ?? info.contextWindow;
     final headroom = selected['compaction_headroom'] ?? 32000;
     if (context is! int ||
@@ -94,6 +108,7 @@ class OpenAIProvider implements ModelProvider {
       'compaction_headroom': headroom,
       'reasoning_summary': summary,
       'web_search': webSearch,
+      'image_generation': imageGeneration && (info.data['input_modalities'] as List? ?? []).contains('image'),
     };
   }
 
@@ -148,7 +163,7 @@ class OpenAIProvider implements ModelProvider {
       transport: request.settings['transport'] as String? ?? 'http',
       verbosity: request.settings['verbosity'] as String? ?? 'low',
       reasoningSummary:
-          request.settings['reasoning_summary'] as String? ?? 'none',
+          request.settings['reasoning_summary'] as String? ?? 'auto',
       onEvent: onEvent,
     );
   }

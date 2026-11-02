@@ -1,4 +1,4 @@
-// Verbatim OpenCode system.txt at e8238bae9b807b72ecfc75afd3a9fe2e6b07b944.
+// Verbatim OpenCode system.txt; capture provenance is in the instruction fixtures.
 const systemPrompt = r'''You are an AI agent running in OpenCode, a coding agent harness. Help the user accomplish their goals using the tools you have available.
 
 # Harness

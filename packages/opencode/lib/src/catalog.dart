@@ -8,6 +8,7 @@ import 'instructions.dart';
 const deepseekCatalogRevision = 'ce7073d51254c26cd63b22a60835b8f948deb447';
 const supportedDeepSeekModel = 'deepseek-flash';
 const openCodeDeepSeekModel = 'deepseek-v4.1-flash-free';
+// Provenance of the recorded Console limits, not an OpenCode compatibility pin.
 const openCodeCatalogRevision = 'fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e';
 
 final _catalog = {
@@ -17,7 +18,7 @@ final _catalog = {
 };
 
 Json deepseekModel(String model) {
-  // OpenCode's pinned models-dev snapshot has separate gateway limits.
+  // The recorded Console catalog has separate gateway limits.
   if (model == openCodeDeepSeekModel) {
     return const {
       'id': openCodeDeepSeekModel,

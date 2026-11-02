@@ -9,7 +9,7 @@ import 'package:xterm2/xterm.dart';
 
 import 'terminal_process.dart';
 
-/// Shells belong to a chat or project draft, independently of the panel's view.
+/// Shells belong to a chat or draft tab, independently of the panel's view.
 class DesktopTerminals extends ChangeNotifier {
   final groups = <(String, String?), TerminalGroup>{};
   final _releasing = <Future<void>>{};
@@ -78,8 +78,8 @@ class DesktopTerminals extends ChangeNotifier {
     return closing;
   }
 
-  void adoptDraft(String project, String task) {
-    final group = groups.remove((project, null));
+  void adoptDraft(String project, String task, {String? draft}) {
+    final group = groups.remove((project, draft));
     if (group != null) groups[(project, task)] = group;
   }
 

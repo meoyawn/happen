@@ -2,6 +2,84 @@ import 'dart:convert';
 
 import 'package:protocol/protocol.dart';
 
+// MCP's content/result wire types, shared once by all nested declarations.
+const sharedMcpTypes = r'''type Role = "user" | "assistant";
+type MetaObject = Record<string, unknown>;
+type Annotations = {
+  audience?: Role[];
+  priority?: number;
+  lastModified?: string;
+};
+type Icon = {
+  src: string;
+  mimeType?: string;
+  sizes?: string[];
+  theme?: "light" | "dark";
+};
+type TextResourceContents = {
+  uri: string;
+  mimeType?: string;
+  _meta?: MetaObject;
+  text: string;
+};
+type BlobResourceContents = {
+  uri: string;
+  mimeType?: string;
+  _meta?: MetaObject;
+  blob: string;
+};
+type TextContent = {
+  type: "text";
+  text: string;
+  annotations?: Annotations;
+  _meta?: MetaObject;
+};
+type ImageContent = {
+  type: "image";
+  data: string;
+  mimeType: string;
+  annotations?: Annotations;
+  _meta?: MetaObject;
+};
+type AudioContent = {
+  type: "audio";
+  data: string;
+  mimeType: string;
+  annotations?: Annotations;
+  _meta?: MetaObject;
+};
+type ResourceLink = {
+  icons?: Icon[];
+  name: string;
+  title?: string;
+  uri: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Annotations;
+  size?: number;
+  _meta?: MetaObject;
+  type: "resource_link";
+};
+type EmbeddedResource = {
+  type: "resource";
+  resource: TextResourceContents | BlobResourceContents;
+  annotations?: Annotations;
+  _meta?: MetaObject;
+};
+type ContentBlock =
+  | TextContent
+  | ImageContent
+  | AudioContent
+  | ResourceLink
+  | EmbeddedResource;
+type CallToolResult<TStructured = { [key: string]: unknown }> = {
+  _meta?: MetaObject;
+  content: ContentBlock[];
+  isError?: boolean;
+  structuredContent?: TStructured;
+  [key: string]: unknown;
+};''';
+
 Json _object(Object? value) => value is Map ? jsonObject(value) : const {};
 
 String codeModeName(String name) {
@@ -13,7 +91,7 @@ String codeModeName(String name) {
   return result.isEmpty ? '_' : result.toString();
 }
 
-Json describeTool(Json tool) {
+Json describeTool(Json tool, {bool namespaceInstructions = true}) {
   final namespaceName = tool['namespace'] as String?;
   final toolName = tool['tool_name'] as String? ?? tool['name'] as String;
   final name = codeModeName(namespaceName == null ? tool['name'] as String
@@ -29,7 +107,7 @@ Json describeTool(Json tool) {
   final supplied = tool['namespace_description'] as String? ?? '';
   final namespace = supplied.trim().isNotEmpty ? supplied.trim()
     : namespaceName != null && !namespaceName.startsWith('mcp__') ? 'Tools in the $namespaceName namespace.' : '';
-  final description = '${tool['description'] ?? ''}${namespace.isEmpty ? '' : '\n\n$namespace'}';
+  final description = '${tool['description'] ?? ''}${!namespaceInstructions || namespace.isEmpty ? '' : '\n\n$namespace'}';
   return {...tool, 'name': name, 'description': '$description\n\nexec tool declaration:\n```ts\n'
     'declare const tools: { $name(${freeform ? 'input' : 'args'}: $input): Promise<$output>; };\n```'};
 }

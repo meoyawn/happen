@@ -21,6 +21,7 @@ import 'dictation.dart';
 import 'dictation_controls.dart';
 import 'file_autocomplete.dart';
 import 'model_picker.dart';
+import 'new_session.dart';
 import 'mcp_conversation.dart';
 import 'session.dart';
 import 'sidebar_frame.dart';
@@ -310,8 +311,8 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Future<void> _addProject() => _run(() async {
-    if (_picking) return;
-    _picking = true;
+    if (_picking || !mounted) return;
+    setState(() => _picking = true);
     try {
       final paths = await MacosFilePicker().pick(
         MacosFilePickerMode.folder,
@@ -321,6 +322,10 @@ class _DesktopViewState extends State<DesktopView> {
       try {
         if (mounted && paths != null && paths.isNotEmpty) {
           await session.addProject(paths.first.path);
+          if (!mounted) return;
+          session.viewingConversation = true;
+          setState(() => _homeOpen = false);
+          _focusComposer();
         }
       } finally {
         for (final path in paths ?? <MacosFilePickerPath>[]) {
@@ -328,7 +333,7 @@ class _DesktopViewState extends State<DesktopView> {
         }
       }
     } finally {
-      _picking = false;
+      if (mounted) setState(() => _picking = false);
     }
   });
 
@@ -394,13 +399,29 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _selectAdjacentTask(int offset) {
-    final tasks = session.openCodeLayout == OpenCodeLayout.inbox
-      ? [for (final project in session.projects) if (!project.removing)
-          for (final task in project.tasks) if (!task.archived) (project, task)]
-      : session.openTasks;
-    final index = tasks.indexWhere((entry) => entry.$2 == session.task);
-    final next = index < 0 ? (offset > 0 ? 0 : tasks.length - 1) : index + offset;
-    if (next >= 0 && next < tasks.length) _openTask(tasks[next].$1, tasks[next].$2);
+    final inbox = session.openCodeLayout == OpenCodeLayout.inbox;
+    final sections = inbox ? inboxSections(session) : null;
+    final tasks = sections == null ? session.openTasks : [
+      ...sections.needs,
+      ...sections.recent,
+      if (session.inboxArchivedExpanded) ...sections.archived,
+      for (final entry in sections.working)
+        if (session.inboxWorkingExpanded || !_homeOpen && session.task == entry.$2) entry,
+    ];
+    final ids = inbox ? [
+      for (final id in session.openTabIds)
+        if (session.sessionDrafts.any((draft) => draft.id == id)) id,
+      ...tasks.map((entry) => entry.$2.id),
+    ] : session.openTabIds;
+    final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
+    final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
+    if (next < 0 || next >= ids.length) { return; }
+    final draft = session.sessionDrafts.where((draft) => draft.id == ids[next]).firstOrNull;
+    if (draft != null) { _activateDraft(draft); }
+    else {
+      final entry = tasks.where((entry) => entry.$2.id == ids[next]).firstOrNull;
+      if (entry != null) { _openTask(entry.$1, entry.$2); }
+    }
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
@@ -409,12 +430,11 @@ class _DesktopViewState extends State<DesktopView> {
     return session.select(project, task);
   }
 
-  Future<void> _newChat() async {
+  Future<void> _newChat([Project? owner]) async {
     if (_homeOpen) setState(() => _homeOpen = false);
-    final project = session.project;
-    if (project == null || !project.available || project.removing) { await _addProject(); return; }
-    await _selectProject(project);
-    if (mounted && session.project == project && session.task == null) _composer.currentState?._focus.requestFocus();
+    session.viewingConversation = true;
+    session.newSession(owner);
+    if (mounted) _focusComposer();
   }
 
   bool get _hasSidebar => session.openCodeLayout != OpenCodeLayout.top;
@@ -422,6 +442,7 @@ class _DesktopViewState extends State<DesktopView> {
   void _showHome({bool search = false}) {
     session.viewingConversation = false;
     setState(() => _homeOpen = true);
+    unawaited(_run(session.refreshSessions));
     if (search) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _homeOpen) _sessionSearchFocus.requestFocus();
@@ -439,14 +460,28 @@ class _DesktopViewState extends State<DesktopView> {
     setState(() => _homeOpen = false);
     unawaited(_run(() async {
       await _selectProject(project);
-      if (mounted) _composer.currentState?._focus.requestFocus();
+      if (mounted) _focusComposer();
     }));
+  }
+
+  void _activateDraft(SessionDraft draft) {
+    setState(() => _homeOpen = false);
+    session.viewingConversation = true;
+    session.openDraft(draft);
+    _focusComposer();
+  }
+
+  void _focusComposer() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_homeOpen) _composer.currentState?._focus.requestFocus();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   bool get _canOpenTerminal => session.project?.available == true && session.project?.removing != true &&
       session.task?.archived != true && session.task?.archiving != true;
 
-  (String, String?)? get _terminalScope => _canOpenTerminal ? (session.project!.checkoutKey, session.task?.id) : null;
+  (String, String?)? get _terminalScope => _canOpenTerminal ? (session.project!.checkoutKey, session.draftKey) : null;
 
   void _openTerminal() {
     final project = session.project;
@@ -486,7 +521,8 @@ class _DesktopViewState extends State<DesktopView> {
         OpenCodeTopBar(session: session, home: _homeOpen, leadingInset: _trafficInset,
           onHome: _showHome, onSearch: () => _showHome(search: true),
           onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
-          onSelect: _openTask, onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived)))),
+          onSelect: _openTask, onDraft: _activateDraft,
+          onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived)))),
         Expanded(child: pane),
       ]));
     }
@@ -499,7 +535,8 @@ class _DesktopViewState extends State<DesktopView> {
       sidebar: OpenCodeSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             onHome: _showHome, onSearch: () => _showHome(search: true),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
-            onSelect: _openTask, onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
+            onSelect: _openTask, onDraft: _activateDraft,
+            onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
         ,
       resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
       child: pane,
@@ -526,57 +563,71 @@ class _DesktopViewState extends State<DesktopView> {
             child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
               Offstage(offstage: home, child: Column(children: [
                 _header(context),
-                Expanded(child: ConversationDataScope(client: session.client, providers: session.providers, child: ConversationDeck(
-                    task: session.task,
-                    tasks: tasks,
-                    directory: session.project?.path ?? '',
-                    empty: _empty(context),
-                    onRetry: (task) => unawaited(_run(() => session.loadHistory(task))),
-                    onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
-                ))),
-                if (session.error case final error?)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
-                    child: SelectableText(
-                      error,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
+                if (session.task == null)
+                  Expanded(child: NewSessionScreen(session: session, picking: _picking,
+                    onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
+                    onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),
+                    onReturnFocus: _focusComposer,
+                    composer: Column(mainAxisSize: MainAxisSize.min, children: [
+                      if (session.project?.available == true)
+                        McpConversationAuth(key: ValueKey(session.client), client: session.client),
+                      _Composer(key: _composer, session: session),
+                    ])))
+                else ...[
+                  Expanded(child: ConversationDataScope(client: session.client, providers: session.providers, child: ConversationDeck(
+                      task: session.task,
+                      tasks: tasks,
+                      directory: session.project?.path ?? '',
+                      empty: const SizedBox.shrink(),
+                      onRetry: (task) => unawaited(_run(() => session.loadHistory(task))),
+                      onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
+                      onPendingAction: (task, inboxID, action) => _run(() => session.changePending(task, inboxID, action)),
+                  ))),
+                  if (session.error case final error?)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+                      child: SelectableText(
+                        error,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
                       ),
                     ),
-                  ),
-                if (session.project != null && session.project!.available && session.task?.archived != true)
-                  McpConversationAuth(key: ValueKey(session.client), client: session.client),
-                if (session.project?.removing == true)
-                  const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
-                else if (session.project?.available == false)
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      const Text('Project folder is unavailable', style: TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 8),
-                      SelectableText(session.project!.path, style: const TextStyle(color: Colors.black54)),
-                      const SizedBox(height: 8),
-                      Wrap(spacing: 8, children: [
-                        TextButton(onPressed: () => _run(() => _removeProject(session.project!)), child: const Text('Remove project')),
-                        if (session.task?.running == true)
-                          TextButton(onPressed: session.connected ? () => _run(session.stop) : null, child: const Text('Stop task')),
+                  if (session.project != null && session.project!.available && session.task?.archived != true)
+                    McpConversationAuth(key: ValueKey(session.client), client: session.client),
+                  if (session.project?.removing == true)
+                    const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
+                  else if (session.project?.available == false)
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Text('Project folder is unavailable', style: TextStyle(fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 8),
+                        SelectableText(session.project!.path, style: const TextStyle(color: Colors.black54)),
+                        const SizedBox(height: 8),
+                        Wrap(spacing: 8, children: [
+                          TextButton(onPressed: () => _run(() => _removeProject(session.project!)), child: const Text('Remove project')),
+                          if (session.task?.running == true)
+                            TextButton(onPressed: session.connected ? () => _run(session.stop) : null, child: const Text('Stop task')),
+                        ]),
                       ]),
-                    ]),
-                  )
-                else if (session.task?.archived == true)
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: FilledButton.icon(
-                      onPressed: () => _run(() => _archiveTask(session.task!, false)),
-                      icon: const Icon(Icons.unarchive_outlined),
-                      label: const Text('Restore task to continue'),
-                    ),
-                  )
-                else if (session.project != null)
-                  _Composer(key: _composer, session: session),
+                    )
+                  else if (session.task?.archived == true)
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: FilledButton.icon(
+                        onPressed: () => _run(() => _archiveTask(session.task!, false)),
+                        icon: const Icon(Icons.unarchive_outlined),
+                        label: const Text('Restore task to continue'),
+                      ),
+                    )
+                  else if (session.project != null)
+                    _Composer(key: _composer, session: session),
+                ],
               ])),
               if (home) OpenCodeHome(session: session, focusNode: _sessionSearchFocus,
-                onSelect: _openTask, onNew: _openDraft, onAddProject: () => unawaited(_addProject())),
+                onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
+                onAddProject: () => unawaited(_addProject())),
             ])),
           )),
         ),
@@ -612,7 +663,7 @@ class _DesktopViewState extends State<DesktopView> {
         ],
         Expanded(
           child: Text(
-            session.task?.title ?? session.project?.name ?? 'Your workspace',
+            session.task?.title ?? 'New session',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500,
@@ -634,7 +685,7 @@ class _DesktopViewState extends State<DesktopView> {
             onPressed: _canOpenTerminal ? _openTerminal : null,
             icon: const Icon(Icons.terminal_outlined, size: 17, color: Color(0xff777b82)),
           ),
-        if (session.project != null)
+        if (session.task != null && session.project != null)
           IconButton(
             tooltip: 'New task',
             onPressed: session.project!.available && !session.project!.removing ? () => _run(_newChat) : null,
@@ -648,45 +699,6 @@ class _DesktopViewState extends State<DesktopView> {
       ],
     )),
   ));
-
-  Widget _empty(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (session.project == null) ...[
-            const Icon(Icons.folder_open_outlined, size: 32, color: Color(0xff8b8e95)),
-            const SizedBox(height: 20),
-          ],
-          Text(
-            session.project == null
-                ? 'Start with a project'
-                : 'What are we working on?',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 24,
-              fontWeight: FontWeight.w500, letterSpacing: -.8, color: const Color(0xff292b30)),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            session.project == null
-                ? 'Open a folder, then start a task.'
-                : 'Each task keeps its own conversation.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 14, color: Color(0xff979aa0)),
-          ),
-          if (session.project == null) ...[
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _addProject,
-              icon: const Icon(Icons.folder_open, size: 18),
-              label: const Text('Open project'),
-            ),
-          ],
-        ],
-      ),
-    ),
-  );
 }
 
 class _Composer extends StatefulWidget {
@@ -702,7 +714,7 @@ class _ComposerState extends State<_Composer> {
   late ComposerTextController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
     files: widget.session.fileDrafts[_draftKey] ?? const [],
-  );
+  )..selection = widget.session.draftSelections[_draftKey] ?? const TextSelection.collapsed(offset: -1);
   final _focus = FocusNode();
   final _autocomplete = GlobalKey<ComposerAutocompleteState>();
   var _attachmentLifetime = CancellationToken();
@@ -819,12 +831,14 @@ class _ComposerState extends State<_Composer> {
     _text = ComposerTextController(
       text: widget.session.drafts[_draftKey] ?? '',
       files: widget.session.fileDrafts[_draftKey] ?? const [],
-    )..addListener(_saveDraft);
+    )..selection = widget.session.draftSelections[_draftKey] ?? const TextSelection.collapsed(offset: -1)
+      ..addListener(_saveDraft);
     // The editor and autocomplete detach their listeners during this build.
     WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
   }
 
   void _saveDraft() {
+    widget.session.draftSelections[_draftKey] = _text.selection;
     if (_text.text.isEmpty) {
       widget.session.drafts.remove(_draftKey);
     } else {
@@ -836,6 +850,7 @@ class _ComposerState extends State<_Composer> {
     } else {
       widget.session.fileDrafts[_draftKey] = files;
     }
+    widget.session.saveDrafts();
   }
 
   Future<void> _copy({bool cut = false}) async {
@@ -858,6 +873,7 @@ class _ComposerState extends State<_Composer> {
         if (!draft.any((existing) => existing.path == attachment.path)) draft.add(attachment);
       }
     });
+    widget.session.saveDrafts();
     _focus.requestFocus();
   }
 
@@ -963,6 +979,7 @@ class _ComposerState extends State<_Composer> {
           if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
         }
         if (mounted && identical(_text, controller) && _text.text == draft) _text.clear();
+        widget.session.saveDrafts();
         if (mounted) setState(() {});
       }
     } on CancelledException {
@@ -1010,14 +1027,16 @@ class _ComposerState extends State<_Composer> {
     _bindVoice();
     final session = widget.session;
     final running = session.task?.running == true;
+    final hasProject = session.project?.available == true && session.project?.removing != true;
     final available =
+        hasProject &&
         session.connected &&
         !_receivingAttachments &&
         !session.submitting &&
         session.task?.loading != true &&
         session.task?.loadError == null;
     return DropTarget(
-      enabled: session.connected && !session.submitting && !_receivingAttachments,
+      enabled: hasProject && session.connected && !session.submitting && !_receivingAttachments,
       acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
       onDrop: _drop,
       onEnter: (_) => setState(() => _draggingAttachments = true),
@@ -1054,24 +1073,26 @@ class _ComposerState extends State<_Composer> {
             child: Actions(actions: {CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
               onInvoke: (intent) { unawaited(_copy(cut: intent.collapseSelection)); return null; }),
               PasteTextIntent: ComposerPasteAction(
-              enabled: session.connected && !session.submitting && !_receivingAttachments && !_dictating, paste: _paste)},
+              enabled: hasProject && session.connected && !session.submitting && !_receivingAttachments && !_dictating, paste: _paste)},
             child: ComposerAutocomplete(
               key: _autocomplete,
               controller: _text,
               focusNode: _focus,
               client: session.client,
-              cwd: session.project!.path,
-              enabled: session.connected && !session.submitting && !_dictating,
+              cwd: session.project?.path ?? '',
+              enabled: hasProject && session.connected && !session.submitting && !_dictating,
               session: session,
               commands: {
-                '/new': (description: 'Start a new session', run: () => unawaited(session.select(session.project!))),
+                if (session.project case final project?)
+                  '/new': (description: 'Start a new session', run: () => unawaited(session.select(project))),
                 if (defaultTargetPlatform == TargetPlatform.macOS)
                   '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
                 '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
                 if (session.task != null) '/context': (description: 'Inspect session context',
                   run: () => session.openSessionPanel(session.task!, contextPanel)),
-                '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
-                  (session.project!.checkoutKey, session.task?.id), session.project!.path)),
+                if (session.project case final project?)
+                  '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
+                    (project.checkoutKey, session.task?.id), project.path)),
               },
               child: DecoratedBox(
                 key: const ValueKey('conversation-composer'),
@@ -1091,15 +1112,16 @@ class _ComposerState extends State<_Composer> {
                   child: Column(
                     children: [
                       if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
-                      if (_attachments.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8), child: Align(
+                      if (_attachments.isNotEmpty) Align(
                         alignment: Alignment.centerLeft,
-                        child: AttachmentRail(attachments: _attachments.map((attachment) => attachment.toJson()).toList(),
+                        child: AttachmentRail(composer: true, attachments: _attachments.map((attachment) => attachment.toJson()).toList(),
                           onRemove: session.submitting ? null : (index) {
                             final removed = _attachments[index];
                             setState(() => widget.session.attachmentDrafts[_draftKey]!.remove(removed));
+                            widget.session.saveDrafts();
                             unawaited(removed.discard());
                           }),
-                      )),
+                      ),
                       if (_receivingAttachments || session.attachmentStatus != null) Row(children: [
                         const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
                         const SizedBox(width: 8),
@@ -1122,7 +1144,7 @@ class _ComposerState extends State<_Composer> {
                       ComposerEditor(
                         controller: _text,
                         focusNode: _focus,
-                        enabled: session.connected,
+                        enabled: hasProject && session.connected,
                         paste: _paste, copy: _copy,
                       ),
                       SizedBox(height: 44, child: Row(

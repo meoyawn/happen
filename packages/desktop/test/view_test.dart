@@ -1098,11 +1098,6 @@ void main() {
     await frame();
     session.chooseReasoning('low');
     expect(session.reasoning, 'high');
-    await tester.runAsync(() async {
-      final saved = jsonObject(await callIsolate(session.database.port, 'load', {}));
-      final project = jsonDecode(saved['settings']['project_models'] as String)['checkout'];
-      expect((project['provider'], project['model'], project['reasoning']), ('openai', 'gpt-6.1-sol', 'high'));
-    });
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
@@ -1134,7 +1129,7 @@ void main() {
     expect(draft.files.single.skillName, 'data-tools');
     expect(find.byType(SkillIcon), findsOneWidget);
     expect(find.text('data-tools'), findsOneWidget);
-    expect(session.fileDrafts['checkout']!.single.skillName, 'data-tools');
+    expect(session.fileDrafts[session.draftKey]!.single.skillName, 'data-tools');
     expect(client.sent, isEmpty);
 
     await tester.runAsync(() => session.select(session.project!, existing));
@@ -1258,8 +1253,8 @@ void main() {
     expect(newDraft.text, 'Please \uFFFC ');
     expect(newDraft.serializePrompt(), 'Please [my file.md](notes/my file.md) ');
     expect(find.text('my file.md'), findsOneWidget);
-    expect(session.drafts['checkout'], newDraft.text);
-    expect(session.fileDrafts['checkout']!.single.path, 'notes/my file.md');
+    expect(session.drafts[session.draftKey], newDraft.text);
+    expect(session.fileDrafts[session.draftKey]!.single.path, 'notes/my file.md');
 
     await tester.enterText(find.byType(TextField), 'Use @desktop');
     await tester.pump(const Duration(milliseconds: 200));
@@ -1276,7 +1271,7 @@ void main() {
     expect(newDraft.text, 'Use \uFFFC ');
     expect(newDraft.serializePrompt(), 'Use [desktop](packages/desktop/) ');
     expect(find.text('desktop'), findsOneWidget);
-    expect(session.drafts['checkout'], newDraft.text);
+    expect(session.drafts[session.draftKey], newDraft.text);
     expect(client.sent, isEmpty);
 
     await tester.runAsync(() => session.select(session.project!, existing));
@@ -1630,7 +1625,11 @@ class _Client implements AgentClient {
     searches.add((cwd: cwd, query: query, cancellation: cancellation, reply: reply));
     return reply.future;
   }
+  @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
+    jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'session.list') return {'data': [], 'cursor': {}};
+    if (method == 'session.active') return {'data': {}};
     if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};
     if (method == 'task.cancel') {
       cancelled.add(params['task_id'] as String);

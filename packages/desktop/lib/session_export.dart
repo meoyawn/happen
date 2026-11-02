@@ -11,7 +11,7 @@ String sessionExportName(String title, String sessionID) {
   return name.substring(0, name.length.clamp(0, 100));
 }
 
-Future<File> saveSessionExport(Json data, {Directory? downloadsDirectory,
+Future<File> saveSessionExport(Json data, {required String title, required String sessionID, Directory? downloadsDirectory,
     required CancellationToken cancellation}) async {
   cancellation.throwIfCancelled();
   final encoded = await CancellableIsolate.run(
@@ -24,8 +24,7 @@ Future<File> saveSessionExport(Json data, {Directory? downloadsDirectory,
   final directory = downloadsDirectory ?? Directory('$home${Platform.pathSeparator}Downloads');
   await directory.create(recursive: true);
   cancellation.throwIfCancelled();
-  final info = jsonObject(data['info']);
-  final name = sessionExportName(info['title'] as String? ?? '', info['id'] as String);
+  final name = sessionExportName(title, sessionID);
   final file = File.fromUri(directory.uri.resolve('$name-${newId().substring(0, 8)}.json'));
   final partial = File('${file.path}.part');
   try {

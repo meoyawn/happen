@@ -11,6 +11,7 @@ import 'src/model_context.dart';
 
 export 'src/owner.dart' show startStore, importHistory;
 export 'src/session_reader.dart' show readSession;
+export 'src/session_list.dart' show listSessions;
 
 part 'src/session.dart';
 
@@ -20,15 +21,14 @@ class TaskStore {
     this.directory,
     this.taskId, {
     bool create = true,
-    bool ephemeral = false,
   }) {
     validateTaskId(taskId);
     final folder = Directory('$directory/tasks/$taskId');
-    if (!ephemeral && !create && !File('${folder.path}/history.sqlite').existsSync()) {
+    if (!create && !File('${folder.path}/history.sqlite').existsSync()) {
       throw StateError('Task does not exist: $taskId');
     }
-    if (!ephemeral) folder.createSync(recursive: true);
-    db = sqlite3.open(ephemeral ? ':memory:' : '${folder.path}/history.sqlite');
+    folder.createSync(recursive: true);
+    db = sqlite3.open('${folder.path}/history.sqlite');
     db.execute('PRAGMA journal_mode = WAL');
     db.execute('PRAGMA synchronous = NORMAL');
     db.execute('PRAGMA foreign_keys = ON');
@@ -109,12 +109,12 @@ class TaskStore {
       // Existing histories catch up through prepareSession before being read.
       final projected = db.select('SELECT through_seq FROM session_projection').single['through_seq'] as int;
       if (projected == (committed.first['seq'] as int) - 1) _projectSession(committed);
+      _projectConversation(committed);
       db.execute('COMMIT');
     } catch (_) {
       db.execute('ROLLBACK');
       rethrow;
     }
-    _projectConversation(committed);
     return committed;
   }
 
@@ -153,7 +153,7 @@ class TaskStore {
     final query = db.prepare(conversationView ? '''
       SELECT e.seq, e.id, e.window_id, e.type, e.created_at, p.seq AS projected,
         coalesce(p.data, CASE
-          WHEN e.type IS 'tool.completed' THEN json_object('item', json_extract(e.data, '\$.item'))
+          WHEN e.type IN ('tool.completed', 'tool.notified') THEN json_object('item', json_extract(e.data, '\$.item'))
           WHEN e.type IS 'context.compacted' THEN json_object('summary', json_extract(e.data, '\$.summary'))
           WHEN e.type IN ('agents.updated', 'skills.updated', 'mcp.updated', 'environment.updated', 'instructions.updated', 'tools.updated') THEN '{}'
           ELSE e.data END) AS data
@@ -209,9 +209,10 @@ class TaskStore {
   }
 
   List<Json> _materializeConversation(List<Json> events) {
-    // Display records and their payload references commit together, after the
-    // original events. A failed cache update cannot undo a saved tool result.
-    db.execute('BEGIN IMMEDIATE');
+    // Savepoints work both within append's durable event transaction and during
+    // lazy read repair. A failed cache update rolls back only the derived view,
+    // never the canonical tool result; successful appends need just one commit.
+    db.execute('SAVEPOINT conversation_cache');
     try {
       final result = <Json>[];
       final insert = db.prepare('INSERT OR REPLACE INTO conversation_events(seq, data) VALUES (?, ?)');
@@ -222,10 +223,11 @@ class TaskStore {
           result.add(display);
         }
       } finally { insert.close(); }
-      db.execute('COMMIT');
+      db.execute('RELEASE conversation_cache');
       return result;
     } catch (_) {
-      db.execute('ROLLBACK');
+      db.execute('ROLLBACK TO conversation_cache');
+      db.execute('RELEASE conversation_cache');
       rethrow;
     }
   }
@@ -264,12 +266,12 @@ class TaskStore {
       for (final key in ['output', 'error']) {
         if (data.containsKey(key)) data[key] = part(data[key]);
       }
-    } else if (event['type'] == 'input.committed' || event['type'] == 'tool.completed') {
+    } else if (event['type'] == 'input.committed' || event['type'] == 'tool.completed' || event['type'] == 'tool.notified') {
       final item = jsonObject(data['item']);
       data['item'] = {...item, 'content': [
         for (final raw in item['content'] as List? ?? [])
           if (raw['type'] == 'image') image(jsonObject(raw))
-          else if (event['type'] == 'tool.completed') {
+          else if (event['type'] == 'tool.completed' || event['type'] == 'tool.notified') {
             ...jsonObject(raw),
             if (raw.containsKey('output')) 'output': part(raw['output']),
             if (raw['images'] is List) 'images': [for (final value in raw['images']) image(jsonObject(value))],
@@ -841,7 +843,7 @@ Json _conversationEvent(Json event) {
         },
       ],
     },
-    'tool.completed' => <String, dynamic>{'item': data['item']},
+    'tool.completed' || 'tool.notified' => <String, dynamic>{'item': data['item']},
     'context.compacted' => <String, dynamic>{'summary': data['summary']},
     'task.created' => <String, dynamic>{
       for (final key in ['provider', 'model', 'reasoning', 'reasoning_updates'])

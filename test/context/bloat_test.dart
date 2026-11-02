@@ -37,7 +37,7 @@ void main() {
         {'type': 'compaction', 'encrypted_content': 'checkpoint-${++sequence}'},
       ] : hasResult ? <Json>[
         {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]},
-      ] : ['catalog baseline', 'one changed tool'].contains(input[lastUser]['content']) ? <Json>[
+      ] : ['catalog baseline', 'one changed tool'].contains(openAIMessageText(input[lastUser])) ? <Json>[
         {
           'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
           'call_id': 'context_${++sequence}',
@@ -101,13 +101,15 @@ void main() {
       final input = initial['input'] as List;
       if (previousInput == null) {
         expect(input, hasLength(3));
-        expect(input[0], {'role': 'developer', 'content': GptModel('gpt-6.1-sol').instructions});
-        expect(input[1]['content'], startsWith('<environment_context>\n  <cwd>${work.path}</cwd>\n'));
-        expect(input[1]['content'], contains(RegExp(r'<shell>(zsh|bash|sh|pwsh|powershell|cmd)</shell>')));
-        expect(input[1]['content'], contains(RegExp(r'<current_date>\d{4}-\d{2}-\d{2}</current_date>')));
-        expect(input[1]['content'], contains(RegExp(r'<timezone>[^<]+</timezone>')));
-        expect(input[1]['content'], endsWith('</environment_context>'));
-        expect(input.last, {'role': 'user', 'content': 'turn-0'});
+        expect(input[0], containsPair('role', 'developer'));
+        expect(openAIMessageText(input[0] as Map), GptModel('gpt-6.1-sol').instructions);
+        expect(openAIMessageText(input[1] as Map), startsWith('<environment_context>\n  <cwd>${work.path}</cwd>\n'));
+        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<shell>(zsh|bash|sh|pwsh|powershell|cmd)</shell>')));
+        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<current_date>\d{4}-\d{2}-\d{2}</current_date>')));
+        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<timezone>[^<]+</timezone>')));
+        expect(openAIMessageText(input[1] as Map), endsWith('</environment_context>'));
+        expect(input.last, containsPair('role', 'user'));
+        expect(openAIMessageText(input.last as Map), 'turn-0');
       } else {
         expect(input.take(previousInput.length).toList(), previousInput);
         expect(input.length, previousInput.length + 2 + (i == 1 || i == 2 ? 1 : 0));
@@ -124,7 +126,7 @@ void main() {
       expect(initial.containsKey('instructions'), false);
       expect(input.take(2).toList(), (requests.first['input'] as List).take(2).toList());
       expect(input.where((item) => item['type'] == 'additional_tools'), isEmpty);
-      expect(input.where((item) => item['content'] == GptModel('gpt-6.1-sol').instructions), hasLength(1));
+      expect(input.where((item) => openAIMessageText(item as Map) == GptModel('gpt-6.1-sol').instructions), hasLength(1));
       expect(initial['reasoning']['effort'], 'low');
       expect((completed['input'] as List).where((item) => item['type'] == 'configuration_update'),
         hasLength(i == 0 ? 0 : 1));
@@ -171,7 +173,7 @@ void main() {
     final beforeRemoval = requests.length;
     await turn('task.send', {'task_id': id, 'prompt': 'removed tools'});
     final notice = (requests[beforeRemoval]['input'] as List).lastWhere((item) => item['role'] == 'developer');
-    expect(notice['content'], '<tools>\nRemoved deferred tool namespaces:\n'
+    expect(openAIMessageText(notice as Map), '<tools>\nRemoved deferred tool namespaces:\n'
       '- client: Tools in the client namespace.\nNo deferred tool namespaces remain.\n</tools>');
     previousInput = requests.last['input'] as List;
 

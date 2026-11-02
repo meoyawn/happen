@@ -100,6 +100,7 @@ class AuthManager {
       return {
         'access_token': access,
         'account_id': tokens['account_id'] ?? _accountId(access),
+        if (_plan(access) case final String plan) 'plan_type': plan,
       };
     }
     if (forceRefresh ||
@@ -122,6 +123,7 @@ class AuthManager {
     return {
       'access_token': requiredString(value, 'access_token'),
       'account_id': requiredString(value, 'account_id'),
+      if (_plan(requiredString(value, 'access_token')) case final String plan) 'plan_type': plan,
     };
   }
 
@@ -417,6 +419,13 @@ Json _claims(String token) {
   return jsonObject(
     jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1])))),
   );
+}
+
+String? _plan(String token) {
+  try {
+    final auth = jsonObject(_claims(token)['https://api.openai.com/auth'] ?? {});
+    return auth['chatgpt_plan_type'] is String ? auth['chatgpt_plan_type'] as String : null;
+  } on FormatException { return null; }
 }
 
 String _accountId(String access) {

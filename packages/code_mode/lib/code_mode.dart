@@ -4,7 +4,8 @@ import 'src/quickjs.dart';
 
 export 'src/quickjs.dart' show HostTool;
 export 'src/cancellation.dart' show CodeInterrupt, CodeCancellationToken;
-export 'src/output.dart' show truncateTextOutput;
+export 'src/output.dart' show truncateTextOutput, truncateTokenText;
+export 'src/session.dart' show CodeSession;
 
 /// Independent JavaScript cells with explicit persisted state and async host tools.
 class CodeMode {

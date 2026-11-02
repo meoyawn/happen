@@ -9,12 +9,16 @@ typedef EmbeddedNativeAsset = ({String name, String sha256, int length, String F
 const cliNativeContracts = <String, ({String assetId, String anchor})>{
   'libcode_mode.dylib': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
   'libsqlite3.dylib': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
+  'libpty2_unix.dylib': (assetId: 'package:pty2/src/impl/unix.dart', anchor: 'pty2_spawn_unix'),
 };
 
 @Native<Uint64 Function()>(assetId: 'package:code_mode/src/bindings.dart', symbol: 'embedded_js_thread_id')
 external int _threadId();
 @Native<Int32 Function()>(assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', symbol: 'sqlite3_libversion_number')
 external int _sqliteVersion();
+typedef _PtySpawn = Int32 Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>, Uint16, Uint16, Int32, Pointer<Int32>);
+@Native<_PtySpawn>(assetId: 'package:pty2/src/impl/unix.dart', symbol: 'pty2_spawn_unix')
+external int _ptySpawn(Pointer<Void> executable, Pointer<Void> argv, Pointer<Void> env, Pointer<Void> cwd, int cols, int rows, int raw, Pointer<Int32> master);
 
 final _process = DynamicLibrary.process();
 final _malloc = _process.lookupFunction<Pointer<Void> Function(Size), Pointer<Void> Function(int)>('malloc');
@@ -116,9 +120,12 @@ Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) 
     if (handle == nullptr) throw StateError('Cannot load embedded native asset: ${asset.name}');
     _libraries.add(handle); // Process-owned; native work must never outlive its library.
     _withCString(cliNativeContracts[asset.name]!.anchor, (symbol) {
-      final bound = asset.name == 'libcode_mode.dylib'
-        ? Native.addressOf<NativeFunction<Uint64 Function()>>(_threadId).cast<Void>()
-        : Native.addressOf<NativeFunction<Int32 Function()>>(_sqliteVersion).cast<Void>();
+      final bound = switch (asset.name) {
+        'libcode_mode.dylib' => Native.addressOf<NativeFunction<Uint64 Function()>>(_threadId).cast<Void>(),
+        'libsqlite3.dylib' => Native.addressOf<NativeFunction<Int32 Function()>>(_sqliteVersion).cast<Void>(),
+        'libpty2_unix.dylib' => Native.addressOf<NativeFunction<_PtySpawn>>(_ptySpawn).cast<Void>(),
+        _ => throw StateError('Unknown native asset ${asset.name}'),
+      };
       if (_dlsym(handle, symbol) != bound) throw StateError('Native asset binding differs from ${asset.name}');
     });
   }

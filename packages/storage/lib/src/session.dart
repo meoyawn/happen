@@ -49,6 +49,9 @@ extension _SessionSchema on TaskStore {
             [payload['inboxID'], item['type'], jsonEncode(item), item['delivery'], seq, event['created']]);
         } else if (event['type'] == 'session.inbox.delivered' || event['type'] == 'session.inbox.cancelled') {
           db.execute('DELETE FROM session_inbox WHERE id = ?', [payload['inboxID']]);
+        } else if (event['type'] == 'session.inbox.delivery.changed') {
+          db.execute(r"UPDATE session_inbox SET delivery = ?, payload = json_set(payload, '$.delivery', ?) WHERE id IS ?",
+            [payload['delivery'], payload['delivery'], payload['inboxID']]);
         }
         final messages = <String, Json>{};
         final owner = event['data']['assistantMessageID'] as String?;
@@ -87,16 +90,67 @@ extension _SessionSchema on TaskStore {
 }
 
 extension SessionProjection on TaskStore {
+  Json? changeSessionInbox(String id, {String? delivery}) {
+    if (delivery != null && !{'steer', 'queue'}.contains(delivery)) {
+      throw ArgumentError('Delivery must be steer or queue');
+    }
+    final row = db.select('SELECT delivery FROM session_inbox WHERE id IS ?', [id]).firstOrNull;
+    if (row == null) throw StateError('Message is no longer pending');
+    if (delivery == row['delivery']) return null;
+    final sourceID = id.replaceFirst(RegExp(r'^msg_'), '');
+    return delivery == null
+      ? append('input.discarded', {'ids': [sourceID], 'reason': 'deleted'})
+      : append('input.delivery', {'id': sourceID, 'delivery': delivery});
+  }
+
+  /// Recheck admission on the writer: a mailbox offer can outlive Delete or
+  /// Move to queue. Selection and commit run without yielding to another write.
+  List<Json> commitSessionSteering(List<String> ids, {required String effort, required bool reasoningUpdates}) {
+    final events = <Json>[];
+    var nextEffort = effort;
+    final offered = ids.map((id) => 'msg_$id').toSet();
+    for (final row in db.select("SELECT id, payload, time_created FROM session_inbox WHERE delivery IS 'steer' ORDER BY enqueued_seq")) {
+      if (!offered.contains(row['id'])) continue;
+      final id = (row['id'] as String).replaceFirst(RegExp(r'^msg_'), '');
+      final item = jsonObject(jsonDecode(row['payload'] as String));
+      if (item['metadata']?['reasoning'] case final String selected when selected != nextEffort) {
+        if (!reasoningUpdates) throw ArgumentError('Reasoning effort is fixed for this task');
+        events.add({'type': 'configuration.updated', 'data': {'effort': selected,
+          'item': ConversationItem(kind: 'configuration', settings: {'reasoning': selected}).toJson()}});
+        nextEffort = selected;
+      }
+      events.add({'type': 'input.committed', 'data': {
+        'message_id': id, 'delivery': 'steer',
+        'sent_at': DateTime.fromMillisecondsSinceEpoch(row['time_created'] as int).toUtc().toIso8601String(),
+        'item': ConversationItem.user(item['text'] as String, attachments: item['files']).toJson(),
+      }});
+    }
+    return events.isEmpty ? [] : appendBatch(events, metadata: {'effective_reasoning': nextEffort});
+  }
+
   Json? discardSessionInbox(String reason) {
     final ids = db.select('SELECT id FROM session_inbox ORDER BY enqueued_seq')
-      .map((row) => (row['id'] as String).replaceFirst(RegExp(r'^msg_'), '')).toList();
-    return ids.isEmpty ? null : append('input.discarded', {'ids': ids, 'reason': reason});
+      .map((row) => (row['id'] as String).replaceFirst(RegExp(r'^msg_'), '')).toSet();
+    // Lifecycle operations must work even when unrelated transcript facts cannot
+    // be projected. Reconcile only inbox changes after the last good projection.
+    final through = db.select('SELECT through_seq FROM session_projection').single['through_seq'] as int;
+    for (final row in db.select('''
+      SELECT type, json_extract(data, '\$.id') AS id,
+        json_extract(data, '\$.message_id') AS message_id, json_extract(data, '\$.ids') AS ids
+      FROM events WHERE seq > ? AND type IN ('input.pending', 'input.committed', 'input.discarded') ORDER BY seq
+    ''', [through])) {
+      switch (row['type']) {
+        case 'input.pending': ids.add(row['id'] as String);
+        case 'input.committed': ids.remove(row['message_id']);
+        case 'input.discarded': ids.removeAll(jsonDecode(row['ids'] as String) as List);
+      }
+    }
+    return ids.isEmpty ? null : append('input.discarded', {'ids': ids.toList(), 'reason': reason});
   }
 
   /// Build the read model from the current event log in bounded transactions
   /// on its single writer.
   Future<void> prepareSession({required CancellationToken cancellation}) async {
-    _sessionSchema();
     var through = db.select('SELECT through_seq FROM session_projection').single['through_seq'] as int;
     final cutoff = lastSequence;
     while (through < cutoff) {

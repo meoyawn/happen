@@ -2,7 +2,11 @@
 
 These expected results were generated outside this repository by executing
 upstream code. The Dart implementation never generates its own expected values.
-Pins and source SHA-256 hashes are recorded in the JSON files.
+Capture revisions and source SHA-256 hashes are recorded in the JSON files.
+For OpenCode these are historical provenance, not version pins: the compatibility
+target is the reference checkout's current HEAD. Keep these independent expected
+values and strict checks; compare new behavior against current upstream rather
+than checking out a historical capture revision to make it pass.
 
 | Fixture | Executed upstream code | Coverage |
 | --- | --- | --- |

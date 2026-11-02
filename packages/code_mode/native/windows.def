@@ -12,3 +12,15 @@ EXPORTS
   embedded_js_interrupt_generation
   embedded_js_interrupt_free
   embedded_js_set_interrupt
+  JS_Eval
+  JS_GetGlobalObject
+  JS_GetException
+  JS_SetPropertyStr
+  __JS_FreeValue
+  JS_NewCFunction2
+  JS_NewStringLen
+  JS_Throw
+  JS_SetUncatchableException
+  JS_ToCStringLen2
+  JS_FreeCString
+  JS_ParseJSON

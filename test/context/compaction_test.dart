@@ -75,7 +75,7 @@ void main() {
         return;
       }
       final lastUser = input.lastIndexWhere((v) => v['role'] == 'user');
-      final prompt = input[lastUser]['content'];
+      final prompt = openAIMessageText(input[lastUser]);
       final outputs = input
           .skip(lastUser + 1)
           .where((v) => v['type'] == 'custom_tool_call_output')

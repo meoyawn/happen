@@ -7,6 +7,7 @@ import 'package:desktop/context_usage.dart';
 import 'package:desktop/context_window.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
@@ -39,7 +40,14 @@ void main() {
   });
 
   Future<void> settleRead(WidgetTester tester) async {
-    await tester.runAsync(() async { await client.reading?.timeout(const Duration(seconds: 10)); });
+    await tester.runAsync(() async {
+      Future<Json>? reading;
+      do {
+        reading = client.reading;
+        await reading?.timeout(const Duration(seconds: 10));
+        await Future<void>.delayed(Duration.zero);
+      } while (!identical(reading, client.reading));
+    });
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
@@ -56,9 +64,14 @@ void main() {
 
   Finder contextScroll() => find.descendant(of: find.byType(SessionContextWindow), matching: find.byType(Scrollable)).first;
 
+  Future<void> reveal(WidgetTester tester, Finder finder) async {
+    await tester.scrollUntilVisible(finder, 200, scrollable: contextScroll());
+    await tester.pumpAndSettle();
+  }
+
   Future<String> export(WidgetTester tester) async {
-    await tester.ensureVisible(find.text('Export session JSON'));
-    final button = tester.widget<TextButton>(find.ancestor(of: find.text('Export session JSON'),
+    await tester.ensureVisible(find.text('Export session'));
+    final button = tester.widget<TextButton>(find.ancestor(of: find.text('Export session'),
       matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
     await tester.runAsync(button.onPressed! as Future<void> Function());
     await tester.pumpAndSettle();
@@ -70,11 +83,39 @@ void main() {
     }))!;
   }
 
+  testWidgets('context message headers remain interactive after scrolling and reassembly', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SessionContextWindow(session: session, task: task))));
+    await settleRead(tester);
+    final position = tester.state<ScrollableState>(contextScroll()).position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final header = find.text('user • msg_item_user', findRichText: true);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: tester.getCenter(header));
+    await tester.pump();
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Raw request', findRichText: true), findsOneWidget);
+
+    final reassembled = tester.binding.reassembleApplication();
+    await tester.pumpAndSettle();
+    await reassembled;
+    await mouse.moveBy(const Offset(1, 0));
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Raw request', findRichText: true), findsNothing);
+    expect(tester.takeException(), isNull);
+    await mouse.removePointer();
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('real context shows the saved prompt and usage, expands input, and exports the session', (tester) async {
     await showContext(tester, indicator: true);
     expect(find.text('Total Tokens'), findsOneWidget);
     expect(find.text('120'), findsNWidgets(2));
-    await tester.scrollUntilVisible(find.text('System Prompt'), 200, scrollable: contextScroll());
+    await reveal(tester, find.text('System Prompt'));
     expect(find.text('You are the saved system prompt.', findRichText: true), findsNothing);
     expect(find.byTooltip('Copy system prompt'), findsOneWidget);
     await tester.tap(find.text('System Prompt'));
@@ -83,46 +124,82 @@ void main() {
     await tester.tap(find.text('System Prompt'));
     await tester.pumpAndSettle();
     expect(find.text('You are the saved system prompt.', findRichText: true), findsNothing);
-    await tester.scrollUntilVisible(find.text('user • item_user'), 200, scrollable: contextScroll());
-    await tester.tap(find.text('user • item_user'));
+    for (final (title, marker) in [('Tools', '"type": "custom"'),
+        ('Model settings', '"parallel_tool_calls": true')]) {
+      final contents = find.textContaining(marker, findRichText: true);
+      await reveal(tester, find.text(title));
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+      expect(contents, findsOneWidget);
+      final reassembled = tester.binding.reassembleApplication();
+      await tester.pumpAndSettle();
+      await reassembled;
+      expect(contents, findsOneWidget);
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+      expect(contents, findsNothing);
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+      expect(contents, findsOneWidget);
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+    final prompt = find.textContaining('developer • System Prompt •', findRichText: true);
+    await reveal(tester, prompt);
+    await tester.tap(prompt);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"content": "You are the saved system prompt."', findRichText: true), findsOneWidget);
+    await tester.tap(prompt);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"content": "You are the saved system prompt."', findRichText: true), findsNothing);
+    await reveal(tester, find.text('user • msg_item_user'));
+    await tester.tap(find.text('user • msg_item_user'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Raw request', findRichText: true), findsOneWidget);
     final contents = await export(tester);
     final exported = jsonDecode(contents) as Map;
-    expect(exported.containsKey('messages'), false);
+    expect(exported['model'], 'fixture');
+    expect(exported.containsKey('context'), false);
     expect(contents, contains('Raw request'));
-    expect((exported['context'] as Map).containsKey('baseInstructionID'), false);
-    expect((exported['context']['input'] as List).map((item) => item['id']), ['item_user', 'item_answer']);
-    expect(exported['context']['instructions'], 'You are the saved system prompt.');
-    for (final key in ['data', 'system', 'systemMessage', 'cursor']) {
-      expect((exported['context'] as Map).containsKey(key), false);
+    final input = exported['input'] as List;
+    expect(input.first['role'], 'developer');
+    expect(input.first['content'], 'You are the saved system prompt.');
+    expect(input.skip(1).map((item) => item['id']), ['msg_item_user', 'msg_item_answer']);
+    expect(input.last['content'], [{'type': 'output_text', 'text': 'Answer'}]);
+    expect(exported['reasoning'], {'effort': 'high', 'summary': 'auto'});
+    for (final key in ['instructions', 'info', 'settings', 'snapshotID', 'cursor']) {
+      expect(exported.containsKey(key), false);
+    }
+    for (final item in input) {
+      for (final key in ['version', 'kind', 'native', 'synthetic']) {
+        expect(item.containsKey(key), false);
+      }
     }
     expect(RegExp('You are the saved system prompt.').allMatches(contents).length, 1);
-    expect(client.methods.where((method) => method == 'session.context'), hasLength(2));
     expect(client.methods.where((method) => method == 'session.message.list'), hasLength(1));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('context pages append in model order and retain the snapshot fence', (tester) async {
+  testWidgets('all context pages display in model order and export the displayed snapshot', (tester) async {
     client.pageLimit = 2;
     client.store.append('input.committed', {'message_id': 'later',
       'item': ConversationItem.text('user', 'Later request', id: 'item_later').toJson()});
     await showContext(tester);
     client.store.append('input.committed', {'message_id': 'new',
       'item': ConversationItem.text('user', 'After snapshot', id: 'item_new').toJson()});
-    await tester.scrollUntilVisible(find.text('Load more context items'), 200, scrollable: contextScroll());
-    await tester.tap(find.text('Load more context items'));
-    await settleRead(tester);
-    expect(find.text('Load more context items'), findsNothing);
-    expect(find.text('user • item_later'), findsOneWidget);
-    expect(find.text('user • item_new'), findsNothing);
-    final titles = tester.widgetList<ExpansionTile>(find.byType(ExpansionTile))
-      .map((tile) => tile.title).whereType<Text>().map((title) => title.data).toList();
-    expect(titles, containsAllInOrder(['user • item_user', 'assistant • item_answer', 'user • item_later']));
+    await reveal(tester, find.text('user • msg_item_later'));
+    expect(find.text('user • msg_item_later'), findsOneWidget);
+    expect(find.text('user • msg_item_new'), findsNothing);
+    final first = tester.getTopLeft(find.text('user • msg_item_user')).dy;
+    final second = tester.getTopLeft(find.text('assistant • msg_item_answer')).dy;
+    final third = tester.getTopLeft(find.text('user • msg_item_later')).dy;
+    expect(first, lessThan(second));
+    expect(second, lessThan(third));
     final exported = jsonDecode(await export(tester)) as Map;
-    expect((exported['context']['input'] as List).map((item) => item['id']),
-      ['item_user', 'item_answer', 'item_later', 'item_new']);
+    expect((exported['input'] as List).skip(1).map((item) => item['id']),
+      ['msg_item_user', 'msg_item_answer', 'msg_item_later']);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -136,34 +213,29 @@ void main() {
     await showContext(tester);
     expect(find.text('12'), findsOneWidget);
     expect(find.text('120'), findsNothing);
-    await tester.scrollUntilVisible(find.text('assistant • item_after'), 200, scrollable: contextScroll());
-    expect(find.text('developer • item_summary'), findsOneWidget);
-    expect(find.text('user • item_user'), findsNothing);
-    expect(find.text('assistant • item_answer'), findsNothing);
+    await reveal(tester, find.text('assistant • msg_item_after'));
+    expect(find.text('developer • msg_item_summary'), findsOneWidget);
+    expect(find.text('user • msg_item_user'), findsNothing);
+    expect(find.text('assistant • msg_item_answer'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('a delayed old page cannot overwrite a refreshed agent snapshot', (tester) async {
+  testWidgets('a context change during paging refreshes the complete snapshot', (tester) async {
     client.pageLimit = 1;
-    await showContext(tester);
     final gate = (await tester.runAsync(() async => (arrived: Completer<void>(), release: Completer<void>())))!;
     client.pageGate = gate;
-    await tester.scrollUntilVisible(find.text('Load more context items'), 200, scrollable: contextScroll());
-    await tester.tap(find.text('Load more context items'));
-    final delayed = client.reading!;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SessionContextWindow(session: session, task: task))));
     await tester.runAsync(() => gate.arrived.future.timeout(const Duration(seconds: 10)));
-    client.store.append('context.compacted', {'summary': 'Replacement', 'input': [
+    final compacted = client.store.append('context.compacted', {'summary': 'Replacement', 'input': [
       ConversationItem.text('developer', 'New snapshot', id: 'item_replacement').toJson(),
     ]});
-    await tester.scrollUntilVisible(find.byTooltip('Refresh context'), -200, scrollable: contextScroll());
-    await tester.tap(find.byTooltip('Refresh context'));
+    for (final event in compacted['session_events']) { client.events.add(jsonObject(event)); }
+    await tester.pump();
+    await tester.runAsync(() async { gate.release.complete(); });
     await settleRead(tester);
-    await tester.runAsync(() async { gate.release.complete(); await delayed; });
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('developer • item_replacement'), 200, scrollable: contextScroll());
-    expect(find.text('assistant • item_answer'), findsNothing);
-    expect(find.text('user • item_user'), findsNothing);
-    expect(find.text('Load more context items'), findsNothing);
+    await reveal(tester, find.text('developer • msg_item_replacement'));
+    expect(find.text('assistant • msg_item_answer'), findsNothing);
+    expect(find.text('user • msg_item_user'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -175,11 +247,11 @@ void main() {
     await showContext(tester);
     expect(find.text('Total Tokens'), findsOneWidget);
     expect(find.text('120'), findsNothing);
-    await tester.scrollUntilVisible(find.text('System Prompt'), 200, scrollable: contextScroll());
+    await reveal(tester, find.text('System Prompt'));
     await tester.tap(find.text('System Prompt'));
     await tester.pumpAndSettle();
     expect(find.text('Prompt from the request envelope', findRichText: true), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Raw context'), 200, scrollable: contextScroll());
+    await reveal(tester, find.text('Raw messages'));
     expect(find.text('user • item_user'), findsNothing);
     expect(find.text('Load more context items'), findsNothing);
     final contents = await export(tester);
@@ -220,8 +292,8 @@ void main() {
     await settleRead(tester);
     expect(client.methods.where((method) => method == 'session.context').length, greaterThan(reads + 1));
     expect(find.text('12'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('assistant • item_after'), 200, scrollable: contextScroll());
-    expect(find.text('user • item_user'), findsNothing);
+    await reveal(tester, find.text('assistant • msg_item_after'));
+    expect(find.text('user • msg_item_user'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

@@ -29,14 +29,26 @@ const mcpResourceMethods = {
 const mcpResourceCatalog = <Json>[
   {
     'name': 'list_mcp_resources',
-    'description': 'List MCP resources. Arguments: server? (configured server name), cursor? (requires server). Returns resources with server, URI, and metadata; nextCursor or next_cursors indicate another page.',
+    'description': 'Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.',
+    'parameters': {'type': 'object', 'properties': {
+      'cursor': {'type': 'string', 'description': 'Opaque cursor from a previous list_mcp_resources call; omit for the first page.'},
+      'server': {'type': 'string', 'description': 'MCP server name. Omit to list resources from every configured server.'},
+    }, 'additionalProperties': false},
   },
   {
     'name': 'list_mcp_resource_templates',
-    'description': 'List parameterized MCP resources. Arguments: server?, cursor? (requires server). Returns resourceTemplates and pagination metadata.',
+    'description': 'Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.',
+    'parameters': {'type': 'object', 'properties': {
+      'cursor': {'type': 'string', 'description': 'Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.'},
+      'server': {'type': 'string', 'description': 'MCP server name. Omit to list resource templates from every configured server.'},
+    }, 'additionalProperties': false},
   },
   {
     'name': 'read_mcp_resource',
-    'description': 'Read an MCP resource. Arguments: server (required, exact configured name), uri (required, obtained from resource discovery). Returns contents with text or blob data.',
+    'description': 'Read a specific resource from an MCP server given the server name and resource URI.',
+    'parameters': {'type': 'object', 'properties': {
+      'server': {'type': 'string', 'description': "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."},
+      'uri': {'type': 'string', 'description': 'Resource URI to read. Must be one of the URIs returned by list_mcp_resources.'},
+    }, 'required': ['server', 'uri'], 'additionalProperties': false},
   },
 ];

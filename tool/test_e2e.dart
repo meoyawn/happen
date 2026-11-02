@@ -12,6 +12,7 @@ import '../test/fixtures/context_contract/environment.dart';
 Future<void> main(List<String> arguments) async {
   if (arguments.isNotEmpty) throw ArgumentError('The E2E matrix is fixed; run moon run test-e2e without overrides');
   final home = await Directory.systemTemp.createTemp('happen-context-contract-');
+  final output = '${Directory.current.path}/.local/context-contract/${DateTime.now().microsecondsSinceEpoch}';
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
@@ -28,7 +29,8 @@ Future<void> main(List<String> arguments) async {
       testLibrary.resolve('../bin/test.dart').toFilePath(), 'test/contracts/codex_context_test.dart',
     ],
       mode: ProcessStartMode.inheritStdio, includeParentEnvironment: false,
-      environment: {...isolatedEnvironment(home.path, '${home.path}/.codex'), 'CONTEXT_CONTRACT_HOME': home.path});
+      environment: {...isolatedEnvironment(home.path, '${home.path}/.codex'), 'CONTEXT_CONTRACT_HOME': home.path,
+        'CONTEXT_CONTRACT_OUTPUT': output});
     hook = CancellationHook(cancellation, () => process?.kill(ProcessSignal.sigterm));
     exitCode = await process.exitCode.asCancellable(cancellation);
   } on CancelledException {

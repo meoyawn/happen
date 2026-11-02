@@ -6,6 +6,7 @@ import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
@@ -48,42 +49,63 @@ void main() {
     return desktop;
   }
 
-  test('model and reasoning choices stay with each project across switches and relaunch', () async {
+  test('draft tabs keep their prompt, context and model through project changes and relaunch', () async {
     var desktop = await open();
     await desktop.addProject(work.path);
     final first = desktop.project!;
+    final firstDraft = desktop.currentDraft;
+    desktop.drafts[firstDraft.id] = 'Inspect \uFFFC afterwards';
+    desktop.fileDrafts[firstDraft.id] = [const ComposerFileReference(8, 'lib/main.dart')];
+    desktop.draftSelections[firstDraft.id] = const TextSelection.collapsed(offset: 9);
+    final owned = await Directory('${root.path}/clipboard').create();
+    final image = await File('${owned.path}/image.png').writeAsString('Draft image');
+    desktop.attachmentDrafts[firstDraft.id] = [ComposerAttachment(
+      name: 'image.png', path: image.path, image: true, ownedDirectory: owned.path)];
     desktop.chooseModel('other-model');
     desktop.chooseReasoning('high');
     final other = await Directory('${root.path}/other').create();
     await desktop.addProject(other.path);
-    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'fixture', 'low'));
+    final second = desktop.project!;
+    expect(desktop.draftKey, firstDraft.id);
+    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
+    desktop.newSession(second);
+    final secondDraft = desktop.currentDraft;
+    desktop.drafts[secondDraft.id] = 'Another tab';
     desktop.chooseModel('free-model');
     desktop.chooseReasoning('max');
+    desktop.openDraft(firstDraft);
     await desktop.select(first);
     expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
-    await desktop.select(desktop.projects.last);
-    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('opencode', 'free-model', 'max'));
-    expect(await desktop.send('Use project defaults'), true, reason: desktop.error);
-    expect(client.started.single['provider'], 'opencode');
-    expect(client.started.single['model'], 'free-model');
-    expect(client.started.single['reasoning'], 'max');
+    expect(desktop.drafts[desktop.draftKey], 'Inspect \uFFFC afterwards');
 
     await desktop.close();
     session = null;
     database = await openDesktopDatabase(root.path);
     client = _Client();
     desktop = await open();
+    expect(desktop.draftKey, firstDraft.id);
+    expect(desktop.project!.checkoutKey, first.checkoutKey);
     expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
-    await desktop.addProject(other.path);
-    expect(desktop.projects, hasLength(2));
+    expect(desktop.drafts[firstDraft.id], 'Inspect \uFFFC afterwards');
+    expect(desktop.fileDrafts[firstDraft.id]!.single.path, 'lib/main.dart');
+    expect(desktop.draftSelections[firstDraft.id], const TextSelection.collapsed(offset: 9));
+    expect(desktop.attachmentDrafts[firstDraft.id]!.single.path, image.path);
+    expect(await image.exists(), true);
+    final restoredSecond = desktop.sessionDrafts.singleWhere((draft) => draft.id == secondDraft.id);
+    desktop.openDraft(restoredSecond);
     expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('opencode', 'free-model', 'max'));
-    await desktop.removeProject(desktop.project!);
-    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'other-model', 'high'));
-    await desktop.addProject(other.path);
-    expect((desktop.providerId, desktop.modelId, desktop.reasoning), ('openai', 'fixture', 'low'));
+    expect(desktop.drafts[desktop.draftKey], 'Another tab');
+    await desktop.select(desktop.projects.first);
+    expect((desktop.modelId, desktop.reasoning), ('free-model', 'max'));
+    expect(await desktop.send('Use this tab selection'), true, reason: desktop.error);
+    expect(client.started.single['provider'], 'opencode');
+    expect(client.started.single['model'], 'free-model');
+    expect(client.started.single['reasoning'], 'max');
+    expect(desktop.openTabIds, [firstDraft.id, desktop.task!.id]);
+    expect(desktop.sessionDrafts.map((draft) => draft.id), [firstDraft.id]);
   });
 
-  test('only explicit task reasoning choices replace the project defaults', () async {
+  test('task reasoning changes do not replace an existing draft selection', () async {
     var desktop = await open();
     await desktop.addProject(work.path);
     final project = desktop.project!;
@@ -102,7 +124,7 @@ void main() {
     expect(existing.reasoning, 'low', reason: 'An unsent choice does not change committed task settings');
     expect(existing.nextReasoning, 'high');
     await desktop.select(project);
-    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
     final fixed = DesktopTask('fixed', 'Fixed effort')
       ..loaded = true..provider = 'opencode'..model = 'free-model'..reasoning = 'max';
     project.tasks.add(fixed);
@@ -110,14 +132,14 @@ void main() {
     desktop.chooseReasoning('low');
     expect(desktop.reasoning, 'max');
     await desktop.select(project);
-    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
 
     await desktop.close();
     session = null;
     database = await openDesktopDatabase(root.path);
     client = _Client();
     desktop = await open();
-    expect((desktop.modelId, desktop.reasoning), ('fixture', 'high'));
+    expect((desktop.modelId, desktop.reasoning), ('other-model', 'high'));
   });
 
   test('catalog refresh falls back from unavailable choices without losing the saved selection', () async {
@@ -273,17 +295,21 @@ class _Client implements AgentClient {
     ]},
   ];
 
+  @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
+    jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'session.list') return {'data': [], 'cursor': {}};
+    if (method == 'session.active') return {'data': {}};
     if (method == 'providers.list') {
       return {'providers': providers};
     }
-    if (method == 'task.start') {
+    if (method == 'session.create') {
       started.add(params);
-      return {'task_id': 'task-${started.length}'};
+      return {'sessionID': 'task-${started.length}'};
     }
-    if (method == 'task.cancel') {
+    if (method == 'session.interrupt') {
       if (rejectCancellation) throw StateError('Could not stop task');
-      cancelled.add(params['task_id'] as String);
+      cancelled.add(params['sessionID'] as String);
       await stopping?.future;
       return null;
     }

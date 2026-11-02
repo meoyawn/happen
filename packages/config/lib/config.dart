@@ -143,21 +143,37 @@ Future<ConfigSnapshot> loadConfig(
   String path, {
   String? legacyPath,
   CancellationToken? cancellation,
-}) async {
-  for (final candidate in [path, ?legacyPath]) {
-    cancellation?.throwIfCancelled();
-    try {
-      return (
-        path: candidate,
-        values: parseConfig(await _read(File(candidate), cancellation)),
-      );
-    } on PathNotFoundException {
-      continue;
-    } on FormatException catch (error) {
-      throw FormatException('$candidate: ${error.message}');
+}) => ConfigReader().load(path, legacyPath: legacyPath, cancellation: cancellation);
+
+/// A config owner rechecks bytes on every read, but parses/validates only edits.
+/// Content equality also detects same-size edits with preserved timestamps and
+/// edits made by a tool before the filesystem watcher's debounce has fired.
+class ConfigReader {
+  String? _path, _source;
+  Map<String, dynamic>? _values;
+
+  Future<ConfigSnapshot> load(String path, {
+    String? legacyPath,
+    CancellationToken? cancellation,
+  }) async {
+    for (final candidate in [path, ?legacyPath]) {
+      cancellation?.throwIfCancelled();
+      try {
+        final source = await _read(File(candidate), cancellation);
+        cancellation?.throwIfCancelled();
+        if (_path == candidate && _source == source) return (path: candidate, values: _values!);
+        final values = parseConfig(source);
+        _path = candidate; _source = source; _values = values;
+        return (path: candidate, values: values);
+      } on PathNotFoundException {
+        continue;
+      } on FormatException catch (error) {
+        throw FormatException('$candidate: ${error.message}');
+      }
     }
+    _path = null; _source = null; _values = null;
+    return (path: null, values: const <String, dynamic>{});
   }
-  return (path: null, values: const <String, dynamic>{});
 }
 
 Future<String> _read(File file, CancellationToken? cancellation) async {

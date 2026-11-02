@@ -1,11 +1,12 @@
 import 'dart:convert';
 
 // Codex's text output budgets and UTF-8 head/tail truncation; see decisions.md.
-int cellOutputTokens(String source) {
+({String code, int maxOutputTokens, int yieldTimeMs}) parseExecSource(String source) {
+  if (source.trim().isEmpty) throw const FormatException('exec expects non-empty raw JavaScript source');
   final newline = source.indexOf('\n');
   final first = (newline < 0 ? source : source.substring(0, newline)).trimLeft();
   const prefix = '// @exec:';
-  if (!first.startsWith(prefix)) return 10000;
+  if (!first.startsWith(prefix)) return (code: source, maxOutputTokens: 10000, yieldTimeMs: 30000);
   if (newline < 0 || source.substring(newline + 1).trim().isEmpty) {
     throw const FormatException('exec pragma must be followed by JavaScript source');
   }
@@ -14,9 +15,9 @@ int cellOutputTokens(String source) {
     throw const FormatException('exec pragma must be a JSON object');
   }
   for (final entry in directive.entries) {
-    if (entry.key != 'max_output_tokens') {
+    if (entry.key != 'max_output_tokens' && entry.key != 'yield_time_ms') {
       throw FormatException(
-        'exec pragma only supports max_output_tokens; got ${entry.key}',
+        'exec pragma only supports yield_time_ms and max_output_tokens; got ${entry.key}',
       );
     }
     final value = entry.value;
@@ -25,8 +26,11 @@ int cellOutputTokens(String source) {
       throw FormatException('${entry.key} must be a non-negative safe integer');
     }
   }
-  return directive['max_output_tokens'] as int? ?? 10000;
+  return (code: source.substring(newline + 1), maxOutputTokens: directive['max_output_tokens'] as int? ?? 10000,
+    yieldTimeMs: directive['yield_time_ms'] as int? ?? 30000);
 }
+
+int cellOutputTokens(String source) => parseExecSource(source).maxOutputTokens;
 
 /// Applies the same presentation budget to direct tool output as printed cells.
 String truncateTextOutput(String text, {int maxTokens = 10000}) =>
@@ -36,6 +40,16 @@ String truncateTextOutput(String text, {int maxTokens = 10000}) =>
       'omittedBytes': 0,
       'omittedItems': 0,
     }, maxTokens).single;
+
+/// Token-bounded nested tool/mixed-media text, without an observation header.
+String truncateTokenText(String text, {int maxTokens = 10000}) {
+  final bytes = utf8.encode(text), budget = maxTokens * 4;
+  if (bytes.length <= budget) return text;
+  var left = budget ~/ 2, right = bytes.length - (budget - budget ~/ 2);
+  while (left > 0 && bytes[left] & 0xc0 == 0x80) { left--; }
+  while (right < bytes.length && bytes[right] & 0xc0 == 0x80) { right++; }
+  return '${utf8.decode(bytes.sublist(0, left))}…${(bytes.length - budget + 3) ~/ 4} tokens truncated…${utf8.decode(bytes.sublist(right))}';
+}
 
 List<String> renderCellOutput(Map<String, dynamic> collected, int maxTokens) {
   final head = (collected['head'] as List).cast<String>();
@@ -102,7 +116,11 @@ function __createOutput() {
   const head = [];
   let tail = [], first = 0, bytes = 0, headBytes = 0, bounded = false;
   let omittedBytes = 0, omittedItems = 0;
+  let omittedImages = 0, omittedAudio = 0;
+  const mediaBytes = {input_image: 0, input_audio: 0};
+  const mediaLimits = {input_image: 8 * 1024 * 1024, input_audio: 62 * 1024 * 1024};
   function entry(text) {
+    if (typeof text !== "string") return {text: "", media: text, bytes: 0, start: 0};
     let bytes = text.length;
     if (/[^\x00-\x7f]/.test(text)) {
       bytes = 0;
@@ -155,10 +173,21 @@ function __createOutput() {
     const item = shift();
     bytes -= item.bytes;
     omittedBytes += item.bytes;
-    omittedItems++;
+    if (!item.media) omittedItems++;
+    else if (item.media.type === "input_image") { omittedImages++; mediaBytes.input_image -= item.media.image_url.length; }
+    else if (item.media.type === "input_audio") { omittedAudio++; mediaBytes.input_audio -= item.media.audio_url.length; }
+    else if (item.media._omission) {
+      omittedImages += item.media._omission.images; omittedAudio += item.media._omission.audio;
+    }
   }
   return {
     push(text) {
+      if (typeof text === "object" && text && text.type in mediaLimits) {
+        const size = (text.image_url ?? text.audio_url).length;
+        if (mediaBytes[text.type] + size > mediaLimits[text.type]) {
+          text = {_omission: {images: Number(text.type === "input_image"), audio: Number(text.type === "input_audio")}};
+        } else { mediaBytes[text.type] += size; }
+      }
       const item = entry(text);
       tail.push(item);
       bytes += item.bytes;
@@ -202,7 +231,7 @@ function __createOutput() {
       function itemCount() {
         const continuation = first < tail.length && tail[first].continuesHead;
         return head.length + tail.length - first - Number(!!continuation)
-          + Number(!continuation && (omittedBytes > 0 || omittedItems > 0));
+          + Number(!continuation && (omittedBytes > 0 || omittedItems > 0 || omittedImages > 0 || omittedAudio > 0));
       }
       while (itemCount() > maxItems) {
         discard();
@@ -214,10 +243,10 @@ function __createOutput() {
     },
     collect() {
       return {
-        head: head.map(item => item.text.slice(item.start)),
-        tail: tail.slice(first).map(item => item.text.slice(item.start)),
+        head: head.map(item => item.media ?? item.text.slice(item.start)),
+        tail: tail.slice(first).map(item => item.media ?? item.text.slice(item.start)),
         continuesHead: first < tail.length && !!tail[first].continuesHead,
-        omittedBytes, omittedItems
+        omittedBytes, omittedItems, omittedImages, omittedAudio
       };
     }
   };

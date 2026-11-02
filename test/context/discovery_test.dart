@@ -41,7 +41,7 @@ void main() {
       requests.add(body);
       final input = (body['input'] as List).map(jsonObject).toList();
       final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
-      final prompt = input[lastUser]['content'];
+      final prompt = openAIMessageText(input[lastUser]);
       final results = input.skip(lastUser + 1).where((item) =>
         ['custom_tool_call_output', 'function_call_output'].contains(item['type']),
       ).toList();

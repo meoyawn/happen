@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -28,15 +29,21 @@ void main() {
     expect(patched['output'], contains('M '));
     expect(await File('${root.path}/shared.txt').readAsString(), 'after\n');
 
-    final pending = jsonObject(await openai.call('exec_command', {
-      'cmd': r'read value; printf "received:%s" "$value"', 'shell': '/bin/sh', 'login': false, 'yield_time_ms': 250,
-    }, cancellation: cancellation));
-    expect(pending['session_id'], isA<int>());
-    expect(pending['exit_code'], isNull);
-    final settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}, cancellation: cancellation));
-    expect(settled['output'], 'received:hello');
-    expect(settled['exit_code'], 0);
-    expect(settled['session_id'], isNull);
+    for (final tty in [false, true]) {
+      final pending = jsonObject(await openai.call('exec_command', {
+        'cmd': '${tty ? 'test -t 0 && test -t 1 && test -t 2 || exit 77; stty -echo; ' : ''}'
+          r'read value; printf "received:%s" "$value"',
+        'shell': '/bin/sh', 'login': false, 'yield_time_ms': 250, 'tty': tty,
+      }, cancellation: cancellation));
+      expect(pending['session_id'], isA<int>(), reason: 'tty=$tty must start the requested kind of interactive process');
+      expect(pending['session_id'], inInclusiveRange(1000, 99999));
+      expect(pending['chunk_id'], matches(r'^[0-9a-f]{6}$'));
+      expect(pending['exit_code'], isNull);
+      final settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}, cancellation: cancellation));
+      expect(settled['output'], 'received:hello', reason: 'tty=$tty');
+      expect(settled['exit_code'], 0);
+      expect(settled['session_id'], isNull);
+    }
     final native = await opencode.execute(_call('shell', {'command': 'printf native'}), context);
     expect(native, containsPair('output', 'native'));
     expect(native['exit'], 0);
@@ -98,7 +105,7 @@ const value = await tools.archive.probe({key: "saved"});
 
   test('Codex code mode exposes sorted metadata and dispatches normalized callable names', () async {
     const interface = OpenAIToolInterface();
-    expect(interface.definitions.map((tool) => '${tool.namespace}.${tool.name}'), ['functions.exec', 'web.run']);
+    expect(interface.definitions.map((tool) => '${tool.namespace}.${tool.name}'), ['functions.exec', 'functions.wait', 'web.run']);
     expect(interface.nestedDiscovery.name, 'tool_search');
     final runtime = interface.createRuntime(root.path, cancellation);
     addTearDown(runtime.close);
@@ -115,18 +122,87 @@ const value = await tools.archive.probe({key: "saved"});
         return input;
       });
     final result = await runtime.execute(ToolCall(id: newId(), namespace: 'functions', name: 'exec', format: 'text', input: '''
+export const moduleValue = 7;
 text(ALL_TOOLS.map(tool => ({name: tool.name, keys: Object.keys(tool).sort()})));
 text(await tools.mcp__archive_probe({key: "archive"}));
 text(await tools.client_probe({key: "client"}));
+text({moduleValue, moduleThis: this === undefined});
 '''), context);
+    expect(result['error'], isNull, reason: 'exec evaluates module grammar, not an AsyncFunction wrapper');
     expect((result['output'] as List).cast<String>().map(jsonDecode).toList(), [
       [
         {'name': 'client_probe', 'keys': ['description', 'name']},
         {'name': 'mcp__archive_probe', 'keys': ['description', 'name']},
       ],
       {'key': 'archive'}, {'key': 'client'},
+      {'moduleValue': 7, 'moduleThis': true},
     ]);
     expect(invoked, ['mcp__archive___probe', 'client___probe']);
+  });
+
+  test('Codex exec yields real cells; wait drains output, completes, and terminates host work', () async {
+    const interface = OpenAIToolInterface();
+    final runtime = interface.createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    final entered = Completer<void>(), release = Completer<void>();
+    CancellationToken? child;
+    final context = ToolExecution(catalog: (_) async => [{'name': 'block', 'description': 'Wait for release'}], values: const {}, cancellation: cancellation,
+      call: (_, _, {required cancellation}) async {
+        child = cancellation;
+        if (!entered.isCompleted) entered.complete();
+        await release.future.asCancellable(cancellation);
+        return 'released';
+      });
+    Future<Json> exec(String source) => runtime.execute(ToolCall(id: newId(), namespace: 'functions',
+      name: 'exec', input: source), context);
+    final running = await exec('// @exec: {"yield_time_ms": 0}\ntext("first"); text(await tools.block({})); store("answer", 42);');
+    await entered.future;
+    expect(running['output'], ['first']);
+    final id = running['cell_id'] as String;
+    expect(id, '1');
+    expect(interface.formatResult(_call('wait', {}), running), contains('Script running with cell ID $id'));
+    final waiting = await runtime.execute(_call('wait', {'cell_id': id, 'yield_time_ms': 0}), context);
+    expect(waiting['cell_id'], id);
+    expect(waiting['output'], isEmpty, reason: 'A wait must not replay already consumed output');
+    expect(child!.isCancelled, isFalse);
+    release.complete();
+    final completed = await runtime.execute(_call('wait', {'cell_id': id}), context);
+    expect(completed['cell_id'], isNull);
+    expect(completed['output'], ['released']);
+    expect(completed['values'], {'answer': 42});
+    expect((await runtime.execute(_call('wait', {'cell_id': id}), context))['error'], 'exec cell $id not found');
+
+    CancellationToken? blocked;
+    final yielded = await runtime.execute(ToolCall(id: newId(), name: 'exec',
+      input: 'text("before"); yield_control(); await tools.block({}); text("after");'),
+      ToolExecution(catalog: (_) async => [{'name': 'block', 'description': 'Wait for cancellation'}], values: const {}, cancellation: cancellation,
+        call: (_, _, {required cancellation}) {
+          blocked = cancellation;
+          return CancellableCompleter<Object?>(cancellation).future;
+        }));
+    expect(yielded['output'], ['before']);
+    expect(yielded['cell_id'], '2');
+    final stopped = await runtime.execute(_call('wait', {'cell_id': yielded['cell_id'], 'terminate': true}), context);
+    expect(stopped['terminated'], isTrue);
+    expect(stopped['output'], isEmpty);
+    expect(blocked!.isCancelled, isTrue);
+    expect(cancellation.isCancelled, isFalse);
+    expect(interface.formatResult(_call('wait', {}), stopped), contains('Script terminated'));
+
+    final a = await exec('yield_control(); await new Promise(resolve => setTimeout(resolve, 50)); store("a", 1);');
+    final b = await exec('store("b", 2);');
+    expect(b['values'], containsPair('b', 2));
+    final merged = await runtime.execute(_call('wait', {'cell_id': a['cell_id']}), context);
+    expect(merged['values'], {'answer': 42, 'a': 1, 'b': 2});
+
+    for (final source in [
+      'text("before-exit"); try { exit(); } finally { while (true) {} }',
+      'await new Promise(resolve => setTimeout(() => { text("before-exit"); exit(); }, 0));',
+    ]) {
+      final ended = await exec(source);
+      expect(ended['error'], isNull, reason: 'exit terminates native execution, including finally blocks and timer callbacks');
+      expect(ended['output'], ['before-exit']);
+    }
   });
 
   test('OpenCode cancels unawaited calls and reports background completion without polling', () async {

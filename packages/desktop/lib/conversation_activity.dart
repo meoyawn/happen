@@ -102,12 +102,13 @@ class _ThinkingLabelState extends State<ThinkingLabel>
 class ConversationDisclosure extends StatefulWidget {
   const ConversationDisclosure({super.key, required this.label, required this.builder,
     this.onExpand, this.icon, this.summary, this.shimmer = false, this.initiallyExpanded = false,
-    this.color, this.fontSize = 14, this.ruled = false, this.maxHeight, this.labelContent, this.action});
+    this.color, this.fontSize = 14, this.ruled = false, this.maxHeight, this.labelContent, this.action,
+    this.summaryWhenCollapsed = false});
   final String label;
   final WidgetBuilder builder;
   final VoidCallback? onExpand;
   final Widget? icon, summary, labelContent, action;
-  final bool shimmer, initiallyExpanded, ruled;
+  final bool shimmer, initiallyExpanded, ruled, summaryWhenCollapsed;
   final Color? color;
   final double fontSize;
   final double? maxHeight;
@@ -143,6 +144,7 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
     _expanded ??= PageStorage.maybeOf(context)?.readState(context, identifier: ('disclosure', widget.key)) as bool?
       ?? widget.initiallyExpanded;
     final expanded = _expanded!;
+    final summary = !expanded || !widget.summaryWhenCollapsed ? widget.summary : null;
     final color = widget.color ?? opencodeInk;
     final header = MouseRegion(
         child: Semantics(button: true, expanded: expanded, child: InkWell(
@@ -154,13 +156,13 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
             constraints: BoxConstraints(minHeight: 24),
             padding: widget.ruled ? const EdgeInsets.only(bottom: 6) : EdgeInsets.zero,
             decoration: widget.ruled ? const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xffe8e9eb)))) : null,
-            child: Row(mainAxisSize: widget.ruled || widget.summary != null ? MainAxisSize.max : MainAxisSize.min, children: [
+            child: Row(mainAxisSize: widget.ruled || summary != null ? MainAxisSize.max : MainAxisSize.min, children: [
               if (widget.icon != null) ...[widget.icon!, const SizedBox(width: 4)],
               Flexible(child: widget.labelContent ?? (widget.shimmer ? ThinkingLabel(label: widget.label, fontSize: widget.fontSize)
                 : Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: widget.fontSize, height: 16 / 13,
                       letterSpacing: -.04, color: color)))),
-              if (widget.summary != null) ...[const SizedBox(width: 8), Flexible(flex: 3, child: widget.summary!)],
+              if (summary != null) ...[const SizedBox(width: 8), Flexible(flex: 3, child: summary)],
               const SizedBox(width: 4),
               Opacity(opacity: 1,
                 child: Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded, size: 14, color: color)),

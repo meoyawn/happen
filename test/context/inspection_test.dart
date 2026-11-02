@@ -113,8 +113,8 @@ void main() {
       }})}\n\n');
       await response.close();
     }
-    List<Json> wire(Json context) => gptPromptInput(context['instructions'] as String, (context['input'] as List)
-      .map((item) => ConversationItem.fromJson(jsonObject(item))));
+    List<Json> wire(Json context) => withGptInstructions(context['instructions'] as String, gptInput((context['input'] as List)
+      .map((item) => ConversationItem.fromJson(jsonObject(item)))), sessionId: context['sessionID'] as String);
     final admitted = jsonObject(await client.request('session.create', {
       'cwd': work.path, 'prompt': 'Inspect this exact context', 'client_tools': [{
         'name': 'lookup', 'description': 'Deferred lookup', 'inputSchema': {'type': 'object'},

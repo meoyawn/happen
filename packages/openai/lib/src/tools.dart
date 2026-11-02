@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:ai/ai.dart';
+import 'package:code_mode/code_mode.dart' show truncateTokenText;
 import 'package:protocol/protocol.dart';
 
 import 'package:tool_runtime/tool_runtime.dart';
@@ -13,6 +16,7 @@ class HostTools {
   final String cwd;
   final CancellationToken cancellation;
   final _commands = <int, _Command>{};
+  final _random = Random.secure();
   late final CommandRunner _runner;
 
   Future<Object?> call(String name, Object? raw, {required CancellationToken cancellation, String? cwd}) async {
@@ -27,6 +31,8 @@ class HostTools {
     }
     final input = jsonObject(raw);
     switch (name) {
+      case 'clock__curr_time':
+        return {'current_time': '${DateTime.now().toUtc().toIso8601String().substring(0, 19).replaceFirst('T', ' ')} UTC'};
       case 'view_image':
         final path = requiredString(input, 'path');
         final images = await prepareInputAttachments([{
@@ -64,11 +70,6 @@ class HostTools {
         if (_commands.length >= 32) {
           throw StateError('Too many running command sessions');
         }
-        if (input['tty'] == true) {
-          throw UnsupportedError(
-            'PTY allocation is not implemented; use tty:false',
-          );
-        }
         if (input['sandbox_permissions'] != null &&
             input['sandbox_permissions'] != 'use_default') {
           throw UnsupportedError('Permission escalation is not implemented');
@@ -78,9 +79,10 @@ class HostTools {
           [if (input['login'] != false) '-l', '-c', requiredString(input, 'cmd')],
           directory: input['workdir'] as String? ?? directory,
           cancellation: this.cancellation,
+          tty: input['tty'] == true,
         ));
-        var id = int.parse(newId().substring(0, 13), radix: 16);
-        while (_commands.containsKey(id)) { id = int.parse(newId().substring(0, 13), radix: 16); }
+        var id = 1000 + _random.nextInt(99000);
+        while (_commands.containsKey(id)) { id = 1000 + _random.nextInt(99000); }
         _commands[id] = command;
         return _poll(
           id,
@@ -136,16 +138,15 @@ class HostTools {
       await Future.any<void>([command.process.done, cancellableDelay(wait, waiting)]).asCancellable(waiting);
       cancellation.throwIfCancelled();
       final text = command.process.takeOutput();
-      final budget = ((input['max_output_tokens'] as num? ?? 10000).toInt() * 4)
-          .clamp(1, maxToolOutputBytes);
+      final tokens = (input['max_output_tokens'] as num? ?? 10000).toInt().clamp(0, maxToolOutputBytes ~/ 4);
       final code = command.process.exitCode;
       if (code != null) _commands.remove(id);
       return {
-        'chunk_id': newId(),
+        'chunk_id': _random.nextInt(0x1000000).toRadixString(16).padLeft(6, '0'),
         'wall_time_seconds': watch.elapsedMicroseconds / 1000000,
         if (code != null) 'exit_code': code else 'session_id': id,
-        'original_token_count': (text.length / 4).ceil(),
-        'output': clippedText(text, budget),
+        'original_token_count': (utf8.encode(text).length + 3) ~/ 4,
+        'output': truncateTokenText(text, maxTokens: tokens),
       };
     } finally {
       link.dispose();

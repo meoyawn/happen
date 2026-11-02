@@ -17,6 +17,7 @@ dependencies:
   flutter_pty2: ^3.0.0
   flutter_svg: ^2.2.4
   openai: any
+  opencode: any
   macos_file_picker: ^2.0.0
   markdown: ^7.3.1
   protocol: any

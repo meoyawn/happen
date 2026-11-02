@@ -3,7 +3,7 @@ import 'package:protocol/protocol.dart';
 
 import 'skills.dart';
 
-// OpenCode e8238bae9b807b72ecfc75afd3a9fe2e6b07b944. See tools/UPSTREAM.md.
+// OpenCode tool contracts; see tools/UPSTREAM.md for the moving reference.
 const executeDefinition = ToolDefinition(
   name: 'execute',
   description: 'Run JavaScript in a confined Code Mode runtime to script tool calls and HTTP requests and compose their results.\n'

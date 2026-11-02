@@ -13,8 +13,10 @@ Regenerate Dart constants with `dart run tool/embed_model_catalogs.dart`.
 
 The legacy native runtime supports `deepseek-flash` with text.
 Other entries and input modalities remain advisory, not advertised capabilities.
-The default Console route uses `deepseek-v4.1-flash-free` from OpenCode's
-`fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e` models-dev snapshot (200,000 context,
-32,000 output tokens). Both routes use the provider-owned OpenCode tool interface
-and verbatim OpenCode system prompt. Tool, instruction, and search pins are
-documented in [`../tools/UPSTREAM.md`](../tools/UPSTREAM.md).
+The default Console route uses `deepseek-v4.1-flash-free`. Its recorded limits
+(200,000 context, 32,000 output tokens) were observed in OpenCode's models-dev
+snapshot at `fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`; this is data provenance,
+not an OpenCode version requirement. Both routes use the provider-owned OpenCode
+tool interface and verbatim OpenCode system prompt. The moving-target tool,
+instruction, and search reference is documented in
+[`../tools/UPSTREAM.md`](../tools/UPSTREAM.md).

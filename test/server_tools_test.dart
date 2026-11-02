@@ -8,6 +8,79 @@ import 'package:test/test.dart';
 import 'support/openai_output.dart';
 
 void main() {
+  test('yielded exec resumes through native wait and notifications survive cold resume', () async {
+    final root = await Directory.systemTemp.createTemp('server-code-cells-');
+    await File('${root.path}/auth.json').writeAsString(jsonEncode({
+      'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
+      'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
+    }));
+    final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final requests = <Json>[];
+    provider.listen((http) async {
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(http).join()));
+      requests.add(body);
+      final output = <Json>[];
+      if (requests.length == 1 || requests.length == 4) {
+        output.add({'type': 'custom_tool_call', 'name': 'exec', 'namespace': 'functions', 'call_id': 'cell_${requests.length}',
+          'input': requests.length == 4 ? 'text(load("done"));' : '''// @exec: {"yield_time_ms": 0}
+text("first"); notify("live notification");
+await new Promise(resolve => setTimeout(resolve, 100));
+text(await tools.exec_command({cmd: "printf receipt > receipt.txt; printf second", login: false}));
+store("done", true);
+setTimeout(() => { throw new Error("discarded timer"); }, 60000);
+'''});
+      } else if (requests.length == 2) {
+        final input = (body['input'] as List).map(jsonObject);
+        final status = input.where((item) => item['type'] == 'custom_tool_call_output')
+          .expand((item) => (item['output'] as List).map(jsonObject)).map((part) => part['text']).whereType<String>()
+          .firstWhere((text) => text.startsWith('Script running with cell ID '));
+        final id = RegExp(r'Script running with cell ID ([^\n]+)').firstMatch(status)![1]!;
+        output.add({'type': 'function_call', 'name': 'wait', 'call_id': 'observe',
+          'arguments': jsonEncode({'cell_id': id, 'yield_time_ms': 1000})});
+      } else {
+        output.add({'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]});
+      }
+      http.response.headers.contentType = ContentType('text', 'event-stream');
+      http.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
+        'status': 'completed', 'output': output, 'usage': {'input_tokens': 100, 'output_tokens': 10},
+      }})}\n\n');
+      await http.response.close();
+    });
+    AgentServer? server;
+    AgentClient? client;
+    addTearDown(() async {
+      await client?.close(); await server?.close(); await provider.close(force: true); await root.delete(recursive: true);
+    });
+    Future<void> start() async {
+      server = await AgentServer.startEmbedded(directory: root.path, endpoint: 'http://127.0.0.1:${provider.port}/responses');
+      client = await AgentClient.connect(server!.uri);
+    }
+    Future<String> turn(String? id) async {
+      final terminal = client!.events.stream.firstWhere((event) =>
+        ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']));
+      await client!.request(id == null ? 'task.start' : 'task.send', {
+        if (id == null) 'cwd': root.path else 'task_id': id, 'prompt': id == null ? 'Start' : 'Continue',
+      });
+      final result = await terminal.timeout(const Duration(seconds: 10));
+      expect(result['type'], 'turn.completed', reason: result.toString());
+      return result['task_id'] as String;
+    }
+    await start();
+    final id = await turn(null);
+    expect(await File('${root.path}/receipt.txt').readAsString(), 'receipt');
+    final finalInput = (requests[2]['input'] as List).map(jsonObject).toList();
+    final notices = finalInput.where((item) => item['type'] == 'custom_tool_call_output' &&
+      item['name'] == 'exec' && item['output'] == 'live notification');
+    expect(notices, hasLength(1));
+    expect(jsonEncode(finalInput.last), contains('second'));
+    expect(jsonEncode(finalInput.last), isNot(contains('first')));
+    await client!.close(); client = null; await server!.close(); server = null;
+    await start();
+    await turn(id);
+    expect(jsonEncode(requests[3]['input']), contains('live notification'));
+    expect(printedOpenAIOutput((requests.last['input'] as List).last['output']), ['true']);
+  });
+
   test('MCP cells filter complete results while model output is bounded', () async {
     final root = await Directory.systemTemp.createTemp('server-mcp-output-');
     final config = File('${root.path}/config.yaml');
@@ -34,7 +107,7 @@ void main() {
       requests.add(body);
       final input = (body['input'] as List).map(jsonObject).toList();
       final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
-      final prompt = input[lastUser]['content'];
+      final prompt = openAIMessageText(input[lastUser]);
       final called = input.skip(lastUser + 1).any((item) =>
         item['type'] == 'function_call_output' || item['type'] == 'custom_tool_call_output',
       );

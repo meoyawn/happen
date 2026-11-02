@@ -12,8 +12,23 @@ and turn duration, rounded to seconds (or minutes and seconds for longer turns).
 tabs**, and **Inbox**, using OpenCode's layout previews. Top and side tabs can
 be dragged to reorder or closed without archiving their sessions. **Home** and
 **Search sessions** reopen them. Inbox groups recent results and sessions that
-need attention, with a collapsible **Working** section below. Tab order, layout,
-read markers, and sidebar choices are saved.
+need attention, with collapsible **Archived** and **Working** sections. The
+**Working** section stays below the scrolling list. Tab order, layout, read
+markers, and sidebar choices are saved.
+
+Saved sessions come from the server's durable session list, not the live-agent
+registry or a desktop-only sidebar entry. After a crash, histories are rediscovered
+automatically when Happen opens; interrupted work is not restarted. Home and project
+selection also refresh the list. Closing a tab does not remove a saved session.
+Inbox keeps interrupted sessions under **Needs attention** even though their
+agents are no longer running; opening their history does not resume execution.
+
+Right-click an Inbox session to archive or restore it, or use its hover action.
+Archiving works even when the conversation history cannot load; saved history is
+kept. **Settings → Archived tasks** also lets you restore an archived session.
+Archiving the selected session switches to the next open session to its right,
+or the previous one to its left, skipping draft tabs. If no session tabs remain,
+Home opens. Archiving another session or restoring one keeps the current view.
 
 The macOS window uses its full content area. The native traffic lights sit in
 the sidebar header in Side tabs and Inbox, or beside the top tabs. Drag empty
@@ -23,8 +38,20 @@ collapsed, hover the window's left edge or rest on the icon to preview it over
 the conversation. On Windows/Linux, use **Ctrl+Shift+B**.
 
 Live responses reveal incoming text on display frames, updating only the
-streaming message. Images reserve their thumbnail space before loading, and
-each horizontal image rail retains its own scroll position.
+streaming message. OpenAI requests visible reasoning summaries by default;
+Thinking shows their current heading, and Thought expands the saved summary.
+Skill reads remain named inside JavaScript cells and in collapsed activity.
+Activity groups start collapsed. JavaScript call rows remember their own open
+state as new calls arrive and when the cell is reopened.
+
+Composer and user images use OpenCode's cropped 58×46 thumbnails. User images
+sit above the message bubble; composer attachments scroll horizontally and show
+their remove button on hover. Assistant Markdown and tool images keep their
+aspect ratio without thumbnail cards or captions. Clicking an image opens the
+window preview with zoom, pan, fit, and close controls. Left and Right switch
+between images from the same message, stopping at either end and resetting zoom.
+The preview also has previous/next buttons and an image count. Escape fits a
+zoomed image first, then closes it.
 
 Drag the sidebar's right edge to resize it. The chosen width is saved between
 launches and adjusts to keep room for the conversation in a smaller window.
@@ -32,7 +59,7 @@ The edge has OpenCode's delayed pill on hover and a darker pill while dragging.
 
 **⌘J** opens and focuses the integrated terminal in the current project's folder.
 Repeated presses focus the same shell. The panel retains shells separately for
-each chat or project draft; hiding it or switching chats keeps them running.
+each chat or draft tab; hiding it or switching chats keeps them running.
 Use **+** for another shell, **×** to stop one, and the down arrow to hide the
 panel. Drag its top edge to resize it. Archiving immediately stops all of that
 chat's terminals, including hidden tabs and background jobs; restoring the chat
@@ -43,6 +70,12 @@ native resources. On Windows/Linux, use **Ctrl+J**.
 
 **Option+Up/Down** moves between sessions in the current navigation view.
 Conversation drafts are retained while navigating.
+
+**New session** opens a draft tab. The project control below its composer opens
+a searchable menu with project avatars and **Add project**. Changing projects
+keeps that tab's prompt, attachments, model and reasoning. Each draft tab saves
+its project, prompt, cursor, file references and model choices across relaunches;
+sending replaces that tab with the created session.
 
 Use a project's **… → Remove project** menu to remove it and its task entries
 from Happen. Confirming stops running tasks and clears drafts; the project folder
@@ -60,14 +93,17 @@ its content and scroll position; closing its last tab hides it.
 
 **Context** shows the actual saved system prompt,
 provider/model, context limit, token and cache counts, tools, model settings, and
-expandable canonical context items in model order. For OpenAI sessions the base
-prompt is supplied once through the request envelope and becomes the developer
-prefix in Standard Responses, rather than being duplicated in stored input.
-The panel reads the agent's actual inference buffer, not transcript projections.
-Additional context pages load on demand from an immutable snapshot. **Export
-session JSON** saves a JSON file to Downloads with a unique title-based filename.
-It includes all model input once in `context.input`, with its request envelope
-and accounting, without duplicating the projected transcript.
+expandable inference input in model order. The compact stats, sticky
+message headers, and wrapped JSON follow OpenCode's context panel. System Prompt,
+Tools, Model settings, Raw messages, and individual messages remain collapsible.
+OpenAI input uses Responses API JSON, including the first developer message
+labeled **System Prompt**, native reasoning, tool calls and results. Tools and
+model settings use the same request serializer as inference. Injected context
+keeps the role actually sent; the inspector does not invent synthetic API fields.
+All context pages load from one immutable snapshot. **Export session** saves
+only the displayed inference request to Downloads with a unique title-based
+filename, including `input`, `tools` and request settings. Internal records and
+transcript projections are not included.
 Usage becomes available after a response measures the current context, including
 after compaction.
 The composer groups the model/reasoning menu, microphone, and Send/Stop.
@@ -76,6 +112,13 @@ changes apply to the next message.
 One action button sends messages, or stops a running task when the draft is empty.
 With a draft or attachments during a running task, it steers or queues the message
 according to Settings.
+
+Pending steering messages offer **Move to queue** and **Delete** beside Copy.
+Queued messages offer **Steer** while the session works, or **Send** while idle,
+plus **Delete**. These controls also appear on messages containing only attachments.
+Delete withdraws that input without stopping the active response. Delivery changes
+keep the prompt, attachments, timestamp, and queue position; controls disable while
+the request is in flight. A message that has already started cannot be withdrawn.
 
 Servers requiring MCP authentication appear inline in the conversation above the
 composer. Choose **Sign in** to open the default browser; waiting, retry and
@@ -126,10 +169,10 @@ remote files upload in blocks of up to 24 MiB; local files remain path reference
 Cancellation preserves the draft. Saved conversations retain prepared image
 bytes. Remote server selection remains outside the current desktop UI.
 
-Images inspected by the agent appear as a collapsed **Viewed an image** or
-**Viewed N images** activity in the conversation. Expand it to reveal the
-thumbnail rail, then click a thumbnail to inspect and zoom inside Happen.
-The saved activity contains the same prepared image bytes sent to the model.
+Images returned by tools appear inside the tool result, including JavaScript
+cells. Expand the activity to see the images, then click one to inspect and zoom
+inside Happen. Saved results contain the same prepared image bytes sent to the
+model.
 OpenAI uses `image(...)` with MCP image blocks or `tools.view_image(...)`;
 OpenCode's `read` and MCP tools present images directly to the model.
 

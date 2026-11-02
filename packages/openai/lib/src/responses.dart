@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ai/ai.dart' show ModelFailure, decodeSse, HttpConnections, HttpReply, httpRequest;
 import 'package:protocol/protocol.dart';
@@ -8,7 +9,7 @@ import 'package:protocol/protocol.dart';
 import 'web_pages.dart';
 import 'retry.dart';
 import 'trace.dart';
-import 'records.dart' show withGptInstructions;
+import 'request.dart';
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -38,7 +39,49 @@ class ResponsesClient {
   final HttpClient _http;
   final HttpConnections? connections;
   final bool _ownsHttp;
-  final _traces = <String, Future<Directory?>>{};
+  Future<Directory?>? _requestDump;
+
+  Future<void> _dump(String encoded, CancellationToken cancellation) async {
+    if (Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty != true) return;
+    final directory = await (_requestDump ??= startRequestDump(cancellation));
+    if (directory != null) await dumpRequest(directory, encoded, cancellation);
+  }
+
+  Future<Json> image(Json body, {required bool edit, required String turnId, required CancellationToken cancellation}) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      cancellation.throwIfCancelled();
+      final auth = await credentials(refresh: attempt != 0).asCancellable(cancellation);
+      cancellation.throwIfCancelled();
+      final headers = <String, String>{
+        if (auth['access_token'] case final String token when token.isNotEmpty) HttpHeaders.authorizationHeader: 'Bearer $token',
+        if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
+        'originator': 'agent', 'x-codex-image-turn-id': turnId,
+        HttpHeaders.acceptHeader: 'application/json',
+      };
+      final uri = endpoint.resolve(edit ? 'images/edits' : 'images/generations');
+      HttpReply response;
+      try { response = await _post(uri, body, headers, cancellation); }
+      on ResponseFailure catch (error) {
+        if (error.status == 401 && attempt == 0) continue;
+        throw ModelFailure('image_generation_http', 'OpenAI image ${edit ? 'edit' : 'generation'} failed (HTTP ${error.status})');
+      }
+      final incoming = ownStream(response, cancellation);
+      final bytes = BytesBuilder(copy: false);
+      try {
+        await for (final chunk in incoming.stream) {
+          cancellation.throwIfCancelled();
+          if (bytes.length + chunk.length > 64 * 1024 * 1024) throw const ModelFailure('image_generation_size', 'Image response exceeds 64 MiB');
+          bytes.add(chunk);
+        }
+        cancellation.throwIfCancelled();
+        final value = jsonObject(jsonDecode(utf8.decode(bytes.takeBytes())));
+        return {...value, if (response.headers['x-codex-imagegen-request-id'] case final String id) 'imagegen_request_id': id};
+      } on FormatException {
+        throw const ModelFailure('image_generation_response', 'OpenAI returned an invalid image response');
+      } finally { await incoming.close(); }
+    }
+    throw const ModelFailure('image_generation_auth', 'OpenAI image authentication failed');
+  }
 
   Future<String> search({
     required String model,
@@ -103,42 +146,20 @@ class ResponsesClient {
     String toolChoice = 'auto',
     String transport = 'http',
     String verbosity = 'low',
-    String reasoningSummary = 'none',
+    String reasoningSummary = 'auto',
     int? maxOutputTokens,
     void Function(Json event)? onEvent,
   }) async {
-    if (!{'http', 'websocket'}.contains(transport)) {
-      throw ArgumentError('GPT transport must be http or websocket');
-    }
-    final body = <String, dynamic>{
-      'model': model,
-      'input': withGptInstructions(instructions, input),
-      if (tools.isNotEmpty) 'tools': tools,
-      'tool_choice': toolChoice,
-      'parallel_tool_calls': true,
-      'store': false,
-      if (transport == 'http') 'stream': true,
-      'include': ['reasoning.encrypted_content'],
-      'prompt_cache_key': sessionId,
-      'reasoning': {
-        'effort': reasoning,
-        if (reasoningSummary != 'none') 'summary': reasoningSummary,
-      },
-      'text': {'verbosity': verbosity},
-      'max_output_tokens': ?maxOutputTokens,
-    };
+    final body = responsesRequest(model: model, instructions: instructions, input: input,
+      tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
+      transport: transport, verbosity: verbosity, reasoningSummary: reasoningSummary,
+      maxOutputTokens: maxOutputTokens);
     var retries = 0, connectionRetries = 0;
-    final tracing = Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty == true;
-    final trace = tracing ? await (_traces[sessionId] ??= startModelTrace(sessionId, cancellation)) : null;
-    final traceID = newId();
-    await recordModelTrace(trace, traceID, 'request', body, cancellation);
     var connectionDelay = const Duration(seconds: 5);
     final sampling = input.isEmpty || input.last['type'] != 'compaction_trigger';
     while (true) {
       try {
-        final response = await _respond(body, sessionId, transport, cancellation, onEvent);
-        await recordModelTrace(trace, traceID, 'response', {'output': response.output, 'usage': response.usage}, cancellation);
-        return response;
+        return await _respond(body, sessionId, transport, cancellation, onEvent);
       } on CancelledException {
         rethrow;
       } catch (error) {
@@ -225,10 +246,13 @@ class ResponsesClient {
 
   Future<HttpReply> _post(Uri uri, Json body, Map<String, String> headers,
     CancellationToken cancellation) async {
+    final encoded = jsonEncode(body);
+    if (uri == endpoint) await _dump(encoded, cancellation);
+    cancellation.throwIfCancelled();
     final response = await httpRequest(_http, 'POST', uri,
       connections: connections, cancellation: cancellation,
       headers: {...headers, HttpHeaders.contentTypeHeader: 'application/json'},
-      body: utf8.encode(jsonEncode(body)));
+      body: utf8.encode(encoded));
     if (response.statusCode == 200) return response;
     // Capture advice when headers arrive; reading the body must not reset it.
     final advice = retryAdvice(response.headers[HttpHeaders.retryAfterHeader]);
@@ -301,7 +325,10 @@ class ResponsesClient {
               .timeout(const Duration(seconds: 15))
               .asCancellable(cancellation);
       cancellation.throwIfCancelled();
-      socket.add(jsonEncode({'type': 'response.create', ...body}));
+      final encoded = jsonEncode(body);
+      await _dump(encoded, cancellation);
+      cancellation.throwIfCancelled();
+      socket.add(encoded);
       final events = socket.map((raw) {
         final text = raw is String ? raw : utf8.decode(raw as List<int>);
         if (utf8.encode(text).length > 8 * 1024 * 1024) {
@@ -347,7 +374,12 @@ class ResponsesClient {
           case 'response.output_text.delta':
             onEvent?.call({'type': 'text.delta', 'delta': event['delta']});
           case 'response.reasoning_summary_text.delta':
+          case 'response.reasoning_text.delta':
             onEvent?.call({'type': 'reasoning.delta', 'delta': event['delta']});
+          case 'response.reasoning_summary_part.added':
+            if ((event['summary_index'] as int? ?? 0) > 0) {
+              onEvent?.call({'type': 'reasoning.delta', 'delta': '\n\n'});
+            }
           case 'response.output_item.done':
             items[(event['output_index'] as num).toInt()] = jsonObject(
               event['item'],

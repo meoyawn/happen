@@ -10,12 +10,38 @@ export 'src/session.dart';
 
 typedef Json = Map<String, dynamic>;
 
+final _ids = UuidV7Ids();
+String newUuidV7() => _ids.create();
+
+// Opaque random IDs also serve as bearer tokens and temporary-file suffixes.
+// Do not replace their entropy with a timestamp/counter-based identity.
 String newId() {
   final random = Random.secure();
-  return List.generate(
-    16,
-    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
-  ).join();
+  return List.generate(16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+}
+
+/// uuid 1.20's ContextV7 contract: millisecond time, a reseeded 42-bit
+/// monotonic counter, RFC variant, and random low bits. One owner per isolate.
+class UuidV7Ids {
+  UuidV7Ids({int Function()? clock, Random? random})
+    : _clock = clock ?? (() => DateTime.now().millisecondsSinceEpoch), _random = random ?? Random.secure();
+  final int Function() _clock;
+  final Random _random;
+  int _timestamp = 0, _counter = 0;
+
+  String create() {
+    final now = _clock();
+    if (now > _timestamp || _counter == 0x3ffffffffff) {
+      _timestamp = now > _timestamp ? now : _timestamp + 1;
+      _counter = _random.nextInt(1 << 21) * (1 << 20) + _random.nextInt(1 << 20);
+    } else { _counter++; }
+    String hex(int value, int width) => value.toRadixString(16).padLeft(width, '0');
+    final time = hex(_timestamp, 12);
+    return '${time.substring(0, 8)}-${time.substring(8)}-'
+      '${hex(0x7000 | _counter >> 30, 4)}-'
+      '${hex(0x8000 | (_counter >> 16 & 0x3fff), 4)}-'
+      '${hex(_counter & 0xffff, 4)}${hex(_random.nextInt(1 << 32), 8)}';
+  }
 }
 
 Json jsonObject(Object? value) {

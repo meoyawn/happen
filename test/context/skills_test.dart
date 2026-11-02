@@ -6,6 +6,8 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 
+import '../support/openai_output.dart';
+
 void main() {
   for (final providerId in ['openai', 'opencode']) {
     test('$providerId keeps filesystem skill context bounded across loading and task lifecycle', () async {
@@ -57,7 +59,7 @@ void main() {
         requests.add(requestBody);
         final messages = (requestBody[openCode ? 'messages' : 'input'] as List).map(jsonObject).toList();
         final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');
-        final load = lastUser >= 0 && messages[lastUser]['content'] == 'load omitted skill';
+        final load = lastUser >= 0 && openAIMessageText(messages[lastUser]) == 'load omitted skill';
         final hasResult = messages.skip(lastUser + 1).any((message) =>
           message['role'] == 'tool' || message['type'] == 'custom_tool_call_output');
         request.response.headers.contentType = ContentType('text', 'event-stream');

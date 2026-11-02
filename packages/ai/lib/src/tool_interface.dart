@@ -35,6 +35,7 @@ abstract class ToolInterface {
 }
 
 abstract class ToolRuntime {
+  bool get hasRunningCells => false;
   Future<Json> execute(ToolCall call, ToolExecution context);
   Future<Object?> call(String name, Object? arguments, {
     required CancellationToken cancellation, String? cwd,
@@ -49,9 +50,11 @@ class ToolExecution {
     required this.catalog,
     required this.values,
     required this.cancellation,
+    this.notify,
   });
   final ToolInvoker call;
   final Future<List<Json>> Function(CancellationToken cancellation) catalog;
   final Json values;
   final CancellationToken cancellation;
+  final Future<void> Function(Json result)? notify;
 }

@@ -45,7 +45,6 @@ void _agentMain(List<Object?> args) {
     try {
       switch (request['method']) {
         case 'turn':
-        case 'prepare':
           if (running != null) {
             throw StateError('Task already has an active turn');
           }
@@ -54,7 +53,6 @@ void _agentMain(List<Object?> args) {
             params['prompt'] as String? ?? '',
             (event) => reply?.send({'event': event}),
             compact: params['compact'] == true,
-            prepareOnly: request['method'] == 'prepare',
             settings: jsonObject(params['settings'] ?? {}),
           );
           try {
@@ -225,7 +223,6 @@ class _Agent {
     String prompt,
     void Function(Json) emit, {
     bool compact = false,
-    bool prepareOnly = false,
     Json settings = const {},
   }) async {
     final cancellation = CancellationToken();
@@ -235,7 +232,7 @@ class _Agent {
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
-    final turnId = newId();
+    final turnId = interface.id == 'openai' ? newUuidV7() : newId();
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
     try {
@@ -348,10 +345,11 @@ class _Agent {
       await currentDeferredCatalog(cancellation);
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
       var skillsCatalog = <String, dynamic>{'skills': []};
-      Future<void> refreshSkills() async {
-        skillsCatalog = jsonObject(await callIsolate(network, 'skills.catalog', {
+      Future<Json> readSkills() async => jsonObject(await callIsolate(network, 'skills.catalog', {
           'task_id': taskId, 'cwd': cwd,
         }, cancellation: cancellation));
+      Future<void> refreshSkills([Json? current]) async {
+        skillsCatalog = current ?? await readSkills();
         final next = skillContext(skillsCatalog, previous: skillsSnapshot,
           contextWindow: baseline['context_limit'] as int?);
         if (contextFingerprint(next.snapshot) == contextFingerprint(skillsSnapshot)) return;
@@ -408,7 +406,7 @@ class _Agent {
         );
       }
       Json? pendingInput;
-      if (!compact && (!prepareOnly || prompt.isNotEmpty)) {
+      if (!compact) {
         pendingInput = {
           'item': ConversationItem.user(prompt, attachments: settings['attachments']).toJson(),
           if (settings['message_id'] != null)
@@ -424,8 +422,8 @@ class _Agent {
         };
       }
 
-      Future<void> refreshInstructions() async {
-        final current = await readInstructions();
+      Future<void> refreshInstructions([Json? loaded]) async {
+        final current = loaded ?? await readInstructions();
         if (contextFingerprint(current) == contextFingerprint(snapshot)) return;
         final item = instructionUpdate(interface, current, snapshot);
         cancellation.throwIfCancelled();
@@ -442,51 +440,21 @@ class _Agent {
         if (_steering.isEmpty) return false;
         final messages = _steering.toList();
         _steering.clear();
-        final updates = <Json>[];
-        var nextEffort = effort;
-        for (final message in messages) {
-          if (message['reasoning'] case final String selected when selected != nextEffort) {
-            if (config['reasoning_updates'] != true) {
-              throw ArgumentError('Reasoning effort is fixed for this task');
-            }
-            updates.add({
-              'type': 'configuration.updated',
-              'data': {
-                'effort': selected,
-                'item': ConversationItem(
-                  kind: 'configuration',
-                  settings: {'reasoning': selected},
-                ).toJson(),
-              },
-            });
-            nextEffort = selected;
-          }
-          updates.add({
-            'type': 'input.committed',
-            'data': {
-              'message_id': message['id'],
-              'delivery': 'steer',
-              if (message['created_at'] != null) 'sent_at': message['created_at'],
-              'item': ConversationItem.user(
-                message['prompt'] as String,
-                attachments: message['attachments'],
-              ).toJson(),
-            },
-          });
-        }
-        final entries = await _appendBatch(updates, {'effective_reasoning': nextEffort});
+        final entries = await callIsolate(writer, 'session.inbox.commit', {
+          'ids': [for (final message in messages) message['id']],
+          'effort': effort, 'reasoningUpdates': config['reasoning_updates'] == true,
+        }, cancellation: cancellation) as List;
         for (final raw in entries) {
-          final entry = jsonObject(raw);
-          event(entry);
+          event(_record(jsonObject(raw)));
         }
-        return true;
+        return entries.isNotEmpty;
       }
 
       var usageItems = await _metadata('context_usage_items') as int? ?? 0;
       final nestedDiscovery = interface.nestedDiscovery;
       List<Json>? declaredCatalog;
-      Future<void> refreshTools() async {
-        final deferred = await currentDeferredCatalog(cancellation);
+      Future<void> refreshTools([List<Json>? loaded]) async {
+        final deferred = loaded ?? await currentDeferredCatalog(cancellation);
         if (!identical(declaredCatalog, deferred)) {
           final serialized = interface.definitionsFor(deferred).map((tool) => tool.toJson()).toList();
           if (_tools == null || contextFingerprint(_tools!.map((tool) => tool.toJson()).toList()) != contextFingerprint(serialized)) {
@@ -526,9 +494,12 @@ class _Agent {
       }
 
       Future<void> refreshContext() async {
-        await refreshInstructions();
-        await refreshSkills();
-        await refreshTools();
+        // Independent live reads overlap; commits retain their protocol order.
+        // No debounce/TTL: edits made by the preceding tool are visible now.
+        final current = await Future.wait<Object>([readInstructions(), readSkills(), currentDeferredCatalog(cancellation)]);
+        await refreshInstructions(current[0] as Json);
+        await refreshSkills(current[1] as Json);
+        await refreshTools(current[2] as List<Json>);
         if (pendingInput case final Json data) {
           event(await _append('input.committed', data));
           pendingInput = null;
@@ -539,7 +510,7 @@ class _Agent {
         final active = token ?? cancellation;
         active.throwIfCancelled();
         if (method == 'respond') {
-          assistantMessageID = 'msg_${newId()}';
+          assistantMessageID = 'msg_${interface.id == 'openai' ? newUuidV7() : newId()}';
           event(await _append('model.started', {
             'assistantMessageID': assistantMessageID,
             'instructions': request().instructions,
@@ -675,10 +646,6 @@ class _Agent {
         return notices.isNotEmpty;
       }
 
-      if (prepareOnly) {
-        await refreshContext();
-        return;
-      }
       if (compact) {
         await refreshContext();
         await compactContext('manual');
@@ -720,34 +687,34 @@ class _Agent {
         countUsage(reply.usage);
         final nextUsage = reply.usage.contextTokens;
         final nextItems = input.length + reply.output.length;
-        event(
-          await _append(
-            'model.completed',
-            {...reply.toJson(), 'assistantMessageID': assistantMessageID},
-            metadata: {
-              'context_usage': nextUsage,
-              'context_usage_items': nextItems,
-            },
-          ),
-        );
+        final calls = reply.calls;
+        Json toolStarted(ToolCall call) => {
+          'type': 'tool.started', 'data': {
+            'call_id': call.id, 'name': call.name,
+            if (call.namespace != null) 'namespace': call.namespace,
+            'input': call.input,
+          },
+        };
+        // Admit the first call atomically with the model output. Host side
+        // effects still start only after this transaction is durable.
+        for (final entry in await _appendBatch([
+          {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID}},
+          if (calls.isNotEmpty) toolStarted(calls.first),
+        ], {'context_usage': nextUsage, 'context_usage_items': nextItems})) { event(entry); }
         usageTokens = nextUsage;
         usageItems = nextItems;
-        if (reply.calls.isEmpty) {
+        if (calls.isEmpty) {
           if (await takeSteering()) continue;
           if (await takeNotifications()) continue;
           await finish(reply.text);
           return;
         }
-        for (final call in reply.calls) {
+        for (final call in calls) {
           cancellation.throwIfCancelled();
-          event(
-            await _append('tool.started', {
-              'call_id': call.id,
-              'name': call.name,
-              if (call.namespace != null) 'namespace': call.namespace,
-              'input': call.input,
-            }),
-          );
+          if (call.id != calls.first.id) {
+            final started = toolStarted(call);
+            event(await _append('tool.started', jsonObject(started['data'])));
+          }
           final watch = Stopwatch()..start();
           Json result;
           var images = <Json>[];
@@ -761,6 +728,11 @@ class _Agent {
               catalog: currentRuntimeCatalog,
               cancellation: cellCancellation,
               values: values,
+              notify: (result) async {
+                cancellation.throwIfCancelled();
+                final item = interface.resultItem(call, result);
+                event(await _append('tool.notified', {'item': item.toJson()}));
+              },
               call: (name, arguments, {required cancellation}) async {
                 cancellation.throwIfCancelled();
                 final id = newId();
@@ -786,6 +758,11 @@ class _Agent {
                     }, cancellation: cancellation);
                   } else if (service == 'web.search') {
                     output = await searchWeb(arguments, cancellation);
+                  } else if (service == 'image.generate') {
+                    output = await callIsolate(network, 'image.generate', {
+                      'provider': config['provider'], ...request().toJson(),
+                      'arguments': arguments, 'call_id': id, 'turn_id': turnId,
+                    }, timeout: null, cancellation: cancellation);
                   } else if (service?.startsWith('history.') == true) {
                     output = await callIsolate(
                       writer,
@@ -874,7 +851,7 @@ class _Agent {
           } catch (error) {
             result = {'error': error.toString()};
           } finally {
-            cellCancellation.cancel();
+            if (!host.hasRunningCells) cellCancellation.cancel();
             _toolCancellation = null;
             _toolPreemption = null;
             link.dispose();

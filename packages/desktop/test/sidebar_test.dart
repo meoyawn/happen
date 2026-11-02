@@ -94,7 +94,11 @@ void main() {
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override bool get sharedFilesystem => true;
+  @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
+    jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'session.list') return {'data': [], 'cursor': {}};
+    if (method == 'session.active') return {'data': {}};
     if (method == 'providers.list') return {'providers': []};
     throw StateError('Unexpected request: $method');
   }

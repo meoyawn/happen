@@ -5,27 +5,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
-import 'package:protocol/protocol.dart' show maxClientFrameBytes;
+import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, maxClientFrameBytes;
 
 import 'code_highlight.dart';
 import 'appearance.dart';
 import 'inline_reference.dart';
+import 'image_preview.dart';
+import 'conversation_data.dart';
 
 const conversationInk = Color(0xff1a1c1f);
 const conversationMuted = Color(0xff8b8e95);
 const conversationBorder = Color(0xffe8e9eb);
 
 class ConversationMarkdown extends StatelessWidget {
-  const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false, this.fontSize = 14});
+  const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false,
+    this.fontSize = 14, this.reasoning = false});
   final String text, directory;
   final bool fitContent;
   final double fontSize;
+  final bool reasoning;
 
   @override
   Widget build(BuildContext context) {
-    final body = TextStyle(fontSize: fontSize, height: fitContent ? 1.5 : 1.6,
-      letterSpacing: 0, color: opencodeInk);
-    return SelectionArea(
+    final body = TextStyle(fontSize: fontSize, height: reasoning ? 20 / 13 : fitContent ? 1.5 : 1.6,
+      letterSpacing: 0, color: reasoning ? opencodeMuted : opencodeInk);
+    return ConversationImageGroup(child: SelectionArea(
       child: MarkdownBody(
         data: text,
         extensionSet: md.ExtensionSet.gitHubFlavored,
@@ -35,16 +39,16 @@ class ConversationMarkdown extends StatelessWidget {
         styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
           p: body,
           a: body.copyWith(color: const Color(0xff3b5cf6), decoration: TextDecoration.none),
-          h1: body.copyWith(fontSize: fontSize + 3, height: 20 / 17, fontWeight: FontWeight.w600),
-          h2: body.copyWith(fontSize: fontSize + 1, height: 20 / 15, fontWeight: FontWeight.w600),
-          h3: body.copyWith(fontSize: fontSize, height: 20 / 14,
+          h1: reasoning ? body : body.copyWith(fontSize: fontSize + 3, height: 20 / 17, fontWeight: FontWeight.w600),
+          h2: reasoning ? body : body.copyWith(fontSize: fontSize + 1, height: 20 / 15, fontWeight: FontWeight.w600),
+          h3: reasoning ? body : body.copyWith(fontSize: fontSize, height: 20 / 14,
             fontWeight: FontWeight.w600, fontVariations: const [FontVariation('wght', 670)]),
           h4: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
           h5: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
           h6: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
-          h1Padding: EdgeInsets.only(top: 28, bottom: 12),
-          h2Padding: EdgeInsets.only(top: 24, bottom: 10),
-          h3Padding: EdgeInsets.only(top: 20, bottom: 8),
+          h1Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 28, bottom: 12),
+          h2Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 24, bottom: 10),
+          h3Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 20, bottom: 8),
           code: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
             color: opencodeInk, backgroundColor: opencodeLayer),
           strong: body.copyWith(fontWeight: FontWeight.w600,
@@ -73,7 +77,7 @@ class ConversationMarkdown extends StatelessWidget {
         builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory)},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
-          label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory,
+          label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory, markdown: true,
         ),
         checkboxBuilder: (checked) => Padding(
           padding: const EdgeInsets.only(top: 4, right: 4),
@@ -84,7 +88,7 @@ class ConversationMarkdown extends StatelessWidget {
           if (href != null) unawaited(_openLink(context, href, directory));
         },
       ),
-    );
+    ));
   }
 }
 
@@ -290,7 +294,7 @@ class _ConversationCopyButtonState extends State<ConversationCopyButton> {
 Uri? _contentUri(String source, String directory) {
   final uri = Uri.tryParse(source);
   if (uri == null) return null;
-  if (uri.scheme.isEmpty) return Uri.directory(directory).resolveUri(uri);
+  if (uri.scheme.isEmpty) return Directory(directory.isEmpty ? Directory.current.path : directory).absolute.uri.resolveUri(uri);
   if (uri.scheme == 'file' && uri.host.isNotEmpty && uri.host != 'localhost') return null;
   return uri;
 }
@@ -321,10 +325,46 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
   }
 }
 
+/// The outermost group is one message (or the composer's attachment rail).
+/// Snapshot mounted images in document order on open, keeping lazy parts lazy.
+class ConversationImageGroup extends StatelessWidget {
+  const ConversationImageGroup({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => context.getElementForInheritedWidgetOfExactType<_ConversationImageScope>() == null
+    ? _ConversationImageScope(child: child) : child;
+}
+
+class _ConversationImageScope extends InheritedWidget {
+  const _ConversationImageScope({required super.child});
+
+  @override
+  bool updateShouldNotify(_ConversationImageScope oldWidget) => false;
+}
+
+class ConversationImageParts extends StatelessWidget {
+  const ConversationImageParts({super.key, required this.parts, required this.directory});
+  final List<Json> parts;
+  final String directory;
+
+  @override
+  Widget build(BuildContext context) => ConversationImageGroup(child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 12, children: [
+    for (final part in parts) ConversationData(value: part, builder: (context, value) {
+      final image = jsonObject(value);
+      final path = image['path'] as String? ?? '';
+      return ConversationImage(source: image['data'] is String ? attachmentDataUrl(image)
+        : path.startsWith('/') ? Uri.file(path).toString() : path,
+        label: image['name'] as String? ?? 'Image', directory: directory);
+    }),
+  ]));
+}
+
 class ConversationImage extends StatefulWidget {
-  const ConversationImage({super.key, required this.source, required this.label, required this.directory, this.thumbnail = false});
+  const ConversationImage({super.key, required this.source, required this.label, required this.directory,
+    this.thumbnail = false, this.markdown = false});
   final String source, label, directory;
-  final bool thumbnail;
+  final bool thumbnail, markdown;
 
   @override
   State<ConversationImage> createState() => _ConversationImageState();
@@ -332,6 +372,8 @@ class ConversationImage extends StatefulWidget {
 
 class _ConversationImageState extends State<ConversationImage> {
   ImageProvider? _provider;
+  bool _previewing = false;
+  final _imageKey = GlobalKey();
 
   @override
   void initState() {
@@ -368,31 +410,25 @@ class _ConversationImageState extends State<ConversationImage> {
   }
 
   Widget _placeholder({bool failed = false}) => Container(
-    height: widget.thumbnail ? 78 : 150,
+    width: widget.thumbnail ? 58 : null,
+    height: widget.thumbnail ? 46 : 96,
     alignment: Alignment.center,
-    color: const Color(0xfff3f3f3),
-    child: widget.thumbnail ? Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
-      color: conversationMuted, size: 24) : Column(mainAxisSize: MainAxisSize.min, children: [
-      Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined,
-        color: conversationMuted, size: 28),
-      const SizedBox(height: 8),
+    color: opencodeLayer,
+    child: widget.thumbnail ? (failed ? const Icon(Icons.broken_image_outlined,
+      color: opencodeFaint, size: 20) : null) : Column(mainAxisSize: MainAxisSize.min, children: [
       Text(failed ? 'Could not load image' : 'Loading image…',
         style: const TextStyle(fontSize: 12, color: conversationMuted)),
-      if (failed && widget.label != 'Image')
-        Padding(padding: const EdgeInsets.all(8), child: Text(widget.label,
-          maxLines: 2, overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, color: conversationMuted))),
     ]),
   );
 
-  Widget _image({bool preview = false}) {
+  Widget _image() {
     final provider = _provider;
     if (provider == null) return _placeholder(failed: true);
     return Image(
-      image: widget.thumbnail && !preview ? ResizeImage(provider, width: 212, height: 156, policy: ResizeImagePolicy.fit) : provider,
-      fit: BoxFit.contain,
-      width: widget.thumbnail && !preview ? 106 : null,
-      height: widget.thumbnail && !preview ? 78 : null,
+      image: provider,
+      fit: widget.thumbnail ? BoxFit.cover : BoxFit.contain,
+      width: widget.thumbnail ? 58 : null,
+      height: widget.thumbnail ? 46 : null,
       gaplessPlayback: true,
       semanticLabel: widget.label,
       frameBuilder: (_, child, frame, synchronous) =>
@@ -401,53 +437,65 @@ class _ConversationImageState extends State<ConversationImage> {
     );
   }
 
+  PreviewImage? _previewImage() {
+    final provider = _provider, box = _imageKey.currentContext?.findRenderObject();
+    if (provider == null || box is! RenderBox || !box.attached || !box.hasSize) return null;
+    return (provider: provider, label: widget.label, origin: box.localToGlobal(Offset.zero) & box.size,
+      originRadius: widget.thumbnail ? 6.0 : 4.0);
+  }
+
   void _preview() {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (context) => Dialog(
-        backgroundColor: const Color(0xfffcfcfa),
-        insetPadding: const EdgeInsets.all(32),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(children: [
-            Row(children: [
-              Expanded(child: Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
-              IconButton(tooltip: 'Close image', onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded)),
-            ]),
-            Expanded(child: InteractiveViewer(minScale: .5, maxScale: 5,
-              child: Center(child: _image(preview: true)))),
-            const Padding(padding: EdgeInsets.only(top: 8, bottom: 4),
-              child: Text('Pinch or scroll to zoom', style: TextStyle(fontSize: 11, color: conversationMuted))),
-          ]),
-        ),
-      ),
-    );
+    if (_previewing) return;
+    final images = <(PreviewImage, _ConversationImageState)>[];
+    void collect(Element element) {
+      if (element is StatefulElement && element.state is _ConversationImageState) {
+        final state = element.state as _ConversationImageState;
+        final image = state._previewImage();
+        if (image != null) images.add((image, state));
+      } else {
+        element.visitChildElements(collect);
+      }
+    }
+    final group = context.getElementForInheritedWidgetOfExactType<_ConversationImageScope>();
+    if (group != null) {
+      group.visitChildElements(collect);
+    } else {
+      final image = _previewImage();
+      if (image != null) images.add((image, this));
+    }
+    final initial = images.indexWhere((image) => identical(image.$2, this));
+    if (initial < 0) return;
+    var active = initial;
+    void hide(int index, bool hidden) {
+      final state = images[index].$2;
+      if (state.mounted) state.setState(() => state._previewing = hidden);
+    }
+    hide(active, true);
+    unawaited(showGeneralDialog<void>(context: context, barrierDismissible: true,
+      barrierLabel: 'Close image', barrierColor: Colors.transparent,
+      transitionDuration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 240),
+      pageBuilder: (context, _, _) => ImagePreview(images: images.map((image) => image.$1).toList(growable: false),
+        initialIndex: initial, onChanged: (index) { hide(active, false); active = index; hide(active, true); }),
+      transitionBuilder: (_, _, _, child) => child,
+    ).whenComplete(() => hide(active, false)));
   }
 
   @override
   Widget build(BuildContext context) {
-    final image = Material(
-        color: const Color(0xfff5f5f5),
-        clipBehavior: Clip.antiAlias,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: _provider == null ? null : _preview,
-          child: Tooltip(message: 'Open image', child: ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: widget.thumbnail ? 78 : 360), child: _image(),
-          )),
-        ),
-      );
-    if (widget.thumbnail) return image;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      image,
-      if (widget.label.isNotEmpty && widget.label != 'Image')
-        Padding(padding: const EdgeInsets.only(top: 6), child: Text(widget.label,
-          style: const TextStyle(fontSize: 12, color: conversationMuted))),
-    ]),
-    );
+    final image = MouseRegion(cursor: _provider == null ? MouseCursor.defer
+      : widget.thumbnail ? SystemMouseCursors.click : SystemMouseCursors.zoomIn,
+      child: GestureDetector(key: _imageKey, onTap: _provider == null ? null : _preview,
+        child: Tooltip(message: 'Open image', child: Semantics(button: _provider != null, label: widget.label,
+          child: Opacity(opacity: _previewing ? 0 : 1, child: ClipRRect(
+            borderRadius: BorderRadius.circular(widget.thumbnail ? 6 : 4),
+            child: _image(),
+          ))))));
+    if (widget.thumbnail) {
+      return SizedBox(width: 58, height: 46,
+      child: DecoratedBox(position: DecorationPosition.foreground,
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: _previewing ? Colors.transparent : opencodeBorder, width: .5)), child: image));
+    }
+    return widget.markdown ? Padding(padding: const EdgeInsets.symmetric(vertical: 24), child: image) : image;
   }
 }

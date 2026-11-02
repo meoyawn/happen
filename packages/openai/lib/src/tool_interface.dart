@@ -12,10 +12,11 @@ import 'tool_catalog.dart';
 import 'tool_specs.dart' as specs;
 import 'tools.dart';
 import 'web_search.dart';
+import 'image_generation.dart';
 
 class OpenAIToolInterface extends ToolInterface {
-  const OpenAIToolInterface({this.webSearch = true});
-  final bool webSearch;
+  const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false});
+  final bool webSearch, imageGeneration;
   @override
   String get id => 'openai';
   @override
@@ -29,7 +30,7 @@ class OpenAIToolInterface extends ToolInterface {
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
   List<ToolDefinition> definitionsFor(List<Json> deferred) => [
-    specs.codeDefinition(deferredTools: deferred.isNotEmpty), if (webSearch) webSearchDefinition,
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration), specs.waitDefinition, if (webSearch) webSearchDefinition,
   ];
   @override
   ToolDefinition get nestedDiscovery => specs.toolSearchDefinition;
@@ -44,54 +45,85 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   Map<String, String> get services => {
     if (webSearch) 'web__run': 'web.search',
+    if (imageGeneration) 'image_gen__imagegen': 'image.generate',
     for (final tool in historyCatalog) tool['name'] as String: 'history.${(tool['name'] as String).substring(9)}',
     ...mcpResourceMethods,
   };
   @override
   List<Json> get hostCatalog => [
     ...specs.hostCatalog.where((tool) => webSearch || tool['name'] != 'web__run'), ...historyCatalog, ...mcpResourceCatalog,
-  ].map(describeTool).toList();
+    if (imageGeneration) imageGenerationCatalog,
+  ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList();
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
     ...hostCatalog,
-    if (deferred.isNotEmpty) describeTool({...specs.toolSearchDefinition.toJson(), 'format': 'json'}),
+    if (deferred.isNotEmpty) describeTool(specs.toolSearchCatalog),
   ];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation, webSearch);
   @override
   String formatResult(ToolCall call, Json result) => jsonEncode([
-    if (call.namespace == 'web' && call.name == 'run' && !result.containsKey('error'))
+    if (result['notification'] case final String notice) {'type': 'input_text', 'text': notice}
+    else if (call.namespace == 'web' && call.name == 'run' && !result.containsKey('error'))
       {'type': 'input_text', 'text': result['output']}
     else ...[
-      {'type': 'input_text', 'text': 'Script ${result.containsKey('error') ? 'failed' : 'completed'}\n'
+      {'type': 'input_text', 'text': '${result['cell_id'] != null ? 'Script running with cell ID ${result['cell_id']}'
+          : result['terminated'] == true ? 'Script terminated' : 'Script ${result.containsKey('error') ? 'failed' : 'completed'}'}\n'
         'Wall time ${(result['wall_time_seconds'] as num? ?? 0).toStringAsFixed(1)} seconds\nOutput:\n'},
-      for (final value in result['output'] as List? ?? []) {'type': 'input_text', 'text': value},
-      if (result.containsKey('error')) {'type': 'input_text', 'text': 'Script error:\n${result['error']}'},
+      if (result['content'] is List) ...(result['content'] as List).map(jsonObject)
+      else ...[
+        for (final value in result['output'] as List? ?? []) {'type': 'input_text', 'text': value},
+        if (result.containsKey('error')) {'type': 'input_text', 'text': 'Script error:\n${result['error']}'},
+      ],
     ],
   ]);
   @override
   ConversationItem resultItem(ToolCall call, Json result, {List<Json> images = const []}) {
-    final item = super.resultItem(call, result, images: images);
+    if (result['notification'] case final String notice) {
+      final item = ConversationItem.toolResult(call, notice);
+      return ConversationItem(id: item.id, role: item.role, native: {'gpt': {'notification': true}}, content: [
+        for (final part in item.content) {...part, 'native': {'gpt': {'name': 'exec'}}},
+      ]);
+    }
+    final shadow = <Json>[];
+    for (final part in (result['content'] as List? ?? []).map(jsonObject).where((part) => part['type'] == 'input_image')) {
+      try { shadow.add(toolImage(part)); }
+      on FormatException { /* Preserve the upstream inline value even if no local preview is possible. */ }
+    }
+    final item = super.resultItem(call, result, images: [...images, ...shadow]);
+    final tokens = result['text_audio_tokens'] as int?;
     return ConversationItem(id: item.id, role: item.role, content: [
-      for (final part in item.content) {...part, 'native': {'gpt': {'content_items': true}}},
+      for (final part in item.content) {
+        ...part,
+        if (tokens != null) 'output_token_estimate': tokens +
+          (utf8.encode(jsonObject((jsonDecode(part['output'] as String) as List).first)['text'] as String).length + 3) ~/ 4,
+        'native': {'gpt': {'content_items': true, if (shadow.isNotEmpty) 'inline_images': true}},
+      },
     ]);
   }
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch) : host = HostTools(cwd, cancellation);
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch)
+    : host = HostTools(cwd, cancellation), cells = CodeSession(cancellation);
   final HostTools host;
+  final CodeSession cells;
+  @override
+  bool get hasRunningCells => cells.hasRunningCells;
   final bool webSearch;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
       host.call(name, arguments, cancellation: cancellation, cwd: cwd);
   @override
-  Future<void> close() => host.close();
+  Future<void> close() async { await cells.close(); await host.close(); }
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
     if (webSearch && call.namespace == 'web' && call.name == 'run') {
       return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};
+    }
+    if (call.name == 'wait' && (call.namespace == null || call.namespace == 'functions')) {
+      return cells.wait(jsonObject(jsonDecode(call.input)), cancellation: context.cancellation);
     }
     if (call.name != 'exec' || call.namespace != null && call.namespace != 'functions') {
       throw StateError('Unknown OpenAI tool: ${call.namespace}.${call.name}');
@@ -104,8 +136,7 @@ class _OpenAITools extends ToolRuntime {
     final metadata = <String, Json>{};
     for (final tool in catalog) { metadata.putIfAbsent(tool['name'] as String, () => tool); }
     final ordered = metadata.keys.toList()..sort();
-    final watch = Stopwatch()..start();
-    final result = await const CodeMode().execute(
+    return cells.execute(
       call.input,
       tool: (name, arguments, {required cancellation}) async {
         cancellation.throwIfCancelled();
@@ -129,7 +160,7 @@ class _OpenAITools extends ToolRuntime {
       catalog: [for (final name in ordered) {'name': name, 'description': metadata[name]!['description']}],
       values: context.values,
       cancellation: context.cancellation,
+      notify: (text) async { await context.notify?.call({'notification': text}); },
     );
-    return {...result, 'wall_time_seconds': watch.elapsedMicroseconds / 1000000};
   }
 }

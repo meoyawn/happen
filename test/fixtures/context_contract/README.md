@@ -10,8 +10,8 @@ startup test. Happen runs its production agent and provider in-process through
 reference. Neither a compiled Happen CLI nor a CLI build dependency is needed.
 The models and scenarios are a named, parameterized Dart test matrix; the Moon
 command takes no scenario/model overrides. `test-unit` excludes the `e2e` tag
-and also runs from source. The existing `build-cli` task remains cached
-for release builds and future compiled-CLI E2E checks.
+and also runs from source. The separate `build-cli` task remains cached for release
+builds and is not a dependency of this comparison.
 
 The fixed target launches the Dart tests through `tool/test_e2e.dart` with an
 empty temporary home and a minimal environment. This also isolates Happen's real
@@ -19,8 +19,10 @@ shell/MCP children from the caller's startup files and credentials. Direct
 unisolated invocation of this test file is rejected. Each pair's Dart MCP
 processes additionally receive the same explicit fixture environment.
 The real `dart mcp-server --help` command prepares the SDK's server package once
-before either harness starts, outside timing. Measured runs use fresh server
-processes; no discovery response or tool result is substituted.
+before either harness starts, outside timing. Measured runs use real production
+connections; no discovery response or tool result is substituted. Happen's
+in-process server retains its production shared MCP owner between sampled tasks;
+Codex starts its own processes for each CLI invocation.
 The launcher invokes package:test from source after normal native-hook setup;
 it does not run dependency resolution under the temporary home or rewrite the
 workspace's package configuration with temporary cache paths.
@@ -53,71 +55,112 @@ extra user, bundled, or plugin skill fails the isolation assertion.
 arrays. The local HTTP peer emits real Responses SSE and advances a scripted
 step only after the previous call IDs have actual tool results. File operations,
 JavaScript, SQLite, instruction discovery, skills, tool search, and MCP execution
-are real. The MCP case starts independent real `dart mcp-server` processes,
-registers the fixture package, and reads its package URI. It does not probe or
-interact with the human's desktop app.
+are real. The package-reading MCP case starts independent real `dart mcp-server`
+processes, registers the fixture package, and reads its package URI. The separate
+`dart-evaluation-discovery` case searches the same real catalog with
+`+mcp__dart evaluate expression flutter driver runtime errors` and compares the
+ordered results and full TypeScript declarations. It does not execute the
+discovered tools, connect to an app, or interact with the human's desktop. The
+broad query does not select `vm_service` among the default eight in either
+harness. A second targeted `dart vm_service evaluate expression` query must
+return that exact tool and its declaration.
 
 ## Assertions and evidence
 
-Every initial context and model request is compared for exact equality after
-normalizing generated protocol item IDs, equivalent native message encodings,
-and runtime-owned wall times/chunk IDs within code-mode output. Tool declarations,
+Only actual requests received by the shared OpenAI endpoint are compared. At
+the end of each session, the final complete inference request uses deep JSON
+equality after removing explicitly scoped generated protocol/transport IDs and
+extracting known numeric timing fields:
+object key order is immaterial; array order, message encodings, field presence,
+types and values are strict. No message reshaping or array sorting is permitted.
+Tool declarations,
 printed values, roles, message boundaries, dates, settings, and tool results are
-not discarded. Transport-only client metadata is retained in evidence but is
-not a model-visible envelope field. There is no similarity threshold, judge,
+not discarded. Client metadata is not discarded wholesale; only its generated
+identity and numeric timing fields are removed. Every extracted timing value
+is retained separately in the report, with its request path, kind and units.
+There is no similarity threshold, judge,
 golden copied from Happen, or expected-failure bypass. An unsupported Codex
 capability is a real failure to fix or configure consistently, not a passing
 approximation.
 
+Both harnesses' HTTP bodies are captured unchanged at the same receiving OpenAI endpoint;
+its built-in compaction trace is a logical request, not the full transport body,
+so that trace is deliberately not used. The endpoint stores exactly the bytes it
+received, not a second serialization of its parsed JSON. Comparison uses those
+received bodies, not either harness's debug/export API.
+There are no separate
+prepared contexts, snapshot-based inference reconstructions, or input-only dumps.
+
+Identity normalization has independent gates first: thread IDs must be unique,
+monotonically ordered UUIDv7 identifiers; generated item IDs have their Codex
+type prefix and UUIDv7 suffix. The prompt-only base instruction ID must match
+Codex's thread-scoped UUIDv5 derivation. IDs actually emitted by the synthetic
+upstream are preserved, not regenerated. Six-hex shell chunk IDs and shell
+session IDs in `1000..99999` are checked before chunk normalization. Concurrent
+public Happen turns also exercise its real ID owner's ordering and reach inference.
+The deterministic cell counters are not normalized: the cell fixture requires
+IDs `1`, `2`, and `3` to refer to the correct live/completed cells.
+
 The suite also independently checks AGENTS.md selection and overrides,
 metadata-only skill discovery, full skill reads, deferred tool discovery,
 real MCP results reaching inference, resumed input retention, and real automatic
-compaction. Compaction is triggered by synthetic reported token usage; both real
+compaction. The multi-user compaction case uses four actual consecutive turns,
+then requires every user message to remain in its original order before the
+checkpoint in the following request, as in the user-supplied context export.
+Compaction is triggered by synthetic reported token usage; both real
 loops must request it, install the synthetic native checkpoint, restore rules
 and skills once, and remove the old real shell receipt from visible context.
+The resumable-cell case also executes real module syntax, checks unavailable
+globals/tools, validates UTC clock output, yields and resumes timers, delivers
+notifications, terminates a cell, exits through a `finally` block, and checks the
+missing-cell diagnostic after completion. Single-text output encoding and the
+notification's name, encoding, and position remain part of exact equality.
 
 Results are written to a new ignored `.local/context-contract/TIMESTAMP/`
 directory. It retains both configs, the catalog
-checksum, Codex version, complete raw/canonical inputs and requests, the first
+checksum, Codex version, the native request files and their paths, the first
 differing line, individual timing samples, and a JSON report. Failures exit
 nonzero. These artifacts are the evidence when the strict parity contract is red.
 
-### Remaining Code Mode gaps
+### Current Code Mode boundary
 
-The Standard Responses envelope is aligned apart from real tool capabilities:
+Happen retains QuickJS and evaluates actual ES modules through its native API,
+not an async-function approximation. `wait`, incremental observations, timers,
+`yield_control`, native uncatchable `exit`, and durable `notify` delivery are
+implemented. Unawaited work is cancelled when the module completes. The generic
+OpenCode evaluator retains its separate async-function/return contract.
 
-- Codex exposes `exec` plus resumable cells through `wait`. Happen exposes only
-  `exec`; `yield_time_ms` is rejected, not silently ignored or advertised.
-- Codex uses a V8 async module. Happen uses a fresh QuickJS async function with
-  different CPU/memory bounds and currently waits for outstanding host promises.
-  Happen exposes a `console.log` alias; Codex's runtime contract has no console.
-- Codex also advertises `exit`, `notify`, timers, `yield_control`, audio and
-  generated-image helpers. These are not implemented or declared by Happen.
-- Eager nested catalogs differ. Happen includes durable-history services and a
-  short-lived shell helper; its task-owned shell sessions do not support TTYs.
-  This Codex profile additionally exposes `clock__curr_time`. Host-tool
-  descriptions, schemas and the shared MCP TypeScript preamble also differ.
-
-Do not copy Codex's description, add dummy `wait` declarations, or omit `tools`
-from equality to turn this gate green. Resumable-cell lifecycle, cancellation,
-incremental output and notification delivery need genuine runtime support first.
+The runtime includes real PTY execution, ordered image/generated-image/audio
+output, and the Images API generation/editing service. The two matrix models do
+not accept audio input, so the recorded-audio case requires Codex's unsupported
+audio notice in the original content position, without treating base64 as prose.
+The media fixtures inspect
+actual request content, never play audio or generate a paid image. Keep any
+remaining failures visible: do not add dummy declarations or omit `tools` from
+equality to make the gate green.
 
 ## Timing gates
 
-Prompt preparation has one untimed warm-up followed by alternating execution
-order. Happen's in-process median must not exceed Codex's CLI median. The report
-labels those different measurement boundaries explicitly; this is not a claim
-that CLI startup has been benchmarked fairly against a function call.
+Actual sessions have one warm-up followed by three samples with alternating
+execution order. Happen's in-process session median must not exceed Codex's CLI
+`exec`/`resume` median. The report labels those different measurement boundaries
+explicitly; this is not a CLI-startup benchmark or a preparation-only call.
 
 For real tool and compaction workflows, three runs alternate harness order. The
 peer separately measures both real loops from the first model request through
-the final synthetic SSE. Happen's median must not exceed Codex's at that shared
+the final synthetic SSE of the last turn. Prelude turns in the multi-user case
+do not replace this real tool/compaction measurement with stub-only timing.
+Happen's median must not exceed Codex's at that shared
 boundary either. A one-response/no-tool case cannot measure the agent through
 that boundary—it would time only the synthetic server—so those cases use the
-real preparation gate, not a misleading stub-only stopwatch. Every sample is
+real turn wall-time gate, not a misleading stub-only stopwatch. Every sample is
 retained, and the threshold is exactly `<= 1.0`, with no hidden timing allowance.
+Each case also reports the faster harness and median wall-time difference.
+The compound evaluation-discovery case uses the same three-run timing gate as
+the package-reading MCP workflow. Durable-event/read-model costs are tracked
+separately in [issue #5](https://github.com/meoyawn/happen/issues/5); a passing
+discovery result does not override a failed timing or envelope check.
 
-Desktop and CLI exports both use `readContextSnapshot`, which reads all pages of
-one immutable snapshot of the agent's real model buffer. The independent
-`happen debug prompt-input`, `debug context`, and optional native tracing remain
-available for local diagnostics; this test does not need them as CLI processes.
+The app retains its read-only model-buffer inspector. Neither that snapshot nor
+a reconstructed request is used by this contract. The obsolete CLI prepared-input,
+context-export, and trace-reducer paths have been removed.

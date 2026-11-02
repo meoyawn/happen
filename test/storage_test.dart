@@ -90,6 +90,26 @@ void main() {
     }
   });
 
+  test('a failed derived cache never loses a durable event and repairs on read', () async {
+    final root = await Directory.systemTemp.createTemp('history-cache-');
+    final id = newId();
+    var store = TaskStore(root.path, id);
+    addTearDown(() async { store.close(); await root.delete(recursive: true); });
+    store.append('host_tool.completed', {'id': 'first', 'name': 'probe', 'output': 'first receipt'});
+    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(1));
+    store.db.execute('''CREATE TEMP TRIGGER fail_cache BEFORE INSERT ON conversation_events
+      BEGIN SELECT RAISE(ABORT, 'cache unavailable'); END''');
+    store.append('host_tool.completed', {'id': 'second', 'name': 'probe', 'output': 'second receipt'},
+      metadata: {'receipt': 'second receipt'});
+    expect(store.history().last['data']['output'], 'second receipt');
+    expect(store.metadata('receipt'), 'second receipt');
+    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(1));
+    store.close();
+    store = TaskStore(root.path, id, create: false);
+    expect(store.history(conversationView: true).last['data']['output'], 'second receipt');
+    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(2));
+  });
+
   test('cancelling paged history work preserves the writer and never publishes a partial fork', () async {
     final root = await Directory.systemTemp.createTemp('history-cancel-');
     final owner = await startStore(root.path, newId());

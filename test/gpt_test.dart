@@ -7,6 +7,8 @@ import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:test/test.dart';
 
+import 'support/openai_output.dart';
+
 void main() {
   for (final transport in ['http', 'websocket']) {
     test(
@@ -180,8 +182,11 @@ void main() {
           cancellation: CancellationToken(),
         );
         expect(second.text, 'Done ✓');
+        // Request inspection must match the packet received by inference,
+        // including the base prompt, tool schemas, native items and settings.
+        expect(gptRequest(request(context)), bodies[1]);
         expect((bodies[1]['input'] as List).sublist(2, 5), native);
-        expect(bodies[1]['reasoning'], {'effort': 'low'});
+        expect(bodies[1]['reasoning'], {'effort': 'low', 'summary': 'auto'});
         expect(
           (bodies[1]['input'] as List).reversed.skip(1).first['type'],
           'configuration_update',
@@ -221,7 +226,7 @@ void main() {
       Future<void> respond(Json body, Future<void> Function(Json) send) async {
         requests++;
         await send({'type': 'response.created'});
-        if ((body['input'] as List).first['content'] == 'silent') {
+        if (openAIMessageText((body['input'] as List).first as Map) == 'silent') {
           await release.future;
           return;
         }
@@ -336,7 +341,7 @@ void main() {
         'text',
         'event-stream',
       );
-      if ((body['input'] as List).first['content'] == 'wait') {
+      if (openAIMessageText((body['input'] as List).first as Map) == 'wait') {
         request.response.write('data: {"type":"response.created"}\n\n');
         await request.response.flush();
         waiting.add(request.response);
