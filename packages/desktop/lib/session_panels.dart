@@ -8,6 +8,9 @@ import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'context_window.dart';
+import 'file_icon.dart';
+import 'file_reference.dart';
+import 'file_viewer.dart';
 import 'panel_state.dart';
 import 'session.dart';
 import 'sidebar_resizer.dart';
@@ -59,8 +62,30 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     widget.onReturnFocus();
   }
 
+  void _openFile(ConversationFileLocation location) {
+    final task = widget.task;
+    if (task != null) {
+      widget.session.openSessionPanel(task, 'file:${location.path}', line: location.line);
+    } else {
+      unawaited(showDialog<void>(context: context, builder: (context) => ConversationFileScope(
+        onOpen: _openFile, child: Dialog(
+        clipBehavior: Clip.antiAlias, child: SizedBox(width: 900, height: 700,
+          child: Column(children: [
+            Row(children: [
+              const SizedBox(width: 16), FileIcon(location.path), const SizedBox(width: 8),
+              Expanded(child: Text(_panelTitle('file:${location.path}'),
+                maxLines: 1, overflow: TextOverflow.ellipsis)),
+              IconButton(tooltip: 'Close file viewer', icon: const Icon(Icons.close_rounded, size: 18),
+                onPressed: () => Navigator.of(context).pop()),
+            ]),
+            Expanded(child: FileViewer(path: location.path, line: location.line)),
+          ]))))));
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.session,
+  Widget build(BuildContext context) => ConversationFileScope(onOpen: _openFile,
+    child: ListenableBuilder(listenable: widget.session,
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
       final task = widget.task;
       final state = task == null ? null : widget.session.panelsFor(task);
@@ -91,6 +116,12 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                     Offstage(offstage: state.active != contextPanel,
                       child: SessionContextWindow(key: ValueKey('context:${task!.id}'),
                         session: widget.session, task: task)),
+                  for (final tab in state.tabs.where(isFilePanel))
+                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                      child: ExcludeFocus(excluding: state.active != tab,
+                      child: FileViewer(path: filePanelPath(tab),
+                        active: opened && state.active == tab, line: state.fileReveals[tab]?.line,
+                        revealRequest: state.fileReveals[tab]?.revision ?? 0))),
                   if (state.active?.startsWith('new:') == true) _launchers(state),
                 ])),
               ]))))))),
@@ -105,7 +136,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             },
             onCancel: () => setState(() => _dragWidth = null))),
       ]);
-    }));
+    })));
 
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
@@ -116,8 +147,10 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         final width = (bounds.maxWidth / state.tabs.length).clamp(80.0, 190.0);
         return SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
           for (final tab in state.tabs) SizedBox(width: width, child: _PanelTab(
-            key: ValueKey(tab), title: tab == contextPanel ? 'Context' : 'New tab',
-            icon: tab == contextPanel ? Icons.donut_large_rounded : Icons.add_rounded,
+            key: ValueKey(tab), title: _panelTitle(tab),
+            icon: isFilePanel(tab) ? FileIcon(filePanelPath(tab), size: 14)
+              : Icon(tab == contextPanel ? Icons.donut_large_rounded : Icons.add_rounded,
+                  size: 14, color: state.active == tab ? opencodeInk : opencodeFaint),
             active: state.active == tab,
             onSelect: () => widget.session.selectSessionPanel(widget.task!, tab),
             onClose: () => _close(tab),
@@ -162,7 +195,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         const Text('Recently closed', style: TextStyle(fontSize: 12, color: opencodeFaint)),
         for (final tab in state.closed) ListTile(contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.history_rounded, size: 16, color: opencodeFaint),
-          title: const Text('Context', style: TextStyle(fontSize: 13)),
+          title: Text(_panelTitle(tab), maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13)),
           onTap: () => widget.session.openSessionPanel(widget.task!, tab)),
       ],
     ],
@@ -205,7 +239,7 @@ class _PanelTab extends StatelessWidget {
   const _PanelTab({super.key, required this.title, required this.icon, required this.active,
     required this.onSelect, required this.onClose, required this.onMenu});
   final String title;
-  final IconData icon;
+  final Widget icon;
   final bool active;
   final VoidCallback onSelect, onClose;
   final ValueChanged<Offset> onMenu;
@@ -215,7 +249,7 @@ class _PanelTab extends StatelessWidget {
       child: Material(color: active ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(6),
         child: InkWell(onTap: onSelect, borderRadius: BorderRadius.circular(6), child: SizedBox(height: 32,
           child: Padding(padding: const EdgeInsets.only(left: 10, right: 4), child: Row(children: [
-            Icon(icon, size: 14, color: active ? opencodeInk : opencodeFaint),
+            icon,
             const SizedBox(width: 8),
             Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 12, color: active ? opencodeInk : opencodeMuted))),
@@ -227,3 +261,7 @@ Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => Size
   child: IconButton(tooltip: label, onPressed: onPressed, padding: EdgeInsets.zero,
     style: IconButton.styleFrom(minimumSize: const Size.square(28), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
     icon: Icon(icon, size: 16, color: opencodeMuted)));
+
+String _panelTitle(String tab) => tab == contextPanel ? 'Context'
+  : isFilePanel(tab) ? filePanelPath(tab).split('/').where((part) => part.isNotEmpty).lastOrNull ?? '/'
+  : 'New tab';

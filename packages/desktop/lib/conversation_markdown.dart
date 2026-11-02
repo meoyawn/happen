@@ -14,6 +14,7 @@ import 'image_preview.dart';
 import 'inline_image.dart';
 import 'conversation_data.dart';
 import 'desktop_toast.dart';
+import 'file_reference.dart';
 
 const conversationInk = Color(0xff1a1c1f);
 const conversationMuted = Color(0xff8b8e95);
@@ -301,14 +302,16 @@ Uri? _contentUri(String source, String directory) {
 
 Future<void> _openLink(BuildContext context, String href, String directory) async {
   try {
-    // File references commonly include :line[:column]. The OS opens the file.
+    final file = conversationFileLocation(href, directory);
+    if (file != null) {
+      ConversationFileScope.open(context, file);
+      return;
+    }
     final uri = _contentUri(href, directory);
-    if (uri == null || !{'http', 'https', 'mailto', 'file'}.contains(uri.scheme)) {
+    if (uri == null || !{'http', 'https', 'mailto'}.contains(uri.scheme)) {
       throw const FormatException('Unsupported link');
     }
-    final target = uri.scheme == 'file'
-        ? uri.replace(fragment: '', query: '').toFilePath().replaceFirst(RegExp(r':\d+(?::\d+)?$'), '')
-        : uri.toString();
+    final target = uri.toString();
     if (Platform.isMacOS) {
       await Process.start('/usr/bin/open', [target], mode: ProcessStartMode.detached);
     } else if (Platform.isLinux) {

@@ -2,6 +2,10 @@ import 'package:protocol/protocol.dart';
 
 const contextPanel = 'context:main';
 
+String filePanelPath(String tab) => tab.substring('file:'.length);
+bool isFilePanel(String tab) => tab.startsWith('file:/') && !tab.contains('\x00');
+bool _knownPanel(String tab) => tab == contextPanel || isFilePanel(tab);
+
 /// OpenCode's per-session side region: stored tabs, selection and chat width.
 /// New tabs are launchers and disappear when the application closes.
 class SessionPanelState {
@@ -9,6 +13,7 @@ class SessionPanelState {
   double? sessionWidth;
   final tabs = <String>[];
   final closed = <String>[];
+  final fileReveals = <String, ({int? line, int revision})>{};
   String? active;
 }
 
@@ -18,9 +23,9 @@ SessionPanelState readSessionPanels(Json value) {
   final width = value['sessionWidth'];
   if (width is num && width.isFinite) state.sessionWidth = width.toDouble().clamp(400, double.infinity);
   final tabs = value['tabs'], closed = value['closed'];
-  state.tabs.addAll((tabs is List ? tabs : const []).whereType<String>().where((tab) => tab == contextPanel).toSet());
+  state.tabs.addAll((tabs is List ? tabs : const []).whereType<String>().where(_knownPanel).toSet());
   state.closed.addAll((closed is List ? closed : const []).whereType<String>()
-    .where((tab) => tab == contextPanel && !state.tabs.contains(tab)).toSet());
+    .where((tab) => _knownPanel(tab) && !state.tabs.contains(tab)).toSet());
   final active = value['active'];
   state.active = state.tabs.contains(active) ? active as String : state.tabs.firstOrNull;
   if (state.opened && state.tabs.isEmpty) {

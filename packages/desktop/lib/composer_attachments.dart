@@ -9,7 +9,9 @@ import 'package:protocol/protocol.dart';
 import 'conversation_markdown.dart';
 import 'conversation_data.dart';
 import 'file_icon.dart';
+import 'file_reference.dart';
 import 'appearance.dart';
+import 'desktop_toast.dart';
 
 class ComposerAttachment {
   ComposerAttachment({required this.name, required this.path, required this.image, this.ownedDirectory}) : id = newId();
@@ -198,6 +200,18 @@ class _AttachmentTile extends StatefulWidget {
 class _AttachmentTileState extends State<_AttachmentTile> {
   bool _hovered = false, _focused = false;
 
+  void _openFile() {
+    try {
+      final path = widget.attachment['path'] as String?;
+      final location = path == null ? null
+        : conversationFileLocation(path.startsWith('/') ? Uri.file(path).toString() : path, widget.directory);
+      if (location == null) throw const FormatException('File path is unavailable');
+      ConversationFileScope.open(context, location);
+    } catch (_) {
+      showDesktopToast(context, 'This file could not be opened.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final attachment = widget.attachment;
@@ -210,7 +224,8 @@ class _AttachmentTileState extends State<_AttachmentTile> {
           : (attachment['path'] as String? ?? '').startsWith('/') ? Uri.file(attachment['path'] as String).toString()
           : attachment['path'] as String? ?? '',
         label: name, directory: widget.directory, thumbnail: true)
-      : Container(width: 160, padding: const EdgeInsets.all(8),
+      : InkWell(onTap: _openFile, borderRadius: BorderRadius.circular(6),
+        child: Container(width: 160, padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(color: const Color(0x07000000), borderRadius: BorderRadius.circular(6),
           border: Border.all(color: opencodeBorder, width: .5)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
@@ -220,7 +235,7 @@ class _AttachmentTileState extends State<_AttachmentTile> {
           Row(spacing: 4, children: [FileIcon(name, size: 12),
             Flexible(child: Text(suffix == name.toUpperCase() ? 'File' : suffix, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 11, height: 14 / 11, letterSpacing: .05, color: opencodeMuted)))]),
-        ])));
+        ]))));
     return MouseRegion(onEnter: (_) => setState(() => _hovered = true), onExit: (_) => setState(() => _hovered = false),
       child: Focus(onFocusChange: (value) => setState(() => _focused = value), child: Stack(clipBehavior: Clip.none, children: [
         tile,

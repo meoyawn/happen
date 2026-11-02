@@ -334,7 +334,7 @@ class DesktopSession extends ChangeNotifier {
     _savePanels(target);
   }
 
-  void openSessionPanel(DesktopTask target, String tab, {bool toggle = false}) {
+  void openSessionPanel(DesktopTask target, String tab, {bool toggle = false, int? line}) {
     final state = panelsFor(target);
     if (toggle && state.opened && state.active == tab) {
       state.opened = false;
@@ -345,6 +345,9 @@ class DesktopSession extends ChangeNotifier {
       state.closed.remove(tab);
       state.active = tab;
       state.opened = true;
+      if (isFilePanel(tab)) {
+        state.fileReveals[tab] = (line: line, revision: (state.fileReveals[tab]?.revision ?? 0) + 1);
+      }
     }
     _savePanels(target);
   }
@@ -370,6 +373,7 @@ class DesktopSession extends ChangeNotifier {
     final index = state.tabs.indexOf(tab);
     if (index < 0) return;
     state.tabs.removeAt(index);
+    state.fileReveals.remove(tab);
     if (!tab.startsWith('new:')) { state.closed..remove(tab)..insert(0, tab); }
     if (state.active == tab) state.active = state.tabs.isEmpty ? null : state.tabs[index.clamp(0, state.tabs.length - 1)];
     if (state.tabs.isEmpty) state.opened = false;
