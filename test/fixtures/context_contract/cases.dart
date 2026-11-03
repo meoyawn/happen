@@ -1,3 +1,4 @@
+import 'fermented_beetroot.dart';
 import 'tldw.dart';
 
 const contextCases = <Map<String, dynamic>>[
@@ -44,6 +45,7 @@ const contextCases = <Map<String, dynamic>>[
     ],
     'result': 'WEB_CONTEXT_RECEIPT',
   },
+  fermentedBeetrootCase,
   tldwYoutubeCase,
   {
     'id': 'clock-sleep', 'workflow': 'sleep', 'prompt': 'Pause briefly using clock.sleep, then reply READY.',

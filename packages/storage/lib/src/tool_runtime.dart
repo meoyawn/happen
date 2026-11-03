@@ -16,11 +16,17 @@ extension ToolRuntimeHistory on TaskStore {
         }},
     ];
     final previous = db.select(
-      "SELECT json_extract(data, '\$.id') AS id FROM events "
+      "SELECT seq, json_extract(data, '\$.id') AS id FROM events "
       "WHERE type IS 'tool_runtime.started' ORDER BY seq DESC LIMIT 1",
     ).firstOrNull;
     if (previous?['id'] == id) return events.isEmpty ? [] : appendBatch(events);
-    final restarted = previous != null || input.isNotEmpty;
+    // Hosted output and completed service calls have no native command handles
+    // to invalidate. Only warn when this runtime could have issued one.
+    final restarted = events.isNotEmpty || db.select(
+      "SELECT 1 FROM events WHERE seq > ? AND type IN ('tool.started', 'host_tool.started') "
+      "AND json_extract(data, '\$.name') IN ('exec_command', 'write_stdin', 'shell') LIMIT 1",
+      [previous?['seq'] ?? 0],
+    ).isNotEmpty;
     return appendBatch([...events,
       {'type': 'tool_runtime.started', 'data': {'id': id}},
       if (restarted) {'type': 'input.committed', 'data': {

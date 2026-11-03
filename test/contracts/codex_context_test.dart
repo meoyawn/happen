@@ -356,7 +356,8 @@ double median(List<int> values) {
 }
 
 Future<Json> scenario(Json scenario, String model, String codex, String output, int samples,
-  CancellationToken cancellation, String catalog, {required bool codeModeOnly}) async {
+  CancellationToken cancellation, String catalog, {required bool codeModeOnly,
+    required String reasoning, required String reasoningSummary}) async {
   final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
   await Directory(output).create(recursive: true);
   final home = (await Directory(output).createTemp('home-')).path;
@@ -399,7 +400,8 @@ Future<Json> scenario(Json scenario, String model, String codex, String output, 
 model = "$model"
 model_catalog_json = ${jsonEncode(catalog)}
 model_provider = "context_contract"
-model_reasoning_effort = "low"
+model_reasoning_effort = "$reasoning"
+model_reasoning_summary = "$reasoningSummary"
 web_search = "live"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -438,7 +440,7 @@ env_key = "CONTEXT_CONTRACT_KEY"
 remote_compaction = "v2"
 ''');
   final happenConfig = <String, dynamic>{'code_mode_only': codeModeOnly, 'providers': {'openai': {'model': model,
-    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'live',
+    'settings': <String, dynamic>{'reasoning': reasoning, 'reasoning_summary': reasoningSummary, 'web_search': 'live',
       'request_user_input': scenario['request_user_input'] == true}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
@@ -520,6 +522,8 @@ remote_compaction = "v2"
       }
       checks['same_model_calls:run-$iteration'] = a.length == b.length && a.isNotEmpty;
       checks['same_selected_model:run-$iteration'] = [...a, ...b].every((request) => request['model'] == model);
+      checks['same_selected_reasoning:run-$iteration'] = [...a, ...b].every((request) =>
+        request['reasoning']?['effort'] == reasoning && request['reasoning']?['summary'] == reasoningSummary);
       checks['happen:no_client_metadata:run-$iteration'] = b.isNotEmpty && b.every((request) => !request.containsKey('client_metadata'));
       if (a.isNotEmpty && b.isNotEmpty) {
         final comparison = await compare(a.last, b.last, runPath);
@@ -634,16 +638,21 @@ remote_compaction = "v2"
               text(item) == "I'll check the requested tools.");
         }
       }
-      if (scenario['workflow'] == 'tldw') {
-        final steps = scenario['responses'] as List;
+      if (scenario['retain_model_items'] == true) {
+        final steps = [...(scenario['responses'] as List), ...(scenario['resume_responses'] as List? ?? [])];
         final expected = steps.take(steps.length - 1).expand((step) => step as List).map(jsonObject).toList();
         for (final pair in [('codex', a), ('happen', b)]) {
           final input = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject).toList();
           final retained = input.where((item) => peer.modelIds[pair.$1]?.containsKey(item['id']) == true).toList();
-          checks['${pair.$1}:tldw_model_items_retained_in_order:run-$iteration'] = pair.$2.length == steps.length &&
+          checks['${pair.$1}:model_items_retained_in_order:run-$iteration'] = pair.$2.length == steps.length &&
             retained.length == expected.length && [for (var i = 0; i < expected.length && i < retained.length; i++)
               expected[i].entries.every((entry) => retained[i].containsKey(entry.key) && equals(entry.value).matches(retained[i][entry.key], {}))]
               .every((value) => value);
+        }
+      }
+      if (scenario['workflow'] == 'tldw') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final input = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject).toList();
           final receipts = {for (final item in input.where((item) => item['type'] == 'custom_tool_call_output')) item['call_id']: item['output']};
           final skillReads = receipts['tldw_read_skills'] is List
             ? (receipts['tldw_read_skills'] as List).skip(1).map((part) => jsonObject(jsonDecode(part['text'] as String))).toList() : <Json>[];
@@ -796,7 +805,8 @@ remote_compaction = "v2"
 }
 
 void main() {
-  const models = ['gpt-6.1-sol', 'gpt-6-sol'];
+  const models = ['gpt-6.1-terra'];
+  const reasoning = 'max', reasoningSummary = 'auto';
   const samples = 3;
   const codex = 'codex';
   var output = '';
@@ -805,7 +815,7 @@ void main() {
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
-  final report = <String, dynamic>{'models': models, 'code_mode': true,
+  final report = <String, dynamic>{'models': models, 'reasoning': reasoning, 'reasoning_summary': reasoningSummary, 'code_mode': true,
     'code_mode_only': codeModeOnlyValues, 'results': <Json>[]};
   setUpAll(() async {
     final isolatedHome = Platform.environment['CONTEXT_CONTRACT_HOME'];
@@ -845,7 +855,7 @@ void main() {
   });
   for (final model in models) {
     for (final codeModeOnly in codeModeOnlyValues) {
-      group('$model code_mode_only=$codeModeOnly', () {
+      group('$model reasoning=$reasoning code_mode_only=$codeModeOnly', () {
         for (final fixture in contextCases) {
           final value = {...fixture,
             if (!codeModeOnly && fixture['mixed_responses'] is List) 'responses': fixture['mixed_responses']};
@@ -857,11 +867,14 @@ void main() {
             Json result;
             try {
               result = await scenario(value, model, codex, path, samples,
-                cancellation.merge(deadline).merge(lifetime), catalogs[codeModeOnly]!.absolute.path, codeModeOnly: codeModeOnly);
+                cancellation.merge(deadline).merge(lifetime), catalogs[codeModeOnly]!.absolute.path,
+                codeModeOnly: codeModeOnly, reasoning: reasoning, reasoningSummary: reasoningSummary);
             } catch (error) {
               result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
             } finally { deadline.cancel(); }
             result['model'] = model;
+            result['reasoning'] = reasoning;
+            result['reasoning_summary'] = reasoningSummary;
             result['code_mode'] = true;
             result['code_mode_only'] = codeModeOnly;
             (report['results'] as List).add(result);

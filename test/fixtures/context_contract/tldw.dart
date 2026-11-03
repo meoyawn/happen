@@ -19,7 +19,7 @@ const tldwYoutubeCase = <String, dynamic>{
   'binary_sources': {'transcript.txt': 'transcripts/ebILGCoN4UU.txt'},
   'contains': ['Print the TLDW in the original language.', 'fixture-tldw', 'fixture-youtube-transcript'],
   'absent': ['[14:01]', 'TLDW_TRANSCRIPT_SKILL_START', 'TLDW_TRANSCRIPT_SKILL_END', 'TLDW_SUMMARY_SKILL_START', 'TLDW_SUMMARY_SKILL_END'],
-  'continue_after': [0, 6], 'indexless_stream': true,
+  'continue_after': [0, 6], 'indexless_stream': true, 'retain_model_items': true,
   'responses': [
     [
       {'type': 'message', 'role': 'assistant', 'phase': 'commentary',

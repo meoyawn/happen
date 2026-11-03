@@ -29,10 +29,11 @@ workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The model axis is `gpt-6.1-sol` and `gpt-6-sol`. Each pair uses the same base model
-catalog, explicitly generated
+The matrix uses `gpt-6.1-terra` with `max` reasoning and `auto` reasoning summaries,
+matching the supplied context exports, in both Code Mode only and mixed tool
+modes. Each pair uses the same base model catalog, explicitly generated
 configs, separate empty data/credential homes, real instruction and skill files,
-code-mode-only execution, and Standard Responses. The generated Codex catalog
+tool settings, and Standard Responses. The generated Codex catalog
 explicitly sets `use_responses_lite: false`; Happen has no Responses Lite path.
 Every captured request must have `parallel_tool_calls: true` and omit
 `reasoning.context` (the standard backend currently defaults to `current_turn`).
@@ -43,7 +44,7 @@ selection is not overridden: the runtime follows Codex's account-database shell
 selection and platform defaults, not the launching terminal's `SHELL` value.
 Provider-hosted web search is enabled in both configurations (`web_search = "live"`).
 The reference keeps the current default `sleep_tool` gate and model-driven mode;
-both matrix models advertise clock support. Goals are explicitly enabled.
+the matrix model advertises clock support. Goals are explicitly enabled.
 
 Global skill discovery is explicitly redirected to the same temporary
 `home-*/.agents/skills` directory in a randomly named fixture home. Codex receives
@@ -71,6 +72,16 @@ URL citations through that same Responses stream, then verifies their retention
 in the next actual inference request. It needs no live internet query or a second
 fake search implementation. Sleep is exercised directly, including invalid zero
 duration; goal tools create, inspect, account usage, complete, and inspect again.
+
+The `fermented-beetroot` case preserves the Russian prompt, all fourteen native
+output items, web search/open/find actions, reasoning summaries, and the cited
+final answer from `context-21b8348e.json`. The hosted workflow arrives in one
+indexless Responses stream without client tool calls. Only model IDs and opaque
+encrypted reasoning use fixture identities. A second user turn cold-resumes
+both harnesses and requires every emitted item, including the final answer and
+all citation metadata, to reach the next actual inference request in order.
+No live web requests or personal instructions are used.
+
 The goal case also cold-resumes the completed goal: Codex launches a new CLI
 process, and Happen hibernates its session owners before the next prompt. Goal
 state uses generic namespaced KV in the same session SQLite; its rules live in
@@ -187,7 +198,7 @@ implemented. Unawaited work is cancelled when the module completes. The generic
 OpenCode evaluator retains its separate async-function/return contract.
 
 The runtime includes real PTY execution, ordered image/generated-image/audio
-output, and the Images API generation/editing service. The two matrix models do
+output, and the Images API generation/editing service. The matrix model does
 not accept audio input, so the recorded-audio case requires Codex's unsupported
 audio notice in the original content position, without treating base64 as prose.
 The media fixtures inspect

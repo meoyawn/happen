@@ -110,10 +110,11 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
         attached = true;
         widget.onAttached?.call();
       } else {
-        if (trace) await Clipboard.setData(ClipboardData(text: file.path));
+        final path = file.absolute.path;
+        await Clipboard.setData(ClipboardData(text: path));
         if (mounted) {
           showDesktopToast(context, trace ? 'End-to-end trace exported' : 'LLM context exported',
-            description: trace ? 'Path copied to clipboard: ${file.path}' : 'Saved to ${file.path}', icon: Icons.check_rounded);
+            description: 'Path copied to clipboard: $path', icon: Icons.check_rounded);
         }
       }
     } on CancelledException { /* The caller owns the export lifetime. */ }
@@ -159,15 +160,12 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: opencodeMuted))),
     if (trace) IconButton(tooltip: 'Refresh session trace counts', visualDensity: VisualDensity.compact,
       onPressed: _traceLoading || !enabled ? null : _loadTraceStatus, icon: const Icon(Icons.refresh, size: 16)),
-    if (trace) Tooltip(message: 'Export end-to-end trace JSON and copy its path',
-      child: TextButton.icon(onPressed: _exporting || !enabled ? null : () => _export(trace: true),
+    Tooltip(message: 'Export $label JSON and copy its absolute path',
+      child: TextButton.icon(onPressed: _exporting || !enabled ? null : () => _export(trace: trace),
         style: TextButton.styleFrom(foregroundColor: opencodeMuted, padding: const EdgeInsets.symmetric(horizontal: 6),
           textStyle: const TextStyle(fontSize: 11)),
         icon: const Icon(Icons.file_download_outlined, size: 16),
-        label: Text(_exporting ? 'Exporting…' : 'Export & copy path')))
-    else IconButton(tooltip: 'Download $label JSON', visualDensity: VisualDensity.compact,
-      onPressed: _exporting || !enabled ? null : () => _export(),
-      icon: const Icon(Icons.file_download_outlined, size: 16)),
+        label: Text(_exporting ? 'Exporting…' : 'Export & copy path'))),
     IconButton(tooltip: 'Attach $label to new session', visualDensity: VisualDensity.compact,
       onPressed: _exporting || !enabled ? null : () => _export(trace: trace, attach: true),
       icon: const Icon(Icons.add_comment_outlined, size: 16)),
