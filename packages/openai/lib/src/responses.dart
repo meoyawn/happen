@@ -43,6 +43,7 @@ class ResponsesClient {
   final HttpConnections? connections;
   final bool _ownsHttp;
   Future<Directory?>? _requestDump;
+  bool _httpFallback = false;
 
   Future<void> _dump(String encoded, CancellationToken cancellation) async {
     if (Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty != true) return;
@@ -63,7 +64,7 @@ class ResponsesClient {
       };
       final uri = endpoint.resolve(edit ? 'images/edits' : 'images/generations');
       HttpReply response;
-      try { response = await _post(uri, body, headers, cancellation); }
+      try { response = await retryRequest(() => _post(uri, body, headers, cancellation), cancellation); }
       on ResponseFailure catch (error) {
         if (error.status == 401 && attempt == 0) continue;
         throw ModelFailure('image_generation_http', 'OpenAI image ${edit ? 'edit' : 'generation'} failed (HTTP ${error.status})');
@@ -157,14 +158,22 @@ class ResponsesClient {
     int? maxOutputTokens,
     void Function(Json event)? onEvent,
   }) async {
-    final body = responsesRequest(model: model, instructions: instructions, input: input,
+    var activeTransport = transport == 'websocket' && _httpFallback ? 'http' : transport;
+    var body = responsesRequest(model: model, instructions: instructions, input: input,
       tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
-      transport: transport, verbosity: verbosity, reasoningSummary: reasoningSummary,
+      transport: activeTransport, verbosity: verbosity, reasoningSummary: reasoningSummary,
       maxOutputTokens: maxOutputTokens);
-    return traceAsync('openai.responses', () => retryRequest(
-      () => _respond(body, sessionId, transport, cancellation, onEvent),
-      cancellation, maxRetries: null, onEvent: onEvent), category: 'model',
-      attributes: {'gen_ai.request.model': model, 'network.transport': transport});
+    return traceAsync('openai.responses', () => retryResponseStream(
+      () => _respond(body, sessionId, activeTransport, cancellation, onEvent), cancellation,
+      unboundedConnections: !input.any((item) => item['type'] == 'compaction_trigger'),
+      fallbackTransport: () {
+        if (activeTransport != 'websocket') return false;
+        activeTransport = 'http';
+        _httpFallback = true;
+        body = {...body, 'stream': true}..remove('type');
+        return true;
+      }, onEvent: onEvent), category: 'model',
+      attributes: {'gen_ai.request.model': model, 'network.transport': activeTransport});
   }
 
   Future<ResponsesReply> _respond(
@@ -196,9 +205,9 @@ class ResponsesClient {
       }
       Future<void> Function()? closeBody;
       try {
-        final response = await _post(endpoint, body,
+        final response = await retryRequest(() => _post(endpoint, body,
           {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
-          headersTimeout: const Duration(seconds: 60));
+          headersTimeout: const Duration(seconds: 60)), cancellation, onEvent: onEvent);
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
@@ -468,14 +477,17 @@ class ResponsesClient {
   static ResponseFailure _failure(Json detail, {int? status, RetryAdvice? advice}) {
     final error = detail['error'] ?? detail['response']?['error'] ?? detail;
     final code = error is Map ? error['code'] ?? error['type'] : null;
+    final providerMessage = error is Map ? error['message'] : null;
+    final message = providerMessage is String && providerMessage.trim().isNotEmpty
+      ? clippedText(providerMessage.trim(), 4096) : null;
     if ([
       'context_length_exceeded',
       'context_window_exceeded',
       'context_overflow',
     ].contains(code)) {
-      return const ResponseFailure(
+      return ResponseFailure(
         'context_overflow',
-        'GPT context limit exceeded',
+        message ?? 'GPT context limit exceeded',
       );
     }
     for (final headers in [if (error is Map) error['headers'], detail['headers']]) {
@@ -507,19 +519,13 @@ class ResponsesClient {
     }
     final needsAdvice = status == 429 || {'server_is_overloaded', 'policy_capacity_unavailable'}.contains(code);
     final retryable = !terminal && (needsAdvice ? advice != null :
-      status == null || status == 408 || status >= 500 && status <= 599);
-    if (retryable) {
-      return ResponseFailure(
-        'retryable_provider_error',
-        'GPT request failed${status == null ? '' : ' (HTTP $status)'}',
-        status: status, retryAfter: advice, retryable: true,
-      );
-    }
-    // Do not echo arbitrary response bodies into persisted task errors.
+      code == 'websocket_connection_limit_reached' || status == null || status == 408 || status >= 500 && status <= 599);
+    // Retain structured diagnostics without falling back to raw response bodies.
     return ResponseFailure(
-      'provider_error',
-      'GPT request failed${status == null ? '' : ' (HTTP $status)'}',
-      status: status, retryAfter: advice,
+      code is String && code.isNotEmpty ? clippedText(code, 256)
+        : retryable ? 'retryable_provider_error' : 'provider_error',
+      message ?? 'GPT request failed${status == null ? '' : ' (HTTP $status)'}',
+      status: status, retryAfter: advice, retryable: retryable,
     );
   }
 

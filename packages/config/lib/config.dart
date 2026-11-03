@@ -11,6 +11,7 @@ import 'package:yaml/yaml.dart';
 import 'src/schema.dart';
 export 'src/schema.dart' show globalConfigSchema;
 export 'src/watcher.dart' show ConfigWatcher;
+export 'src/executables.dart' show McpExecutable, readMcpExecutables;
 
 typedef ConfigSnapshot = ({String? path, Map<String, dynamic> values});
 

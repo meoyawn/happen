@@ -271,6 +271,70 @@ void main() {
     stopped(pidOf(finalServers, 'alpha'));
   });
 
+  test('watched binaries restart only their servers without config edits', () async {
+    final build = File('${root.path}/build/mcp');
+    await build.parent.create(recursive: true);
+    final compiled = await Process.run(Platform.resolvedExecutable, [
+      'compile', 'exe', fixture, '-o', build.path,
+    ]);
+    expect(compiled.exitCode, 0, reason: '${compiled.stdout}${compiled.stderr}');
+    final target = File('${root.path}/targets/mcp');
+    final alternate = File('${root.path}/alternate/mcp');
+    await target.parent.create(recursive: true);
+    await alternate.parent.create(recursive: true);
+    await build.copy(target.path);
+    await build.copy(alternate.path);
+    final command = Link('${root.path}/bin/mcp');
+    await command.parent.create(recursive: true);
+    await command.create(target.path);
+    final source = '''
+mcp_servers:
+${local('stable')}
+  rebuilt:
+    command: mcp
+    cwd: ${jsonEncode(root.path)}
+    env: {PATH: bin}
+    legacy_fallback: false
+''';
+    await write(source);
+    await start();
+    final initial = await status();
+    expect(ready(initial, ['stable', 'rebuilt']), isTrue);
+    final stablePid = pidOf(initial, 'stable');
+    var previousPid = pidOf(initial, 'rebuilt');
+    Future<void> replaced(Future<void> Function() edit) async {
+      final updated = await changed(edit, (values) =>
+          ready(values, ['stable', 'rebuilt']) &&
+          pidOf(values, 'rebuilt') != previousPid);
+      stopped(previousPid);
+      expect(pidOf(updated, 'stable'), stablePid);
+      expect(await file.readAsString(), source);
+      previousPid = pidOf(updated, 'rebuilt');
+    }
+
+    // Build tools commonly publish by renaming over the symlink target.
+    await replaced(() async {
+      final pending = await build.copy('${target.path}.new');
+      await pending.rename(target.path);
+    });
+    // Follow the new target after the command symlink itself is replaced.
+    await replaced(() async {
+      final pending = Link('${command.path}.new');
+      await pending.create(alternate.path);
+      await pending.rename(command.path);
+    });
+    await replaced(() async {
+      final pending = await build.copy('${alternate.path}.new');
+      await pending.rename(alternate.path);
+    });
+    // Reading binaries, unchanged polls and manual reconciliation are inert.
+    await alternate.readAsBytes();
+    await Future<void>.delayed(const Duration(milliseconds: 2300));
+    final unchanged = servers(await client!.request('mcp.reload', {}));
+    expect(pidOf(unchanged, 'rebuilt'), previousPid);
+    expect(pidOf(unchanged, 'stable'), stablePid);
+  });
+
   test(
     'watched URL entries reconnect without owning remote server processes',
     () async {

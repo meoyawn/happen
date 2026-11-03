@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -290,9 +291,14 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                     );
                     index -= historyOffset;
                     final row = rows[index];
-                    if (row.id == 'working') return thinking
-                      ? _TurnClock(key: const ValueKey('working'), startedAt: startedAt, status: task.retryStatus)
-                      : const SizedBox(key: ValueKey('working'), height: 36);
+                    if (row.id == 'working') {
+                      if (!thinking) return const SizedBox(key: ValueKey('working'), height: 36);
+                      if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
+                        return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
+                      }
+                      return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
+                        status: task.retryStatus?['message'] as String?);
+                    }
                     final entry = row.entry;
                     return Padding(
                       key: ValueKey(row.id),
@@ -585,6 +591,10 @@ class _Timestamp extends StatelessWidget {
 
 String _duration(DateTime start, DateTime end) {
   final seconds = end.difference(start).inSeconds.clamp(0, 1 << 32);
+  return _durationSeconds(seconds);
+}
+
+String _durationSeconds(int seconds) {
   if (seconds < 1) return '<1s';
   if (seconds < 60) return '${seconds}s';
   if (seconds < 3600) return '${seconds ~/ 60}m ${seconds % 60}s';
@@ -613,14 +623,17 @@ class _CompactionRow extends StatelessWidget {
   final ChatEntry entry;
   final String directory;
   final VoidCallback onExpand;
-  final String? retryStatus;
+  final Map<String, dynamic>? retryStatus;
 
   @override
   Widget build(BuildContext context) {
     final compaction = entry.compaction!;
     if (compaction.status == 'running') {
+      if (retryStatus?['error'] != null || retryStatus?['provider_delay'] == true) {
+        return _ProviderRetryNotice(status: retryStatus!, contextLabel: 'Compacting context');
+      }
       return _TurnClock(startedAt: compaction.startedAt,
-        status: 'Compacting context${retryStatus == null ? '' : ' · $retryStatus'}');
+        status: 'Compacting context${retryStatus == null ? '' : ' · ${retryStatus!['message']}'}');
     }
     final label = switch (compaction.status) {
       'done' => 'Context compacted',
@@ -664,6 +677,95 @@ class _TurnClockState extends State<_TurnClock> {
       child: SizedBox(height: 36, child: Padding(padding: const EdgeInsets.only(top: 12),
         child: Align(alignment: Alignment.topLeft,
           child: ThinkingLabel(label: widget.status ?? 'Working', fontSize: 13)))));
+  }
+}
+
+class _ProviderRetryNotice extends StatefulWidget {
+  const _ProviderRetryNotice({super.key, required this.status, this.contextLabel});
+  final Map<String, dynamic> status;
+  final String? contextLabel;
+
+  @override
+  State<_ProviderRetryNotice> createState() => _ProviderRetryNoticeState();
+}
+
+class _ProviderRetryNoticeState extends State<_ProviderRetryNotice> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _watchDeadline();
+  }
+
+  @override
+  void didUpdateWidget(_ProviderRetryNotice oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.status['next'] != widget.status['next']) _watchDeadline();
+  }
+
+  void _watchDeadline() {
+    _timer?.cancel();
+    final next = widget.status['next'] as int?;
+    if (next == null || next <= DateTime.now().millisecondsSinceEpoch) return;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (DateTime.now().millisecondsSinceEpoch >= next) _timer?.cancel();
+      setState(() {});
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = widget.status;
+    final error = status['error'] as Map?;
+    final attempt = status['attempt'];
+    final maximum = status['max_retries'];
+    final progress = attempt == null ? '' : ' ($attempt${maximum == null ? '' : '/$maximum'})';
+    final label = 'Retrying provider$progress';
+    final next = status['next'] as int?;
+    final remaining = next == null ? 0 : next - DateTime.now().millisecondsSinceEpoch;
+    final waiting = remaining > 0;
+    final detail = error?['message'] as String?;
+    final code = error?['code'] as String?;
+    final http = error?['http_status'];
+    final diagnostics = [if (code != null) code, if (http != null) 'HTTP $http'].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(color: opencodeLayer,
+          border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(8)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Semantics(liveRegion: true, child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(waiting ? Icons.schedule_outlined : Icons.refresh_rounded, size: 16, color: opencodeMuted),
+            const SizedBox(width: 8),
+            Expanded(child: Text('${widget.contextLabel == null ? '' : '${widget.contextLabel} · '}$label',
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: opencodeInk))),
+          ])),
+          if (detail != null && detail.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(detail, style: const TextStyle(fontSize: 13, height: 1.4, color: opencodeMuted)),
+          ],
+          if (diagnostics.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            SelectableText(diagnostics, style: const TextStyle(fontSize: 12, color: opencodeFaint)),
+          ],
+          const SizedBox(height: 8),
+          Text(waiting
+            ? '${status['provider_delay'] == true ? 'Provider requested a wait. ' : ''}'
+              'Retrying automatically in ${_durationSeconds((remaining + 999) ~/ 1000)}.'
+            : 'Retrying now…',
+            style: const TextStyle(fontSize: 12, color: opencodeMuted)),
+        ]),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 }
 

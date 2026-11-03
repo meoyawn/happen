@@ -16,7 +16,6 @@ import 'file_reference.dart';
 import 'file_viewer.dart';
 import 'panel_state.dart';
 import 'session.dart';
-import 'session_question.dart';
 import 'sidebar_resizer.dart';
 import 'window_chrome.dart';
 
@@ -214,14 +213,6 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             onPendingAction: widget.session.changePending))),
     if (side.sideError case final error?) Padding(padding: const EdgeInsets.symmetric(horizontal: 20),
       child: SelectableText(error, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
-    if (side.questions.values.firstOrNull case final request?)
-      Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
-        key: ValueKey('question:${request['id']}'), request: request,
-        draft: side.questionDrafts.putIfAbsent(request['id'] as String,
-          () => QuestionDraft.fromRequest(request)),
-        enabled: widget.session.connected,
-        onAnswer: (answers, cancellation) => widget.session.answerQuestion(
-          side, request['id'] as String, answers, cancellation: cancellation))),
     widget.sideComposer(side, active),
   ]);
 

@@ -14,10 +14,12 @@ typedef _Reference = ({int start, int end, ComposerFileReference file});
 /// not rebuild when text changes, and reference labels are painted as text.
 class ComposerEditor extends StatefulWidget {
   const ComposerEditor({super.key, required this.controller, required this.focusNode,
-    required this.enabled, required this.paste, required this.copy});
+    required this.enabled, required this.paste, required this.copy,
+    this.placeholder = 'Ask anything, / for commands, @ for context…', this.label = 'Message'});
   final TextEditingController controller;
   final FocusNode focusNode;
   final bool enabled;
+  final String placeholder, label;
   final Future<void> Function(SelectionChangedCause) paste;
   final Future<void> Function({bool cut}) copy;
 
@@ -313,12 +315,12 @@ class _ComposerEditorState extends State<ComposerEditor> {
       }
       return ValueListenableBuilder<double>(valueListenable: _height, builder: (context, height, _) => SizedBox(
         height: height,
-        child: Semantics(label: 'Message', textField: true, multiline: true,
+        child: Semantics(label: widget.label, textField: true, multiline: true,
           child: CodeEditor(key: const ValueKey('composer-editor'), controller: _code,
             focusNode: widget.focusNode, autofocus: true, readOnly: !widget.enabled,
             wordWrap: true, autocompleteSymbols: false, chunkAnalyzer: const NonCodeChunkAnalyzer(),
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            hint: 'Ask anything, / for commands, @ for context…',
+            hint: widget.placeholder,
             style: const CodeEditorStyle(fontFamily: 'Inter', fontSize: 13, fontHeight: 20 / 13,
               textColor: opencodeInk, hintTextColor: opencodeFaint, backgroundColor: Colors.transparent,
               cursorColor: opencodeInk, cursorWidth: 1.5, cursorLineColor: Colors.transparent,

@@ -109,6 +109,37 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('provider retries show the reason and countdown, then clear on recovery', (tester) async {
+    final task = DesktopTask('cooldown', 'Cooldown')..loaded = true..running = true;
+    task.retryStatus = {
+      'type': 'retry', 'attempt': 1, 'provider_delay': true,
+      'next': DateTime.now().add(const Duration(seconds: 310)).millisecondsSinceEpoch,
+      'error': {'code': 'server_is_overloaded', 'message': 'The selected model is overloaded.', 'http_status': 503},
+    };
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump();
+    expect(find.text('Retrying provider (1)'), findsOneWidget);
+    expect(find.text('The selected model is overloaded.'), findsOneWidget);
+    expect(find.text('server_is_overloaded · HTTP 503'), findsOneWidget);
+    expect(find.textContaining(RegExp(r'Provider requested a wait\. Retrying automatically in \d+m \d+s\.')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    task.retryStatus = {...task.retryStatus!,
+      'next': DateTime.now().subtract(const Duration(seconds: 1)).millisecondsSinceEpoch};
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump();
+    expect(find.text('Retrying now…'), findsOneWidget);
+    expect(find.textContaining('Retrying automatically'), findsNothing);
+    task.retryStatus = null;
+    await open(tester, task, size: const Size(420, 800));
+    await tester.pump();
+    expect(find.text('Working'), findsWidgets);
+    expect(find.textContaining('Retrying provider'), findsNothing);
+    expect(find.text('The selected model is overloaded.'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('conversation renders Markdown, message times, turn duration, and copies original content', (tester) async {
     final started = DateTime(2026, 10, 31, 9, 41);
     const response = '''## Ready for review
@@ -194,7 +225,7 @@ print(message);
     expect(find.textContaining('Working'), findsNothing);
     expect(find.text('Internal compaction text', findRichText: true), findsNothing);
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    task.retryStatus = 'Reconnecting… 1/5';
+    task.retryStatus = {'type': 'retry', 'message': 'Reconnecting… 1/5'};
     await open(tester, task, size: const Size(420, 800));
     await tester.pump();
     expect(find.textContaining('Compacting context · Reconnecting… 1/5'), findsNWidgets(2));

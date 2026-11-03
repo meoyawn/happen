@@ -1570,6 +1570,9 @@ class AgentServer {
     if (task != null) {
       if (event['type'] == 'model.retrying') {
         task.retryStatus = {'type': 'retry', 'attempt': event['attempt'], 'message': event['message'],
+          if (event['max_retries'] != null) 'max_retries': event['max_retries'],
+          if (event['error'] != null) 'error': event['error'],
+          if (event['provider_delay'] == true) 'provider_delay': true,
           'next': DateTime.now().millisecondsSinceEpoch + (event['delay_ms'] as int? ?? 0)};
       } else if ({'model.started', 'model.connected', 'text.delta', 'reasoning.delta',
         'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) {

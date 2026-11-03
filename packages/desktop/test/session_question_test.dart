@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:desktop/appearance.dart';
+import 'package:desktop/composer_editor.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/session_question.dart';
@@ -10,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
+import 'package:re_editor/re_editor.dart';
 import 'package:server/server.dart';
 
 final _questions = <Json>[
@@ -24,6 +26,25 @@ final _questions = <Json>[
   {'header': 'Details', 'question': 'Anything else?', 'options': <Json>[]},
 ];
 
+Widget _composer(QuestionComposer answer) => Column(mainAxisSize: MainAxisSize.min, children: [
+  Flexible(fit: FlexFit.loose, child: answer.panel),
+  ComposerEditor(controller: answer.controller, focusNode: answer.focus, enabled: answer.enabled,
+    placeholder: answer.placeholder, label: 'Answer',
+    paste: (_) async {}, copy: ({bool cut = false}) async {}),
+  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+    if (answer.previous != null) TextButton(onPressed: answer.previous, child: const Text('Previous')),
+    FilledButton(onPressed: answer.canSubmit ? answer.advance : null, child: Text(answer.action)),
+  ]),
+]);
+
+Future<void> _typeAnswer(WidgetTester tester, String text) async {
+  tester.widget<CodeEditor>(find.byType(CodeEditor)).controller!.edit(
+    TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length)));
+  await tester.pump();
+}
+
+String _answer(WidgetTester tester) => tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text;
+
 void main() {
   testWidgets('question dock retains edits across navigation and retries the same answers', (tester) async {
     final draft = QuestionDraft(3);
@@ -36,79 +57,85 @@ void main() {
     Widget dock() => MaterialApp(theme: desktopTheme(), home: Scaffold(body: Center(
       child: SizedBox(width: 744, height: 480, child: SessionQuestionDock(
         request: {'id': 'request', 'questions': _questions}, draft: draft, onAnswer: answer,
+        composer: _composer,
       )),
     )));
     await tester.pumpWidget(dock());
     await tester.tap(find.text('Yes'));
-    await tester.tap(find.text('Next'));
+    await tester.pump(const Duration(milliseconds: 200));
     await tester.pumpAndSettle();
     await tester.sendKeyEvent(LogicalKeyboardKey.digit1);
     await tester.sendKeyEvent(LogicalKeyboardKey.digit2);
-    await tester.tap(find.text('Type your own answer'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'More');
-    await tester.tap(find.text('Back'));
+    await _typeAnswer(tester, 'More');
+    await tester.tap(find.text('Previous'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('No'));
-    await tester.tap(find.text('Next'));
+    await tester.pump(const Duration(milliseconds: 200));
     await tester.pumpAndSettle();
-    expect(find.text('More'), findsOneWidget);
-    await tester.tap(find.byTooltip('Minimize questions'));
+    expect(_answer(tester), 'More');
+    await tester.tap(find.byTooltip('Hide question and options'));
     await tester.pumpAndSettle();
     expect(find.text('First feature'), findsNothing);
-    await tester.tap(find.byTooltip('Expand questions'));
+    await tester.tap(find.byTooltip('Show question and options'));
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Type your own answer'));
-    await tester.tap(find.text('Type your own answer'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Detailed custom answer');
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Submit answers')).onPressed, isNull);
+    await _typeAnswer(tester, 'Detailed custom answer');
 
     // Leaving the tab unmounts the dock; its session still owns the draft.
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(dock());
     await tester.pumpAndSettle();
-    expect(find.text('Detailed custom answer'), findsOneWidget);
-    await tester.tap(find.text('Submit'));
+    expect(_answer(tester), 'Detailed custom answer');
+    await tester.tap(find.text('Submit answers'));
     await tester.pump();
-    await tester.tap(find.text('Submit'));
+    await tester.tap(find.text('Submit answers'));
     expect(sends, hasLength(1), reason: 'A pending answer cannot be submitted twice');
     first.completeError(StateError('Network unavailable'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Network unavailable'), findsOneWidget);
-    await tester.tap(find.text('Submit'));
+    await tester.tap(find.text('Submit answers'));
     await tester.pumpAndSettle();
     expect(sends, [
-      [['No'], ['A', 'B', 'More'], ['Detailed custom answer']],
-      [['No'], ['A', 'B', 'More'], ['Detailed custom answer']],
+      [['No'], ['More'], ['Detailed custom answer']],
+      [['No'], ['More'], ['Detailed custom answer']],
     ]);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
-  });
+  }, variant: TargetPlatformVariant.desktop());
 
-  testWidgets('Escape dismisses a question and a small dock scrolls without overflowing', (tester) async {
+  testWidgets('Escape collapses a compact question without dismissing its answer', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(360, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     var dismissed = false;
     await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: Scaffold(body: Center(
-      child: SizedBox(width: 320, height: 150, child: SessionQuestionDock(
+      child: SizedBox(width: 320, height: 240, child: SessionQuestionDock(
         request: {'id': 'small', 'questions': _questions}, draft: QuestionDraft(3),
         onAnswer: (answers, cancellation) async { dismissed = answers == null; },
+        composer: _composer,
       )),
     ))));
     await tester.pump();
+    await tester.tap(find.text('Yes'));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('A'));
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Next'));
+    await _typeAnswer(tester, 'A compact answer');
+    await tester.binding.setSurfaceSize(const Size(280, 480));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Type your own answer'));
-    await tester.tap(find.text('Type your own answer'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'A compact answer');
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(dismissed, false);
+    expect(find.byTooltip('Show question and options'), findsOneWidget);
+    expect(_answer(tester), 'A compact answer');
+    await tester.tap(find.byTooltip('Dismiss question without answering'));
     await tester.pump();
     expect(dismissed, true);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
-  });
+  }, variant: TargetPlatformVariant.desktop());
 
   test('desktop questions resume headless sessions, reconnect, deliver answers, and cancel with their turn',
     () => HttpOverrides.runWithHttpOverrides(() async {

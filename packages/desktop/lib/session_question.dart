@@ -9,16 +9,33 @@ import 'package:protocol/protocol.dart';
 import 'appearance.dart';
 import 'conversation_activity.dart';
 import 'conversation_data.dart';
+import 'conversation_markdown.dart';
 import 'session.dart';
 
-/// OpenCode's question dock, kept with its session while switching tabs.
+typedef QuestionComposer = ({
+  Widget panel,
+  TextEditingController controller,
+  FocusNode focus,
+  bool enabled,
+  bool canSubmit,
+  bool sending,
+  String placeholder,
+  String action,
+  VoidCallback advance,
+  VoidCallback? previous,
+});
+
+/// Questions attach to the composer and keep their answers with the session.
 class SessionQuestionDock extends StatefulWidget {
   const SessionQuestionDock({super.key, required this.request, required this.draft,
-    required this.onAnswer, this.enabled = true});
+    required this.onAnswer, required this.composer, this.directory = '',
+    this.enabled = true, this.active = true});
   final Json request;
   final QuestionDraft draft;
   final Future<void> Function(List<List<String>>? answers, CancellationToken cancellation) onAnswer;
-  final bool enabled;
+  final Widget Function(QuestionComposer answer) composer;
+  final String directory;
+  final bool enabled, active;
 
   @override
   State<SessionQuestionDock> createState() => _SessionQuestionDockState();
@@ -31,7 +48,9 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   final _custom = TextEditingController();
   final _scroll = ScrollController();
   List<FocusNode> _options = [];
+  Timer? _advance;
   bool _sending = false;
+  bool _changingQuestion = false;
   String? _error;
 
   QuestionDraft get draft => widget.draft;
@@ -40,24 +59,45 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   List<Json> get options => (question['options'] as List).cast<Json>();
   bool get multi => question['multiple'] == true;
   bool get available => widget.enabled && !_sending;
-  bool get customOn => draft.customOn.contains(draft.tab);
   bool get last => draft.tab == questions.length - 1;
+  bool get canSubmit => available && draft.answer(draft.tab).isNotEmpty &&
+      (!last || List.generate(questions.length, draft.answer).every((answer) => answer.isNotEmpty));
 
   @override
   void initState() {
     super.initState();
     _prepare();
+    _custom.addListener(_edited);
+  }
+
+  @override
+  void didUpdateWidget(SessionQuestionDock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!available || !widget.active) _advance?.cancel();
   }
 
   void _prepare() {
+    _advance?.cancel();
     for (final node in _options) { node.dispose(); }
-    _options = List.generate(options.length + 1, (_) => FocusNode());
+    _options = List.generate(options.length, (_) => FocusNode());
+    _changingQuestion = true;
     _custom.text = draft.custom[draft.tab];
+    _custom.selection = TextSelection.collapsed(offset: _custom.text.length);
+    _changingQuestion = false;
+  }
+
+  void _edited() {
+    if (_changingQuestion || draft.custom[draft.tab] == _custom.text) return;
+    _advance?.cancel();
+    setState(() {
+      draft.custom[draft.tab] = _custom.text;
+    });
   }
 
   @override
   void dispose() {
     _lifetime.cancel();
+    _advance?.cancel();
     _focus.dispose();
     _customFocus.dispose();
     _custom.dispose();
@@ -71,42 +111,34 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
     _customFocus.unfocus();
     setState(() {
       draft.tab = tab;
+      draft.minimized = false;
+      _error = null;
       _prepare();
     });
     if (_scroll.hasClients) _scroll.jumpTo(0);
-    _focus.requestFocus();
+    if (options.isEmpty) { _customFocus.requestFocus(); } else { _focus.requestFocus(); }
   }
 
   void _pick(int index) {
     if (!available) return;
-    if (index == options.length) {
-      setState(() {
-        if (multi && customOn) {
-          draft.customOn.remove(draft.tab);
-        } else {
-          draft.customOn.add(draft.tab);
-          if (!multi) draft.answers[draft.tab].clear();
-          draft.minimized = false;
-        }
-      });
-      if (customOn) _customFocus.requestFocus();
-      return;
-    }
+    _advance?.cancel();
     final label = options[index]['label'] as String;
     setState(() {
+      _custom.clear();
       final answers = draft.answers[draft.tab];
       if (multi) {
         if (!answers.add(label)) answers.remove(label);
       } else {
         answers..clear()..add(label);
-        draft.customOn.remove(draft.tab);
       }
     });
     _options[index].requestFocus();
+    if (!multi) _advance = Timer(const Duration(milliseconds: 200), _next);
   }
 
   Future<void> _finish({bool dismiss = false}) async {
     if (!available) return;
+    _advance?.cancel();
     setState(() { _sending = true; _error = null; });
     try {
       await widget.onAnswer(dismiss ? null : [
@@ -122,18 +154,19 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   }
 
   void _next() {
-    if (!available) return;
+    if (!canSubmit) return;
     if (last) { unawaited(_finish()); } else { _jump(draft.tab + 1); }
   }
 
   KeyEventResult _key(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || !available || !_custom.value.composing.isCollapsed) {
+    if (event is! KeyDownEvent || !available || !widget.active || !_custom.value.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
     final keys = HardwareKeyboard.instance;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.escape) {
-      unawaited(_finish(dismiss: true));
+      _advance?.cancel();
+      setState(() => draft.minimized = !draft.minimized);
       return KeyEventResult.handled;
     }
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
@@ -147,7 +180,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       _jump(draft.tab - 1);
       return KeyEventResult.handled;
     }
-    if (_customFocus.hasFocus || keys.isAltPressed || keys.isControlPressed || keys.isMetaPressed) {
+    if (_customFocus.hasFocus || keys.isAltPressed || keys.isControlPressed || keys.isMetaPressed || keys.isShiftPressed) {
       return KeyEventResult.ignored;
     }
     final number = int.tryParse(key.keyLabel);
@@ -155,6 +188,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       _pick(number - 1);
       return KeyEventResult.handled;
     }
+    if (_options.isEmpty) return KeyEventResult.ignored;
     final current = _options.indexWhere((node) => node.hasFocus);
     final next = switch (key) {
       LogicalKeyboardKey.arrowDown || LogicalKeyboardKey.arrowRight => (current + 1).clamp(0, _options.length - 1),
@@ -163,13 +197,12 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       LogicalKeyboardKey.end => _options.length - 1,
       _ => null,
     };
-    if (next != null && !draft.minimized) {
+    if (next != null && _options.isNotEmpty && !draft.minimized) {
       _options[next].requestFocus();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter) {
-      if (current >= 0) _pick(current);
-      if (!multi && !_customFocus.hasFocus) _next();
+      if (current >= 0) { _pick(current); } else { _next(); }
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -179,22 +212,23 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
     Semantics(
       selected: picked, checked: multi ? picked : null,
       inMutuallyExclusiveGroup: !multi, enabled: available,
-      child: Material(color: picked ? const Color(0xffedf2ff) : Colors.transparent,
+      child: Material(color: Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
           focusNode: _options[index],
           onTap: available ? () => _pick(index) : null,
           borderRadius: BorderRadius.circular(6),
-          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Padding(padding: const EdgeInsets.only(top: 2), child: Icon(
                 multi ? picked ? Icons.check_box_outlined : Icons.check_box_outline_blank
                   : picked ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                size: 16, color: picked ? const Color(0xff3250df) : opencodeFaint)),
+                size: 15, color: picked ? opencodeInk : opencodeFaint)),
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(label, style: const TextStyle(fontSize: 13, height: 1.5, color: opencodeInk)),
-                if (description?.isNotEmpty == true) Text(description!,
+                Text(label, style: TextStyle(fontSize: 13, height: 1.5,
+                  fontWeight: FontWeight.w500, color: picked ? opencodeInk : opencodeMuted)),
+                if (description?.isNotEmpty == true && description != label) Text(description!,
                   style: const TextStyle(fontSize: 12, height: 1.5, color: opencodeMuted)),
               ])),
               if (index < 9) ...[
@@ -210,104 +244,71 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
 
   @override
   Widget build(BuildContext context) {
-    final shortcut = defaultTargetPlatform == TargetPlatform.macOS ? '⌘↵' : 'Ctrl+Enter';
-    final secondaryStyle = TextButton.styleFrom(minimumSize: const Size(0, 32),
-      padding: const EdgeInsets.symmetric(horizontal: 8), tapTargetSize: MaterialTapTargetSize.shrinkWrap);
-    return Center(heightFactor: 1, child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: opencodeSessionWidth),
-      child: Padding(padding: const EdgeInsets.fromLTRB(24, 8, 24, 8),
-        child: Focus(focusNode: _focus, autofocus: true, onKeyEvent: _key,
-          child: Material(color: Colors.white, shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10), side: const BorderSide(color: opencodeBorder, width: .5)),
-            clipBehavior: Clip.antiAlias,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Flexible(child: SingleChildScrollView(controller: _scroll, padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-                  Row(children: [
-                    Expanded(child: Text(questions.length == 1 ? 'Question' : '${draft.tab + 1} of ${questions.length} questions',
-                      style: const TextStyle(fontSize: 13, color: opencodeMuted))),
-                    if (questions.length > 1) Flexible(child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        for (var i = 0; i < questions.length; i++) Tooltip(
-                          message: questions[i]['header'] as String,
-                          child: Semantics(label: 'Question ${i + 1}', selected: draft.tab == i,
-                            child: InkWell(onTap: available ? () => _jump(i) : null,
-                              borderRadius: BorderRadius.circular(4),
-                              child: Padding(padding: const EdgeInsets.all(5), child: Container(
-                                width: 12, height: 3, decoration: BoxDecoration(borderRadius: BorderRadius.circular(2),
-                                  color: draft.tab == i ? const Color(0xff3250df)
-                                    : draft.answer(i).isEmpty ? opencodeBorder : opencodeMuted))))),
-                        ),
-                      ]),
-                    )),
-                    IconButton(
-                      tooltip: draft.minimized ? 'Expand questions' : 'Minimize questions',
-                      onPressed: available ? () => setState(() => draft.minimized = !draft.minimized) : null,
-                      constraints: const BoxConstraints.tightFor(width: 28, height: 28),
-                      padding: EdgeInsets.zero, iconSize: 18,
-                      icon: Icon(draft.minimized ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded)),
-                  ]),
-                  const SizedBox(height: 4),
-                  SelectableText(question['question'] as String,
-                    maxLines: draft.minimized ? 3 : null,
-                    style: const TextStyle(fontSize: 13, height: 1.5, fontWeight: FontWeight.w500, color: opencodeInk)),
-                  if (!draft.minimized) ...[
-                    const SizedBox(height: 6),
-                    Text(multi ? 'Select all that apply' : 'Select one answer',
-                      style: const TextStyle(fontSize: 11, color: opencodeFaint)),
-                    const SizedBox(height: 8),
-                    for (var i = 0; i < options.length; i++) _option(i,
-                      label: options[i]['label'] as String, description: options[i]['description'] as String,
-                      picked: draft.answers[draft.tab].contains(options[i]['label'])),
-                    _option(options.length, label: 'Type your own answer', picked: customOn),
-                    if (customOn) Padding(padding: const EdgeInsets.fromLTRB(36, 4, 8, 8), child: TextField(
-                      controller: _custom, focusNode: _customFocus, enabled: available,
-                      minLines: 1, maxLines: 4,
-                      style: const TextStyle(fontSize: 13, color: opencodeInk),
-                      decoration: const InputDecoration(hintText: 'Type your answer…',
-                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                        border: OutlineInputBorder(), enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: opencodeBorder))),
-                      onChanged: (value) => setState(() => draft.custom[draft.tab] = value),
-                    )),
-                  ],
-                  if (_error != null) Padding(padding: const EdgeInsets.only(top: 8),
-                    child: Text(_error!, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
-                ]),
-              )),
-              LayoutBuilder(builder: (context, constraints) => Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 12, 8), child: Wrap(
-                  alignment: WrapAlignment.end, crossAxisAlignment: WrapCrossAlignment.center, spacing: 8,
-                  children: [
-                TextButton(style: secondaryStyle, onPressed: available ? () => unawaited(_finish(dismiss: true)) : null,
-                  child: const Text('Dismiss', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-                if (draft.tab > 0) ...[
-                  TextButton(style: secondaryStyle, onPressed: available ? () => _jump(draft.tab - 1) : null,
-                    child: const Text('Back', style: TextStyle(fontSize: 12))),
-                ],
-                Tooltip(message: shortcut, child: FilledButton(
-                  onPressed: available ? _next : null,
-                  style: FilledButton.styleFrom(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                    padding: const EdgeInsets.symmetric(horizontal: 12), visualDensity: VisualDensity.compact),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (_sending) ...[
-                      const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
-                      const SizedBox(width: 8),
-                    ],
-                    Text(last ? 'Submit' : 'Next', style: const TextStyle(fontSize: 12)),
-                    if (constraints.maxWidth >= 360) ...[
-                      const SizedBox(width: 10),
-                      Text(shortcut, style: const TextStyle(fontSize: 11)),
-                    ],
-                  ]),
-                )),
-              ]))),
+    final header = question['header'] as String? ?? 'Question';
+    final custom = draft.custom[draft.tab].trim().isNotEmpty;
+    final panel = Padding(padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: DecoratedBox(decoration: const BoxDecoration(
+        color: Color(0xfffafafa),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+        border: Border(top: BorderSide(color: opencodeBorder, width: .5),
+          left: BorderSide(color: opencodeBorder, width: .5),
+          right: BorderSide(color: opencodeBorder, width: .5))),
+        child: Material(color: Colors.transparent,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              Expanded(child: Tooltip(
+                message: draft.minimized ? 'Show question and options' : 'Hide question and options',
+                child: InkWell(
+                onTap: () {
+                  _advance?.cancel();
+                  setState(() => draft.minimized = !draft.minimized);
+                },
+                child: Padding(padding: const EdgeInsets.fromLTRB(16, 9, 0, 9), child: Row(children: [
+                  Expanded(child: Text(draft.minimized ? '$header  ·  ${question['question']}' : header,
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+                  if (questions.length > 1) Text('${draft.tab + 1}/${questions.length}',
+                    style: const TextStyle(fontSize: 11, color: opencodeMuted)),
+                  const SizedBox(width: 8),
+                  Icon(draft.minimized ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                    size: 16, color: opencodeFaint),
+                ]))))),
+              IconButton(tooltip: 'Dismiss question without answering',
+                onPressed: available ? () => unawaited(_finish(dismiss: true)) : null,
+                constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+                padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: opencodeFaint)),
+              const SizedBox(width: 6),
             ]),
-          ),
+            if (!draft.minimized) Flexible(fit: FlexFit.loose, child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: (MediaQuery.sizeOf(context).height * .4).clamp(80, 384)),
+              child: SingleChildScrollView(controller: _scroll,
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  ConversationMarkdown(text: question['question'] as String, directory: widget.directory, fontSize: 13),
+                  if (multi) const Padding(padding: EdgeInsets.only(top: 8),
+                    child: Text('Select all that apply', style: TextStyle(fontSize: 11, color: opencodeFaint))),
+                  if (options.isNotEmpty) const SizedBox(height: 6),
+                  for (var i = 0; i < options.length; i++) _option(i,
+                    label: options[i]['label'] as String, description: options[i]['description'] as String?,
+                    picked: !custom && draft.answers[draft.tab].contains(options[i]['label'])),
+                ]),
+              ),
+            )),
+            if (_error != null) Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              child: Text(_error!, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
+          ]),
         ),
       ),
-    ));
+    );
+    return Focus(focusNode: _focus, onKeyEvent: _key, child: widget.composer((
+      panel: panel, controller: _custom, focus: _customFocus,
+      enabled: available, canSubmit: canSubmit, sending: _sending,
+      placeholder: options.isEmpty ? 'Type your answer…' : 'Type your own answer, or choose an option above…',
+      action: last ? (questions.length > 1 ? 'Submit answers' : 'Submit answer') : 'Next',
+      advance: _next, previous: draft.tab > 0 && available ? () => _jump(draft.tab - 1) : null,
+    )));
   }
 }
 

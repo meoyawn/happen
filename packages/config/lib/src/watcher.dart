@@ -30,6 +30,20 @@ class ConfigWatcher with Cancellable {
   Future<void>? _closing;
   bool _closed = false;
 
+  void updatePaths(Iterable<String> paths) {
+    if (_closed) return;
+    _paths
+      ..clear()
+      ..addAll(paths.map(p.absolute).map(p.normalize));
+    final parents = _paths.map(p.dirname).toSet();
+    for (final parent in _directories.keys.toList()) {
+      if (!parents.contains(parent)) {
+        unawaited(_directories.remove(parent)!.cancel());
+      }
+    }
+    _attach();
+  }
+
   void _schedule() {
     if (_closed) return;
     _debounce?.cancel();
@@ -40,10 +54,6 @@ class ConfigWatcher with Cancellable {
     if (_closed || !FileSystemEntity.isWatchSupported) return;
     for (final parent in _paths.map(p.dirname).toSet()) {
       if (_directories.containsKey(parent)) continue;
-      final names = _paths
-          .where((path) => p.dirname(path) == parent)
-          .map(p.basename)
-          .toSet();
       late StreamSubscription<FileSystemEvent> subscription;
       void lost() {
         if (identical(_directories[parent], subscription)) {
@@ -57,10 +67,11 @@ class ConfigWatcher with Cancellable {
           (event) {
             // Native events may resolve a symlink in the watched directory
             // (notably /var -> /private/var on macOS). Compare direct filenames.
-            if (names.contains(p.basename(event.path)) ||
+            if (_paths.where((path) => p.dirname(path) == parent).any((path) =>
+                p.basename(path) == p.basename(event.path) ||
                 event is FileSystemMoveEvent &&
                     event.destination != null &&
-                    names.contains(p.basename(event.destination!))) {
+                    p.basename(path) == p.basename(event.destination!))) {
               _schedule();
             }
           },

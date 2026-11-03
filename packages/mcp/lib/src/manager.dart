@@ -25,17 +25,19 @@ class McpManager {
   Json? _catalog;
   final _authenticating = <String>{};
 
-  _Server _server(String name, Json config) => _Server(name, config, http,
+  _Server _server(String name, Json config, String? executableRevision) => _Server(name, config, executableRevision, http,
     directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
       ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name));
 
-  Future<void> configure(Json config, CancellationToken cancellation) {
-    final next = _reload.then((_) => _configure(config, cancellation));
+  Future<void> configure(Json config, CancellationToken cancellation, {
+    Map<String, String> executableRevisions = const {},
+  }) {
+    final next = _reload.then((_) => _configure(config, cancellation, executableRevisions));
     _reload = next.catchError((Object _) {});
     return next;
   }
 
-  Future<void> _configure(Json config, CancellationToken cancellation) async {
+  Future<void> _configure(Json config, CancellationToken cancellation, Map<String, String> executableRevisions) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
     if (config.length > 64) {
@@ -55,7 +57,8 @@ class McpManager {
     for (final entry in _servers.entries.toList()) {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
-      if (jsonEncode(config[entry.key]) != jsonEncode(entry.value.config)) {
+      if (jsonEncode(config[entry.key]) != jsonEncode(entry.value.config) ||
+          executableRevisions[entry.key] != entry.value.executableRevision) {
         for (final subscription
             in _subscriptions.values
                 .where((s) => s.server == entry.key)
@@ -73,7 +76,7 @@ class McpManager {
       if (_servers.containsKey(entry.key) || entry.value['enabled'] == false) {
         continue;
       }
-      final server = _server(entry.key, jsonObject(entry.value));
+      final server = _server(entry.key, jsonObject(entry.value), executableRevisions[entry.key]);
       _servers[entry.key] = server;
       server.start();
     }
@@ -150,7 +153,7 @@ class McpManager {
       // Starting the replacement belongs to the manager after retiring the old
       // generation, even if this client stops waiting at the same instant.
       lifetime.throwIfCancelled();
-      final replacement = _servers[name] = _server(name, previous.config);
+      final replacement = _servers[name] = _server(name, previous.config, previous.executableRevision);
       replacement.start();
       await replacement.initial.future.asCancellable(cancellation.merge(lifetime));
     });
@@ -267,6 +270,8 @@ class McpManager {
         {'name': tool['name'], 'arguments': jsonObject(arguments)},
         cancellation,
         inputSchema: jsonObject(tool['inputSchema']),
+        retrySafe: tool['annotations']?['readOnlyHint'] == true ||
+            tool['annotations']?['idempotentHint'] == true,
       );
       if (result['resultType'] == 'input_required') {
         throw const McpFailure(
@@ -443,9 +448,10 @@ class McpManager {
 }
 
 class _Server {
-  _Server(this.name, this.config, this.http, this.oauth, this.onAuthChanged);
+  _Server(this.name, this.config, this.executableRevision, this.http, this.oauth, this.onAuthChanged);
   final String name;
   final Json config;
+  final String? executableRevision;
   final HttpClient http;
   final McpOAuth? oauth;
   final void Function() onAuthChanged;
@@ -540,6 +546,7 @@ class _Server {
     Json params,
     CancellationToken cancellation, {
     Json? inputSchema,
+    bool retrySafe = false,
   }) async {
     final current = await ready(cancellation);
     try {
@@ -548,6 +555,7 @@ class _Server {
         params,
         cancellation: cancellation,
         inputSchema: inputSchema,
+        retrySafe: retrySafe,
       );
     } on SocketException {
       unawaited(current.close());

@@ -58,7 +58,7 @@ class DesktopTask {
   String? historyBefore;
   String streamingText = '';
   late final liveText = ValueNotifier<String>(streamingText);
-  String? retryStatus;
+  Json? retryStatus;
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
@@ -89,12 +89,8 @@ class QuestionDraft {
   bool minimized = false;
   final List<Set<String>> answers;
   final List<String> custom;
-  final customOn = <int>{};
-
-  List<String> answer(int index) => {
-    ...answers[index],
-    if (customOn.contains(index) && custom[index].trim().isNotEmpty) custom[index].trim(),
-  }.toList();
+  List<String> answer(int index) => custom[index].trim().isNotEmpty
+    ? [custom[index].trim()] : answers[index].toList();
 }
 
 class SessionDraft {
@@ -1231,7 +1227,7 @@ class DesktopSession extends ChangeNotifier {
       read.throwIfCancelled();
       target.running = page['running'] == true;
       target.retryStatus = target.running && page['status']?['type'] == 'retry'
-        ? page['status']['message'] as String? : null;
+        ? jsonObject(page['status']) : null;
       if (!target.running) target.runStartedAt = null;
       final sending = target.pending.entries.where((entry) => entry.value['sending'] == true).toList();
       target.pending
@@ -1538,7 +1534,7 @@ class DesktopSession extends ChangeNotifier {
     final failure = terminals.lastOrNull;
     if (failure?['outcome'] != 'failed') return;
     target.running = true;
-    target.retryStatus = 'Reconnecting…';
+    target.retryStatus = {'type': 'retry', 'message': 'Reconnecting…'};
     error = null;
     notifyListeners();
     try {
@@ -1765,7 +1761,7 @@ class DesktopSession extends ChangeNotifier {
       case 'session.status':
         target.running = data['status']['type'] != 'idle';
         if (!target.running) target.runStartedAt = null;
-        target.retryStatus = data['status']['type'] == 'retry' ? data['status']['message'] as String? : null;
+        target.retryStatus = data['status']['type'] == 'retry' ? jsonObject(data['status']) : null;
         if (target.retryStatus != null) target.streamingText = '';
       case 'session.question.asked':
         final request = jsonObject(data['request']);

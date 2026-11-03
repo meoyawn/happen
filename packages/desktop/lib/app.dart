@@ -507,18 +507,6 @@ class _DesktopViewState extends State<DesktopView> {
       },
       onCancel: () => setState(() => _dragSidebarWidth = null));
 
-  Widget _questionDock(DesktopTask target) {
-    final request = target.questions.values.first, id = request['id'] as String;
-    return Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
-      key: ValueKey('question:$id'), request: request,
-      draft: target.questionDrafts.putIfAbsent(id,
-        () => QuestionDraft.fromRequest(request)),
-      enabled: session.connected,
-      onAnswer: (answers, cancellation) => session.answerQuestion(
-        target, id, answers, cancellation: cancellation),
-    ));
-  }
-
   Widget _conversationPane(BuildContext context, Set<DesktopTask> tasks) {
     final home = _homeOpen;
     final transcript = home ? null : session.task ?? session.currentDraft.submission;
@@ -565,8 +553,6 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                   if (session.project != null && session.project!.available && session.task?.archived != true)
                     McpConversationAuth(key: ValueKey(session.client), client: session.client),
-                  if (session.task case final target? when target.questions.isNotEmpty && !target.archived)
-                    _questionDock(target),
                   if (session.project?.removing == true)
                     const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
                   else if (session.project?.available == false)
@@ -836,14 +822,16 @@ class _ComposerState extends State<_Composer> {
     _saveDrafts();
   }
 
-  Future<void> _copy({bool cut = false}) async {
-    final controller = _text;
-    final before = _text.value, selection = _text.selection;
+  Future<void> _copy({bool cut = false, TextEditingController? controller, FocusNode? focus}) async {
+    controller ??= _text;
+    final before = controller.value, selection = controller.selection;
     if (!selection.isValid || selection.isCollapsed) return;
-    final text = _text.serializeRange(selection.start, selection.end);
+    final text = controller is ComposerTextController
+      ? controller.serializeRange(selection.start, selection.end)
+      : controller.text.substring(selection.start, selection.end);
     await Clipboard.setData(ClipboardData(text: text));
-    if (cut && mounted && identical(_text, controller) && _text.value == before && !_submitting) {
-      final editor = _focus.context;
+    if (cut && mounted && controller.value == before && !_submitting) {
+      final editor = (focus ?? _focus).context;
       if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(before, '', selection, SelectionChangedCause.keyboard));
     }
   }
@@ -860,8 +848,17 @@ class _ComposerState extends State<_Composer> {
     _focus.requestFocus();
   }
 
-  Future<void> _paste(SelectionChangedCause cause) async {
+  Future<void> _paste(SelectionChangedCause cause, {TextEditingController? controller, FocusNode? focus}) async {
     if (_receivingAttachments || _submitting || _dictating || !widget.session.connected) return;
+    if (controller != null) {
+      final before = controller.value, lifetime = _attachmentLifetime;
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      if (!mounted || lifetime.isCancelled || controller.value != before || data?.text == null) return;
+      final range = before.selection.isValid ? before.selection : TextSelection.collapsed(offset: before.text.length);
+      final editor = focus?.context;
+      if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(before, data!.text!, range, cause));
+      return;
+    }
     final before = _text.value, lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
@@ -999,17 +996,17 @@ class _ComposerState extends State<_Composer> {
     }
   }
 
-  void _newline() {
-    final value = _text.value;
+  void _newline([TextEditingController? controller]) {
+    controller ??= _text;
+    final value = controller.value;
     if (!value.composing.isCollapsed) return;
     final selection = value.selection.isValid
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
-    _text.value = TextEditingValue(
+    controller.value = TextEditingValue(
       text: value.text.replaceRange(selection.start, selection.end, '\n'),
       selection: TextSelection.collapsed(offset: selection.start + 1),
     );
-    widget.session.drafts[_draftKey] = _text.text;
   }
 
   @override
@@ -1027,6 +1024,24 @@ class _ComposerState extends State<_Composer> {
   @override
   Widget build(BuildContext context) {
     _bindVoice();
+    final target = _target, request = _target?.questions.values.firstOrNull;
+    if (target != null && request != null && !_dictating) {
+      final id = request['id'] as String;
+      return SessionQuestionDock(
+        key: ValueKey('question:${target.id}:$id'), request: request,
+        draft: target.questionDrafts.putIfAbsent(id, () => QuestionDraft.fromRequest(request)),
+        directory: _project?.path ?? '',
+        enabled: widget.session.connected && !_submitting && !_dictating,
+        active: widget.active,
+        onAnswer: (answers, cancellation) => widget.session.answerQuestion(
+          target, id, answers, cancellation: cancellation),
+        composer: (answer) => _input(context, answer: answer),
+      );
+    }
+    return _input(context);
+  }
+
+  Widget _input(BuildContext context, {QuestionComposer? answer}) {
     final session = widget.session;
     final running = _target?.running == true;
     final hasProject = _project?.available == true && _project?.removing != true;
@@ -1039,77 +1054,96 @@ class _ComposerState extends State<_Composer> {
         _target?.sidePreparing != true &&
         _target?.archived != true && _target?.archiving != true &&
         _target?.loading != true &&
-        _target?.loadError == null;
+        _target?.loadError == null && (answer?.enabled ?? true);
+    final controller = answer?.controller ?? _text;
+    final focus = answer?.focus ?? _focus;
+    Future<void> copy({bool cut = false}) => _copy(cut: cut, controller: controller, focus: focus);
+    Future<void> paste(SelectionChangedCause cause) => _paste(cause,
+      controller: answer?.controller, focus: focus);
+    void submit() {
+      if (!available) return;
+      if (answer != null) { answer.advance(); } else { unawaited(_submit()); }
+    }
+    Widget autocomplete(Widget child) {
+      if (answer != null) return child;
+      return ComposerAutocomplete(
+        key: _autocomplete,
+        controller: _text,
+        focusNode: _focus,
+        client: session.client,
+        cwd: _project?.path ?? '',
+        enabled: hasProject && session.connected && !_submitting && !_dictating,
+        session: session,
+        target: widget.target,
+        commands: {
+          if (widget.target == null && _project != null)
+            '/new': (description: 'Start a new session', run: () => unawaited(session.select(_project!))),
+          if (defaultTargetPlatform == TargetPlatform.macOS)
+            '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
+          '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
+          if (session.task != null) '/context': (description: 'Inspect session context',
+            run: () => session.openSessionPanel(session.task!, contextPanel)),
+          if (session.task != null) '/browser': (description: 'Open the in-app browser',
+            run: () => session.openBrowserPanel(session.task!)),
+          if (widget.target == null && session.task != null)
+            '/side': (description: 'Ask a side question in a temporary chat',
+              run: () => unawaited(() async {
+                try { await session.openSideChat(session.task!); }
+                on CancelledException { /* The pending side chat was closed. */ }
+                catch (error) { session.showError(error); }
+              }())),
+          if (_project case final project?)
+            '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
+              (project.checkoutKey, session.task?.id), project.path)),
+        },
+        child: child,
+      );
+    }
     return DropTarget(
-      enabled: hasProject && session.connected && !_submitting && !_receivingAttachments,
+      enabled: answer == null && hasProject && session.connected && !_submitting && !_receivingAttachments,
       acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
       onDrop: _drop,
       onEnter: (_) => setState(() => _draggingAttachments = true),
       onLeave: () { if (mounted) setState(() => _draggingAttachments = false); },
       child: Center(
+      heightFactor: 1,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: opencodeSessionWidth),
         child: Padding(
           padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: answer == null ? double.infinity : MediaQuery.sizeOf(context).height * .65),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (answer != null) Flexible(fit: FlexFit.loose, child: answer.panel),
           CallbackShortcuts(
             bindings: {
+              if (answer == null)
               const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
-                if (!_text.value.composing.isCollapsed) return;
+                if (!controller.value.composing.isCollapsed) return;
                 if (_ownsVoice && (_dictating || _voice.phase == DictationPhase.failed)) unawaited(_cancelVoice());
               },
-              const SingleActivator(LogicalKeyboardKey.enter, shift: true): _newline,
+              const SingleActivator(LogicalKeyboardKey.enter, shift: true): () => _newline(controller),
               const SingleActivator(
                 LogicalKeyboardKey.enter,
                 includeRepeats: false,
               ): () {
-                if (available) unawaited(_submit());
+                if (controller.value.composing.isCollapsed) submit();
               },
               const SingleActivator(LogicalKeyboardKey.enter, meta: true): () {
-                if (available) unawaited(_submit());
+                if (controller.value.composing.isCollapsed) submit();
               },
               const SingleActivator(
                 LogicalKeyboardKey.enter,
                 control: true,
               ): () {
-                if (available) unawaited(_submit());
+                if (controller.value.composing.isCollapsed) submit();
               },
             },
             child: Actions(actions: {CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-              onInvoke: (intent) { unawaited(_copy(cut: intent.collapseSelection)); return null; }),
+              onInvoke: (intent) { unawaited(copy(cut: intent.collapseSelection)); return null; }),
               PasteTextIntent: ComposerPasteAction(
-              enabled: hasProject && session.connected && !_submitting && !_receivingAttachments && !_dictating, paste: _paste)},
-            child: ComposerAutocomplete(
-              key: _autocomplete,
-              controller: _text,
-              focusNode: _focus,
-              client: session.client,
-              cwd: _project?.path ?? '',
-              enabled: hasProject && session.connected && !_submitting && !_dictating,
-              session: session,
-              target: widget.target,
-              commands: {
-                if (widget.target == null && _project != null)
-                  '/new': (description: 'Start a new session', run: () => unawaited(session.select(_project!))),
-                if (defaultTargetPlatform == TargetPlatform.macOS)
-                  '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
-                '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
-                if (session.task != null) '/context': (description: 'Inspect session context',
-                  run: () => session.openSessionPanel(session.task!, contextPanel)),
-                if (session.task != null) '/browser': (description: 'Open the in-app browser',
-                  run: () => session.openBrowserPanel(session.task!)),
-                if (widget.target == null && session.task != null)
-                  '/side': (description: 'Ask a side question in a temporary chat',
-                    run: () => unawaited(() async {
-                      try { await session.openSideChat(session.task!); }
-                      on CancelledException { /* The pending side chat was closed. */ }
-                      catch (error) { session.showError(error); }
-                    }())),
-                if (_project case final project?)
-                  '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
-                    (project.checkoutKey, session.task?.id), project.path)),
-              },
-              child: DecoratedBox(
+              enabled: available && !_dictating, paste: paste)},
+            child: autocomplete(DecoratedBox(
                 key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -1127,7 +1161,7 @@ class _ComposerState extends State<_Composer> {
                   child: Column(
                     children: [
                       if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
-                      if (_attachments.isNotEmpty) Align(
+                      if (answer == null && _attachments.isNotEmpty) Align(
                         alignment: Alignment.centerLeft,
                         child: AttachmentRail(composer: true, attachments: _attachments.map((attachment) => attachment.toJson()).toList(),
                           onRemove: _submitting ? null : (index) {
@@ -1158,13 +1192,16 @@ class _ComposerState extends State<_Composer> {
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
                       ComposerEditor(
-                        controller: _text,
-                        focusNode: _focus,
-                        enabled: hasProject && session.connected,
-                        paste: _paste, copy: _copy,
+                        controller: controller,
+                        focusNode: focus,
+                        enabled: hasProject && session.connected && (answer?.enabled ?? true),
+                        placeholder: answer?.placeholder ?? 'Ask anything, / for commands, @ for context…',
+                        label: answer == null ? 'Message' : 'Answer',
+                        paste: paste, copy: copy,
                       ),
                       SizedBox(height: 44, child: Row(
                         children: [
+                          if (answer == null)
                           PopupMenuButton<String>(tooltip: 'Add context or commands', enabled: available && !_dictating,
                             padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 220),
                             onSelected: (value) {
@@ -1188,15 +1225,27 @@ class _ComposerState extends State<_Composer> {
                             ],
                             child: const SizedBox.square(dimension: 28,
                               child: Icon(Icons.add_rounded, size: 20, color: Color(0xff656971)))),
-                          if (_dictating) ...[
+                          if (answer == null && _dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
                           Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.start, children: [
-                            Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target)),
+                            if (answer == null)
+                              Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target))
+                            else if (!answer.sending)
+                              const Flexible(child: Padding(padding: EdgeInsets.only(left: 16),
+                                child: Text('↵ to continue · ⇧↵ for a new line', maxLines: 1, overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontSize: 11, color: opencodeFaint)))),
                           ])),
                           const SizedBox(width: 8),
-                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
+                          if (answer?.previous case final previous?) ...[
+                            TextButton(onPressed: previous,
+                              style: TextButton.styleFrom(minimumSize: const Size(0, 32),
+                                padding: const EdgeInsets.symmetric(horizontal: 10)),
+                              child: const Text('Previous', style: TextStyle(fontSize: 12))),
+                            const SizedBox(width: 6),
+                          ],
+                          if (answer == null && defaultTargetPlatform == TargetPlatform.macOS) ...[
                             DictationButton(
                               phase: _voicePhase,
                               amplitude: _voice.amplitude,
@@ -1208,7 +1257,16 @@ class _ComposerState extends State<_Composer> {
                             ),
                             const SizedBox(width: 8),
                           ],
-                          ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
+                          if (answer != null)
+                            FilledButton(onPressed: available && answer.canSubmit ? submit : null,
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size(0, 32),
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                              child: answer.sending
+                                ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 1.5))
+                                : Text(answer.action, style: const TextStyle(fontSize: 12)))
+                          else ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
                             final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty;
                             final stopWorking = running && !hasContent && !_dictating;
                             final dictationCanSend = _dictating && _voice.phase == DictationPhase.recording && !_finishingVoice;
@@ -1239,16 +1297,16 @@ class _ComposerState extends State<_Composer> {
                           }),
                         ],
                       )),
-                      if (!authenticated)
+                      if (answer == null && !authenticated)
                         const Align(alignment: Alignment.centerLeft, child: Text('Sign in to the selected provider to send',
                           style: TextStyle(fontSize: 11, color: Colors.black38))),
                     ],
                   ),
                 ),
-              ),
-            )),
+              )),
+            ),
           ),
-          ]),
+          ])),
         ),
       ),
       ),

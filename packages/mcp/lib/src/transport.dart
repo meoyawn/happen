@@ -11,6 +11,17 @@ const mcpProtocolVersion = '2026-07-28';
 const _maxMessageBytes = 64 * 1024 * 1024;
 const _versionKey = 'io.modelcontextprotocol/protocolVersion';
 const _subscriptionKey = 'io.modelcontextprotocol/subscriptionId';
+// Match Codex's bounded streamable HTTP recovery delays.
+const _httpRetryDelays = [Duration(milliseconds: 250), Duration(seconds: 1)];
+
+bool _transientHttpStatus(int? status) =>
+    const {408, 429, 500, 502, 503, 504}.contains(status);
+
+bool _retryableHttpFailure(Object error) => switch (error) {
+  SocketException() || HttpException() || HandshakeException() => true,
+  McpFailure(:final status) => _transientHttpStatus(status),
+  _ => false,
+};
 
 class McpFailure implements Exception {
   const McpFailure(this.message, {this.code, this.status, this.data});
@@ -107,6 +118,7 @@ class McpConnection {
       }
       if (error.status == 401 ||
           error.status == 403 ||
+          _transientHttpStatus(error.status) ||
           config['legacy_fallback'] == false) {
         rethrow;
       }
@@ -163,6 +175,7 @@ class McpConnection {
     Duration? timeout = const Duration(seconds: 60),
     void Function(Json)? onNotification,
     Json? inputSchema,
+    bool retrySafe = false,
   }) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
@@ -221,7 +234,8 @@ class McpConnection {
           _pending.remove(id);
         }
       }
-      return await _http(body, token, onNotification, inputSchema);
+      return await _http(body, token, onNotification, inputSchema,
+        retrySafe: retrySafe);
     } finally {
       deadline.cancel();
     }
@@ -297,6 +311,48 @@ class McpConnection {
   }
 
   Future<Json> _http(
+    Json body,
+    CancellationToken token,
+    void Function(Json)? notify,
+    Json? schema, {
+    bool retrySafe = false,
+  }) async {
+    final canRetry = retrySafe || const {
+      'server/discover',
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'resources/list',
+      'resources/templates/list',
+      'resources/read',
+      'prompts/list',
+      'prompts/get',
+      'events/list',
+    }.contains(body['method']);
+    for (var retries = 0; ; retries++) {
+      token.throwIfCancelled();
+      try {
+        return await _httpOnce(body, token, notify, schema);
+      } catch (error) {
+        token.throwIfCancelled();
+        if (!canRetry || retries >= _httpRetryDelays.length ||
+            !_retryableHttpFailure(error)) {
+          rethrow;
+        }
+        final delay = _httpRetryDelays[retries];
+        traceInstant('mcp.http.retry', category: 'retry', attributes: {
+          'mcp.method': body['method'],
+          'attempt': retries + 1,
+          'delay_ms': delay.inMilliseconds,
+          'error.type': error.runtimeType.toString(),
+          if (error is McpFailure) 'http.response.status_code': error.status,
+        });
+        await cancellableDelay(delay, token);
+      }
+    }
+  }
+
+  Future<Json> _httpOnce(
     Json body,
     CancellationToken token,
     void Function(Json)? notify,

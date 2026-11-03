@@ -143,17 +143,27 @@ void _networkMain(List<Object?> args) async {
       'event': event,
     }),
   );
-  final initialized = mcp.configure(
-    jsonObject(global['mcp_servers'] ?? {}),
-    lifetime,
-  );
+  final startupServers = jsonObject(global['mcp_servers'] ?? {});
+  final startupExecutables = await readMcpExecutables(startupServers, lifetime);
+  Map<String, String> revisions(Map<String, McpExecutable> executables) => {
+    for (final entry in executables.entries) entry.key: entry.value.revision,
+  };
+  String fingerprint(Json servers, Map<String, McpExecutable> executables) =>
+      jsonEncode([servers, revisions(executables)]);
+  Iterable<String> watchedPaths(Map<String, McpExecutable> executables) => [
+    configPath, '$directory/config.json',
+    for (final executable in executables.values) ...executable.paths,
+  ];
+  final initialized = mcp.configure(startupServers, lifetime,
+    executableRevisions: revisions(startupExecutables));
   // Capture startup failure for callers without an unhandled background error.
   unawaited(initialized.catchError((Object _) {}));
   var closing = false;
   var loadedConfigPath = startup['loaded_config_path'] as String?;
-  String? appliedMcp = jsonEncode(global['mcp_servers'] ?? {});
+  String? appliedMcp = fingerprint(startupServers, startupExecutables);
   String? configError;
   final configReader = ConfigReader();
+  late final ConfigWatcher watcher;
   Future<void> reloads = initialized.catchError((Object _) {});
   void configEvent(String type, Json data) {
     if (closing) return;
@@ -182,14 +192,19 @@ void _networkMain(List<Object?> args) async {
           );
         }
         final servers = jsonObject(updated.values['mcp_servers'] ?? {});
-        final encoded = jsonEncode(servers);
+        final executables = await readMcpExecutables(servers, cancellation);
+        cancellation.throwIfCancelled();
+        lifetime.throwIfCancelled();
+        watcher.updatePaths(watchedPaths(executables));
+        final encoded = fingerprint(servers, executables);
         final changed = encoded != appliedMcp;
         final recovered = configError != null;
         if (changed) {
           // Cancellation can interrupt process replacement. Force the next
           // reload to reconcile even if the file reverts to the previous value.
           appliedMcp = null;
-          await mcp.configure(servers, cancellation);
+          await mcp.configure(servers, cancellation,
+            executableRevisions: revisions(executables));
         }
         cancellation.throwIfCancelled();
         lifetime.throwIfCancelled();
@@ -242,8 +257,8 @@ void _networkMain(List<Object?> args) async {
     }().whenComplete(() => automaticReload = null);
   }
 
-  final watcher = ConfigWatcher(
-    [configPath, '$directory/config.json'],
+  watcher = ConfigWatcher(
+    watchedPaths(startupExecutables),
     onChange: changed,
     cancellation: lifetime,
   );

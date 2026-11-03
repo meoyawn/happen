@@ -26,10 +26,11 @@ void main() {
         expect(reply.error, isNull);
         expect(reply.value!.text, 'Recovered');
         expect(transport.bodies, hasLength(4));
-        expect(events.map((event) => event['attempt']), [1, 2, 3]);
-        expect(events.every((event) => !event.containsKey('max_retries')), isTrue);
+        expect(events.map((event) => event['layer']), ['http', 'http', 'stream']);
+        expect(events.map((event) => event['attempt']), [1, 2, 1]);
+        expect(events.map((event) => event['max_retries']), [4, 4, 5]);
         expect(events.map((event) => event['delay_ms']), [
-          inInclusiveRange(180, 220), inInclusiveRange(360, 440), inInclusiveRange(720, 880),
+          inInclusiveRange(180, 220), inInclusiveRange(360, 440), inInclusiveRange(180, 220),
         ]);
         expect(transport.bodies.every((body) => jsonEncode(body) == jsonEncode(transport.bodies.first)), isTrue);
       });
@@ -90,22 +91,36 @@ void main() {
       expect(transport.bodies, hasLength(2));
     });
 
-    test('${search ? 'search returns' : 'responses wait through'} long server cooldowns without retrying early', () {
+    test('${search ? 'search times out during' : 'responses explain and wait through'} long server cooldowns without retrying early', () {
       fakeAsync((time) {
-        final transport = _Transport((attempt, _) => attempt == 1
-          ? _json(503, {}, headers: {'retry-after': '60'}) : _events([_completed]));
-        final client = _client(transport);
-        if (search) {
-          expect(_settle(time, _search(client)).error, isA<ModelFailure>());
+        for (final (seconds, error, streamed) in [
+          (60, {'code': 'server_is_overloaded', 'message': 'The selected model is overloaded.'}, false),
+          if (!search) (310, {'code': 'rate_limit_exceeded', 'message': 'Try again in 310 seconds'}, true),
+        ]) {
+          final transport = _Transport((attempt, _) => attempt != 1 ? _events([_completed])
+            : streamed ? _events([{'type': 'response.failed', 'response': {'error': error}}])
+            : _json(503, {'error': error}, headers: {'retry-after': '$seconds'}));
+          final client = _client(transport);
+          if (search) {
+            expect(_settle(time, _search(client), within: const Duration(seconds: 31)).error,
+              isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_timeout'));
+            expect(transport.bodies, hasLength(1));
+            continue;
+          }
+          final events = <Json>[];
+          final pending = _respond(client, onEvent: events.add);
+          time.flushMicrotasks();
+          expect(events.single['error'], {
+            ...error, if (!streamed) 'http_status': 503,
+          });
+          expect(events.single['provider_delay'], isTrue);
+          expect(events.single['message'], 'Retrying provider (1/${streamed ? 5 : 4})');
+          expect(events.single['delay_ms'], inInclusiveRange(seconds * 1000 - 100, seconds * 1000));
+          time.elapse(Duration(seconds: seconds - 1));
           expect(transport.bodies, hasLength(1));
-          return;
+          expect(_settle(time, pending, within: const Duration(seconds: 2)).value!.text, 'Recovered');
+          expect(transport.bodies, hasLength(2));
         }
-        final pending = _respond(client);
-        time.flushMicrotasks();
-        time.elapse(const Duration(seconds: 59));
-        expect(transport.bodies, hasLength(1));
-        expect(_settle(time, pending, within: const Duration(seconds: 2)).value!.text, 'Recovered');
-        expect(transport.bodies, hasLength(2));
       });
     });
 
@@ -139,37 +154,65 @@ void main() {
     });
   }
 
-  test('a prolonged outage keeps inference cancellable with bounded backoff', () {
+  // Ported from Codex core/tests/suite/retry_after.rs: HTTP and stream
+  // budgets remain independent, including when the provider supplies advice.
+  for (final compaction in [false, true]) {
+    for (final (name, status, code, advised, requests, httpRetries, streamRetries) in [
+      ('HTTP server failure', 500, 'server_error', false, 30, 24, 5),
+      ('HTTP overload without advice', 503, 'server_is_overloaded', false, 5, 4, 0),
+      ('HTTP overload with advice', 503, 'server_is_overloaded', true, 30, 24, 5),
+      ('HTTP rate limit without advice', 429, 'rate_limit_exceeded', false, 1, 0, 0),
+      ('HTTP rate limit with advice', 429, 'rate_limit_exceeded', true, 6, 0, 5),
+      ('stream server failure', null, 'server_error', false, 6, 0, 5),
+      ('stream rate limit without advice', null, 'rate_limit_exceeded', false, 6, 0, 5),
+      ('stream overload without advice', null, 'server_is_overloaded', false, 1, 0, 0),
+      ('stream overload with advice', null, 'server_is_overloaded', true, 6, 0, 5),
+    ]) {
+      test('${compaction ? 'compaction' : 'sampling'} bounds $name using Codex retry budgets', () {
+        fakeAsync((time) {
+          final error = {'code': code, 'message': 'Fixture provider failure.',
+            if (advised && status == null) 'headers': {'Retry-After': '0'}};
+          final transport = _Transport((_, _) => status == null
+            ? _events([{'type': 'response.failed', 'response': {'error': error}}])
+            : _json(status, {'error': error}, headers: {if (advised) 'retry-after': '0'}));
+          final events = <Json>[];
+          final result = _settle(time, _respond(_client(transport),
+            input: compaction ? [{'type': 'compaction_trigger'}] : [],
+            onEvent: events.add), within: const Duration(seconds: 30));
+          expect(result.error, isA<ResponseFailure>()
+            .having((error) => error.code, 'code', code)
+            .having((error) => error.message, 'message', 'Fixture provider failure.'));
+          expect(transport.bodies, hasLength(requests));
+          final http = events.where((event) => event['layer'] == 'http');
+          final stream = events.where((event) => event['layer'] == 'stream');
+          expect(http, hasLength(httpRetries));
+          expect(http.map((event) => event['attempt']), [for (var i = 0; i < httpRetries; i++) i % 4 + 1]);
+          expect(http.every((event) => event['max_retries'] == 4), isTrue);
+          expect(stream.map((event) => event['attempt']), [for (var i = 1; i <= streamRetries; i++) i]);
+          expect(stream.every((event) => event['max_retries'] == 5), isTrue);
+          final count = transport.bodies.length;
+          time.elapse(const Duration(hours: 1));
+          expect(transport.bodies, hasLength(count), reason: 'Exhaustion must leave no retry timer running');
+        });
+      });
+    }
+  }
+
+  test('search stops after five failed requests', () {
     fakeAsync((time) {
       final transport = _Transport((_, _) => _json(500, {}));
-      final token = CancellationToken();
-      final events = <Json>[];
-      final pending = _respond(_client(transport), cancellation: token, onEvent: events.add);
-      time.flushMicrotasks();
-      time.elapse(const Duration(hours: 1));
-      expect(events.length, greaterThan(100));
-      expect(events.every((event) => (event['delay_ms'] as int) > 0 && event['delay_ms'] <= 30000), isTrue);
-      final requests = transport.bodies.length;
-      token.cancel();
-      expect(_settle(time, pending).error, isA<CancelledException>());
-      time.elapse(const Duration(hours: 1));
-      expect(transport.bodies, hasLength(requests));
-      expect(token.hasCancellables, isFalse);
+      expect(_settle(time, _search(_client(transport)), within: const Duration(seconds: 4)).error,
+        isA<ModelFailure>());
+      expect(transport.bodies, hasLength(5));
     });
   });
 
-  test('search stops after three failed requests', () async {
-    final transport = _Transport((_, _) => _json(500, {}));
-    await expectLater(_fast(() => _search(_client(transport))), throwsA(isA<ModelFailure>()));
-    expect(transport.bodies, hasLength(3));
-  });
-
-  test('search connection resets stop within a second', () {
+  test('search connection resets exhaust the HTTP budget', () {
     fakeAsync((time) {
       final transport = _Transport((_, _) => throw const SocketException('Connection reset by peer'));
-      expect(_settle(time, _search(_client(transport))).error,
+      expect(_settle(time, _search(_client(transport)), within: const Duration(seconds: 4)).error,
         isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_transport'));
-      expect(transport.bodies, hasLength(3));
+      expect(transport.bodies, hasLength(5));
     });
   });
 
