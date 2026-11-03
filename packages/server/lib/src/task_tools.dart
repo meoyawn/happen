@@ -5,13 +5,15 @@ import 'package:ai/ai.dart';
 import 'package:openai/openai.dart';
 import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 /// Task-owned native tool state survives the short-lived agent/SQLite owners.
 /// Each invocation still has its own cancellation; only explicitly persistent
 /// processes use the task lifetime inside the provider's runtime.
 class TaskToolBridge {
   TaskToolBridge() {
-    _mailbox.listen((raw) => unawaited(_handle(jsonObject(raw))));
+    _mailbox.listen((raw) => unawaited(traceIncoming(jsonObject(raw),
+      () => _handle(jsonObject(raw)), service: 'server')));
   }
   final _mailbox = ReceivePort();
   final _tasks = <String, _Tools>{};
@@ -60,6 +62,7 @@ class TaskToolBridge {
       }
       reply?.send({'result': result});
     } catch (error) {
+      traceError(error);
       reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
     } finally {
       _operations.remove(operation);

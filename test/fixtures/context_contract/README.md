@@ -46,8 +46,9 @@ The reference keeps the current default `sleep_tool` gate and model-driven mode;
 both matrix models advertise clock support. Goals are explicitly enabled.
 
 Global skill discovery is explicitly redirected to the same temporary
-`home/.agents/skills` directory: Codex receives that generated `HOME`, and Happen
-receives the same `skillsHome` through its production embedding API. The
+`home-*/.agents/skills` directory in a randomly named fixture home. Codex receives
+that generated `HOME`, and Happen receives the same `skillsHome` through its
+production embedding API. The
 `global_skills` fixtures populate that directory. Repository `.agents/skills`
 fixtures remain separate. Each context must list exactly `catalog_skills`; any
 extra user, bundled, or plugin skill fails the isolation assertion.
@@ -90,7 +91,12 @@ introductory commentary, parallel `Promise.allSettled` shell receipts, hosted
 YouTube open/search items, four opaque reasoning items with summaries, and a
 truncated transcript read followed by a timestamp-filtered reread. Commentary and
 the final reasoning-only step must continue to inference rather than ending the
-turn. Every emitted model item must survive in order through the seventh request.
+turn. Its prompt names the isolated `fixture-youtube-transcript` and `fixture-tldw`
+skills. Both harnesses must list exactly those two skills and read their complete
+`SKILL.md` files through real shell calls before inspecting the transcript.
+Skill bodies must stay out of the initial context and reach inference in the
+tool receipts. Every emitted model item must survive in order through the eighth
+request.
 The transcript fixture preserves the export's 14:01–34:58 excerpt byte-for-byte.
 Cached-file discovery replaces network transcription, paths are fixture-local,
 encrypted reasoning uses distinct sentinels, and the initial shell budget is
@@ -113,6 +119,11 @@ printed values, roles, message boundaries, dates, settings, and tool results are
 not discarded. Happen deliberately does not send Codex's `client_metadata`;
 every case independently asserts its absence in Happen's received requests before
 the shared comparison excludes it. Raw captures retain Codex's telemetry unchanged.
+The `interactive-user-input` case enables Codex's direct `request_user_input`
+tool and Default-mode availability, matching desktop sessions in Happen. Its
+name, description, schema, registration order, and exclusion from Code Mode's
+nested declarations are part of the same strict request comparison. Other cases
+keep interactive questions disabled in both harnesses.
 Every extracted timing value is retained separately in the report, with its
 request path, kind and units.
 Shell IDs and timings inside indexed fulfilled `Promise.allSettled` receipts use

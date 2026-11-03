@@ -12,3 +12,4 @@ dependencies:
   crypto: ^3.0.6
   html: ^0.15.7
   protocol: any
+  telemetry: any

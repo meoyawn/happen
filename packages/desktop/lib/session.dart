@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:ai/ai.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'project_identity.dart';
 import 'dictation.dart';
@@ -30,14 +32,21 @@ class Project {
 }
 
 class DesktopTask {
-  DesktopTask(this.id, this.title);
+  DesktopTask(this.id, this.title, {this.sideParentID});
   final String id, title;
+  final String? sideParentID;
+  String? sideError;
+  String? sideAttachmentStatus;
+  CancellationToken? sideSubmission;
+  bool sideSubmitting = false;
   final events = <int, Json>{};
   final messages = <String, Json>{};
   final projectionState = <String, dynamic>{};
   final liveEvents = <Json>[];
   int through = 0;
   final pending = <String, Json>{};
+  final questions = <String, Json>{};
+  final questionDrafts = <String, QuestionDraft>{};
   bool running = false, loaded = false, loading = false, archived = false, archiving = false;
   bool loadingEarlier = false;
   String? historyBefore;
@@ -53,6 +62,22 @@ class DesktopTask {
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending, _legacyRecords;
   Object? _conversationState;
+}
+
+class QuestionDraft {
+  QuestionDraft(int count)
+    : answers = List.generate(count, (_) => <String>{}),
+      custom = List.filled(count, '');
+  int tab = 0;
+  bool minimized = false;
+  final List<Set<String>> answers;
+  final List<String> custom;
+  final customOn = <int>{};
+
+  List<String> answer(int index) => {
+    ...answers[index],
+    if (customOn.contains(index) && custom[index].trim().isNotEmpty) custom[index].trim(),
+  }.toList();
 }
 
 class SessionDraft {
@@ -81,6 +106,7 @@ class DesktopSession extends ChangeNotifier {
   final AgentClient client;
   final IsolateOwner database;
   final projects = <Project>[];
+  final sideChats = <String, DesktopTask>{};
   final terminals = DesktopTerminals();
   final panelLayouts = <String, SessionPanelState>{};
   final _changedPanelLayouts = <String>{};
@@ -92,10 +118,14 @@ class DesktopSession extends ChangeNotifier {
   Timer? _draftSave;
   late final fileDrafts = <String, List<ComposerFileReference>>{};
   final String attachmentDirectory;
+  TraceStore? _traceStore;
+  Future<TraceStore> get tracing async =>
+    _traceStore ??= await client.startTracing(File(attachmentDirectory).parent.path);
+  final _traceFrames = <String>{};
   final attachmentDrafts = <String, List<ComposerAttachment>>{};
   CancellationToken? _submission;
   String? attachmentStatus;
-  void cancelUpload() => _submission?.cancel();
+  void cancelUpload({DesktopTask? target}) => (target == null ? _submission : target.sideSubmission)?.cancel();
   DictationService? _dictation;
   DictationService get dictation => _dictation ??= DictationService(client);
   final _lifetime = CancellationToken();
@@ -167,10 +197,14 @@ class DesktopSession extends ChangeNotifier {
         {...jsonObject(model), 'provider': provider['id']},
   ];
   Json? get modelInfo => models.where((m) => m['provider'] == providerId && m['id'] == modelId).firstOrNull;
-  bool get authenticated => {
+  Json? modelFor(DesktopTask? target) => target == null ? modelInfo
+    : models.where((model) => model['provider'] == target.provider && model['id'] == target.model).firstOrNull;
+  String? effortFor(DesktopTask? target) => target == null ? reasoning : target.nextReasoning ?? target.reasoning;
+  bool authenticatedFor(DesktopTask? target) => {
     'signed_in',
     'refresh_required',
-  }.contains(providerInfo?['status']);
+  }.contains(providers.where((provider) => provider['id'] == (target?.provider ?? providerId)).firstOrNull?['status']);
+  bool get authenticated => authenticatedFor(null);
 
   Future<void> refreshProviders() async {
     final result = jsonObject(await _request('providers.list'));
@@ -361,6 +395,24 @@ class DesktopSession extends ChangeNotifier {
     _savePanels(target);
   }
 
+  void openBrowserPanel(DesktopTask target, {String url = ''}) {
+    final state = panelsFor(target);
+    final existing = url.isEmpty ? null : state.tabs.where(isBrowserPanel).where((tab) =>
+      state.browserPages[tab]?.url == url).firstOrNull;
+    final tab = existing ?? 'browser:${newId()}';
+    state.browserPages.putIfAbsent(tab, () => (url: url, title: ''));
+    openSessionPanel(target, tab);
+  }
+
+  void updateBrowserPanel(DesktopTask target, String tab, String url, String title) {
+    final state = panelsFor(target);
+    if (!state.tabs.contains(tab)) return;
+    final page = (url: url, title: title);
+    if (state.browserPages[tab] == page) return;
+    state.browserPages[tab] = page;
+    _savePanels(target);
+  }
+
   void selectSessionPanel(DesktopTask target, String tab) {
     final state = panelsFor(target);
     if (!state.tabs.contains(tab)) return;
@@ -374,10 +426,59 @@ class DesktopSession extends ChangeNotifier {
     if (index < 0) return;
     state.tabs.removeAt(index);
     state.fileReveals.remove(tab);
-    if (!tab.startsWith('new:')) { state.closed..remove(tab)..insert(0, tab); }
+    if (!tab.startsWith('new:') && !isSideChatPanel(tab)) { state.closed..remove(tab)..insert(0, tab); }
     if (state.active == tab) state.active = state.tabs.isEmpty ? null : state.tabs[index.clamp(0, state.tabs.length - 1)];
     if (state.tabs.isEmpty) state.opened = false;
     _savePanels(target);
+    if (isSideChatPanel(tab)) unawaited(_discardSideChat(target, sideChatID(tab)));
+  }
+
+  Future<DesktopTask> openSideChat(DesktopTask parent, {String prompt = '', List<Json> attachments = const []}) async {
+    if (!connected || parent.archived || parent.archiving) throw StateError('Session is unavailable');
+    if (parent.sideParentID != null) throw StateError('Start side chats from the main session');
+    final reply = jsonObject(await _request('session.side.create', {
+      'sessionID': parent.id, 'prompt': prompt,
+      if (attachments.isNotEmpty) 'attachments': attachments,
+    }));
+    final id = requiredString(reply, 'sessionID');
+    final config = jsonObject(reply['configuration']);
+    final side = DesktopTask(id, reply['title'] as String? ?? 'Side chat', sideParentID: parent.id)
+      ..running = reply['running'] == true
+      ..provider = config['provider'] as String?
+      ..model = config['model'] as String?
+      ..reasoning = config['provider_settings']?['reasoning'] as String?
+      ..reasoningUpdates = config['reasoning_updates'] == true
+      ..contextLimit = config['provider_settings']?['context_limit'] as num?;
+    sideChats[id] = side;
+    openSessionPanel(parent, sideChatPanel(id));
+    await loadHistory(side);
+    return side;
+  }
+
+  Future<void> _discardSideChat(DesktopTask parent, String id) async {
+    final side = sideChats[id];
+    if (side == null) return;
+    side.archiving = true;
+    side.sideSubmission?.cancel();
+    try {
+      await _request('session.side.close', {'sessionID': id});
+      if (sideChats.remove(id) != null) await _releaseSideDraft(side);
+    } catch (failure) {
+      side.archiving = false;
+      side.sideError = failure.toString();
+      if (!_lifetime.isCancelled) openSessionPanel(parent, sideChatPanel(id));
+    }
+    if (!_lifetime.isCancelled) notifyListeners();
+  }
+
+  Future<void> _releaseSideDraft(DesktopTask side) async {
+    side.sideSubmission?.cancel();
+    side.liveText.dispose();
+    drafts.remove(side.id);
+    draftSelections.remove(side.id);
+    fileDrafts.remove(side.id);
+    final attachments = attachmentDrafts.remove(side.id) ?? const <ComposerAttachment>[];
+    for (final attachment in attachments) { await attachment.discard(); }
   }
 
   void resizeSessionPanel(DesktopTask target, double width) {
@@ -650,13 +751,14 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  void chooseReasoning(String value) {
-    final provider = providerId, model = modelId;
-    if (task case final target?) {
-      if (!target.reasoningUpdates) return;
-      target.nextReasoning = value;
+  void chooseReasoning(String value, {DesktopTask? target}) {
+    final selected = target ?? task;
+    final provider = selected?.provider ?? providerId, model = selected?.model ?? modelId;
+    if (selected != null) {
+      if (!selected.reasoningUpdates) return;
+      selected.nextReasoning = value;
     }
-    _rememberModel(provider, model, value);
+    if (target == null) _rememberModel(provider, model, value);
     notifyListeners();
   }
 
@@ -752,6 +854,7 @@ class DesktopSession extends ChangeNotifier {
     method = const {
       'task.start': 'session.create', 'task.send': 'session.prompt',
       'task.cancel': 'session.interrupt', 'task.compact': 'session.compact',
+      'task.retry': 'session.retry',
       'task.archive': 'session.archive', 'task.unarchive': 'session.unarchive',
       'task.fork': 'session.fork',
     }[method] ?? method;
@@ -1037,12 +1140,20 @@ class DesktopSession extends ChangeNotifier {
         cancellation: read);
       read.throwIfCancelled();
       target.running = page['running'] == true;
+      target.retryStatus = target.running && page['status']?['type'] == 'retry'
+        ? page['status']['message'] as String? : null;
       if (!target.running) target.runStartedAt = null;
       target.pending
         ..clear()
         ..addEntries((page['pending'] as List? ?? []).map((raw) {
           final item = jsonObject(raw);
           return MapEntry('msg_${item['id']}', item);
+        }));
+      target.questions
+        ..clear()
+        ..addEntries((page['questions'] as List? ?? []).map((raw) {
+          final question = jsonObject(raw);
+          return MapEntry(question['id'] as String, question);
         }));
       final config = jsonObject(page['configuration'] ?? {});
       target.provider = config['provider'] as String?;
@@ -1067,6 +1178,7 @@ class DesktopSession extends ChangeNotifier {
           _applySessionEvent(target, event);
         }
       }
+      target.questionDrafts.removeWhere((id, _) => !target.questions.containsKey(id));
       target.loaded = true;
       if (task == target) _markViewed(target);
     } on CancelledException {
@@ -1111,27 +1223,55 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const []}) async {
-    final owner = project;
-    final existing = task;
+  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
+    final store = _traceStore;
+    if (store == null) return _send(prompt, attachments: attachments, target: target);
+    final context = TraceContext(sink: store.sink, service: 'desktop', session: (target ?? task)?.id);
+    return withTrace(context, () => traceAsync('desktop.submit',
+      () => _send(prompt, attachments: attachments, target: target)));
+  }
+
+  Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
+    final owner = target == null ? project : projects.where((project) =>
+      project.tasks.any((task) => task.id == target.sideParentID)).firstOrNull;
+    final existing = target ?? task;
     final draft = existing == null ? currentDraft : null;
     final wasRunning = existing?.running == true;
+    final sideCommand = target == null ? RegExp(r'^\s*/side(?:\s|$)').firstMatch(prompt) : null;
+    if (sideCommand != null && existing == null) {
+      showError('Send a message in the main session before starting a side chat.');
+      return false;
+    }
     if (owner == null ||
         !owner.available ||
         owner.removing ||
         (prompt.trim().isEmpty && attachments.isEmpty) ||
-        submitting ||
+        (target?.sideSubmitting ?? submitting) ||
+        target != null && sideChats[target.id] != target ||
         !connected ||
         existing?.archived == true ||
         existing?.archiving == true ||
-        !authenticated) {
+        !authenticatedFor(target)) {
       return false;
     }
-    submitting = true;
-    error = null;
-    _earlyEvents.clear();
-    final provider = providerId, model = modelId, effort = reasoning, info = modelInfo;
-    final cancellation = _submission = CancellationToken();
+    if (target == null) {
+      submitting = true;
+      error = null;
+      _earlyEvents.clear();
+    } else {
+      target.sideSubmitting = true;
+      target.sideError = null;
+    }
+    final provider = target?.provider ?? providerId, model = target?.model ?? modelId;
+    final effort = effortFor(target), info = modelFor(target);
+    final cancellation = CancellationToken();
+    if (target == null) { _submission = cancellation; }
+    else { target.sideSubmission = cancellation; }
+    void progress(String? status) {
+      if (target == null) { attachmentStatus = status; }
+      else { target.sideAttachmentStatus = status; }
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
     final uploaded = <String>[];
     var admitted = false;
     notifyListeners();
@@ -1140,11 +1280,10 @@ class DesktopSession extends ChangeNotifier {
       final images = attachments.where((attachment) => attachment.image).toList();
       final remoteImages = <Json>[];
       if (images.isNotEmpty && !client.sharedFilesystem) {
-        attachmentStatus = 'Preparing images…';
-        notifyListeners();
+        progress('Preparing images…');
         remoteImages.addAll(await prepareRemoteImages(images.map((image) => image.toJson()).toList(),
           cancellation: cancellation.merge(_lifetime)));
-        attachmentStatus = null;
+        progress(null);
       }
       var imageIndex = 0;
       for (final attachment in attachments) {
@@ -1156,14 +1295,12 @@ class DesktopSession extends ChangeNotifier {
           if (await FileSystemEntity.isDirectory(attachment.path)) {
             throw StateError('Folders must be on the server; upload individual files instead');
           }
-          attachmentStatus = 'Uploading ${attachment.name}…';
-          notifyListeners();
+          progress('Uploading ${attachment.name}…');
           final part = await client.uploadAttachment(attachment.path,
             name: attachment.name, type: attachment.image ? 'image' : 'file',
             cancellation: cancellation.merge(_lifetime),
             onProgress: (sent, total) {
-              attachmentStatus = 'Uploading ${attachment.name} · ${total == 0 ? 100 : (sent * 100 ~/ total)}%';
-              if (!_lifetime.isCancelled) notifyListeners();
+              progress('Uploading ${attachment.name} · ${total == 0 ? 100 : (sent * 100 ~/ total)}%');
             });
           uploaded.add(part['upload_id'] as String);
           input.add(part);
@@ -1173,8 +1310,7 @@ class DesktopSession extends ChangeNotifier {
       }
       cancellation.throwIfCancelled();
       _lifetime.throwIfCancelled();
-      attachmentStatus = null;
-      notifyListeners();
+      progress(null);
       if (existing == null) {
         final reply = jsonObject(
           await _request('task.start', {
@@ -1184,6 +1320,7 @@ class DesktopSession extends ChangeNotifier {
             'provider': provider,
             'model': model,
             'reasoning': effort,
+            if (provider == 'openai') 'settings': {'request_user_input': true},
           }),
         );
         final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
@@ -1192,6 +1329,7 @@ class DesktopSession extends ChangeNotifier {
           title.length > 72 ? '${title.substring(0, 72)}…' : title,
         )..running = true
           ..lastActivity = DateTime.now().millisecondsSinceEpoch;
+        bindTraceSession(created.id);
         created.loaded = true;
         created.provider = provider;
         created.model = model;
@@ -1234,6 +1372,8 @@ class DesktopSession extends ChangeNotifier {
           error =
               'Task started, but its sidebar reference could not be saved: $failure';
         }
+      } else if (sideCommand != null) {
+        await openSideChat(existing, prompt: prompt.substring(sideCommand.end).trimLeft(), attachments: input);
       } else {
         // Mark admission before awaiting: a very short turn can finish before
         // the caller resumes from the WebSocket acknowledgement.
@@ -1252,23 +1392,51 @@ class DesktopSession extends ChangeNotifier {
       rethrow;
     } catch (failure) {
       existing?.running = wasRunning;
-      error = failure.toString();
+      if (target == null) { error = failure.toString(); }
+      else { target.sideError = failure.toString(); }
       return false;
     } finally {
       if (!admitted) for (final id in uploaded) { await client.discardAttachment(id); }
       cancellation.cancel();
-      if (identical(_submission, cancellation)) _submission = null;
-      attachmentStatus = null;
-      _earlyEvents.clear();
-      submitting = false;
+      if (target == null) {
+        if (identical(_submission, cancellation)) _submission = null;
+        attachmentStatus = null;
+        _earlyEvents.clear();
+        submitting = false;
+      } else {
+        target.sideSubmission = null;
+        target.sideAttachmentStatus = null;
+        target.sideSubmitting = false;
+      }
       if (!_lifetime.isCancelled) notifyListeners();
     }
   }
 
-  Future<void> stop() async {
-    final target = task;
-    if (target == null || !target.running) return;
-    await _request('task.cancel', {'task_id': target.id});
+  Future<void> retry(DesktopTask target) async {
+    if (target.running || target.archived || target.archiving || !connected) return;
+    final terminals = target.messages.values.where((message) => message['type'] == 'idle').toList()
+      ..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
+    final failure = terminals.lastOrNull;
+    if (failure?['outcome'] != 'failed') return;
+    target.running = true;
+    target.retryStatus = 'Reconnecting…';
+    error = null;
+    notifyListeners();
+    try {
+      await _request('task.retry', {'task_id': target.id, 'failureID': failure!['id']});
+    } catch (_) {
+      target.running = false;
+      target.retryStatus = null;
+      rethrow;
+    } finally {
+      if (!_lifetime.isCancelled) notifyListeners();
+    }
+  }
+
+  Future<void> stop({DesktopTask? target}) async {
+    final selected = target ?? task;
+    if (selected == null || !selected.running) return;
+    await _request('task.cancel', {'task_id': selected.id});
   }
 
   Future<void> changePending(DesktopTask target, String inboxID, String action) async {
@@ -1279,6 +1447,16 @@ class DesktopSession extends ChangeNotifier {
       'sessionID': target.id, 'inboxID': inboxID,
       if (action != 'delete') 'delivery': action,
     });
+  }
+
+  Future<void> answerQuestion(DesktopTask target, String requestID, List<List<String>>? answers, {
+    required CancellationToken cancellation,
+  }) async {
+    await client.answerQuestion(target.id, requestID, answers,
+      cancellation: cancellation.merge(_lifetime));
+    target.questions.remove(requestID);
+    target.questionDrafts.remove(requestID);
+    if (!_lifetime.isCancelled) notifyListeners();
   }
 
   Future<void> setArchived(DesktopTask target, bool archived) async {
@@ -1305,13 +1483,56 @@ class DesktopSession extends ChangeNotifier {
     }, cancellation: _lifetime);
   }
 
-  void showError(Object failure) {
+  void showError(Object failure, {DesktopTask? target}) {
     if (_lifetime.isCancelled) return;
-    error = failure.toString();
+    if (target == null) { error = failure.toString(); }
+    else { target.sideError = failure.toString(); }
     notifyListeners();
   }
 
   void _onEvent(Json event) {
+    final trace = event['_trace'] == null ? null : client.eventTrace(event);
+    withTrace(trace, () => traceSync('desktop.event.apply', () => _applyIncomingEvent(event),
+      attributes: {'event.type': event['type']}));
+    if (trace == null || trace.session != task?.id || !_traceFrames.add(trace.trace)) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _traceFrames.remove(trace.trace);
+      withTrace(trace, () => traceInstant('desktop.frame.presented',
+        attributes: {'event.type': event['type']}));
+    });
+  }
+
+  void attachExportToNewSession(File file, {Project? owner, String? ownedDirectory}) {
+    newSession(owner);
+    attachmentDrafts[currentDraft.id] = [ComposerAttachment(name: file.uri.pathSegments.last,
+      path: file.path, image: false, ownedDirectory: ownedDirectory)];
+    saveDrafts();
+    notifyListeners();
+  }
+
+  void _applyIncomingEvent(Json event) {
+    if (event['type'] == 'session.side.closed') {
+      final id = event['data']?['sessionID'] as String?;
+      final side = sideChats.remove(id);
+      if (side == null) return;
+      unawaited(_releaseSideDraft(side).catchError((Object failure) {
+        if (!_lifetime.isCancelled) showError(failure);
+      }));
+      final parent = projects.expand((project) => project.tasks)
+        .where((task) => task.id == side.sideParentID).firstOrNull;
+      if (parent != null) {
+        final panels = panelsFor(parent), tab = sideChatPanel(side.id);
+        final index = panels.tabs.indexOf(tab);
+        panels.tabs.remove(tab);
+        if (panels.active == tab) panels.active = panels.tabs.isEmpty ? null
+          : panels.tabs[index.clamp(0, panels.tabs.length - 1)];
+        if (panels.tabs.isEmpty) panels.opened = false;
+        _savePanels(parent);
+      } else {
+        notifyListeners();
+      }
+      return;
+    }
     if (event['type'] == 'session.archived' || event['type'] == 'task.archived') {
       final id = event['data']?['sessionID'] ?? event['task_id'];
       if (id is String) unawaited(terminals.removeTask(id));
@@ -1330,9 +1551,10 @@ class DesktopSession extends ChangeNotifier {
       }
       return;
     }
-    final target = projects
+    final sessionID = event['data']?['sessionID'] ?? event['task_id'];
+    final target = sideChats[sessionID] ?? projects
         .expand((p) => p.tasks)
-        .where((t) => t.id == (event['data']?['sessionID'] ?? event['task_id']))
+        .where((t) => t.id == sessionID)
         .firstOrNull;
     if (target == null) {
       if (submitting && _earlyEvents.length < 256) _earlyEvents.add(event);
@@ -1368,6 +1590,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> _saveActivity(DesktopTask target) async {
+    if (target.sideParentID != null) return;
     await callIsolate(database.port, 'task.activity', {
       'task_id': target.id, 'last_activity': target.lastActivity,
     }, cancellation: _lifetime);
@@ -1410,6 +1633,8 @@ class DesktopSession extends ChangeNotifier {
         final ordinal = data['ordinal'] as int;
         target.streamingText = ordinal < parts.length ? parts[ordinal]['text'] as String? ?? '' : '';
         target.retryStatus = null;
+      case 'session.reasoning.delta':
+        target.retryStatus = null;
       case 'session.text.ended':
       case 'session.step.streamed':
         target.streamingText = '';
@@ -1419,6 +1644,13 @@ class DesktopSession extends ChangeNotifier {
         if (!target.running) target.runStartedAt = null;
         target.retryStatus = data['status']['type'] == 'retry' ? data['status']['message'] as String? : null;
         if (target.retryStatus != null) target.streamingText = '';
+      case 'session.question.asked':
+        final request = jsonObject(data['request']);
+        target.questions[request['id'] as String] = request;
+      case 'session.question.replied':
+      case 'session.question.rejected':
+        target.questions.remove(data['requestID']);
+        target.questionDrafts.remove(data['requestID']);
       case 'session.model.selected':
         target.reasoning = data['model']['variant'] as String?;
         if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
@@ -1447,6 +1679,8 @@ class DesktopSession extends ChangeNotifier {
         target.runStartedAt = null;
         target.streamingText = '';
         target.retryStatus = null;
+        target.questions.clear();
+        target.questionDrafts.clear();
     }
     target.liveText.value = target.streamingText;
     final activity = event['created'] as int?;
@@ -1463,6 +1697,7 @@ class DesktopSession extends ChangeNotifier {
     await terminals.close();
     terminals.dispose();
     _submission?.cancel();
+    for (final side in sideChats.values) { side.sideSubmission?.cancel(); }
     await _dictation?.cancel();
     _dictation?.dispose();
     _dictation = null;
@@ -1471,6 +1706,8 @@ class DesktopSession extends ChangeNotifier {
     await _events.cancel();
     await client.close();
     await database.close();
+    for (final side in sideChats.values) { side.liveText.dispose(); }
+    sideChats.clear();
     for (final entry in attachmentDrafts.entries) {
       if (sessionDrafts.any((draft) => draft.id == entry.key)) continue;
       for (final attachment in entry.value) { await attachment.discard(); }
@@ -1658,9 +1895,13 @@ List<ChatEntry> conversation(DesktopTask task) {
               reasoning: model?['variant'] as String?, duration: created != null && started != null ? created.difference(started) : null,
               interrupted: interrupted));
         }
-        result.add(ChatEntry(id, message['outcome'] == 'failed' ? 'Error' : 'Status',
-          message['outcome'] == 'failed' ? (message['error']?['message'] as String? ?? 'Task failed') : interrupted ? 'Stopped' : 'Completed',
-          timestamp: created, startedAt: started));
+        // A resumed turn supersedes its failure notice; keep the stored event
+        // for history without presenting a recovered failure as a current error.
+        if (message['outcome'] != 'failed' || identical(message, activeMessage) && !task.running) {
+          result.add(ChatEntry(id, message['outcome'] == 'failed' ? 'Error' : 'Status',
+            message['outcome'] == 'failed' ? (message['error']?['message'] as String? ?? 'Task failed') : interrupted ? 'Stopped' : 'Completed',
+            timestamp: created, startedAt: started));
+        }
         started = null;
         turnFirstRow = result.length;
         activeAssistant = null;

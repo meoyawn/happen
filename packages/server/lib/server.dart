@@ -18,6 +18,9 @@ import 'src/client_tools.dart';
 import 'src/task_tools.dart';
 import 'src/file_search.dart';
 import 'src/attachments.dart';
+import 'src/questions.dart';
+
+part 'src/side_chats.dart';
 
 class AgentServer {
   AgentServer._(
@@ -39,6 +42,7 @@ class AgentServer {
   final _lifetime = CancellationToken();
   final _clientTools = ClientToolBridge();
   final _taskTools = TaskToolBridge();
+  late final _questions = SessionQuestions(_broadcast);
   final _files = FileSearch();
   String? socketPath;
   Directory? _socketDirectory;
@@ -52,6 +56,8 @@ class AgentServer {
   bool _networkExited = false;
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
+  Future<TraceStore>? _traces;
+  Future<TraceStore> get traces => _traces ??= TraceStore.open('$directory/telemetry.sqlite', cancellation: _lifetime);
   int _transfers = 0;
 
   /// Activity belongs to this server instance, independent of client subscriptions.
@@ -314,6 +320,7 @@ class AgentServer {
               jsonObject(request['params'] ?? {}),
               client,
               id,
+              trace: request['_trace'] is Map ? jsonObject(request['_trace']) : null,
             );
             _requests.add(operation);
             final result = await operation;
@@ -336,6 +343,12 @@ class AgentServer {
 
   void _detach(_Client client) {
     if (!_clients.remove(client)) return;
+    for (final context in client.sessionTraces.values) {
+      withTrace(context, () => traceInstant('websocket.disconnected', category: 'websocket', attributes: {
+        'connection.id': client.id, 'close.code': client.socket?.closeCode,
+        'queued_events': client._events.length, 'queued_bytes': client._queuedBytes,
+      }));
+    }
     client.cancellation.cancel();
     unawaited(client.attachments.close());
     _clientTools.detach(client.id);
@@ -397,7 +410,25 @@ class AgentServer {
     }
   }
 
-  Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId) async {
+  Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
+    // Export reads must not recursively record their own trace pages.
+    if (method.startsWith('session.trace.')) return _dispatchUntraced(method, params, client, requestId);
+    final store = await traces;
+    final context = traceContextFrom(trace, sink: store.sink, service: 'server') ??
+      TraceContext(sink: store.sink, service: 'server',
+        session: (params['sessionID'] ?? params['task_id']) as String?);
+    if ((params['sessionID'] ?? params['task_id']) case final String session) context.session = session;
+    return withTrace(context, () {
+      traceReceive(trace, 'websocket', attributes: {'rpc.method': method, 'rpc.id': requestId});
+      return traceAsync('server.$method', () {
+        client.requestTraces[requestId] = currentTrace!;
+        return _dispatchUntraced(method, params, client, requestId);
+      },
+        category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id});
+    });
+  }
+
+  Future<Object?> _dispatchUntraced(String method, Json params, _Client client, Object requestId) async {
     _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
     if (method == 'session.read.cancel') {
@@ -413,12 +444,13 @@ class AgentServer {
     method = const {
       'session.create': 'task.start', 'session.prompt': 'task.send',
       'session.interrupt': 'task.cancel', 'session.compact': 'task.compact',
+      'session.retry': 'task.retry',
       'session.archive': 'task.archive', 'session.unarchive': 'task.unarchive',
       'session.fork': 'task.fork',
       'session.hibernate': 'task.hibernate', 'session.subscribe': 'task.subscribe',
     }[method] ?? method;
     if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
-    if (method == 'task.start' || method == 'task.send') {
+    if (method == 'task.start' || method == 'task.send' || method == 'session.side.create') {
       final claimed = await client.attachments.claim(params['attachments']);
       var committed = false;
       try {
@@ -428,7 +460,9 @@ class AgentServer {
       final attachments = await prepareInputAttachments(claimed.parts,
         cancellation: client.cancellation,
         envelopeBytes: utf8.encode(jsonEncode({'id': requestId, 'method': method, 'params': envelope})).length);
-      validateUserInput(prompt, attachments);
+      if (method != 'session.side.create' || prompt.isNotEmpty || attachments.isNotEmpty) {
+        validateUserInput(prompt, attachments);
+      }
       params = {...params, 'prompt': prompt, if (attachments.isNotEmpty) 'attachments': attachments};
       client.cancellation.throwIfCancelled();
       final result = await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey);
@@ -438,7 +472,8 @@ class AgentServer {
         await client.attachments.release(claimed.ids, committed: committed);
       }
     }
-    if ({'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+    if ({'session.list', 'session.message.list', 'session.context', 'session.event.list',
+      'session.trace.page', 'session.trace.status'}.contains(method)) {
       final operation = CancellationToken();
       client.sessionReads[requestId] = operation;
       try { return await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey); }
@@ -558,11 +593,22 @@ class AgentServer {
           'rss_bytes': ProcessInfo.currentRss,
           ...telemetry.snapshot(),
         };
+      case 'session.trace.page':
+      case 'session.trace.status':
+        final id = requiredString(params, 'task_id');
+        validateTaskId(id);
+        final store = await traces;
+        if (method == 'session.trace.status') return store.status(id, cancellation: cancellation);
+        final after = params['after'] as int? ?? 0;
+        final through = params['through'] as int?;
+        if (after < 0 || through != null && through < after) throw const FormatException('Invalid trace cursor');
+        return store.page(id, after: after, through: through, cancellation: cancellation);
       case 'maintenance.run':
         return maintain();
       case 'task.start':
         final config = await _config(params);
         final id = await _newTaskId(config, client.cancellation);
+        bindTraceSession(id);
         if (params['client_tools'] != null) {
           _clientTools.register(
             id,
@@ -605,25 +651,57 @@ class AgentServer {
         client.subscriptions.add(id);
         if (client.sessionProtocol) client.sessionSubscriptions.add(id);
         if (method == 'session.context') return _contextPage(id, params, client, cancellation);
+        if (method == 'session.question.list') return {'data': _questions.list(id)};
+        if (method == 'session.question.reply' || method == 'session.question.reject') {
+          final requestID = requiredString(params, 'requestID');
+          if (method == 'session.question.reply') {
+            _questions.reply(id, requestID, params['answers']);
+          } else {
+            _questions.reject(id, requestID);
+          }
+          return null;
+        }
         var task = _tasks[id] ?? _Task(id, null);
         if (task.backgroundMaintenance case final maintenance?) {
           await maintenance.future.asCancellable(cancellation);
           _lifetime.throwIfCancelled();
           task = _tasks[id] ?? _Task(id, null);
         }
-        // Lazy image/tool reads can arrive together. Queue behind the current
-        // SQLite owner instead of rejecting a second reader during its close.
-        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.event.list', 'session.inbox', 'session.inbox.update', 'session.inbox.cancel', 'task.send', 'task.compact'}.contains(method)) {
-          while (task.maintenance) {
-            await task.maintenanceDone!.future.asCancellable(cancellation);
+        // Reads and input admission share the writer's ownership transitions.
+        // Recheck after each wait: completion may have started a queued turn.
+        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.event.list',
+          'session.side.create', 'session.inbox', 'session.inbox.update', 'session.inbox.cancel',
+          'task.send', 'task.compact', 'task.retry'}.contains(method)) {
+          while (task.maintenance || task.finishing || task.busy && task.writer == null) {
+            await (task.maintenance ? task.maintenanceDone!.future
+              : task.finishing ? task.running! : task.ready!.future).asCancellable(cancellation);
             task = _tasks[id] ?? _Task(id, null);
           }
         }
+        if (method == 'session.side.create') return _createSide(task, params, client, cancellation);
+        if (method == 'session.side.list') {
+          final sides = _tasks.values.where((side) => side.sideParentID == id && !side.disposing).toList();
+          for (final side in sides) {
+            client.subscriptions.add(side.id);
+            client.sessionSubscriptions.add(side.id);
+          }
+          return {'data': sides.map(_sideInfo).toList()};
+        }
+        if (method == 'session.side.close') {
+          if (task.sideParentID == null) throw StateError('Session is not a side chat');
+          await _closeSide(task);
+          return null;
+        }
+        if (task.sideParentID != null &&
+            {'task.archive', 'task.unarchive', 'task.hibernate', 'task.fork', 'history.export'}.contains(method)) {
+          throw StateError('Side chats are ephemeral; close the side chat to discard it');
+        }
+        if (task.disposing) throw StateError('Side chat is closing');
         if ({'session.message.list', 'session.event.list', 'session.inbox'}.contains(method)) {
           client.sessionSubscriptions.add(id);
           if (task.busy && task.writer == null) await task.ready?.future.asCancellable(cancellation);
-          var page = File('$directory/tasks/$id/history.sqlite').existsSync()
-            ? await readSession(directory, id, method, params, cancellation: cancellation)
+          var page = task.sideParentID != null || File('$directory/tasks/$id/history.sqlite').existsSync()
+            ? await _readSession(task, method, params, cancellation)
             : <String, dynamic>{'needsProjection': true};
           if (page['needsProjection'] == true) {
             task = _tasks[id] ?? task;
@@ -632,10 +710,11 @@ class AgentServer {
               task = _tasks[id] ?? task;
             }
             await _withWriter(task, (writer) => callIsolate(writer.port, 'session.prepare', {}, cancellation: cancellation));
-            page = await readSession(directory, id, method, params, cancellation: cancellation);
+            page = await _readSession(task, method, params, cancellation);
           }
           final current = _tasks[id] ?? task;
-          return {...page, 'running': current.busy};
+          return {...page, 'questions': _questions.list(id), 'running': current.busy,
+            'status': current.retryStatus ?? {'type': current.busy ? 'busy' : 'idle'}};
         }
         if (method == 'session.inbox.update' || method == 'session.inbox.cancel') {
           final inboxID = requiredString(params, 'inboxID');
@@ -657,13 +736,14 @@ class AgentServer {
             if (index >= 0) {
               if (delivery == null) {
                 task.pending.removeAt(index);
+                task.pendingTraces.remove(sourceID);
               } else {
                 final updated = task.pending[index] = {...task.pending[index], 'delivery': delivery};
                 if (task.busy) _offerSteering(task, updated);
               }
             }
             if (!task.busy && delivery == 'steer') {
-              final inbox = await readSession(directory, id, 'session.inbox', {}, cancellation: cancellation);
+              final inbox = await _readSession(task, 'session.inbox', {}, cancellation);
               task.pending
                 ..clear()
                 ..addAll((inbox['data'] as List).map(jsonObject));
@@ -695,7 +775,8 @@ class AgentServer {
           );
         }
         if (method == 'task.subscribe') {
-          return {identityKey: id, 'running': task.busy, 'pending': task.pending};
+          return {identityKey: id, 'running': task.busy, 'pending': task.pending,
+            'status': task.retryStatus ?? {'type': task.busy ? 'busy' : 'idle'}};
         }
         if (method == 'task.archive' || method == 'task.unarchive') {
           await _archive(task, method == 'task.archive');
@@ -714,6 +795,25 @@ class AgentServer {
         if (method == 'task.hibernate') {
           await _hibernate(task);
           return {identityKey: id};
+        }
+        if (method == 'task.retry') {
+          if (task.busy) return {identityKey: id, 'running': true};
+          final page = jsonObject(await _withWriter(task, (writer) => callIsolate(
+            writer.port, 'history.list', {'limit': 1}, cancellation: cancellation)));
+          final turns = (page['summary'] as List).map(jsonObject).where((event) =>
+            {'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])).toList()
+              ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+          final last = turns.lastOrNull;
+          final failure = last == null ? null : sessionEvents(id, last, {}).lastOrNull;
+          final matches = identityKey == 'sessionID'
+            ? failure != null && sessionMessageID(failure['id'] as String) == params['failureID']
+            : last?['seq'] == params['failure_seq'];
+          if (page['archived'] == true || last?['type'] != 'turn.failed' || !matches) {
+            throw StateError('The failed turn is no longer available to retry');
+          }
+          task = _tasks[id] ?? task;
+          if (!task.busy) _begin(task, '', retry: true);
+          return {identityKey: id, 'running': true};
         }
         if (method == 'task.send' || method == 'task.compact') {
           final mode = params['delivery'] as String? ?? 'queue';
@@ -736,6 +836,11 @@ class AgentServer {
             }, cancellation: client.cancellation);
             // Validation can outlive the current turn. Admit against its latest owner.
             task = _tasks[id] ?? task;
+          }
+          while (task.maintenance || task.finishing || task.busy && task.writer == null) {
+            await (task.maintenance ? task.maintenanceDone!.future
+              : task.finishing ? task.running! : task.ready!.future).asCancellable(cancellation);
+            task = _tasks[id] ?? _Task(id, null);
           }
           if (method == 'task.send' && task.busy) {
             if (task.cancelled) throw StateError('Task is stopping');
@@ -763,12 +868,12 @@ class AgentServer {
             if (utf8.encode(jsonEncode([...task.pending, message])).length > maxClientFrameBytes - 1024) {
               throw StateError('Pending messages exceed the 64 MiB transport budget');
             }
-            await task.ready?.future.asCancellable(client.cancellation);
             await _withWriter(task, (writer) async {
               final admitted = jsonObject(await callIsolate(writer.port, 'append', {
                 'type': 'input.pending', 'data': message,
               }, cancellation: client.cancellation));
               task.pending.add(message);
+              if (currentTrace case final context?) task.pendingTraces[message['id'] as String] = context;
               _broadcast(id, admitted);
               _offerSteering(task, message);
               return null;
@@ -920,7 +1025,7 @@ class AgentServer {
         final config = jsonObject(await callIsolate(writer.port, 'metadata', {'key': 'config'}, cancellation: cancellation));
         final restored = await startAgent(taskId: id, config: config,
           writer: writer.port, network: network.port, taskTools: _taskTools.port,
-          clientTools: _clientTools.port, codeInterrupt: 0);
+          clientTools: _clientTools.port, questions: _questions.port, codeInterrupt: 0);
         try {
           return await callIsolate(restored.port, 'context', {}, cancellation: cancellation);
         } finally { await restored.close(); }
@@ -930,7 +1035,8 @@ class AgentServer {
   }
 
   void _forgetIdle(_Task task) {
-    if (!task.busy && !task.maintenance && task.pending.isEmpty && identical(_tasks[task.id], task)) {
+    if (task.sideParentID == null && !task.busy && !task.maintenance &&
+        task.pending.isEmpty && identical(_tasks[task.id], task)) {
       _tasks.remove(task.id);
     }
     // Publish after any queued turn has been admitted, without a false idle gap.
@@ -993,6 +1099,11 @@ class AgentServer {
         await task.running;
       }
       _lifetime.throwIfCancelled();
+      if (archived) {
+        for (final side in _tasks.values.where((side) => side.sideParentID == task.id).toList()) {
+          await _closeSide(side);
+        }
+      }
       writer = await startStore(directory, task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
@@ -1096,13 +1207,15 @@ class AgentServer {
   }
 
   void _offerSteering(_Task task, Json message) {
-    if (task.agent == null ||
+    if (task.finishing || task.agent == null ||
         message['delivery'] != 'steer' ||
         !task.offered.add(message['id'] as String)) {
       return;
     }
     task.codeInterrupt?.interrupt();
-    task.agent!.port.send({'method': 'steer', 'params': message});
+    withTrace(task.pendingTraces[message['id']] ?? currentTrace, () {
+      task.agent!.port.send({'method': 'steer', 'params': message, '_trace': ?traceIsolateCarrier('steer')});
+    });
   }
 
   Future<void> _discardPending(_Task task, String reason, {IsolateOwner? writer}) async {
@@ -1110,6 +1223,7 @@ class AgentServer {
       {'reason': reason}, cancellation: _lifetime);
     final discarded = writer == null ? await _withWriter(task, discard) : await discard(writer);
     task.pending.clear();
+    task.pendingTraces.clear();
     task.offered.clear();
     if (discarded != null) _broadcast(task.id, jsonObject(discarded));
   }
@@ -1137,6 +1251,7 @@ class AgentServer {
     _Task task,
     String prompt, {
     bool compact = false,
+    bool retry = false,
     Json settings = const {},
   }) {
     _lifetime.throwIfCancelled();
@@ -1145,8 +1260,9 @@ class AgentServer {
         'Network worker exited; restart the server before starting a turn',
       );
     }
+    if (task.disposing) throw StateError('Side chat is closing');
     if (task.busy || task.maintenance) throw StateError('Task is busy');
-    if (!compact && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
+    if (!compact && !retry && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
       throw const FormatException('Prompt is required');
     }
     if (_tasks.values.where((task) => task.busy).length >= maxAgents) {
@@ -1161,6 +1277,7 @@ class AgentServer {
       effective['cwd'] = p.normalize(cwd.path);
     }
     task.busy = true;
+    task.retryStatus = null;
     task.finishing = false;
     task.ready = Completer<void>();
     _tasks[task.id] = task;
@@ -1168,13 +1285,19 @@ class AgentServer {
     task.startingInputID = settings['message_id'] == null ? null : 'msg_${settings['message_id']}';
     _activity.add(activeTaskCount);
     telemetry.add('turns_started');
-    task.running = _run(task, prompt, compact: compact, settings: effective);
+    final context = task.pendingTraces[settings['message_id']] ?? currentTrace;
+    task.running = withTrace(context, () {
+      bindTraceSession(task.id);
+      return traceAsync('server.turn', () => _run(task, prompt, compact: compact, retry: retry, settings: effective),
+        attributes: {'session_id': task.id, 'compact': compact});
+    });
   }
 
   Future<void> _run(
     _Task task,
     String prompt, {
     required bool compact,
+    required bool retry,
     required Json settings,
   }) async {
     Json? terminal;
@@ -1182,7 +1305,7 @@ class AgentServer {
     // it commits its terminal event, regardless of the turn's total duration.
     final turnLifetime = CancellationToken();
     try {
-      task.writer = await startStore(
+      task.writer = task.sideStore ?? await startStore(
         directory,
         task.id,
         create: task.config != null,
@@ -1209,7 +1332,7 @@ class AgentServer {
       );
       if (task.pending.isEmpty) {
         await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: turnLifetime);
-        final inbox = await readSession(directory, task.id, 'session.inbox', {}, cancellation: turnLifetime);
+        final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
         task.pending.addAll((inbox['data'] as List).map(jsonObject));
       }
       task.codeInterrupt = CodeInterrupt();
@@ -1220,6 +1343,7 @@ class AgentServer {
         network: network.port,
         clientTools: _clientTools.port,
         taskTools: _taskTools.port,
+        questions: _questions.port,
         codeInterrupt: task.codeInterrupt!.address,
       );
       task.ready!.complete();
@@ -1230,7 +1354,7 @@ class AgentServer {
       final turn = callIsolate(
         task.agent!.port,
         'turn',
-        {'prompt': prompt, 'compact': compact, 'settings': settings},
+        {'prompt': prompt, 'compact': compact, 'retry': retry, 'settings': settings},
         timeout: null,
         cancellation: turnLifetime,
         onEvent: (event) {
@@ -1238,6 +1362,12 @@ class AgentServer {
             final id = event['data']?['message_id'];
             if (task.startingInputID == 'msg_$id') task.startingInputID = null;
             task.pending.removeWhere((message) => message['id'] == id);
+            final origin = task.pendingTraces.remove(id);
+            if (origin != null) {
+              traceInstant('session.input.committed', attributes: {
+                'message_id': id, 'origin.trace_id': origin.trace,
+              });
+            }
             task.offered.remove(id);
           }
           if ([
@@ -1257,6 +1387,7 @@ class AgentServer {
       }
       await turn;
     } catch (error) {
+      traceError(error);
       terminal = {
         'task_id': task.id,
         'type': 'turn.failed',
@@ -1283,7 +1414,7 @@ class AgentServer {
       if (!_closing && task.writer != null && (task.cancelled || terminal?['type'] != 'turn.completed')) {
         await _discardPending(task, 'stopped', writer: task.writer);
       }
-      await task.writer?.close();
+      if (task.sideParentID == null) await task.writer?.close();
       task.agent = null;
       task.writer = null;
       task.busy = false;
@@ -1291,12 +1422,16 @@ class AgentServer {
       task.offered.clear();
       task.startingInputID = null;
       if (terminal != null) {
+        traceInstant('server.${terminal!['type']}', attributes: {
+          'status': terminal!['type'] == 'turn.completed' ? 'ok'
+            : terminal!['type'] == 'turn.cancelled' ? 'cancelled' : 'error',
+        });
         telemetry.add(terminal!['type'] as String);
         _broadcast(task.id, terminal!);
       }
       if (_closing) {
         // The durable inbox remains available when this session resumes.
-      } else if (!task.cancelled && terminal?['type'] == 'turn.completed' && task.pending.isNotEmpty) {
+      } else if (!task.cancelled && !task.disposing && terminal?['type'] == 'turn.completed' && task.pending.isNotEmpty) {
         final next = task.pending.first;
         try {
           _begin(
@@ -1345,14 +1480,14 @@ class AgentServer {
     _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
-      writer = await startStore(
+      writer = task.sideStore ?? await startStore(
         directory,
         task.id,
         create: false,
       );
       return await operation(writer);
     } finally {
-      try { await writer?.close(); }
+      try { if (task.sideParentID == null) await writer?.close(); }
       finally {
         task.maintenance = false;
         task.maintenanceDone = null;
@@ -1364,6 +1499,15 @@ class AgentServer {
 
   void _broadcast(String taskId, Json event) {
     final task = _tasks[taskId];
+    if (task != null) {
+      if (event['type'] == 'model.retrying') {
+        task.retryStatus = {'type': 'retry', 'attempt': event['attempt'], 'message': event['message'],
+          'next': DateTime.now().millisecondsSinceEpoch + (event['delay_ms'] as int? ?? 0)};
+      } else if ({'model.started', 'model.connected', 'text.delta', 'reasoning.delta',
+        'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) {
+        task.retryStatus = null;
+      }
+    }
     if (event['type'] == 'model.started' || event['type'] == 'model.retrying') {
       task?.streamOrdinal = 0;
       task?.streamPartType = null;
@@ -1393,17 +1537,22 @@ class AgentServer {
           'turn.failed' => 'session.execution.failed',
           'turn.cancelled' => 'session.execution.interrupted',
           'turn.completed' => 'session.execution.succeeded',
+          'question.asked' => 'session.question.asked',
+          'question.replied' => 'session.question.replied',
+          'question.rejected' => 'session.question.rejected',
+          'side.closed' => 'session.side.closed',
           _ => null,
         };
         if (type == null) continue;
         client.event({'id': 'evt_${newId()}', 'created': DateTime.now().millisecondsSinceEpoch,
           'type': type, 'data': {'sessionID': taskId,
             'assistantMessageID': ?assistant,
+            if (type.startsWith('session.question.')) ...payload,
+            if (type == 'session.side.closed') ...payload,
             if (type == 'session.text.delta' || type == 'session.reasoning.delta') ...{'ordinal': task?.streamOrdinal ?? 0, 'delta': event['delta']},
             if (type == 'session.compaction.delta') 'text': event['delta'],
             if (type == 'session.status') 'status': event['type'] == 'model.retrying'
-              ? {'type': 'retry', 'attempt': event['attempt'], 'message': event['message'],
-                'next': DateTime.now().millisecondsSinceEpoch + (event['delay_ms'] as int? ?? 0)} : {'type': 'busy'},
+              ? task?.retryStatus : {'type': 'busy'},
             if (type == 'session.inbox.enqueued') ...{'inboxID': 'msg_${payload['id']}', 'item': {
               'type': 'user', 'delivery': payload['delivery'], 'text': payload['prompt'], 'files': payload['attachments'] ?? []}},
             if (type == 'session.inbox.cancelled') 'ids': [for (final id in payload['ids'] as List? ?? []) 'msg_$id'],
@@ -1422,6 +1571,7 @@ class AgentServer {
     _lifetime.cancel();
     try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
     _clientTools.close();
+    _questions.close();
     _files.clear();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
@@ -1442,6 +1592,9 @@ class AgentServer {
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
     );
     await Future.wait(_requests.toList().map((operation) => operation.catchError((Object _) => null)));
+    await Future.wait(_tasks.values.where((task) => task.sideParentID != null)
+      .map((task) => task.sideStore!.close()));
+    _tasks.clear();
     await _taskTools.close();
     unawaited(_activity.close());
     await network.close();
@@ -1459,6 +1612,10 @@ class AgentServer {
       }
     }
     await _socketDirectory?.delete(recursive: true);
+    if (_traces != null) {
+      try { await (await _traces!).close(); }
+      on CancelledException { /* Shutdown can cancel recorder startup. */ }
+    }
   }
 }
 
@@ -1466,7 +1623,12 @@ class _Task {
   _Task(this.id, this.config);
   final String id;
   Json? config;
+  String? sideParentID;
+  IsolateOwner? sideStore;
+  Future<void>? closingSide;
+  bool disposing = false;
   String? assistantMessageID;
+  Json? retryStatus;
   String? startingInputID;
   int streamOrdinal = 0;
   String? streamPartType;
@@ -1479,6 +1641,7 @@ class _Task {
   int writerRequests = 0;
   Completer<void>? ready;
   final pending = <Json>[];
+  final pendingTraces = <String, TraceContext>{};
   final offered = <String>{};
 }
 
@@ -1500,31 +1663,43 @@ class _Client {
   final mcpLogins = <Object, CancellationToken>{};
   final sessionReads = <Object, CancellationToken>{};
   final contextSnapshots = <String, Json>{};
+  final requestTraces = <Object, TraceContext>{};
+  final sessionTraces = <String, TraceContext>{};
   Object? fileSearchId;
   Object? skillSearchId;
   final subscriptions = <String>{};
   final sessionSubscriptions = <String>{};
   bool sessionProtocol = false;
-  final _events = Queue<({String frame, int bytes})>();
+  final _events = Queue<({Json event, int bytes, int queuedAt, TraceContext? trace})>();
   int _queuedBytes = 0;
   int credits = 256, inFlight = 0;
   void send(Json message) {
+    final trace = message.containsKey('id') ? requestTraces.remove(message['id']) : currentTrace;
+    withTrace(trace ?? currentTrace, () {
+    if (currentTrace case final context? when context.session != null) sessionTraces[context.session!] = context;
+    final carrier = traceSend('websocket', attributes: {
+      if (message['id'] != null) 'rpc.id': message['id'],
+      if (message['event'] is Map) 'event.type': message['event']['type'],
+    });
+    message = {...message, '_trace': ?carrier};
     if (local case final messages?) {
       if (!messages.isClosed) messages.add(jsonObject(jsonDecode(jsonEncode(message))));
     } else if (socket!.readyState == WebSocket.open) { socket!.add(jsonEncode(message)); }
+    });
   }
 
   void event(Json event) {
     if (local != null) { send({'event': event}); return; }
     if (socket!.readyState != WebSocket.open) return;
-    final frame = jsonEncode({'event': event});
     if (credits > 0) {
       credits--;
-      socket!.add(frame);
+      send({'event': event});
       return;
     }
-    final bytes = utf8.encode(frame).length;
+    final bytes = utf8.encode(jsonEncode({'event': event})).length;
     if (_events.length >= 1024 || _queuedBytes + bytes > maxClientFrameBytes) {
+      traceInstant('websocket.backlog.exceeded', category: 'websocket',
+        attributes: {'queued_events': _events.length, 'queued_bytes': _queuedBytes});
       unawaited(
         socket!.close(
           1008,
@@ -1533,7 +1708,9 @@ class _Client {
       );
       return;
     }
-    _events.add((frame: frame, bytes: bytes));
+    traceInstant('websocket.queued', category: 'websocket',
+      attributes: {'queued_events': _events.length, 'queued_bytes': _queuedBytes});
+    _events.add((event: event, bytes: bytes, queuedAt: traceTime(), trace: currentTrace));
     _queuedBytes += bytes;
   }
 
@@ -1543,7 +1720,11 @@ class _Client {
       final next = _events.removeFirst();
       _queuedBytes -= next.bytes;
       credits--;
-      socket!.add(next.frame);
+      withTrace(next.trace, () {
+        traceInstant('websocket.dequeued', category: 'websocket',
+          attributes: {'queue_us': traceTime() - next.queuedAt, 'queued_events': _events.length});
+        send({'event': next.event});
+      });
     }
   }
 
@@ -1560,8 +1741,13 @@ class AgentClient {
     _subscription = connection.listen(
       (raw) {
         final message = jsonObject(jsonDecode(raw as String));
+        final trace = _receiveTrace(message);
+        withTrace(trace, () {
+        traceReceive(message['_trace'], 'websocket',
+          attributes: {'bytes': utf8.encode(raw).length, 'rpc.id': message['id'],
+            if (message['event'] is Map) 'event.type': message['event']['type']});
         if (message.containsKey('event')) {
-          events.add(jsonObject(message['event']));
+          events.add({...jsonObject(message['event']), '_trace': ?trace?.carrier(local: false)});
           connection.add(
             jsonEncode({
               'method': 'events.ack',
@@ -1576,6 +1762,7 @@ class AgentClient {
             completer?.complete(message['result']);
           }
         }
+        });
       },
       onDone: _disconnected,
       onError: (Object error) => _disconnected(),
@@ -1587,7 +1774,13 @@ class AgentClient {
     final state = _localClient = _Client.local(server.directory);
     server._clients.add(state);
     _subscription = state.local!.stream.listen((message) {
-      if (message['event'] case final Map event) events.add(jsonObject(event));
+      final trace = _receiveTrace(message);
+      withTrace(trace, () {
+        traceReceive(message['_trace'], 'websocket');
+        if (message['event'] case final Map event) {
+          events.add({...jsonObject(event), '_trace': ?trace?.carrier(local: false)});
+        }
+      });
     }, onDone: _disconnected, onError: (Object _) => _disconnected());
   }
   final WebSocket? socket;
@@ -1600,6 +1793,28 @@ class AgentClient {
   final events = StreamController<Json>.broadcast();
   final _pending = <int, Completer<Object?>>{};
   int _next = 0;
+  Future<TraceStore>? _tracing;
+  TraceStore? _traceStore;
+  final _sessionTraces = <String, TraceContext>{};
+  bool _disconnectRecorded = false;
+  final _traceLifetime = CancellationToken();
+  Future<TraceStore> startTracing(String directory) => _tracing ??=
+    TraceStore.open('$directory/telemetry-desktop.sqlite', cancellation: _traceLifetime)
+      .then((store) => _traceStore = store);
+  TraceContext? _receiveTrace(Json message) {
+    final context = _traceStore == null ? null
+      : traceContextFrom(message['_trace'], sink: _traceStore!.sink, service: 'desktop');
+    if (context?.session case final session?) _sessionTraces[session] = context!;
+    return context;
+  }
+  TraceContext? eventTrace(Json event) => _receiveTrace(event);
+
+  Future<Json> tracePage(String sessionID, {int after = 0, int? through,
+    required CancellationToken cancellation}) async => jsonObject(await withTrace(null, () => _requestUntraced(
+      'session.trace.page', {'sessionID': sessionID, 'after': after, 'through': through},
+      cancellation: cancellation)));
+  Future<Json> traceStatus(String sessionID, {required CancellationToken cancellation}) async =>
+    jsonObject(await withTrace(null, () => _requestUntraced('session.trace.status', {'sessionID': sessionID}, cancellation: cancellation)));
 
   static Future<AgentClient> connect(
     Uri uri, {
@@ -1649,6 +1864,14 @@ class AgentClient {
       throw ArgumentError('Unknown session read');
     }
     return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
+  Future<void> answerQuestion(String sessionID, String requestID, List<List<String>>? answers, {
+    required CancellationToken cancellation,
+  }) async {
+    await _request(answers == null ? 'session.question.reject' : 'session.question.reply', {
+      'sessionID': sessionID, 'requestID': requestID, if (answers != null) 'answers': answers,
+    }, cancellation: cancellation);
   }
 
 
@@ -1733,6 +1956,19 @@ class AgentClient {
   Future<Object?> _request(String method, Json params, {
     CancellationToken? cancellation,
     Duration timeout = const Duration(minutes: 5),
+  }) {
+    final store = _traceStore;
+    final context = currentTrace ?? (store == null ? null : TraceContext(sink: store.sink,
+      service: 'desktop', session: (params['sessionID'] ?? params['task_id']) as String?));
+    if (context?.session case final session?) _sessionTraces[session] = context!;
+    return withTrace(context, () => traceAsync('desktop.$method',
+      () => _requestUntraced(method, params, cancellation: cancellation, timeout: timeout),
+      category: 'websocket'));
+  }
+
+  Future<Object?> _requestUntraced(String method, Json params, {
+    CancellationToken? cancellation,
+    Duration timeout = const Duration(minutes: 5),
   }) async {
     cancellation?.throwIfCancelled();
     if (_closed || socket != null && socket!.readyState != WebSocket.open) {
@@ -1753,7 +1989,17 @@ class AgentClient {
         state.mcpLogins[id]?.cancel();
       });
       state.inFlight++;
-      final operation = server._dispatch(method, jsonObject(jsonDecode(jsonEncode(params))), state, id);
+      final carrier = traceSend('websocket', attributes: {'rpc.method': method, 'rpc.id': id});
+      final operation = () async {
+        try {
+          return await server._dispatch(method, jsonObject(jsonDecode(jsonEncode(params))), state, id, trace: carrier);
+        } finally {
+          final response = withTrace(state.requestTraces.remove(id),
+            () => traceSend('websocket', attributes: {'rpc.id': id, 'transport': 'local'}));
+          withTrace(_receiveTrace({'_trace': response}),
+            () => traceReceive(response, 'websocket', attributes: {'rpc.id': id, 'transport': 'local'}));
+        }
+      }();
       server._requests.add(operation);
       unawaited(operation.then((_) {}, onError: (Object _, StackTrace _) {}).whenComplete(() {
         server._requests.remove(operation);
@@ -1769,7 +2015,7 @@ class AgentClient {
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
-      if ({'session.message.list', 'session.context', 'session.event.list'}.contains(method) && socket!.readyState == WebSocket.open) {
+      if ({'session.message.list', 'session.context', 'session.event.list', 'session.trace.page', 'session.trace.status'}.contains(method) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {
@@ -1786,7 +2032,8 @@ class AgentClient {
       }
     });
     _pending[id] = result;
-    socket!.add(jsonEncode({'id': id, 'method': method, 'params': params}));
+    socket!.add(jsonEncode({'id': id, 'method': method, 'params': params,
+      '_trace': ?traceSend('websocket', attributes: {'rpc.method': method, 'rpc.id': id})}));
     try {
       return await result.future;
     } finally {
@@ -1796,6 +2043,12 @@ class AgentClient {
   }
 
   void _disconnected() {
+    if (_disconnectRecorded) return;
+    _disconnectRecorded = true;
+    for (final context in _sessionTraces.values) {
+      withTrace(context, () => traceInstant('websocket.disconnected', category: 'websocket',
+        attributes: {'pending_requests': _pending.length, 'close.code': socket?.closeCode}));
+    }
     for (final completer in _pending.values) {
       completer.completeError(StateError('Connection closed'));
     }
@@ -1812,6 +2065,11 @@ class AgentClient {
     } else { await socket!.close(); }
     await _subscription.cancel();
     _disconnected();
+    _traceLifetime.cancel();
+    if (_tracing != null) {
+      try { await (await _tracing!).close(); }
+      on CancelledException { /* Shutdown can cancel recorder startup. */ }
+    }
   }
 }
 

@@ -9,10 +9,12 @@ import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:storage/storage.dart';
+import 'package:telemetry/telemetry.dart';
 
 void main() {
   late Directory root;
@@ -25,7 +27,9 @@ void main() {
     root = await Directory.systemTemp.createTemp('context-window-');
     client = _Client(root.path, newId());
     await client.connect();
-    session = DesktopSession(client, await openDesktopDatabase(root.path));
+    session = DesktopSession(client, await openDesktopDatabase(root.path),
+      attachmentDirectory: '${root.path}/attachments');
+    await session.tracing;
     task = DesktopTask(client.id, 'Inspect context');
     final page = await client.sessionRead('session.message.list', {'sessionID': client.id},
       cancellation: CancellationToken());
@@ -45,6 +49,7 @@ void main() {
       do {
         reading = client.reading;
         await reading?.timeout(const Duration(seconds: 10));
+        await client.traceReading?.timeout(const Duration(seconds: 10));
         await Future<void>.delayed(Duration.zero);
       } while (!identical(reading, client.reading));
     });
@@ -69,19 +74,71 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> until(FutureOr<bool> Function() condition) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!await condition()) {
+      if (DateTime.now().isAfter(deadline)) throw TimeoutException('Export did not complete');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
   Future<String> export(WidgetTester tester) async {
-    await tester.ensureVisible(find.text('Export session'));
-    final button = tester.widget<TextButton>(find.ancestor(of: find.text('Export session'),
-      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
-    await tester.runAsync(button.onPressed! as Future<void> Function());
-    await tester.pumpAndSettle();
-    return (await tester.runAsync(() async {
-      final file = (await Directory('${root.path}/Downloads').list().toList()).single as File;
+    final button = tester.widget<IconButton>(find.byWidgetPredicate(
+      (widget) => widget is IconButton && widget.tooltip == 'Download LLM context JSON'));
+    final contents = (await tester.runAsync(() async {
+      button.onPressed!();
+      final downloads = Directory('${root.path}/Downloads');
+      await until(() async => await downloads.exists() &&
+        (await downloads.list().toList()).any((file) => file.path.endsWith('.json')));
+      final file = (await downloads.list().toList()).single as File;
       expect(file.path, endsWith('.json'));
       expect(file.path, contains('inspect-context-'));
       return file.readAsString();
     }))!;
+    await tester.pumpAndSettle();
+    return contents;
   }
+
+  testWidgets('trace download copies its path and both JSON exports attach to a new composer', (tester) async {
+    String? copiedPath;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copiedPath = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await showContext(tester);
+    final download = tester.widget<TextButton>(find.ancestor(of: find.text('Export & copy path'),
+      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
+    await tester.runAsync(() async {
+      download.onPressed!();
+      await until(() => copiedPath != null);
+    });
+    await tester.pumpAndSettle();
+    expect(copiedPath, startsWith('${root.path}/Downloads/'));
+    final trace = jsonDecode((await tester.runAsync(() => File(copiedPath!).readAsString()))!) as Map;
+    expect(trace['metadata']['sessionID'], task.id);
+    expect(trace['traceEvents'], isNotEmpty);
+    for (final label in ['LLM context', 'End-to-end trace']) {
+      final previousDraft = session.currentDraft.id;
+      final button = tester.widget<IconButton>(find.byWidgetPredicate(
+        (widget) => widget is IconButton && widget.tooltip == 'Attach $label to new session'));
+      await tester.runAsync(() async {
+        button.onPressed!();
+        await until(() => session.currentDraft.id != previousDraft &&
+          session.attachmentDrafts[session.currentDraft.id]?.isNotEmpty == true);
+      });
+      await tester.pumpAndSettle();
+      expect(session.task, isNull);
+      expect(session.currentDraft.id, isNot(previousDraft));
+      expect(session.project!.tasks, contains(task));
+      final attachment = session.attachmentDrafts[session.currentDraft.id]!.single;
+      expect(attachment.image, isFalse);
+      expect(attachment.ownedDirectory, startsWith('${root.path}/attachments/'));
+      final data = jsonDecode((await tester.runAsync(() => File(attachment.path).readAsString()))!) as Map;
+      expect(data.containsKey(label == 'LLM context' ? 'input' : 'traceEvents'), isTrue);
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('context message headers remain interactive after scrolling and reassembly', (tester) async {
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: SessionContextWindow(session: session, task: task))));
@@ -149,10 +206,12 @@ void main() {
     await reveal(tester, prompt);
     await tester.tap(prompt);
     await tester.pumpAndSettle();
-    expect(find.textContaining('"content": "You are the saved system prompt."', findRichText: true), findsOneWidget);
+    final promptJson = find.textContaining('"text": "You are the saved system prompt."', findRichText: true);
+    await reveal(tester, promptJson);
+    expect(promptJson, findsOneWidget);
     await tester.tap(prompt);
     await tester.pumpAndSettle();
-    expect(find.textContaining('"content": "You are the saved system prompt."', findRichText: true), findsNothing);
+    expect(promptJson, findsNothing);
     await reveal(tester, find.text('user • msg_item_user'));
     await tester.tap(find.text('user • msg_item_user'));
     await tester.pumpAndSettle();
@@ -164,7 +223,7 @@ void main() {
     expect(contents, contains('Raw request'));
     final input = exported['input'] as List;
     expect(input.first['role'], 'developer');
-    expect(input.first['content'], 'You are the saved system prompt.');
+    expect(input.first['content'], [{'type': 'input_text', 'text': 'You are the saved system prompt.'}]);
     expect(input.skip(1).map((item) => item['id']), ['msg_item_user', 'msg_item_answer']);
     expect(input.last['content'], [{'type': 'output_text', 'text': 'Answer'}]);
     expect(exported['reasoning'], {'effort': 'high', 'summary': 'auto'});
@@ -324,8 +383,17 @@ class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   final methods = <String>[];
   Future<Json>? reading;
+  Future<Json>? traceReading;
   int? pageLimit;
   ({Completer<void> arrived, Completer<void> release})? pageGate;
+
+  @override Future<TraceStore> startTracing(String directory) =>
+    _ioZone.run(() => remote.startTracing(directory));
+  @override Future<Json> traceStatus(String sessionID, {required CancellationToken cancellation}) =>
+    traceReading = _ioZone.run<Future<Json>>(() => remote.traceStatus(sessionID, cancellation: cancellation));
+  @override Future<Json> tracePage(String sessionID, {int after = 0, int? through,
+    required CancellationToken cancellation}) => _ioZone.run(() => remote.tracePage(
+      sessionID, after: after, through: through, cancellation: cancellation));
 
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) {
     methods.add(method);

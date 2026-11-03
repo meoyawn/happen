@@ -9,6 +9,7 @@ import 'conversation_activity.dart';
 import 'conversation_data.dart';
 import 'conversation_markdown.dart';
 import 'opencode_activity.dart';
+import 'session_question.dart';
 import 'session.dart';
 
 const _codeStyle = TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13, height: 20 / 13,
@@ -173,6 +174,7 @@ class _ExecuteCallState extends State<_ExecuteCall> {
   Widget build(BuildContext context) {
     _open ??= PageStorage.maybeOf(context)?.readState(context, identifier: ('execute-call', widget.call.id)) as bool? ?? false;
     final call = widget.call;
+    if (call.name.split('.').last == 'question') return QuestionToolResult(tool: call, onExpand: widget.onExpand);
     final failed = call.status == 'failed';
     final summary = _summary(call);
     if (call.name.split('.').last == 'skill' && toolSkillReads(call).isNotEmpty) return SkillReadRows(tool: call);

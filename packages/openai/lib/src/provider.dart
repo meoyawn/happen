@@ -66,6 +66,7 @@ class OpenAIProvider implements ModelProvider {
       'sleep_tool',
       'goals',
       'code_mode_only',
+      'request_user_input',
     };
     if (selected.keys.any((key) => !allowed.contains(key))) {
       throw ArgumentError('Unsupported GPT setting');
@@ -92,7 +93,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['standalone_web_search', 'sleep_tool', 'goals', 'code_mode_only']) {
+    for (final key in ['standalone_web_search', 'sleep_tool', 'goals', 'code_mode_only', 'request_user_input']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -120,6 +121,9 @@ class OpenAIProvider implements ModelProvider {
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
       'code_mode_only': selected['code_mode_only'] ?? true,
+      // Interactive clients opt in when creating the session. Headless agents
+      // must not wait for a question that no client can answer.
+      'request_user_input': selected['request_user_input'] ?? false,
     };
   }
 

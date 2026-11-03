@@ -9,6 +9,7 @@ import 'package:openai/openai.dart';
 import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'agents_md.dart';
 import 'skills.dart';
@@ -39,7 +40,6 @@ Future<IsolateOwner> startNetwork(
     'events': events,
   });
 }
-
 void _networkMain(List<Object?> args) async {
   final startup = jsonObject(args[1]);
   final directory = startup['directory'] as String;
@@ -657,6 +657,7 @@ void _networkMain(List<Object?> args) async {
       }
       reply?.send({'result': result});
     } catch (error) {
+      traceError(error);
       reply?.send({
         'error': error.toString(),
         if (error is ModelFailure) 'code': error.code,
@@ -698,8 +699,11 @@ void _networkMain(List<Object?> args) async {
         Isolate.exit();
       }
     }
-    final operation = handle(request);
+    final operation = traceIncoming(request, () => handle(request),
+      service: {'respond', 'compact', 'web.search', 'image.generate'}.contains(request['method']) &&
+        request['params']?['provider'] == 'openai' ? 'openai' : 'network');
     pending.add(operation);
     unawaited(operation.whenComplete(() => pending.remove(operation)));
   });
 }
+

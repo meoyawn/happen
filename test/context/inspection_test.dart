@@ -33,7 +33,7 @@ void main() {
     final config = <String, dynamic>{'provider': 'openai', 'tool_interface': 'openai',
       'model': 'gpt-6.1-sol', 'instructions': '', 'provider_settings': {'reasoning': 'high'}};
     var agent = await startAgent(taskId: newId(), config: config, writer: writer.sendPort,
-      network: network.sendPort, taskTools: network.sendPort, codeInterrupt: 0);
+      network: network.sendPort, taskTools: network.sendPort, questions: network.sendPort, codeInterrupt: 0);
     addTearDown(() async { await agent.close(); writer.close(); network.close(); });
     final cancelled = CancellationToken(), lifetime = CancellationToken();
     addTearDown(lifetime.cancel);
@@ -55,7 +55,7 @@ void main() {
     expect(reads, 1);
     await agent.close();
     agent = await startAgent(taskId: newId(), config: config, writer: writer.sendPort,
-      network: network.sendPort, taskTools: network.sendPort, codeInterrupt: 0);
+      network: network.sendPort, taskTools: network.sendPort, questions: network.sendPort, codeInterrupt: 0);
     expect(jsonObject(await callIsolate(agent.port, 'context', {}, cancellation: lifetime))['input'], saved);
     expect(reads, 2);
   });

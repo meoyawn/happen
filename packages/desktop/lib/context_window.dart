@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart' show readContextSnapshot;
 
@@ -16,10 +17,11 @@ import 'session_export.dart';
 
 /// Inspects the inference request built from a frozen agent snapshot.
 class SessionContextWindow extends StatefulWidget {
-  const SessionContextWindow({super.key, required this.session, required this.task, this.downloadsDirectory});
+  const SessionContextWindow({super.key, required this.session, required this.task, this.downloadsDirectory, this.onAttached});
   final DesktopSession session;
   final DesktopTask task;
   final Directory? downloadsDirectory;
+  final VoidCallback? onAttached;
 
   @override
   State<SessionContextWindow> createState() => _SessionContextWindowState();
@@ -31,6 +33,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   String? _error;
   bool _exporting = false;
   bool _loading = false;
+  bool _traceLoading = false;
+  Map<String, int>? _traceCounts;
+  String? _traceError;
   bool _messagesExpanded = true;
   final _expanded = <String>{};
 
@@ -39,6 +44,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     super.initState();
     widget.session.addListener(_changed);
     unawaited(_load());
+    unawaited(_loadTraceStatus());
   }
 
   void _changed() {
@@ -57,37 +63,112 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     catch (error) { if (mounted) setState(() => _error = error.toString()); }
     finally {
       _loading = false;
+      if (mounted) unawaited(_loadTraceStatus());
       if (mounted && widget.task.through > through) _changed();
     }
   }
 
-  Future<void> _export() async {
-    // Export exactly what this panel is inspecting, including every input page.
-    final snapshot = _snapshot;
-    if (_exporting || snapshot == null) return;
-    setState(() => _exporting = true);
+  Future<void> _loadTraceStatus() async {
+    if (_traceLoading) return;
+    _traceLoading = true;
     try {
-      final file = await saveSessionExport(inferenceRequest(snapshot),
+      final store = await widget.session.tracing;
+      final results = await Future.wait([
+        widget.session.client.traceStatus(widget.task.id, cancellation: _lifetime),
+        store.status(widget.task.id, cancellation: _lifetime),
+      ]);
+      final counts = <String, int>{};
+      for (final result in results) {
+        for (final entry in jsonObject(result['categories']).entries) {
+          counts[entry.key] = (counts[entry.key] ?? 0) + (entry.value as int);
+        }
+      }
+      if (mounted) setState(() { _traceCounts = counts; _traceError = null; });
+    } on CancelledException { /* The panel owns its reads. */ }
+    catch (error) { if (mounted) setState(() => _traceError = error.toString()); }
+    finally { _traceLoading = false; }
+  }
+
+  Future<void> _export({bool trace = false, bool attach = false}) async {
+    final snapshot = _snapshot;
+    if (_exporting || !trace && snapshot == null) return;
+    setState(() => _exporting = true);
+    final destination = attach ? Directory('${widget.session.attachmentDirectory}/${newId()}')
+      : widget.downloadsDirectory;
+    var attached = false;
+    try {
+      final file = trace ? await saveSessionTrace(widget.session.client, await widget.session.tracing,
         title: widget.task.title, sessionID: widget.task.id,
-        downloadsDirectory: widget.downloadsDirectory, cancellation: _lifetime);
-      if (mounted) showDesktopToast(context, 'Session exported', description: 'Saved to ${file.path}', icon: Icons.check_rounded);
+        downloadsDirectory: destination, cancellation: _lifetime)
+        : await saveSessionExport(inferenceRequest(snapshot!),
+          title: '${widget.task.title}-context', sessionID: widget.task.id,
+          downloadsDirectory: destination, cancellation: _lifetime);
+      if (attach) {
+        _lifetime.throwIfCancelled();
+        final owner = widget.session.projects.where((project) => project.tasks.contains(widget.task)).firstOrNull;
+        widget.session.attachExportToNewSession(file, owner: owner, ownedDirectory: destination!.path);
+        attached = true;
+        widget.onAttached?.call();
+      } else {
+        if (trace) await Clipboard.setData(ClipboardData(text: file.path));
+        if (mounted) {
+          showDesktopToast(context, trace ? 'End-to-end trace exported' : 'LLM context exported',
+            description: trace ? 'Path copied to clipboard: ${file.path}' : 'Saved to ${file.path}', icon: Icons.check_rounded);
+        }
+      }
     } on CancelledException { /* The caller owns the export lifetime. */ }
     catch (error) {
-      if (mounted) showDesktopToast(context, 'Could not export session', description: '$error');
+      if (mounted) showDesktopToast(context, 'Could not export ${trace ? 'session trace' : 'LLM context'}', description: '$error');
     }
-    finally { if (mounted) setState(() => _exporting = false); }
+    finally {
+      if (attach && !attached && await destination!.exists()) await destination.delete(recursive: true);
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 
   @override
   void dispose() { widget.session.removeListener(_changed); _lifetime.cancel(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) => Material(color: Colors.white, child: _error != null
+  Widget build(BuildContext context) => Material(color: Colors.white, child: Column(children: [
+    _exports(),
+    const Divider(height: 1, color: opencodeBorder),
+    Expanded(child: _error != null
       ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
           SelectableText(_error!), TextButton(onPressed: _load, child: const Text('Retry')),
         ])))
       : _snapshot == null ? const Center(child: CircularProgressIndicator(strokeWidth: 1.5))
-      : ListenableBuilder(listenable: widget.session, builder: (context, _) => _content()));
+      : ListenableBuilder(listenable: widget.session, builder: (context, _) => _content())),
+  ]));
+
+  Widget _exports() => Padding(padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      _exportRow('LLM context', enabled: _snapshot != null, trace: false),
+      _exportRow('End-to-end trace', enabled: true, trace: true),
+      if (_traceError != null) Padding(padding: const EdgeInsets.only(right: 8, top: 4),
+        child: Text(_traceError!, style: const TextStyle(fontSize: 11, color: Colors.red))),
+      if (_traceCounts case final counts?) Padding(padding: const EdgeInsets.only(right: 8, bottom: 4),
+        child: Text('Events: ${counts['http'] ?? 0} HTTP · ${counts['websocket'] ?? 0} WebSocket · ${counts['sqlite'] ?? 0} SQLite',
+          style: const TextStyle(fontSize: 11, color: opencodeFaint))),
+    ]));
+
+  Widget _exportRow(String label, {required bool enabled, required bool trace}) => Row(children: [
+    Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+    if (trace) IconButton(tooltip: 'Refresh session trace counts', visualDensity: VisualDensity.compact,
+      onPressed: _traceLoading ? null : _loadTraceStatus, icon: const Icon(Icons.refresh, size: 16)),
+    if (trace) Tooltip(message: 'Export end-to-end trace JSON and copy its path',
+      child: TextButton.icon(onPressed: _exporting ? null : () => _export(trace: true),
+        style: TextButton.styleFrom(foregroundColor: opencodeMuted, padding: const EdgeInsets.symmetric(horizontal: 6),
+          textStyle: const TextStyle(fontSize: 11)),
+        icon: const Icon(Icons.file_download_outlined, size: 16),
+        label: Text(_exporting ? 'Exporting…' : 'Export & copy path')))
+    else IconButton(tooltip: 'Download $label JSON', visualDensity: VisualDensity.compact,
+      onPressed: _exporting || !enabled ? null : () => _export(),
+      icon: const Icon(Icons.file_download_outlined, size: 16)),
+    IconButton(tooltip: 'Attach $label to new session', visualDensity: VisualDensity.compact,
+      onPressed: _exporting || !enabled ? null : () => _export(trace: trace, attach: true),
+      icon: const Icon(Icons.add_comment_outlined, size: 16)),
+  ]);
 
   Widget _content() {
     final snapshot = _snapshot!;
@@ -169,11 +250,8 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
                 style: TextStyle(fontSize: 12, color: opencodeFaint))),
               const SizedBox(width: 8), Icon(_messagesExpanded ? Icons.expand_less : Icons.expand_more,
                 size: 16, color: opencodeFaint)]))))),
-          TextButton.icon(onPressed: _exporting ? null : _export,
-            style: TextButton.styleFrom(foregroundColor: opencodeFaint, minimumSize: const Size(0, 24),
-              padding: const EdgeInsets.symmetric(horizontal: 8), textStyle: const TextStyle(fontSize: 12)),
-            icon: const Icon(Icons.file_download_outlined, size: 16),
-            label: Text(_exporting ? 'Exporting…' : 'Export session'))]))),
+          if (_exporting) const SizedBox.square(dimension: 12,
+            child: CircularProgressIndicator(strokeWidth: 1.5))]))),
       if (_messagesExpanded) for (var index = 0; index < input.length; index++)
           SliverPadding(padding: EdgeInsets.symmetric(horizontal: inset), sliver: _message(input[index],
             id: input[index]['id'] as String? ?? '$inputField[$index]',

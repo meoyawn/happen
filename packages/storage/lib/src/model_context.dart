@@ -2,11 +2,11 @@ import 'dart:convert';
 
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
-import 'package:sqlite3/sqlite3.dart';
+import 'package:telemetry/telemetry.dart';
 
 /// The model's current window: replacement history at the last checkpoint,
 /// followed by its committed suffix. Used only when restoring an agent.
-List<Json> readModelContext(Database db, {int maxBytes = maxContextBytes}) {
+List<Json> readModelContext(TracedDatabase db, {int maxBytes = maxContextBytes}) {
   final checkpoint = db.select(
     "SELECT seq, data FROM events WHERE type = 'context.compacted' ORDER BY seq DESC LIMIT 1",
   );
@@ -25,6 +25,9 @@ List<Json> readModelContext(Database db, {int maxBytes = maxContextBytes}) {
   final after = checkpoint.isEmpty ? 0 : checkpoint.single['seq'] as int;
   if (checkpoint.isNotEmpty) {
     add('context.compacted', jsonObject(jsonDecode(checkpoint.single['data'] as String)));
+  } else {
+    final inherited = db.select("SELECT value FROM metadata WHERE key IS 'fork_input'").firstOrNull;
+    if (inherited != null) add('context.compacted', {'input': jsonDecode(inherited['value'] as String)});
   }
   final query = db.prepare('''
     SELECT type, data FROM events WHERE seq > ? AND type IN (

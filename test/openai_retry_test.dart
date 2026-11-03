@@ -11,22 +11,25 @@ import 'package:test/test.dart';
 
 void main() {
   for (final compaction in [false, true]) {
-    test('${compaction ? 'compaction' : 'sampling'} shares two retries across connection, HTTP, and stream failures', () {
+    test('${compaction ? 'compaction' : 'sampling'} recovers across connection, HTTP, and stream failures', () {
       fakeAsync((time) {
         final transport = _Transport((attempt, _) => switch (attempt) {
           1 => throw const SocketException('Connection reset by peer'),
           2 => _json(503, {}),
-          _ => _events([]),
+          3 => _events([]),
+          _ => _events([_completed]),
         });
         final events = <Json>[];
         final reply = _settle(time, _respond(_client(transport),
-          input: compaction ? [{'type': 'compaction_trigger'}] : [], onEvent: events.add));
-        expect(reply.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_disconnected'));
-        expect(transport.bodies, hasLength(3));
-        expect(events.map((event) => event['attempt']), [1, 2]);
-        expect(events.every((event) => event['max_retries'] == 2), isTrue);
+          input: compaction ? [{'type': 'compaction_trigger'}] : [], onEvent: events.add),
+          within: const Duration(seconds: 2));
+        expect(reply.error, isNull);
+        expect(reply.value!.text, 'Recovered');
+        expect(transport.bodies, hasLength(4));
+        expect(events.map((event) => event['attempt']), [1, 2, 3]);
+        expect(events.every((event) => !event.containsKey('max_retries')), isTrue);
         expect(events.map((event) => event['delay_ms']), [
-          inInclusiveRange(180, 220), inInclusiveRange(360, 440),
+          inInclusiveRange(180, 220), inInclusiveRange(360, 440), inInclusiveRange(720, 880),
         ]);
         expect(transport.bodies.every((body) => jsonEncode(body) == jsonEncode(transport.bodies.first)), isTrue);
       });
@@ -68,13 +71,6 @@ void main() {
       expect(transport.paths.toSet(), {search ? '/alpha/search' : '/responses'});
     });
 
-    test('${search ? 'search' : 'responses'} stop after three failed requests', () async {
-      final transport = _Transport((_, _) => _json(500, {}));
-      final client = _client(transport);
-      await expectLater(_fast(() => search ? _search(client) : _respond(client)), throwsA(isA<ModelFailure>()));
-      expect(transport.bodies, hasLength(3));
-    });
-
     test('${search ? 'search' : 'responses'} cancellation interrupts a request backoff', () async {
       final transport = _Transport((_, _) => _json(503, {}));
       final client = _client(transport);
@@ -94,28 +90,79 @@ void main() {
       expect(transport.bodies, hasLength(2));
     });
 
-    test('${search ? 'search' : 'responses'} return long server cooldowns without waiting or retrying early', () {
+    test('${search ? 'search returns' : 'responses wait through'} long server cooldowns without retrying early', () {
       fakeAsync((time) {
-        final transport = _Transport((_, _) => _json(503, {}, headers: {'retry-after': '60'}));
+        final transport = _Transport((attempt, _) => attempt == 1
+          ? _json(503, {}, headers: {'retry-after': '60'}) : _events([_completed]));
         final client = _client(transport);
-        expect(_settle(time, search ? _search(client) : _respond(client)).error, isA<ModelFailure>());
+        if (search) {
+          expect(_settle(time, _search(client)).error, isA<ModelFailure>());
+          expect(transport.bodies, hasLength(1));
+          return;
+        }
+        final pending = _respond(client);
+        time.flushMicrotasks();
+        time.elapse(const Duration(seconds: 59));
         expect(transport.bodies, hasLength(1));
+        expect(_settle(time, pending, within: const Duration(seconds: 2)).value!.text, 'Recovered');
+        expect(transport.bodies, hasLength(2));
       });
     });
 
-    test('${search ? 'search' : 'responses'} bound stalled response headers', () {
+    test('${search ? 'search bounds' : 'responses recover from'} stalled response headers', () {
       fakeAsync((time) {
-        final transport = _Transport((_, _) => Completer<HttpReply>().future);
+        final transport = _Transport((attempt, _) => attempt < 4
+          ? Completer<HttpReply>().future
+          : Future.delayed(const Duration(seconds: 45), () => _events([_completed])));
         final client = _client(transport);
         final result = _settle(time, search ? _search(client) : _respond(client),
-          within: const Duration(seconds: 31));
-        expect(result.error, search
-          ? isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_timeout')
-          : isA<TimeoutException>());
-        expect(transport.bodies, hasLength(3));
+          within: Duration(seconds: search ? 31 : 230));
+        if (search) {
+          expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_timeout'));
+        } else {
+          expect(result.error, isNull);
+          expect(result.value, isA<ResponsesReply>().having((reply) => reply.text, 'text', 'Recovered'));
+        }
+        expect(transport.bodies, hasLength(search ? 3 : 4));
+        expect(transport.cancellations.take(3).every((token) => token.isCancelled), isTrue);
+        if (!search) {
+          transport.reply = (_, _) => Completer<HttpReply>().future;
+          final token = CancellationToken();
+          final pending = _respond(client, cancellation: token);
+          time.flushMicrotasks();
+          token.cancel();
+          expect(_settle(time, pending).error, isA<CancelledException>());
+          expect(transport.cancellations.last.isCancelled, isTrue);
+          expect(token.hasCancellables, isFalse);
+        }
       });
     });
   }
+
+  test('a prolonged outage keeps inference cancellable with bounded backoff', () {
+    fakeAsync((time) {
+      final transport = _Transport((_, _) => _json(500, {}));
+      final token = CancellationToken();
+      final events = <Json>[];
+      final pending = _respond(_client(transport), cancellation: token, onEvent: events.add);
+      time.flushMicrotasks();
+      time.elapse(const Duration(hours: 1));
+      expect(events.length, greaterThan(100));
+      expect(events.every((event) => (event['delay_ms'] as int) > 0 && event['delay_ms'] <= 30000), isTrue);
+      final requests = transport.bodies.length;
+      token.cancel();
+      expect(_settle(time, pending).error, isA<CancelledException>());
+      time.elapse(const Duration(hours: 1));
+      expect(transport.bodies, hasLength(requests));
+      expect(token.hasCancellables, isFalse);
+    });
+  });
+
+  test('search stops after three failed requests', () async {
+    final transport = _Transport((_, _) => _json(500, {}));
+    await expectLater(_fast(() => _search(_client(transport))), throwsA(isA<ModelFailure>()));
+    expect(transport.bodies, hasLength(3));
+  });
 
   test('search connection resets stop within a second', () {
     fakeAsync((time) {
@@ -126,20 +173,27 @@ void main() {
     });
   });
 
-  test('a socket reset after headers uses the same bounded recovery', () {
+  test('socket resets after headers recover and close abandoned bodies', () {
     fakeAsync((time) {
-      final transport = _Transport((_, _) {
-        final source = StreamController<List<int>>(onCancel: () => Future<void>.value());
+      var closed = 0;
+      final transport = _Transport((attempt, _) {
+        if (attempt == 5) return _events([_completed]);
+        final source = StreamController<List<int>>(onCancel: () {
+          closed++;
+          return Future<void>.value();
+        });
         source.addError(const SocketException('Connection reset by peer'));
         unawaited(source.close());
         return HttpReply(source.stream, 200, {}, '2');
       });
       final events = <Json>[];
-      final result = _settle(time, _respond(_client(transport), onEvent: events.add));
-      expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_disconnected'));
-      expect(transport.bodies, hasLength(3));
-      expect(events.map((event) => event['attempt']), [1, 2]);
-      expect(events.every((event) => event['max_retries'] == 2), isTrue);
+      final result = _settle(time, _respond(_client(transport), onEvent: events.add),
+        within: const Duration(seconds: 4));
+      expect(result.error, isNull);
+      expect(result.value!.text, 'Recovered');
+      expect(transport.bodies, hasLength(5));
+      expect(closed, 4);
+      expect(events.map((event) => event['attempt']), [1, 2, 3, 4]);
     });
   });
 
@@ -166,13 +220,18 @@ void main() {
     test('a stalled HTTP $status body preserves the status and closes before recovery', () {
       fakeAsync((time) {
         var closed = 0;
-        final transport = _Transport((_, _) => HttpReply(StreamController<List<int>>(
+        final transport = _Transport((attempt, _) => attempt == 4 ? _events([_completed]) : HttpReply(StreamController<List<int>>(
           onCancel: () { closed++; return Future<void>.value(); },
         ).stream, status, {}, '2'));
-        final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 7));
-        expect(result.error, isA<ResponseFailure>().having((error) => error.status, 'status', status));
-        expect(transport.bodies, hasLength(status == 400 ? 1 : 3));
-        expect(closed, transport.bodies.length);
+        final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 8));
+        if (status == 400) {
+          expect(result.error, isA<ResponseFailure>().having((error) => error.status, 'status', status));
+        } else {
+          expect(result.error, isNull);
+          expect(result.value!.text, 'Recovered');
+        }
+        expect(transport.bodies, hasLength(status == 400 ? 1 : 4));
+        expect(closed, status == 400 ? 1 : 3);
       });
     });
   }
@@ -180,13 +239,14 @@ void main() {
   test('silent streams reconnect after 60 seconds and close every abandoned body', () {
     fakeAsync((time) {
       var closed = 0;
-      final transport = _Transport((_, _) => HttpReply(StreamController<List<int>>(
+      final transport = _Transport((attempt, _) => attempt == 5 ? _events([_completed]) : HttpReply(StreamController<List<int>>(
         onCancel: () { closed++; return Future<void>.value(); },
       ).stream, 200, {}, '2'));
-      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 181));
-      expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'stream_idle_timeout'));
-      expect(transport.bodies, hasLength(3));
-      expect(closed, 3);
+      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 244));
+      expect(result.error, isNull);
+      expect(result.value!.text, 'Recovered');
+      expect(transport.bodies, hasLength(5));
+      expect(closed, 4);
     });
   });
 
@@ -311,6 +371,7 @@ class _Transport extends HttpConnections {
   FutureOr<HttpReply> Function(int attempt, Json body) reply;
   final bodies = <Json>[];
   final paths = <String>[];
+  final cancellations = <CancellationToken>[];
 
   @override
   Future<HttpReply> send(HttpClient http, String method, Uri uri, {
@@ -319,6 +380,7 @@ class _Transport extends HttpConnections {
     cancellation.throwIfCancelled();
     bodies.add(jsonObject(jsonDecode(utf8.decode(body))));
     paths.add(uri.path);
+    cancellations.add(cancellation);
     return Future<HttpReply>.sync(() => reply(bodies.length, bodies.last)).asCancellable(cancellation);
   }
 }

@@ -52,6 +52,63 @@ void main() {
     ));
   }
 
+  testWidgets('retry clears the resolved failure from live and reopened conversations', (tester) async {
+    final task = DesktopTask('retry', 'Retry')..loaded = true;
+    task.events.addAll({
+      1: {'seq': 1, 'type': 'turn.started', 'data': {}},
+      2: {'seq': 2, 'type': 'input.committed', 'data': {'item': {
+        'role': 'user', 'content': [{'type': 'text', 'text': 'Finish the work'}],
+      }}},
+      3: {'seq': 3, 'type': 'turn.failed', 'data': {'error': 'HTTP response headers timed out'}},
+    });
+    var retries = 0;
+    Widget transcript(DesktopTask current) => MaterialApp(home: Scaffold(body: ConversationTranscript(
+      task: current, directory: '/project', onRetry: () {},
+      onRetryTurn: () { retries++; current.running = true; },
+    )));
+    await tester.pumpWidget(transcript(task));
+    await tester.pumpAndSettle();
+    expect(find.text('HTTP response headers timed out'), findsOneWidget);
+    await tester.tap(find.text('Retry'));
+    await tester.pumpWidget(transcript(task));
+    await tester.pump();
+    expect(retries, 1);
+    expect(find.text('Something went wrong'), findsNothing);
+
+    task.running = false;
+    task.events.addAll({
+      4: {'seq': 4, 'type': 'turn.started', 'data': {}},
+      5: {'seq': 5, 'type': 'model.started', 'data': {'assistantMessageID': 'msg_reply'}},
+      6: {'seq': 6, 'type': 'model.completed', 'data': {'assistantMessageID': 'msg_reply', 'output': [
+        {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Work completed'}]},
+      ]}},
+      7: {'seq': 7, 'type': 'turn.completed', 'data': {}},
+    });
+    await tester.pumpWidget(transcript(task));
+    await tester.pumpAndSettle();
+    expect(find.text('Work completed', findRichText: true), findsOneWidget);
+    expect(find.text('Something went wrong'), findsNothing);
+    expect(task.messages.values.where((message) => message['outcome'] == 'failed'), hasLength(1));
+
+    final reopened = DesktopTask(task.id, task.title)..loaded = true
+      ..messages.addEntries(task.messages.entries.toList().reversed);
+    await tester.pumpWidget(transcript(reopened));
+    await tester.pumpAndSettle();
+    expect(find.text('Work completed', findRichText: true), findsOneWidget);
+    expect(find.text('Something went wrong'), findsNothing);
+
+    reopened.messages['new-failure'] = {
+      'id': 'new-failure', 'type': 'idle', 'metadata': {'seq': 100},
+      'time': {'created': 100}, 'outcome': 'failed', 'error': {'message': 'New failure'},
+    };
+    await tester.pumpWidget(transcript(reopened));
+    await tester.pumpAndSettle();
+    expect(find.text('New failure'), findsOneWidget);
+    expect(find.text('HTTP response headers timed out'), findsNothing);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('conversation renders Markdown, message times, turn duration, and copies original content', (tester) async {
     final started = DateTime(2026, 10, 31, 9, 41);
     const response = '''## Ready for review

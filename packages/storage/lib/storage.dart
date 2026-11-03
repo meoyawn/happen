@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
-import 'package:sqlite3/sqlite3.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'src/model_context.dart';
 
@@ -22,19 +22,21 @@ class TaskStore {
     this.directory,
     this.taskId, {
     bool create = true,
+    bool inMemory = false,
   }) {
     validateTaskId(taskId);
     final folder = Directory('$directory/tasks/$taskId');
-    if (!create && !File('${folder.path}/history.sqlite').existsSync()) {
+    if (!inMemory && !create && !File('${folder.path}/history.sqlite').existsSync()) {
       throw StateError('Task does not exist: $taskId');
     }
-    folder.createSync(recursive: true);
-    db = sqlite3.open('${folder.path}/history.sqlite');
+    if (!inMemory) folder.createSync(recursive: true);
+    db = openTracedDatabase(inMemory ? ':memory:' : '${folder.path}/history.sqlite');
     db.execute('PRAGMA journal_mode = WAL');
     db.execute('PRAGMA synchronous = NORMAL');
     db.execute('PRAGMA foreign_keys = ON');
     db.execute('PRAGMA cache_size = -512');
     db.execute('PRAGMA busy_timeout = 0');
+    if (inMemory) db.execute('PRAGMA temp_store = MEMORY');
     // Schema initialization must outlive failed event transactions.
     db.execute('''
       CREATE TABLE IF NOT EXISTS events (
@@ -62,7 +64,7 @@ class TaskStore {
     _sessionSchema();
   }
   final String directory, taskId;
-  late final Database db;
+  late final TracedDatabase db;
   Object? keyValue(String method, Json arguments) => _keyValue(this, method, arguments);
   int get lastSequence =>
       db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').first['seq']
@@ -339,6 +341,29 @@ class TaskStore {
   }
 
   List<Json> modelContext({int maxBytes = maxContextBytes}) => readModelContext(db, maxBytes: maxBytes);
+
+  /// Freeze committed model history and instruction baselines on the writer.
+  /// Pending inputs and live tool/process state belong only to the parent.
+  Json forkSnapshot() => {
+    'input': modelContext(),
+    'config': metadataValue('config'),
+    'archived': metadataValue('archived_at') != null,
+    'metadata': {
+      for (final key in ['current_cwd', 'agents_snapshot', 'skills_state',
+        'mcp_snapshot', 'client_tools_snapshot', 'request_tools', 'effective_reasoning'])
+        if (metadataValue(key) case final value?) key: value,
+    },
+  };
+
+  /// Inherited history is model context, separate from this fork's transcript.
+  void initializeFork(Json snapshot) {
+    final config = {...jsonObject(snapshot['config']), 'task_id': taskId};
+    append('task.created', config, metadata: {
+      ...jsonObject(snapshot['metadata'] ?? {}),
+      'config': config, 'title': snapshot['title'] ?? 'Side chat',
+      'fork_input': snapshot['input'],
+    });
+  }
 
   /// Restore an agent's buffer and accounting together on its single writer.
   Json modelSnapshot() {

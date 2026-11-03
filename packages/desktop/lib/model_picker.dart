@@ -30,17 +30,22 @@ PopupMenuItem<String> _option(String value, String label, bool selected, bool en
 );
 
 class ComposerModelPicker extends StatelessWidget {
-  const ComposerModelPicker({super.key, required this.session, required this.enabled});
+  const ComposerModelPicker({super.key, required this.session, required this.enabled, this.target});
   final DesktopSession session;
   final bool enabled;
+  final DesktopTask? target;
 
   @override
   Widget build(BuildContext context) {
-    final canChangeModel = enabled && session.task == null;
-    final canChangeEffort = enabled && (session.task == null || session.task!.reasoningUpdates);
-    final efforts = session.modelInfo?['reasoning_levels'] as List? ?? const [];
-    final model = session.modelId ?? 'Model';
-    final effort = session.reasoning;
+    final selected = target ?? session.task;
+    final canChangeModel = enabled && selected == null;
+    final canChangeEffort = enabled && (selected == null || selected.reasoningUpdates);
+    final efforts = session.modelFor(target)?['reasoning_levels'] as List? ?? const [];
+    final model = target?.model ?? session.modelId ?? 'Model';
+    final effort = session.effortFor(target);
+    final provider = target?.provider ?? session.providerId;
+    void chooseModel(String value) { if (canChangeModel) session.chooseModel(value); }
+    void chooseEffort(String value) => session.chooseReasoning(value, target: target);
     const muted = Color(0xff626862);
     const heading = TextStyle(fontSize: 10, letterSpacing: 1, color: muted);
     final combined = LayoutBuilder(builder: (context, constraints) => PopupMenuButton<String>(
@@ -49,24 +54,24 @@ class ComposerModelPicker extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       onSelected: (value) {
         if (value.startsWith('effort:')) {
-          session.chooseReasoning(value.substring(7));
+          chooseEffort(value.substring(7));
         } else {
-          session.chooseModel(value);
+          chooseModel(value);
         }
       },
       itemBuilder: (_) => [
         const PopupMenuItem<String>(enabled: false, height: 28, child: Text('MODEL', style: heading)),
         for (final model in session.models)
           _option(model['id'] as String, model['id'] as String,
-            model['provider'] == session.providerId && model['id'] == session.modelId, canChangeModel),
-        if (session.task != null) const PopupMenuItem<String>(enabled: false,
+            model['provider'] == provider && model['id'] == (target?.model ?? session.modelId), canChangeModel),
+        if (selected != null) const PopupMenuItem<String>(enabled: false,
           child: Text('Start a new task to change models.')),
         if (efforts.isNotEmpty) ...[
           const PopupMenuDivider(),
           const PopupMenuItem<String>(enabled: false, height: 28, child: Text('REASONING EFFORT', style: heading)),
           for (final effort in efforts.cast<String>())
-            _option('effort:$effort', _effortLabel(effort), effort == session.reasoning, canChangeEffort),
-          if (session.task != null && !session.task!.reasoningUpdates)
+            _option('effort:$effort', _effortLabel(effort), effort == session.effortFor(target), canChangeEffort),
+          if (selected != null && !selected.reasoningUpdates)
             const PopupMenuItem<String>(enabled: false, child: Text('Reasoning effort is fixed for this task.')),
         ],
       ],
@@ -95,18 +100,18 @@ class ComposerModelPicker extends StatelessWidget {
     return LayoutBuilder(builder: (context, constraints) => constraints.maxWidth < 140 ? combined : Row(
       mainAxisSize: MainAxisSize.min, children: [
         Flexible(child: PopupMenuButton<String>(tooltip: 'Model', enabled: enabled,
-          onSelected: session.chooseModel,
+          onSelected: chooseModel,
           itemBuilder: (_) => [
             for (final model in session.models) _option(model['id'] as String, model['id'] as String,
-              model['provider'] == session.providerId && model['id'] == session.modelId, canChangeModel),
-            if (session.task != null) const PopupMenuItem<String>(enabled: false,
+              model['provider'] == provider && model['id'] == (target?.model ?? session.modelId), canChangeModel),
+            if (selected != null) const PopupMenuItem<String>(enabled: false,
               child: Text('Start a new task to change models.')),
           ], child: control(_modelLabel(model)))),
         if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(tooltip: 'Reasoning effort', enabled: enabled,
-          onSelected: session.chooseReasoning,
+          onSelected: chooseEffort,
           itemBuilder: (_) => [
             for (final effort in efforts.cast<String>()) _option(effort, _effortLabel(effort),
-              effort == session.reasoning, canChangeEffort),
+              effort == session.effortFor(target), canChangeEffort),
             if (!canChangeEffort) const PopupMenuItem<String>(enabled: false,
               child: Text('Reasoning effort is fixed for this task.')),
           ], child: control(_effortLabel(effort))),

@@ -193,7 +193,7 @@ void main() {
     expect(ports.toSet(), hasLength(1));
   });
 
-  for (final failure in ['disconnect', 'reset', 'reset before headers']) {
+  for (final failure in ['disconnect', 'reset', 'reset before headers', 'headers timeout']) {
     test('OpenAI retries an HTTP/2 $failure on a fresh connection without interrupting other responses', () async {
       final server = await SecureServerSocket.bind(InternetAddress.loopbackIPv4, 0,
         _serverContext()..setAlpnProtocols(['h2'], true));
@@ -223,9 +223,9 @@ void main() {
               path = utf8.decode(message.headers.firstWhere((header) => ascii.decode(header.name) == ':path').value);
             }
           }
-          if (path != '/hold' && damaged && failure == 'reset before headers') {
+          if (path != '/hold' && damaged && {'reset before headers', 'headers timeout'}.contains(failure)) {
             requests++;
-            stream.terminate();
+            if (failure == 'reset before headers') stream.terminate();
             return;
           }
           stream.sendHeaders([h2.Header.ascii(':status', '200'), h2.Header.ascii('content-type', 'text/event-stream')]);
@@ -247,16 +247,22 @@ void main() {
       final client = ResponsesClient(http: http, connections: connections,
         endpoint: Uri.parse('https://localhost:${server.port}/responses'),
         credentials: ({bool refresh = false}) async => {'access_token': 'fixture', 'account_id': 'fixture'});
-      Future<ResponsesReply> send() => client.respond(model: 'gpt-6.1-sol', instructions: 'Reply briefly.',
-        input: const [], tools: const [], sessionId: 'fixture-session', reasoning: 'low',
-        cancellation: CancellationToken(), onEvent: (event) {
-          events.add(event);
-          if (event['delta'] == 'PARTIAL' && !partial.isCompleted) partial.complete();
-        });
+      Future<ResponsesReply> send() => runZoned(
+        () => client.respond(model: 'gpt-6.1-sol', instructions: 'Reply briefly.',
+          input: const [], tools: const [], sessionId: 'fixture-session', reasoning: 'low',
+          cancellation: CancellationToken(), onEvent: (event) {
+            events.add(event);
+            if (event['delta'] == 'PARTIAL' && !partial.isCompleted) partial.complete();
+          }),
+        zoneSpecification: failure == 'headers timeout' ? ZoneSpecification(
+          createTimer: (_, parent, zone, duration, callback) => parent.createTimer(zone,
+            duration == const Duration(seconds: 60) ? const Duration(milliseconds: 100) : duration, callback),
+        ) : null,
+      );
       final other = failure != 'disconnect' ? utf8.decoder.bind(await httpRequest(http, 'GET',
         Uri.parse('https://localhost:${server.port}/hold'), connections: connections,
         cancellation: CancellationToken())).join() : null;
-      final count = failure == 'disconnect' ? 1 : 6;
+      final count = {'disconnect', 'headers timeout'}.contains(failure) ? 1 : 6;
       final replies = await Future.wait(List.generate(count, (_) => send())).timeout(const Duration(seconds: 10));
       expect(replies.map((reply) => reply.text), everyElement('READY'));
       expect(events.where((event) => event['type'] == 'model.retrying'), hasLength(1));

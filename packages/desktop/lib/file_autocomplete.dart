@@ -33,7 +33,7 @@ typedef ComposerCommand = ({String description, VoidCallback run});
 class ComposerAutocomplete extends StatefulWidget {
   const ComposerAutocomplete({super.key, required this.controller, required this.focusNode,
     required this.client, required this.cwd, required this.enabled, required this.child,
-    this.session, this.commands = const {}});
+    this.session, this.target, this.commands = const {}});
 
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -42,6 +42,7 @@ class ComposerAutocomplete extends StatefulWidget {
   final bool enabled;
   final Widget child;
   final DesktopSession? session;
+  final DesktopTask? target;
   final Map<String, ComposerCommand> commands;
 
   @override
@@ -49,6 +50,7 @@ class ComposerAutocomplete extends StatefulWidget {
 }
 
 class ComposerAutocompleteState extends State<ComposerAutocomplete> {
+  DesktopTask? get _target => widget.target ?? widget.session?.task;
   final _link = LayerLink();
   final _overlay = OverlayPortalController();
   final _scroll = ScrollController();
@@ -84,11 +86,11 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     (name: '/mcp', description: 'Show MCP server status'),
     (name: '/mcp verbose', description: 'Show MCP tools and resources'),
     if (widget.session case final session?) ...[
-      if (session.task == null)
+      if (_target == null)
         for (final model in session.models)
           (name: '/model ${model['id']}', description: model['provider'] as String? ?? 'Choose model'),
-      if (session.task == null || session.task!.reasoningUpdates)
-        for (final level in session.modelInfo?['reasoning_levels'] as List? ?? [])
+      if (_target == null || _target!.reasoningUpdates)
+        for (final level in session.modelFor(widget.target)?['reasoning_levels'] as List? ?? [])
           (name: '/reasoning $level', description: 'Set reasoning effort'),
     ],
     for (final entry in widget.commands.entries)
@@ -328,7 +330,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       selection: TextSelection.collapsed(offset: command.start), composing: TextRange.empty);
     widget.focusNode.requestFocus();
     if (name.startsWith('/model ')) { widget.session?.chooseModel(name.substring(7)); }
-    else if (name.startsWith('/reasoning ')) { widget.session?.chooseReasoning(name.substring(11)); }
+    else if (name.startsWith('/reasoning ')) {
+      widget.session?.chooseReasoning(name.substring(11), target: widget.target);
+    }
     else { widget.commands[name]?.run(); }
   }
 
@@ -336,7 +340,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   void openCommands() => _insertTrigger('/');
   void openHistory() {
     final entries = <String>[];
-    for (final message in widget.session?.task?.messages.values ?? <Json>[]) {
+    for (final message in _target?.messages.values ?? <Json>[]) {
       if (message['type'] != 'user') continue;
       final text = message['text'];
       if (text is String && text.isNotEmpty) entries.add(text);

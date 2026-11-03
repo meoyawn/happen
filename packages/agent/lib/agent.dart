@@ -21,6 +21,7 @@ Future<IsolateOwner> startAgent({
   required SendPort network,
   SendPort? clientTools,
   required SendPort taskTools,
+  required SendPort questions,
   required int codeInterrupt,
 }) => IsolateOwner.start(_agentMain, {
   ...config,
@@ -29,8 +30,9 @@ Future<IsolateOwner> startAgent({
   'network': network,
   'client_tools': clientTools,
   'task_tools': taskTools,
+  'questions': questions,
   'code_interrupt': codeInterrupt,
-});
+}, service: 'agent');
 
 void _agentMain(List<Object?> args) {
   final actor = _Agent(jsonObject(args[1]));
@@ -39,7 +41,7 @@ void _agentMain(List<Object?> args) {
   Future<void>? running;
   String? turnOperation;
   final reads = <String, CancellationToken>{};
-  port.listen((raw) async {
+  port.listen((raw) => traceIncoming(jsonObject(raw), () async {
     final request = jsonObject(raw),
         params = jsonObject(jsonObject(raw)['params']);
     final reply = request['reply'] as SendPort?;
@@ -54,6 +56,7 @@ void _agentMain(List<Object?> args) {
             params['prompt'] as String? ?? '',
             (event) => reply?.send({'event': event}),
             compact: params['compact'] == true,
+            retry: params['retry'] == true,
             settings: jsonObject(params['settings'] ?? {}),
           );
           try {
@@ -94,9 +97,10 @@ void _agentMain(List<Object?> args) {
           throw StateError('Unknown agent operation');
       }
     } catch (error) {
+      traceError(error);
       reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
     }
-  });
+  }, service: 'agent'));
 }
 
 class _Agent {
@@ -199,6 +203,7 @@ class _Agent {
     network.send({
       'method': 'cancel',
       'params': {'task_id': taskId},
+      '_trace': ?traceIsolateCarrier('cancel'),
     });
   }
 
@@ -224,6 +229,7 @@ class _Agent {
     String prompt,
     void Function(Json) emit, {
     bool compact = false,
+    bool retry = false,
     Json settings = const {},
   }) async {
     final cancellation = CancellationToken();
@@ -285,6 +291,7 @@ class _Agent {
           ..remove('network')
           ..remove('client_tools')
           ..remove('task_tools')
+          ..remove('questions')
           ..remove('code_interrupt');
         event(
           await _append(
@@ -420,7 +427,7 @@ class _Agent {
         );
       }
       Json? pendingInput;
-      if (!compact) {
+      if (!compact && !retry) {
         pendingInput = {
           'item': ConversationItem.user(prompt, attachments: settings['attachments']).toJson(),
           if (settings['message_id'] != null)
@@ -769,6 +776,14 @@ class _Agent {
                       await currentDeferredCatalog(cancellation), jsonObject(arguments),
                       native: call.format == 'search',
                     );
+                  } else if (service == 'question.ask') {
+                    output = await callIsolate(config['questions'] as SendPort, 'ask', {
+                      'task_id': taskId, 'call_id': id, 'arguments': arguments,
+                    }, timeout: null, cancellation: cancellation);
+                    if (jsonObject(output)['rejected'] == true) {
+                      cancel();
+                      cancellation.throwIfCancelled();
+                    }
                   } else if (service == 'skills.read') {
                     output = await callIsolate(network, 'skills.read', {
                       ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,

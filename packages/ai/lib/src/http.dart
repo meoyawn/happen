@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http2/transport.dart' as h2;
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 /// A response owns a stream, never the connection carrying other requests.
 class HttpReply extends StreamView<List<int>> {
@@ -45,7 +46,9 @@ class HttpConnections {
         : Socket.startConnect(proxyHost ?? uri.host, proxyPort ?? uri.port);
   }
 
-  Future<_Connection?> _connect(Uri uri) => _tlsPreflight(() => _dial(uri), _lifetime);
+  Future<_Connection?> _connect(Uri uri) => traceAsync('http.connect',
+    () => _tlsPreflight(() => _dial(uri), _lifetime), category: 'http',
+    attributes: {'server.address': uri.host, 'server.port': uri.port});
 
   Future<_Connection?> _dial(Uri uri) async {
     final deadline = TimeoutCancellationToken(connectTimeout);
@@ -155,7 +158,9 @@ class HttpConnections {
     token.throwIfCancelled();
     // Explicit IO overrides own routing and certificate policy. Do not bypass
     // them with a raw TLS socket (for example a configured HTTPS proxy).
-    final connection = uri.scheme == 'https' && HttpOverrides.current == null ? await _acquire(uri, token) : null;
+    final connection = uri.scheme == 'https' && HttpOverrides.current == null
+      ? await traceAsync('http.acquire', () => _acquire(uri, token), category: 'http') : null;
+    traceInstant('http.transport', category: 'http', attributes: {'network.protocol.version': connection == null ? '1.1' : '2'});
     token.throwIfCancelled();
     if (connection == null) return _http1(http, method, uri, token, headers, body);
     return _http2(connection, method, uri, token, headers, body);
@@ -264,7 +269,7 @@ Future<HttpReply> _http2(_Connection connection, String method, Uri uri,
       }
     }, onError: (Object error, StackTrace stack) {
       if (!token.isCancelled && error is! CancelledException) connection.retire();
-      // Preserve the providers' existing bounded recovery for disconnected IO.
+      // Let the provider recover disconnected IO using its own retry policy.
       final failure = error is CancelledException ? error : const HttpException('HTTP/2 stream disconnected');
       if (!status.isCompleted) { status.completeError(failure, stack); }
       else { incoming.addError(failure, stack); }
@@ -277,7 +282,10 @@ Future<HttpReply> _http2(_Connection connection, String method, Uri uri,
       unawaited(stop());
     });
     hook = CancellationHook(token, () {
-      if (!status.isCompleted) { status.completeError(token.exception!); }
+      if (!status.isCompleted) {
+        if (token.exception is TimeoutException) connection.retire();
+        status.completeError(token.exception!);
+      }
       else if (!incoming.isClosed) { incoming.addError(token.exception!); }
       unawaited(stop());
     });
@@ -352,8 +360,20 @@ Future<HttpReply> httpRequest(HttpClient http, String method, Uri uri, {
       if (!{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty || uri.userInfo.isNotEmpty) {
         throw const FormatException('HTTP request requires an HTTP(S) URL without embedded credentials');
       }
-      final response = connections == null ? await _http1(http, method, uri, token, headers, body)
-          : await connections.send(http, method, uri, cancellation: token, headers: headers, body: body);
+      final span = startTraceSpan('http.$method', category: 'http',
+        attributes: {'http.request.method': method, 'server.address': uri.host,
+          'url.path': uri.path, 'http.request.body.size': body.length});
+      late HttpReply response;
+      try {
+        response = await withTrace(span?.context ?? currentTrace, () async =>
+          connections == null ? await _http1(http, method, uri, token, headers, body)
+            : await connections.send(http, method, uri, cancellation: token, headers: headers, body: body));
+        span?.end(attributes: {'http.response.status_code': response.statusCode, 'network.protocol.version': response.version});
+      } catch (error) { span?.end(error: error); rethrow; }
+      response = HttpReply(withTrace(span?.context ?? currentTrace, () =>
+        traceStream(response, 'http.body', size: (chunk) => chunk.length,
+          attributes: {'http.response.status_code': response.statusCode})),
+        response.statusCode, response.headers, response.version, reasonPhrase: response.reasonPhrase);
       if (!followRedirects || method != 'GET' || !{301, 302, 303, 307, 308}.contains(response.statusCode) ||
           response.headers['location'] == null) { return response; }
       await response.listen((_) {}).cancel();

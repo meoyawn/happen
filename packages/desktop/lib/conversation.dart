@@ -14,6 +14,7 @@ import 'conversation_streaming.dart';
 import 'opencode_activity.dart';
 import 'opencode_execute.dart';
 import 'opencode_response.dart';
+import 'session_question.dart';
 
 typedef _TranscriptRow = ({String id, ChatEntry? entry, List<ChatEntry> activity, ChatEntry? status});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
@@ -51,12 +52,13 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
 /// Task data is cached by the session; only the selected transcript is mounted.
 class ConversationDeck extends StatefulWidget {
   const ConversationDeck({super.key, required this.task, required this.tasks,
-    required this.directory, required this.empty, required this.onRetry, this.onLoadEarlier, this.onPendingAction});
+    required this.directory, required this.empty, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction});
   final DesktopTask? task;
   final Set<DesktopTask> tasks;
   final String directory;
   final Widget empty;
   final ValueChanged<DesktopTask> onRetry;
+  final ValueChanged<DesktopTask>? onRetryTurn;
   final ValueChanged<DesktopTask>? onLoadEarlier;
   final PendingMessageAction? onPendingAction;
 
@@ -73,6 +75,7 @@ class _ConversationDeckState extends State<ConversationDeck> {
       key: ValueKey(selected.id),
       task: selected, directory: widget.directory,
       onRetry: () => widget.onRetry(selected),
+      onRetryTurn: widget.onRetryTurn == null ? null : () => widget.onRetryTurn!(selected),
       onLoadEarlier: widget.onLoadEarlier == null ? null : () => widget.onLoadEarlier!(selected),
       onPendingAction: widget.onPendingAction,
     );
@@ -80,10 +83,11 @@ class _ConversationDeckState extends State<ConversationDeck> {
 }
 
 class ConversationTranscript extends StatefulWidget {
-  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onLoadEarlier, this.onPendingAction});
+  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction});
   final DesktopTask task;
   final String directory;
   final VoidCallback onRetry;
+  final VoidCallback? onRetryTurn;
   final VoidCallback? onLoadEarlier;
   final PendingMessageAction? onPendingAction;
 
@@ -298,7 +302,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         ),
                         'Reasoning' => _ReasoningRow(entry: entry, directory: widget.directory, onExpand: () => _following = false),
                         'Status' => _TurnStatus(entry: entry),
-                        'Error' => _ErrorMessage(entry: entry),
+                        'Error' => _ErrorMessage(entry: entry,
+                          onRetry: !task.running && !task.archived && entry.id == latest?.id ? widget.onRetryTurn : null),
                         _ => _Message(entry: entry, directory: widget.directory,
                           running: task.running,
                           onPendingAction: widget.onPendingAction == null ? null
@@ -437,6 +442,7 @@ String _toolLabel(ToolActivity tool) => switch (tool.name.split('.').last) {
   'read' || 'read_file' => 'Read',
   'write' || 'write_file' || 'apply_patch' || 'edit' => 'Edit',
   'exec' => 'JavaScript',
+  'question' || 'request_user_input' => 'Questions',
   _ => tool.name,
 };
 
@@ -655,8 +661,9 @@ class _TurnClockState extends State<_TurnClock> {
 }
 
 class _ErrorMessage extends StatelessWidget {
-  const _ErrorMessage({required this.entry});
+  const _ErrorMessage({required this.entry, this.onRetry});
   final ChatEntry entry;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -669,6 +676,8 @@ class _ErrorMessage extends StatelessWidget {
       SelectableText(entry.text, style: const TextStyle(fontSize: 13, height: 1.5)),
       const SizedBox(height: 10),
       _TurnStatus(entry: ChatEntry(entry.id, 'Status', 'Failed', timestamp: entry.timestamp, startedAt: entry.startedAt)),
+      if (onRetry != null) TextButton.icon(onPressed: onRetry,
+        icon: const Icon(Icons.refresh, size: 16), label: const Text('Retry')),
     ]),
   );
 }
@@ -685,6 +694,9 @@ class _ToolRow extends StatelessWidget {
     final running = tool.status == 'running';
     final failed = tool.status == 'failed';
     if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, directory: directory, onExpand: onExpand);
+    if ({'question', 'request_user_input'}.contains(tool.name.split('.').last)) {
+      return QuestionToolResult(tool: tool, onExpand: onExpand);
+    }
     if (tool.name.split('.').last == 'skill' && toolSkillReads(tool).isNotEmpty) return SkillReadRows(tool: tool);
     final color = failed ? Theme.of(context).colorScheme.error : conversationMuted;
     final elapsed = tool.startedAt != null && tool.endedAt != null

@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'transport.dart';
 
@@ -437,7 +438,10 @@ class McpOAuth {
         request.headers.contentType = ContentType.json;
         request.write(jsonEncode(body));
       }
-      final response = await request.close().asCancellable(token);
+      final response = await traceAsync('mcp.oauth.http.headers', () => request!.close().asCancellable(token),
+        category: 'http', attributes: {'http.request.method': method, 'server.address': uri.host, 'url.path': uri.path});
+      traceInstant('mcp.oauth.http.response', category: 'http',
+        attributes: {'http.response.status_code': response.statusCode});
       final headers = <String, List<String>>{};
       response.headers.forEach((name, values) => headers[name.toLowerCase()] = values);
       // A discovery probe can be an indefinitely open SSE response. Only its
@@ -447,7 +451,7 @@ class McpOAuth {
         return (status: response.statusCode, body: <String, dynamic>{}, headers: headers);
       }
       final bytes = <int>[];
-      final input = StreamIterator(response);
+      final input = StreamIterator(traceStream(response, 'mcp.oauth.http.body', size: (chunk) => chunk.length));
       try {
         while (await input.moveNext().asCancellable(token, onCancel: () => unawaited(input.cancel()))) {
           bytes.addAll(input.current);

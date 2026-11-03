@@ -22,6 +22,7 @@ void main() {
     late Completer<void> releaseStreams;
     var sequence = 0;
     var interruptedReplies = 0;
+    var failSavedReply = true;
 
     setUp(() async {
       root = await Directory.systemTemp.createTemp('agent-contract-');
@@ -40,6 +41,7 @@ void main() {
       );
       requests.clear();
       interruptedReplies = 0;
+      failSavedReply = true;
       streaming.clear();
       releaseStreams = Completer<void>();
       provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -82,7 +84,13 @@ void main() {
             await request.response.close();
             return;
           }
-          if (prompt == 'recover' && hasOutput && interruptedReplies++ < 2) {
+          if (prompt == 'retry saved' && hasOutput && failSavedReply) {
+            request.response.statusCode = 400;
+            request.response.write('{"error":{"code":"invalid_prompt"}}');
+            await request.response.close();
+            return;
+          }
+          if ({'recover', 'retry saved'}.contains(prompt) && hasOutput && interruptedReplies++ < 4) {
             request.response.write('data: {"type":"response.output_text.delta","delta":"Abandoned partial answer"}\n\n');
             await request.response.close();
             return;
@@ -215,17 +223,34 @@ void main() {
       expect((await client.request('session.message.list', {'sessionID': id}) as Map)['archived'], true);
     });
 
-    test('session reconnect status preserves retry messages and deadlines', () async {
+    test('session reconnect status survives client reloads during recovery', () async {
       final statuses = <Json>[];
       final subscription = client.events.stream.where((event) => event['type'] == 'session.status')
         .listen((event) => statuses.add(jsonObject(event['data']['status'])));
       addTearDown(subscription.cancel);
       final finished = client.events.stream.firstWhere((event) => event['type'] == 'session.execution.succeeded');
-      await client.request('session.create', {'cwd': work.path, 'prompt': 'recover'});
+      final retrying = client.events.stream.firstWhere((event) =>
+        event['type'] == 'session.status' && event['data']['status']['attempt'] == 4);
+      final admitted = jsonObject(await client.request('session.create', {'cwd': work.path, 'prompt': 'recover'}));
+      final id = admitted['sessionID'] as String;
+      final status = (await retrying.timeout(const Duration(seconds: 10)))['data']['status'];
+      final reconnected = await AgentClient.connect(server.uri);
+      addTearDown(reconnected.close);
+      final snapshot = jsonObject(await reconnected.request('session.message.list', {'sessionID': id}));
+      expect(snapshot['running'], true);
+      expect(snapshot['status'], status);
+      expect(jsonObject(await reconnected.request('session.subscribe', {'sessionID': id}))['status'], status);
       await finished.timeout(const Duration(seconds: 15));
       final retries = statuses.where((status) => status['type'] == 'retry').toList();
-      expect(retries.map((status) => status['message']), ['Reconnecting… 1/5', 'Reconnecting… 2/5']);
+      expect(retries.map((status) => status['message']), [
+        'Reconnecting… 1', 'Reconnecting… 2', 'Reconnecting… 3', 'Reconnecting… 4',
+      ]);
       expect(retries.every((status) => status['next'] is int && status['next'] > 0), isTrue);
+      final page = jsonObject(await reconnected.request('session.message.list', {'sessionID': id}));
+      expect(page['running'], false);
+      expect(page['status'], {'type': 'idle'});
+      final messages = (page['data'] as List).map(jsonObject).toList();
+      expect(jsonEncode(messages), isNot(contains('Abandoned partial answer')));
     });
 
     test('archiving cancels the durable inbox through the session writer', () async {
@@ -447,12 +472,55 @@ void main() {
       final result = await turn('task.start', {'cwd': work.path, 'prompt': 'recover'});
       expect(result['type'], 'turn.completed', reason: result.toString());
       expect(result['data']['text'], 'Verified 42 ✓');
-      expect(retries.map((event) => event['attempt']), [1, 2]);
-      expect(requests.length, 4);
+      expect(retries.map((event) => event['attempt']), [1, 2, 3, 4]);
+      expect(requests.length, 6);
       expect(await File('${work.path}/result.txt').readAsString(), '42\n');
       final history = await client.request('history.page', {'task_id': result['task_id']}) as List;
       expect(history.where((event) => event['type'] == 'tool.started'), hasLength(1));
       expect(history.where((event) => event['type'] == 'model.completed'), hasLength(2));
+    });
+
+    test('retry restores a failed turn after restart and recovers network errors without repeating work', () async {
+      final failed = await turn('task.start', {'cwd': work.path, 'prompt': 'retry saved'});
+      expect(failed['type'], 'turn.failed');
+      final id = failed['task_id'] as String;
+      expect(await File('${work.path}/result.txt').readAsString(), '42\n');
+      expect(requests, hasLength(2));
+      await client.close();
+      await server.close();
+      failSavedReply = false;
+      server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml',
+        port: 0, endpoint: 'http://127.0.0.1:${provider.port}/responses');
+      client = await AgentClient.connect(server.uri);
+      final params = {'task_id': id, 'failure_seq': failed['seq']};
+      await expectLater(client.request('task.retry', {...params, 'failure_seq': (failed['seq'] as int) - 1}),
+        throwsStateError);
+      final desktop = await AgentClient.connect(server.uri);
+      addTearDown(desktop.close);
+      final page = jsonObject(await desktop.request('session.message.list', {'sessionID': id}));
+      final failure = (page['data'] as List).lastWhere((message) => message['type'] == 'idle');
+      final retry = {'sessionID': id, 'failureID': failure['id']};
+      await expectLater(desktop.request('session.retry', {...retry, 'failureID': 'stale'}), throwsStateError);
+      expect(requests, hasLength(2));
+      final retries = <Json>[];
+      final subscription = client.events.stream.where((event) => event['type'] == 'model.retrying').listen(retries.add);
+      addTearDown(subscription.cancel);
+      final completed = client.events.stream.firstWhere((event) =>
+        {'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type']));
+      await desktop.request('session.retry', retry);
+      expect(jsonObject(await client.request('task.retry', params))['running'], true);
+      final result = await completed.timeout(const Duration(seconds: 15));
+      expect(result['type'], 'turn.completed', reason: result.toString());
+      expect(result['data']['text'], 'Verified 42 ✓');
+      expect(retries.map((event) => event['attempt']), [1, 2, 3, 4]);
+      expect(requests, hasLength(7));
+      final history = await client.request('history.page', {'task_id': id}) as List;
+      expect(history.where((event) => event['type'] == 'tool.started'), hasLength(1));
+      expect(history.where((event) => event['type'] == 'input.committed'), hasLength(1));
+      expect(history.where((event) => event['type'] == 'turn.started'), hasLength(2));
+      expect(history.last['type'], 'turn.completed');
+      await expectLater(desktop.request('session.retry', retry), throwsStateError);
+      expect(requests, hasLength(7));
     });
 
     test(

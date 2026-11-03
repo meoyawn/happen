@@ -37,6 +37,7 @@ class OpenCodeToolInterface extends ToolInterface {
   }
   @override
   Map<String, String> get services => const {
+    'question': 'question.ask',
     'skill': 'skills.read',
     'websearch': 'web.search', 'webfetch': 'web.search', '__fetch': 'web.search',
     '__resource_list': 'resources/list', '__resource_templates': 'resources/templates/list',
@@ -69,6 +70,7 @@ class OpenCodeToolInterface extends ToolInterface {
       prepareOpenCodeImages(images, cancellation: cancellation);
   @override
   String formatResult(ToolCall call, Json result) {
+    if (call.name == 'question') return jsonEncode(result);
     final value = result.containsKey('error') && result['error'] != true ? result['error'] : result['output'];
     if (value is String) return value;
     if (value is Map && value['content'] is List) {

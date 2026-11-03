@@ -2,16 +2,16 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:protocol/protocol.dart';
-import 'package:sqlite3/sqlite3.dart';
+import 'package:telemetry/telemetry.dart';
 
 /// One isolate owns the desktop's only SQLite connection, including all reads.
 Future<IsolateOwner> openDesktopDatabase(String directory) =>
-    IsolateOwner.start(_databaseMain, {'directory': directory});
+    IsolateOwner.start(_databaseMain, {'directory': directory}, service: 'desktop.storage');
 
 void _databaseMain(List<Object?> args) async {
   final directory = jsonObject(args[1])['directory'] as String;
   Directory(directory).createSync(recursive: true);
-  final db = sqlite3.open('$directory/desktop.sqlite');
+  final db = openTracedDatabase('$directory/desktop.sqlite');
   final port = ReceivePort();
   try {
     db.execute('PRAGMA journal_mode=WAL');
@@ -59,6 +59,9 @@ void _databaseMain(List<Object?> args) async {
       final request = jsonObject(raw);
       final reply = request['reply'] as SendPort?;
       final params = jsonObject(request['params']);
+      if (request['method'] == 'cancel') continue;
+      var closed = false;
+      await traceIncoming(request, () async {
       try {
         Object? result;
         switch (request['method']) {
@@ -119,12 +122,7 @@ void _databaseMain(List<Object?> args) async {
           case 'task.archive':
             db.execute('UPDATE tasks SET archived = ? WHERE id IS ?', [params['archived'] == true ? 1 : 0, params['task_id']]);
           case 'close':
-            reply?.send({'result': null});
-            return;
-          case 'cancel':
-            // Each small SQL operation finishes atomically before the next
-            // mailbox message. There is no asynchronous work to leave running.
-            continue;
+            closed = true;
           default:
             throw ArgumentError('Unknown desktop database operation');
         }
@@ -132,6 +130,8 @@ void _databaseMain(List<Object?> args) async {
       } catch (error) {
         reply?.send({'error': error.toString()});
       }
+      }, service: 'desktop.storage');
+      if (closed) return;
     }
   } finally {
     db.close();

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:ai/ai.dart' show ModelFailure, decodeSse, HttpConnections, HttpReply, httpRequest;
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'web_pages.dart';
 import 'retry.dart';
@@ -160,8 +161,10 @@ class ResponsesClient {
       tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
       transport: transport, verbosity: verbosity, reasoningSummary: reasoningSummary,
       maxOutputTokens: maxOutputTokens);
-    return retryRequest(() => _respond(body, sessionId, transport, cancellation, onEvent),
-      cancellation, onEvent: onEvent);
+    return traceAsync('openai.responses', () => retryRequest(
+      () => _respond(body, sessionId, transport, cancellation, onEvent),
+      cancellation, maxRetries: null, onEvent: onEvent), category: 'model',
+      attributes: {'gen_ai.request.model': model, 'network.transport': transport});
   }
 
   Future<ResponsesReply> _respond(
@@ -195,7 +198,7 @@ class ResponsesClient {
       try {
         final response = await _post(endpoint, body,
           {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
-          headersTimeout: const Duration(seconds: 10));
+          headersTimeout: const Duration(seconds: 60));
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
@@ -283,7 +286,7 @@ class ResponsesClient {
         scheme: endpoint.scheme == 'https' ? 'wss' : 'ws',
       );
       socket =
-          await WebSocket.connect(
+          await traceAsync('openai.websocket.connect', () => WebSocket.connect(
                 uri.toString(),
                 headers: headers,
                 customClient: _http,
@@ -295,14 +298,18 @@ class ResponsesClient {
                 return value;
               })
               .timeout(const Duration(seconds: 10))
-              .asCancellable(cancellation);
+              .asCancellable(cancellation), category: 'websocket',
+              attributes: {'server.address': uri.host, 'url.path': uri.path});
       cancellation.throwIfCancelled();
       final encoded = jsonEncode(body);
       await _dump(encoded, cancellation);
       cancellation.throwIfCancelled();
-      socket.add(encoded);
-      final events = socket.timeout(const Duration(seconds: 60)).map((raw) {
+      traceSync('openai.websocket.send', () => socket!.add(encoded), category: 'websocket',
+        attributes: {'bytes': utf8.encode(encoded).length});
+      final events = socket!.timeout(const Duration(seconds: 60)).map((raw) {
         final text = raw is String ? raw : utf8.decode(raw as List<int>);
+        traceInstant('openai.websocket.receive', category: 'websocket',
+          attributes: {'bytes': utf8.encode(text).length});
         if (utf8.encode(text).length > 8 * 1024 * 1024) {
           throw const FormatException('GPT event too large');
         }
@@ -375,6 +382,7 @@ class ResponsesClient {
       )) {
         cancellation.throwIfCancelled();
         final event = iterator.current;
+        traceInstant('openai.event', category: 'model', attributes: {'event.type': event['type']});
         switch (event['type']) {
           case 'response.created':
             onEvent?.call({'type': 'model.connected'});

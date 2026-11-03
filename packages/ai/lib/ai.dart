@@ -5,3 +5,4 @@ export 'src/images.dart';
 export 'src/web_search.dart';
 export 'src/tool_interface.dart';
 export 'src/tool_input.dart';
+export 'src/question.dart';

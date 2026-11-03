@@ -134,6 +134,21 @@ reopening tabs, and **⌘W** closes the focused panel tab. Open tabs, selection,
 visibility, and the divider width are saved per session. Hiding the panel keeps
 its content and scroll position; closing its last tab hides it.
 
+On macOS, choose **Browser** from the panel's new-tab page, **Open browser**
+from the command menu, or type `/browser`. Browser tabs have an address/search
+bar, Back, Forward, Reload/Stop, Copy link, and Open in system browser.
+Bare localhost and loopback addresses use HTTP. **⌘L** selects the address,
+**⌘R** reloads, **⌘T** opens a browser tab, and **⌘W** closes the focused panel
+tab. Open browser tabs and their last addresses are saved per session.
+Conversation web links open inside Happen; authentication still uses the system
+browser.
+
+Local **HTML** and **PDF** links open in the file panel using the same macOS
+WebView. HTML starts in Preview, with a Source toggle and line navigation.
+HTML resources can load from the session's project folder. PDFs use WebKit's
+native viewer. Reload rereads the file; previews work offline. Source views
+retain the 2 MB text limit.
+
 **Context** shows the actual saved system prompt,
 provider/model, context limit, token and cache counts, tools, model settings, and
 expandable inference input in model order. The compact stats, sticky

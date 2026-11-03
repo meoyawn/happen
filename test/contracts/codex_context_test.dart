@@ -357,8 +357,10 @@ double median(List<int> values) {
 
 Future<Json> scenario(Json scenario, String model, String codex, String output, int samples,
   CancellationToken cancellation, String catalog, {required bool codeModeOnly}) async {
-  final work = '$output/work', home = '$output/home', codexHome = '$output/codex-home', data = '$output/happen-data';
-  for (final path in [work, home, codexHome, data]) { await Directory(path).create(recursive: true); }
+  final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
+  await Directory(output).create(recursive: true);
+  final home = (await Directory(output).createTemp('home-')).path;
+  for (final path in [work, codexHome, data]) { await Directory(path).create(recursive: true); }
   final globalSkills = Directory('$home/.agents/skills');
   await globalSkills.create(recursive: true);
   for (final entry in jsonObject(scenario['global_skills'] ?? {}).entries) {
@@ -388,8 +390,10 @@ Future<Json> scenario(Json scenario, String model, String codex, String output, 
   if (scenario['global_instructions'] case final String instructions) {
     for (final path in [codexHome, data]) { await File('$path/AGENTS.md').writeAsString(instructions); }
   }
-  final peer = await responsesPeer(jsonObject(jsonDecode(
-    jsonEncode(scenario).replaceAll('{{WORK_URI}}', Directory(work).uri.toString()))), output, cancellation);
+  scenario = jsonObject(jsonDecode(
+    jsonEncode(scenario).replaceAll('{{WORK_URI}}', Directory(work).uri.toString())
+      .replaceAll('{{SKILLS_ROOT}}', globalSkills.path)));
+  final peer = await responsesPeer(scenario, output, cancellation);
   final endpoint = 'http://127.0.0.1:${peer.server.port}';
   final config = StringBuffer('''
 model = "$model"
@@ -410,8 +414,9 @@ enabled = false
 [skills.bundled]
 enabled = false
 [tools.experimental_request_user_input]
-enabled = false
+enabled = ${scenario['request_user_input'] == true}
 [features]
+default_mode_request_user_input = ${scenario['request_user_input'] == true}
 code_mode = true
 code_mode_only = $codeModeOnly
 code_mode_tool_search = true
@@ -433,7 +438,8 @@ env_key = "CONTEXT_CONTRACT_KEY"
 remote_compaction = "v2"
 ''');
   final happenConfig = <String, dynamic>{'code_mode_only': codeModeOnly, 'providers': {'openai': {'model': model,
-    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'live'}}}};
+    'settings': <String, dynamic>{'reasoning': 'low', 'reasoning_summary': 'none', 'web_search': 'live',
+      'request_user_input': scenario['request_user_input'] == true}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
     config.clear();
@@ -639,6 +645,12 @@ remote_compaction = "v2"
               expected[i].entries.every((entry) => retained[i].containsKey(entry.key) && equals(entry.value).matches(retained[i][entry.key], {}))]
               .every((value) => value);
           final receipts = {for (final item in input.where((item) => item['type'] == 'custom_tool_call_output')) item['call_id']: item['output']};
+          final skillReads = receipts['tldw_read_skills'] is List
+            ? (receipts['tldw_read_skills'] as List).skip(1).map((part) => jsonObject(jsonDecode(part['text'] as String))).toList() : <Json>[];
+          final skillFiles = jsonObject(scenario['global_skills']).values.toList();
+          checks['${pair.$1}:tldw_skill_bodies_delivered:run-$iteration'] = skillReads.length == skillFiles.length &&
+            skillReads.indexed.every((entry) => entry.$2['i'] == entry.$1 && entry.$2['status'] == 'fulfilled' &&
+              entry.$2['value']?['exit_code'] == 0 && entry.$2['value']?['output'] == skillFiles[entry.$1]);
           final discovery = receipts['tldw_discover'] is List ? (receipts['tldw_discover'] as List).skip(1).take(2).toList() : [];
           checks['${pair.$1}:parallel_shell_receipts_delivered:run-$iteration'] = discovery.length == 2 &&
             [for (var i = 0; i < discovery.length; i++) jsonObject(jsonDecode(discovery[i]['text'] as String))]

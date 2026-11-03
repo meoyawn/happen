@@ -27,6 +27,7 @@ import 'model_picker.dart';
 import 'new_session.dart';
 import 'mcp_conversation.dart';
 import 'session.dart';
+import 'session_question.dart';
 import 'sidebar_frame.dart';
 import 'sidebar_resizer.dart';
 import 'settings_screen.dart';
@@ -173,6 +174,8 @@ class _DesktopViewState extends State<DesktopView> {
                 shortcut: mac ? '⌘ ⇧ B' : 'Ctrl Shift B',
                 run: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)))),
             if (task != null && !_homeOpen) ...[
+              (title: 'Open browser', keywords: 'web url page preview', icon: Icons.language_rounded,
+                shortcut: null, run: () => session.openBrowserPanel(task)),
               (title: 'Toggle side panel', keywords: 'context files changes', icon: Icons.vertical_split_outlined,
                 shortcut: mac ? '⌘ B' : 'Ctrl B', run: _toggleSidePanel),
               if (session.connected && !task.archiving)
@@ -504,12 +507,26 @@ class _DesktopViewState extends State<DesktopView> {
       },
       onCancel: () => setState(() => _dragSidebarWidth = null));
 
+  Widget _questionDock(DesktopTask target) {
+    final request = target.questions.values.first, id = request['id'] as String;
+    return Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
+      key: ValueKey('question:$id'), request: request,
+      draft: target.questionDrafts.putIfAbsent(id,
+        () => QuestionDraft((request['questions'] as List).length)),
+      enabled: session.connected,
+      onAnswer: (answers, cancellation) => session.answerQuestion(
+        target, id, answers, cancellation: cancellation),
+    ));
+  }
+
   Widget _conversationPane(BuildContext context, Set<DesktopTask> tasks) {
     final home = _homeOpen;
     return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
       child: ConversationTypography(
           child: Padding(padding: const EdgeInsets.all(8), child: SessionPanelWorkspace(
             session: session, task: home ? null : session.task,
+            sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.id}'),
+              session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
             child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
               if (!home) Column(children: [
@@ -531,6 +548,7 @@ class _DesktopViewState extends State<DesktopView> {
                       directory: session.project?.path ?? '',
                       empty: const SizedBox.shrink(),
                       onRetry: (task) => unawaited(_run(() => session.loadHistory(task))),
+                      onRetryTurn: (task) => unawaited(_run(() => session.retry(task))),
                       onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
                       onPendingAction: (task, inboxID, action) => _run(() => session.changePending(task, inboxID, action)),
                   ))),
@@ -546,6 +564,8 @@ class _DesktopViewState extends State<DesktopView> {
                     ),
                   if (session.project != null && session.project!.available && session.task?.archived != true)
                     McpConversationAuth(key: ValueKey(session.client), client: session.client),
+                  if (session.task case final target? when target.questions.isNotEmpty && !target.archived)
+                    _questionDock(target),
                   if (session.project?.removing == true)
                     const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
                   else if (session.project?.available == false)
@@ -649,15 +669,27 @@ class _DesktopViewState extends State<DesktopView> {
 }
 
 class _Composer extends StatefulWidget {
-  const _Composer({super.key, required this.session});
+  const _Composer({super.key, required this.session, this.target, this.active = true});
   final DesktopSession session;
+  final DesktopTask? target;
+  final bool active;
 
   @override
   State<_Composer> createState() => _ComposerState();
 }
 
 class _ComposerState extends State<_Composer> {
-  late String _draftKey = widget.session.draftKey;
+  DesktopTask? get _target => widget.target ?? widget.session.task;
+  Project? get _project => widget.target == null ? widget.session.project
+    : widget.session.projects.where((project) =>
+        project.tasks.any((task) => task.id == widget.target!.sideParentID)).firstOrNull;
+  String get _currentDraftKey => widget.target?.id ?? widget.session.draftKey;
+  bool get _submitting => widget.target?.sideSubmitting ?? widget.session.submitting;
+  String? get _attachmentStatus => widget.target == null
+    ? widget.session.attachmentStatus : widget.target!.sideAttachmentStatus;
+  void _saveDrafts() { if (widget.target == null) widget.session.saveDrafts(); }
+  void _showError(Object error) => widget.session.showError(error, target: widget.target);
+  late String _draftKey = _currentDraftKey;
   late ComposerTextController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
     files: widget.session.fileDrafts[_draftKey] ?? const [],
@@ -703,7 +735,7 @@ class _ComposerState extends State<_Composer> {
   }
 
   Future<void> _startVoice() async {
-    if (_voice.active || _finishingVoice || !widget.session.connected || widget.session.submitting) return;
+    if (_voice.active || _finishingVoice || !widget.session.connected || _submitting) return;
     _voiceText?.dispose();
     _voiceText = ComposerDictationSession(_text, (range, text) {
       final editorContext = _focus.context;
@@ -716,7 +748,7 @@ class _ComposerState extends State<_Composer> {
           selection: TextSelection.collapsed(offset: range.start + text.length));
       }
     });
-    _focus.requestFocus();
+    if (widget.active) _focus.requestFocus();
     await _voice.start(owner: _voiceOwner, liveTranscription: widget.session.dictationMode == 'live',
       onRecordingLimit: () => unawaited(_finishVoice(DictationAction.insert)));
   }
@@ -754,13 +786,14 @@ class _ComposerState extends State<_Composer> {
   void initState() {
     super.initState();
     _text.addListener(_saveDraft);
-    _focus.requestFocus();
+    if (widget.active) _focus.requestFocus();
   }
 
   @override
   void didUpdateWidget(_Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_draftKey == widget.session.draftKey) return;
+    if (widget.active && !oldWidget.active) _focus.requestFocus();
+    if (_draftKey == _currentDraftKey) return;
     _attachmentLifetime.cancel();
     _attachmentLifetime = CancellationToken();
     _receivingAttachments = false;
@@ -774,7 +807,7 @@ class _ComposerState extends State<_Composer> {
     _finishingVoice = false;
     final previous = _text;
     previous.removeListener(_saveDraft);
-    _draftKey = widget.session.draftKey;
+    _draftKey = _currentDraftKey;
     _text = ComposerTextController(
       text: widget.session.drafts[_draftKey] ?? '',
       files: widget.session.fileDrafts[_draftKey] ?? const [],
@@ -797,7 +830,7 @@ class _ComposerState extends State<_Composer> {
     } else {
       widget.session.fileDrafts[_draftKey] = files;
     }
-    widget.session.saveDrafts();
+    _saveDrafts();
   }
 
   Future<void> _copy({bool cut = false}) async {
@@ -806,7 +839,7 @@ class _ComposerState extends State<_Composer> {
     if (!selection.isValid || selection.isCollapsed) return;
     final text = _text.serializeRange(selection.start, selection.end);
     await Clipboard.setData(ClipboardData(text: text));
-    if (cut && mounted && identical(_text, controller) && _text.value == before && !widget.session.submitting) {
+    if (cut && mounted && identical(_text, controller) && _text.value == before && !_submitting) {
       final editor = _focus.context;
       if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(before, '', selection, SelectionChangedCause.keyboard));
     }
@@ -820,12 +853,12 @@ class _ComposerState extends State<_Composer> {
         if (!draft.any((existing) => existing.path == attachment.path)) draft.add(attachment);
       }
     });
-    widget.session.saveDrafts();
+    _saveDrafts();
     _focus.requestFocus();
   }
 
   Future<void> _paste(SelectionChangedCause cause) async {
-    if (_receivingAttachments || widget.session.submitting || _dictating || !widget.session.connected) return;
+    if (_receivingAttachments || _submitting || _dictating || !widget.session.connected) return;
     final before = _text.value, lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
@@ -847,14 +880,14 @@ class _ComposerState extends State<_Composer> {
     } on CancelledException {
       // Leaving this composer owns the pending native snapshot.
     } catch (error) {
-      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
+      if (mounted && !lifetime.isCancelled) _showError(error);
     } finally {
       if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
     }
   }
 
   Future<void> _drop(DropDetails details) async {
-    if (_receivingAttachments || widget.session.submitting) return;
+    if (_receivingAttachments || _submitting) return;
     final lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
@@ -867,19 +900,19 @@ class _ComposerState extends State<_Composer> {
     } on CancelledException {
       // The source is released by DropTarget after this operation settles.
     } catch (error) {
-      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
+      if (mounted && !lifetime.isCancelled) _showError(error);
     } finally {
       if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
     }
   }
 
   Future<void> _pickAttachments() async {
-    if (_receivingAttachments || widget.session.submitting || _dictating) return;
+    if (_receivingAttachments || _submitting || _dictating) return;
     final lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
       final paths = await MacosFilePicker().pick(MacosFilePickerMode.file,
-        allowsMultiple: true, initialDirectory: widget.session.project?.path, dialogTitle: 'Attach files');
+        allowsMultiple: true, initialDirectory: _project?.path, dialogTitle: 'Attach files');
       try {
         lifetime.throwIfCancelled();
         if (mounted) _addAttachments([for (final path in paths ?? <MacosFilePickerPath>[]) composerAttachmentForFile(path.path)]);
@@ -889,7 +922,7 @@ class _ComposerState extends State<_Composer> {
     } on CancelledException {
       // A different task now owns the composer.
     } catch (error) {
-      if (mounted && !lifetime.isCancelled) widget.session.showError(error);
+      if (mounted && !lifetime.isCancelled) _showError(error);
     } finally {
       if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
     }
@@ -912,7 +945,7 @@ class _ComposerState extends State<_Composer> {
     final prompt = _text.serializePrompt();
     final attachments = List<ComposerAttachment>.of(_attachments);
     try {
-      final accepted = await widget.session.send(prompt, attachments: attachments);
+      final accepted = await widget.session.send(prompt, attachments: attachments, target: widget.target);
       if (accepted) {
         if (mounted && identical(_text, controller)) _autocomplete.currentState?.dismiss();
         if (widget.session.drafts[draftKey] == draft) {
@@ -926,7 +959,7 @@ class _ComposerState extends State<_Composer> {
           if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
         }
         if (mounted && identical(_text, controller) && _text.text == draft) _text.clear();
-        widget.session.saveDrafts();
+        _saveDrafts();
         if (mounted) setState(() {});
       }
     } on CancelledException {
@@ -936,11 +969,11 @@ class _ComposerState extends State<_Composer> {
 
   Future<void> _stop() async {
     try {
-      await widget.session.stop();
+      await widget.session.stop(target: widget.target);
     } on CancelledException {
       // Application exit owns cancellation.
     } catch (error) {
-      widget.session.showError(error);
+      _showError(error);
     }
   }
 
@@ -973,17 +1006,19 @@ class _ComposerState extends State<_Composer> {
   Widget build(BuildContext context) {
     _bindVoice();
     final session = widget.session;
-    final running = session.task?.running == true;
-    final hasProject = session.project?.available == true && session.project?.removing != true;
+    final running = _target?.running == true;
+    final hasProject = _project?.available == true && _project?.removing != true;
+    final authenticated = session.authenticatedFor(widget.target);
     final available =
         hasProject &&
         session.connected &&
         !_receivingAttachments &&
-        !session.submitting &&
-        session.task?.loading != true &&
-        session.task?.loadError == null;
+        !_submitting &&
+        _target?.archived != true && _target?.archiving != true &&
+        _target?.loading != true &&
+        _target?.loadError == null;
     return DropTarget(
-      enabled: hasProject && session.connected && !session.submitting && !_receivingAttachments,
+      enabled: hasProject && session.connected && !_submitting && !_receivingAttachments,
       acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
       onDrop: _drop,
       onEnter: (_) => setState(() => _draggingAttachments = true),
@@ -1020,24 +1055,33 @@ class _ComposerState extends State<_Composer> {
             child: Actions(actions: {CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
               onInvoke: (intent) { unawaited(_copy(cut: intent.collapseSelection)); return null; }),
               PasteTextIntent: ComposerPasteAction(
-              enabled: hasProject && session.connected && !session.submitting && !_receivingAttachments && !_dictating, paste: _paste)},
+              enabled: hasProject && session.connected && !_submitting && !_receivingAttachments && !_dictating, paste: _paste)},
             child: ComposerAutocomplete(
               key: _autocomplete,
               controller: _text,
               focusNode: _focus,
               client: session.client,
-              cwd: session.project?.path ?? '',
-              enabled: hasProject && session.connected && !session.submitting && !_dictating,
+              cwd: _project?.path ?? '',
+              enabled: hasProject && session.connected && !_submitting && !_dictating,
               session: session,
+              target: widget.target,
               commands: {
-                if (session.project case final project?)
-                  '/new': (description: 'Start a new session', run: () => unawaited(session.select(project))),
+                if (widget.target == null && _project != null)
+                  '/new': (description: 'Start a new session', run: () => unawaited(session.select(_project!))),
                 if (defaultTargetPlatform == TargetPlatform.macOS)
                   '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
                 '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
                 if (session.task != null) '/context': (description: 'Inspect session context',
                   run: () => session.openSessionPanel(session.task!, contextPanel)),
-                if (session.project case final project?)
+                if (session.task != null) '/browser': (description: 'Open the in-app browser',
+                  run: () => session.openBrowserPanel(session.task!)),
+                if (widget.target == null && session.task != null)
+                  '/side': (description: 'Ask a side question in a temporary chat',
+                    run: () => unawaited(() async {
+                      try { await session.openSideChat(session.task!); }
+                      catch (error) { session.showError(error); }
+                    }())),
+                if (_project case final project?)
                   '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
                     (project.checkoutKey, session.task?.id), project.path)),
               },
@@ -1062,18 +1106,19 @@ class _ComposerState extends State<_Composer> {
                       if (_attachments.isNotEmpty) Align(
                         alignment: Alignment.centerLeft,
                         child: AttachmentRail(composer: true, attachments: _attachments.map((attachment) => attachment.toJson()).toList(),
-                          onRemove: session.submitting ? null : (index) {
+                          onRemove: _submitting ? null : (index) {
                             final removed = _attachments[index];
                             setState(() => widget.session.attachmentDrafts[_draftKey]!.remove(removed));
-                            widget.session.saveDrafts();
+                            _saveDrafts();
                             unawaited(removed.discard());
                           }),
                       ),
-                      if (_receivingAttachments || session.attachmentStatus != null) Row(children: [
+                      if (_receivingAttachments || _attachmentStatus != null) Row(children: [
                         const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
                         const SizedBox(width: 8),
-                        Expanded(child: Text(session.attachmentStatus ?? 'Adding attachments…', style: const TextStyle(fontSize: 12))),
-                        if (session.attachmentStatus != null) IconButton(tooltip: 'Cancel upload', onPressed: session.cancelUpload, icon: const Icon(Icons.close, size: 16)),
+                        Expanded(child: Text(_attachmentStatus ?? 'Adding attachments…', style: const TextStyle(fontSize: 12))),
+                        if (_attachmentStatus != null) IconButton(tooltip: 'Cancel upload',
+                          onPressed: () => session.cancelUpload(target: widget.target), icon: const Icon(Icons.close, size: 16)),
                       ]),
                       if (_ownsVoice && _voice.canRetry)
                         Tooltip(message: _voice.error ?? 'Dictation stopped', child: DictationRecoveryRail(
@@ -1124,7 +1169,7 @@ class _ComposerState extends State<_Composer> {
                             const SizedBox(width: 8),
                           ],
                           Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.start, children: [
-                            Flexible(child: ComposerModelPicker(session: session, enabled: available)),
+                            Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target)),
                           ])),
                           const SizedBox(width: 8),
                           if (defaultTargetPlatform == TargetPlatform.macOS) ...[
@@ -1155,7 +1200,7 @@ class _ComposerState extends State<_Composer> {
                                       ? 'Steer task'
                                       : 'Queue message')
                                 : 'Send message',
-                            onPressed: stopWorking ? (session.connected ? _stop : null) : available && session.authenticated &&
+                            onPressed: stopWorking ? (session.connected ? _stop : null) : available && authenticated &&
                                 (dictationCanSend || !_dictating && hasContent)
                                 ? _submit
                                 : null,
@@ -1169,7 +1214,7 @@ class _ComposerState extends State<_Composer> {
                           }),
                         ],
                       )),
-                      if (!session.authenticated)
+                      if (!authenticated)
                         const Align(alignment: Alignment.centerLeft, child: Text('Sign in to the selected provider to send',
                           style: TextStyle(fontSize: 11, color: Colors.black38))),
                     ],

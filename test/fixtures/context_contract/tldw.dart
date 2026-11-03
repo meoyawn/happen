@@ -2,15 +2,35 @@
 // isolated cached-transcript replay. All shell work is real.
 const tldwYoutubeCase = <String, dynamic>{
   'id': 'tldw-youtube', 'workflow': 'tldw',
-  'prompt': 'tldw https://www.youtube.com/watch?v=ebILGCoN4UU',
+  'prompt': 'Use fixture-youtube-transcript and fixture-tldw for tldw https://www.youtube.com/watch?v=ebILGCoN4UU. '
+    'Read both SKILL.md files before inspecting the transcript.',
+  'global_skills': {
+    'fixture-youtube-transcript/SKILL.md': '---\nname: fixture-youtube-transcript\n'
+      'description: Use to locate and read the isolated YouTube transcript.\n---\n'
+      'TLDW_TRANSCRIPT_SKILL_START\nRead transcript.txt in the current working directory.\n'
+      'If the shell truncates it, reread the timestamp range before summarizing.\nTLDW_TRANSCRIPT_SKILL_END\n',
+    'fixture-tldw/SKILL.md': '---\nname: fixture-tldw\n'
+      'description: Use to summarize the isolated transcript as a TL;DW.\n---\n'
+      'TLDW_SUMMARY_SKILL_START\nSummarize the central claim and key supporting points.\n'
+      'Use the original language of the transcript. Do not translate unless explicitly asked.\nTLDW_SUMMARY_SKILL_END\n',
+  },
+  'catalog_skills': ['fixture-tldw', 'fixture-youtube-transcript'],
   'files': {'AGENTS.md': 'Print the TLDW in the original language. Do not mention the language. Do not translate unless explicitly asked.\n'},
   'binary_sources': {'transcript.txt': 'transcripts/ebILGCoN4UU.txt'},
-  'contains': ['Print the TLDW in the original language.'], 'absent': ['[14:01]'],
-  'continue_after': [0, 5], 'indexless_stream': true,
+  'contains': ['Print the TLDW in the original language.', 'fixture-tldw', 'fixture-youtube-transcript'],
+  'absent': ['[14:01]', 'TLDW_TRANSCRIPT_SKILL_START', 'TLDW_TRANSCRIPT_SKILL_END', 'TLDW_SUMMARY_SKILL_START', 'TLDW_SUMMARY_SKILL_END'],
+  'continue_after': [0, 6], 'indexless_stream': true,
   'responses': [
     [
       {'type': 'message', 'role': 'assistant', 'phase': 'commentary',
         'content': [{'type': 'output_text', 'text': 'I’ll get the transcript and summarize the main points.'}]},
+    ],
+    [
+      {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'tldw_read_skills',
+        'input': 'const results = await Promise.allSettled(['
+          'tools.exec_command({cmd:"cat \\"{{SKILLS_ROOT}}/fixture-youtube-transcript/SKILL.md\\"",login:false,max_output_tokens:2000}),'
+          'tools.exec_command({cmd:"cat \\"{{SKILLS_ROOT}}/fixture-tldw/SKILL.md\\"",login:false,max_output_tokens:2000})'
+          ']); for (let i=0;i<results.length;i++) text({i,...results[i]});'},
     ],
     [
       {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'tldw_discover',

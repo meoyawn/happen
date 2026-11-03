@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
 
 import 'appearance.dart';
+import 'browser.dart';
 import 'code_highlight.dart';
 import 'conversation_markdown.dart';
 import 'desktop_toast.dart';
@@ -20,6 +21,7 @@ const _imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'};
 
 String _extension(String path) => path.split('/').last.split('.').last.toLowerCase();
 bool _isMarkdown(String path) => {'md', 'markdown', 'mdown', 'mkd'}.contains(_extension(path));
+bool _isHtml(String path) => {'html', 'htm', 'xhtml'}.contains(_extension(path));
 
 Future<_FilePreview> _readFilePreview(String path, CancellationToken cancellation) =>
   CancellableIsolate.run(() {
@@ -30,21 +32,23 @@ Future<_FilePreview> _readFilePreview(String path, CancellationToken cancellatio
     final extension = _extension(path);
     if (_imageExtensions.contains(extension)) return (kind: 'image', text: null, size: stat.size, truncated: false);
     if (extension == 'svg') return (kind: 'svg', text: null, size: stat.size, truncated: false);
+    if (extension == 'pdf') return (kind: 'pdf', text: null, size: stat.size, truncated: false);
+    final kind = _isHtml(path) ? 'html' : 'text';
     final input = file.openSync();
     try {
       final bytes = input.readSync(_previewLimit + 1);
       final truncated = bytes.length > _previewLimit;
       final sample = truncated ? bytes.sublist(0, _previewLimit) : bytes;
-      if (sample.contains(0)) return (kind: 'binary', text: null, size: stat.size, truncated: false);
+      if (sample.contains(0)) return (kind: kind == 'html' ? 'html' : 'binary', text: null, size: stat.size, truncated: false);
       try {
         final text = StringBuffer();
         final decoder = utf8.decoder.startChunkedConversion(StringConversionSink.fromStringSink(text));
         decoder.add(sample);
         // An incomplete final UTF-8 character belongs to the omitted suffix.
         if (!truncated) decoder.close();
-        return (kind: 'text', text: text.toString(), size: stat.size, truncated: truncated);
+        return (kind: kind, text: text.toString(), size: stat.size, truncated: truncated);
       } on FormatException {
-        return (kind: 'binary', text: null, size: stat.size, truncated: false);
+        return (kind: kind == 'html' ? 'html' : 'binary', text: null, size: stat.size, truncated: false);
       }
     } finally {
       input.closeSync();
@@ -99,8 +103,9 @@ List<TextSpan> _highlightedLines(String text, String path) {
 }
 
 class FileViewer extends StatefulWidget {
-  const FileViewer({super.key, required this.path, this.line, this.revealRequest = 0, this.active = true});
+  const FileViewer({super.key, required this.path, this.line, this.directory, this.revealRequest = 0, this.active = true});
   final String path;
+  final String? directory;
   final int? line;
   final int revealRequest;
   final bool active;
@@ -234,6 +239,10 @@ class _FileViewerState extends State<FileViewer> {
       return _notice(Icons.insert_drive_file_outlined,
         'Preview is unavailable for this file type.', detail: _fileSize(preview.size));
     }
+    if (preview.kind == 'pdf' || preview.kind == 'html' && (!_source || preview.text == null)) {
+      return DesktopBrowser(key: ValueKey(widget.path), initialUrl: File(widget.path).absolute.uri.toString(),
+        active: widget.active, toolbar: false, directory: widget.directory);
+    }
     if (preview.kind == 'image' || preview.kind == 'svg') {
       Widget failed(BuildContext context, Object error, StackTrace? stack) {
         return _notice(Icons.broken_image_outlined, 'Could not load this image.');
@@ -264,7 +273,9 @@ class _FileViewerState extends State<FileViewer> {
   Widget build(BuildContext context) {
     final preview = _preview, text = preview?.text;
     final canPreviewMarkdown = text != null && _isMarkdown(widget.path) && !preview!.truncated;
-    final source = text != null && (!canPreviewMarkdown || _source);
+    final canPreviewHtml = text != null && preview?.kind == 'html';
+    final canPreview = canPreviewMarkdown || canPreviewHtml;
+    final source = text != null && (!canPreview || _source);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: opencodeBorder, width: .5))),
@@ -274,7 +285,7 @@ class _FileViewerState extends State<FileViewer> {
           const SizedBox(width: 8),
           _button(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager',
             Icons.folder_open_outlined, _revealing ? null : _reveal),
-          if (canPreviewMarkdown) _button(_source ? 'Show Markdown preview' : 'Show source',
+          if (canPreview) _button(_source ? 'Show ${canPreviewHtml ? 'HTML' : 'Markdown'} preview' : 'Show source',
             _source ? Icons.visibility_outlined : Icons.code_rounded, () {
               setState(() => _source = !_source);
             }, selected: !_source),
@@ -285,18 +296,18 @@ class _FileViewerState extends State<FileViewer> {
           ],
           _button('Reload file', Icons.refresh_rounded, _loading ? null : _load),
         ])),
-      if (preview?.truncated == true) Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      if (source && preview?.truncated == true) Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         color: opencodeLayer, child: const Text('Showing the first 2 MB of this file.',
           style: TextStyle(fontSize: 12, color: opencodeMuted))),
       Expanded(child: _body()),
-      if (text != null && !_loading && !_failed) Container(height: 28,
+      if (preview != null && !_loading && !_failed) Container(height: 28,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: const BoxDecoration(border: Border(top: BorderSide(color: opencodeBorder, width: .5))),
         child: Row(children: [
           FileIcon(widget.path, size: 12), const SizedBox(width: 6),
-          Text('${_code.lineCount} lines', style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+          if (source) Text('${_code.lineCount} lines', style: const TextStyle(fontSize: 11, color: opencodeFaint)),
           const Spacer(),
-          Text(_fileSize(preview!.size), style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+          Text(_fileSize(preview.size), style: const TextStyle(fontSize: 11, color: opencodeFaint)),
         ])),
     ]);
   }

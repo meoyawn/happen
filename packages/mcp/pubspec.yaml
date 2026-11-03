@@ -7,4 +7,5 @@ environment:
 dependencies:
   protocol: any
   ai: any
+  telemetry: any
   crypto: ^3.0.7

@@ -7,12 +7,16 @@ import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'browser.dart';
 import 'context_window.dart';
+import 'conversation.dart';
+import 'conversation_data.dart';
 import 'file_icon.dart';
 import 'file_reference.dart';
 import 'file_viewer.dart';
 import 'panel_state.dart';
 import 'session.dart';
+import 'session_question.dart';
 import 'sidebar_resizer.dart';
 import 'window_chrome.dart';
 
@@ -20,11 +24,12 @@ import 'window_chrome.dart';
 /// Hiding a region retains its tabs; closing a tab releases its content and reads.
 class SessionPanelWorkspace extends StatefulWidget {
   const SessionPanelWorkspace({super.key, required this.session, required this.task,
-    required this.child, required this.onReturnFocus});
+    required this.child, required this.onReturnFocus, required this.sideComposer});
   final DesktopSession session;
   final DesktopTask? task;
   final Widget child;
   final VoidCallback onReturnFocus;
+  final Widget Function(DesktopTask task, bool active) sideComposer;
 
   @override
   State<SessionPanelWorkspace> createState() => _SessionPanelWorkspaceState();
@@ -83,12 +88,29 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     }
   }
 
+  void _openBrowser(Uri uri) {
+    if (widget.task case final task?) {
+      widget.session.openBrowserPanel(task, url: uri.toString());
+    } else {
+      unawaited(showDialog<void>(context: context, builder: (context) => Dialog(
+        clipBehavior: Clip.antiAlias, child: SizedBox(width: 1000, height: 700,
+          child: Column(children: [
+            Align(alignment: Alignment.centerRight, child: IconButton(
+              tooltip: 'Close browser', icon: const Icon(Icons.close_rounded, size: 18),
+              onPressed: () => Navigator.of(context).pop())),
+            Expanded(child: DesktopBrowser(initialUrl: uri.toString())),
+          ])))));
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => ConversationFileScope(onOpen: _openFile,
+  Widget build(BuildContext context) => ConversationBrowserScope(onOpen: _openBrowser,
+    child: ConversationFileScope(onOpen: _openFile,
     child: ListenableBuilder(listenable: widget.session,
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
       final task = widget.task;
       final state = task == null ? null : widget.session.panelsFor(task);
+      final directory = widget.session.projects.where((project) => project.tasks.contains(task)).firstOrNull?.path;
       final opened = state?.opened == true;
       final wide = bounds.maxWidth >= 768;
       final available = bounds.maxWidth - 8;
@@ -115,13 +137,27 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                   if (state.tabs.contains(contextPanel))
                     Offstage(offstage: state.active != contextPanel,
                       child: SessionContextWindow(key: ValueKey('context:${task!.id}'),
-                        session: widget.session, task: task)),
+                        session: widget.session, task: task, onAttached: widget.onReturnFocus)),
                   for (final tab in state.tabs.where(isFilePanel))
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: state.active != tab,
                       child: FileViewer(path: filePanelPath(tab),
+                        directory: directory,
                         active: opened && state.active == tab, line: state.fileReveals[tab]?.line,
                         revealRequest: state.fileReveals[tab]?.revision ?? 0))),
+                  for (final tab in state.tabs.where(isBrowserPanel))
+                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                      child: ExcludeFocus(excluding: !opened || state.active != tab,
+                        child: DesktopBrowser(initialUrl: state.browserPages[tab]?.url ?? '',
+                          active: opened && state.active == tab, directory: directory,
+                          onNewTab: () => widget.session.openBrowserPanel(task),
+                          onPageChanged: (url, title) => widget.session.updateBrowserPanel(task, tab, url, title)))),
+                  for (final tab in state.tabs.where(isSideChatPanel))
+                    if (widget.session.sideChats[sideChatID(tab)] case final side?)
+                      Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                        child: ExcludeFocus(excluding: !opened || state.active != tab,
+                          child: TickerMode(enabled: opened && state.active == tab,
+                            child: _sideChat(side, opened && state.active == tab)))),
                   if (state.active?.startsWith('new:') == true) _launchers(state),
                 ])),
               ]))))))),
@@ -136,7 +172,43 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             },
             onCancel: () => setState(() => _dragWidth = null))),
       ]);
-    })));
+    }))));
+
+  Widget _sideChat(DesktopTask side, bool active) => Column(children: [
+    const Padding(padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
+      child: Align(alignment: Alignment.centerLeft, child: Text('Temporary side chat',
+        style: TextStyle(fontSize: 12, color: opencodeFaint)))),
+    Expanded(child: side.loaded && side.messages.isEmpty && !side.running
+      ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Column(
+          mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.chat_bubble_outline_rounded, size: 24, color: opencodeFaint),
+            SizedBox(height: 12),
+            Text('Ask a side question', style: TextStyle(fontSize: 14, color: opencodeMuted)),
+            SizedBox(height: 6),
+            Text('Uses a snapshot of the main conversation.',
+              textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: opencodeFaint)),
+          ])))
+      : ConversationDataScope(client: widget.session.client, providers: widget.session.providers,
+          child: ConversationTranscript(key: ValueKey(side.id), task: side,
+            directory: widget.session.projects.where((project) =>
+              project.tasks.contains(widget.task)).firstOrNull?.path ?? '',
+            onRetry: () => unawaited(widget.session.loadHistory(side)),
+            onRetryTurn: () => unawaited(widget.session.retry(side).catchError((Object error) =>
+              widget.session.showError(error, target: side))),
+            onLoadEarlier: () => unawaited(widget.session.loadEarlier(side)),
+            onPendingAction: widget.session.changePending))),
+    if (side.sideError case final error?) Padding(padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: SelectableText(error, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
+    if (side.questions.values.firstOrNull case final request?)
+      Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
+        key: ValueKey('question:${request['id']}'), request: request,
+        draft: side.questionDrafts.putIfAbsent(request['id'] as String,
+          () => QuestionDraft((request['questions'] as List).length)),
+        enabled: widget.session.connected,
+        onAnswer: (answers, cancellation) => widget.session.answerQuestion(
+          side, request['id'] as String, answers, cancellation: cancellation))),
+    widget.sideComposer(side, active),
+  ]);
 
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
@@ -147,9 +219,12 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         final width = (bounds.maxWidth / state.tabs.length).clamp(80.0, 190.0);
         return SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
           for (final tab in state.tabs) SizedBox(width: width, child: _PanelTab(
-            key: ValueKey(tab), title: _panelTitle(tab),
+            key: ValueKey(tab), title: isSideChatPanel(tab)
+              ? widget.session.sideChats[sideChatID(tab)]?.title ?? 'Side chat' : _panelTitle(tab, state),
             icon: isFilePanel(tab) ? FileIcon(filePanelPath(tab), size: 14)
-              : Icon(tab == contextPanel ? Icons.donut_large_rounded : Icons.add_rounded,
+              : Icon(tab == contextPanel ? Icons.donut_large_rounded
+                  : isBrowserPanel(tab) ? Icons.language_rounded
+                  : isSideChatPanel(tab) ? Icons.chat_bubble_outline_rounded : Icons.add_rounded,
                   size: 14, color: state.active == tab ? opencodeInk : opencodeFaint),
             active: state.active == tab,
             onSelect: () => widget.session.selectSessionPanel(widget.task!, tab),
@@ -184,6 +259,24 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28), children: [
       const Text('Open a panel', style: TextStyle(fontSize: 13, color: opencodeMuted)),
       const SizedBox(height: 16),
+      ListTile(key: const ValueKey('open-browser-panel'), contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.language_rounded, size: 18, color: opencodeMuted),
+        title: const Text('Browser', style: TextStyle(fontSize: 13)),
+        subtitle: const Text('Preview your app, read docs, or browse the web',
+          style: TextStyle(fontSize: 12, color: opencodeFaint)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: opencodeFaint),
+        onTap: () => widget.session.openBrowserPanel(widget.task!)),
+      ListTile(key: const ValueKey('open-side-chat'), contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18, color: opencodeMuted),
+        title: const Text('Side chat', style: TextStyle(fontSize: 13)),
+        subtitle: const Text('Ask a question with context from this session',
+          style: TextStyle(fontSize: 12, color: opencodeFaint)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: opencodeFaint),
+        enabled: widget.session.connected && !widget.task!.archived && !widget.task!.archiving,
+        onTap: () => unawaited(() async {
+          try { await widget.session.openSideChat(widget.task!); }
+          catch (error) { widget.session.showError(error); }
+        }())),
       ListTile(key: const ValueKey('open-context-panel'), contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.donut_large_rounded, size: 18, color: opencodeMuted),
         title: const Text('Context', style: TextStyle(fontSize: 13)),
@@ -195,7 +288,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         const Text('Recently closed', style: TextStyle(fontSize: 12, color: opencodeFaint)),
         for (final tab in state.closed) ListTile(contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.history_rounded, size: 16, color: opencodeFaint),
-          title: Text(_panelTitle(tab), maxLines: 1, overflow: TextOverflow.ellipsis,
+          title: Text(_panelTitle(tab, state), maxLines: 1, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 13)),
           onTap: () => widget.session.openSessionPanel(widget.task!, tab)),
       ],
@@ -262,6 +355,15 @@ Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => Size
     style: IconButton.styleFrom(minimumSize: const Size.square(28), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
     icon: Icon(icon, size: 16, color: opencodeMuted)));
 
-String _panelTitle(String tab) => tab == contextPanel ? 'Context'
+String _panelTitle(String tab, [SessionPanelState? state]) => tab == contextPanel ? 'Context'
   : isFilePanel(tab) ? filePanelPath(tab).split('/').where((part) => part.isNotEmpty).lastOrNull ?? '/'
+  : isBrowserPanel(tab) ? _browserTitle(state?.browserPages[tab])
   : 'New tab';
+
+String _browserTitle(({String url, String title})? page) {
+  if (page == null || page.url.isEmpty || page.url == 'about:blank') return 'Browser';
+  if (page.title.isNotEmpty) return page.title;
+  final uri = Uri.tryParse(page.url);
+  return uri?.host.isNotEmpty == true ? uri!.host
+    : uri?.path.split('/').lastOrNull ?? 'Browser';
+}

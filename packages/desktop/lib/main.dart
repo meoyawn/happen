@@ -92,6 +92,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       );
       _lifetime.throwIfCancelled();
       final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
+      await session.tracing;
       await session.load();
       _lifetime.throwIfCancelled();
       if (mounted) setState(() {});

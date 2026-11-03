@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 /// Client tools belong to one live connection and one task. No browser state or
 /// client credentials cross this boundary; the owner executes each request.
 class ClientToolBridge {
   ClientToolBridge() {
-    _mailbox.listen((raw) => unawaited(_handle(jsonObject(raw))));
+    _mailbox.listen((raw) => unawaited(traceIncoming(jsonObject(raw),
+      () => _handle(jsonObject(raw)), service: 'server')));
   }
 
   final _mailbox = ReceivePort();
@@ -230,6 +232,7 @@ class ClientToolBridge {
       });
       reply?.send({'result': await result});
     } catch (error) {
+      traceError(error);
       reply?.send({
         'error': error.toString(),
         if (error is CancelledException) 'code': 'cancelled',

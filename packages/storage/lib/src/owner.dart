@@ -2,18 +2,24 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 import '../storage.dart';
+import 'session_reader.dart';
 
 Future<IsolateOwner> startStore(
   String directory,
   String id, {
   bool create = true,
+  bool inMemory = false,
+  Json? fork,
 }) => IsolateOwner.start(_storeMain, {
   'directory': directory,
   'task_id': id,
   'create': create,
-});
+  'in_memory': inMemory,
+  'fork': fork,
+}, service: 'storage');
 
 Future<String> importHistory(
   String directory,
@@ -23,7 +29,7 @@ Future<String> importHistory(
   required CancellationToken cancellation,
 }) async {
   cancellation.throwIfCancelled();
-  final owner = await IsolateOwner.start(_storeMain, {'import_only': true});
+  final owner = await IsolateOwner.start(_storeMain, {'import_only': true}, service: 'storage');
   try {
     return await callIsolate(owner.port, 'import', {
       'directory': directory,
@@ -44,7 +50,9 @@ void _storeMain(List<Object?> args) async {
           config['directory'] as String,
           config['task_id'] as String,
           create: config['create'] as bool,
+          inMemory: config['in_memory'] == true,
         );
+  if (config['fork'] case final Map snapshot) store!.initializeFork(jsonObject(snapshot));
   final port = ReceivePort(), queue = StreamController<Json>();
   final operations = <String, CancellationToken>{};
   var closing = false;
@@ -78,9 +86,13 @@ void _storeMain(List<Object?> args) async {
       final reply = request['reply'] as SendPort?;
       final id = request['operation_id'] as String;
       final cancellation = operations[id]!;
+      var closed = false;
+      await traceIncoming(request, () async {
       try {
         cancellation.throwIfCancelled();
-        if (store != null && {'append', 'append_batch', 'context', 'session.prepare', 'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
+        if (store != null && {'append', 'append_batch', 'context', 'fork.snapshot', 'session.prepare',
+          'session.message.list', 'session.event.list', 'session.inbox',
+          'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
           await store.prepareSession(cancellation: cancellation);
         }
         final Object? result = switch (request['method']) {
@@ -103,6 +115,9 @@ void _storeMain(List<Object?> args) async {
           'archive' => store!.archive(params['archived'] as bool),
           'maintain' => store!.maintain(),
           'context' => store!.modelSnapshot(),
+          'fork.snapshot' => store!.forkSnapshot(),
+          'session.message.list' || 'session.event.list' || 'session.inbox' =>
+            readStoredSession(store!.db, request['method'] as String, params),
           'history' => store!.history(
             after: params['after'] as int? ?? 0,
             limit: params['limit'] as int? ?? 100,
@@ -148,8 +163,9 @@ void _storeMain(List<Object?> args) async {
           _ => throw StateError('Unknown persistence operation'),
         };
         reply?.send({'result': result});
-        if (request['method'] == 'close') break;
+        if (request['method'] == 'close') closed = true;
       } catch (error) {
+        traceError(error);
         reply?.send({
           'error': error.toString(),
           if (error is CancelledException) 'code': 'cancelled',
@@ -158,6 +174,8 @@ void _storeMain(List<Object?> args) async {
         operations.remove(id);
         cancellation.cancel();
       }
+      }, service: 'storage');
+      if (closed) break;
     }
   } finally {
     store?.close();

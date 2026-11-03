@@ -18,6 +18,7 @@ const executeDefinition = ToolDefinition(
 final openCodeDefinitions = <ToolDefinition>[
   executeDefinition,
   skillDefinition,
+  questionDefinition,
   ToolDefinition(name: 'shell', description: 'Execute a shell command and return its output. Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands when possible. When output is large, the full result is saved to a file and a truncated preview is returned. Rely on automatic truncation unless filtering the output is more useful. Commands accept an optional timeout, background commands have no timeout by default. Background commands return immediately; completed results are included at the next model step or turn.', parameters: _object({
     'command': _string('Shell command string to execute'),
     'workdir': _string('Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.'),

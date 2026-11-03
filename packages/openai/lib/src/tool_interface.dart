@@ -14,11 +14,13 @@ import 'tools.dart';
 import 'web_search.dart';
 import 'image_generation.dart';
 import 'goals.dart';
+import 'user_input.dart';
 
 class OpenAIToolInterface extends ToolInterface {
   const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
-    this.standaloneWebSearch = false, this.sleepTool = true, this.goals = true, this.codeModeOnly = true});
-  final bool webSearch, imageGeneration, standaloneWebSearch, sleepTool, goals, codeModeOnly;
+    this.standaloneWebSearch = false, this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
+    this.requestUserInput = false});
+  final bool webSearch, imageGeneration, standaloneWebSearch, sleepTool, goals, codeModeOnly, requestUserInput;
   @override
   String get id => 'openai';
   @override
@@ -33,6 +35,7 @@ class OpenAIToolInterface extends ToolInterface {
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
   List<ToolDefinition> definitionsFor(List<Json> deferred) => [
+    if (requestUserInput) requestUserInputDefinition,
     specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
@@ -60,6 +63,7 @@ class OpenAIToolInterface extends ToolInterface {
   Json search(List<Json> catalog, Json arguments, {bool native = false}) => discoverTools(catalog, arguments, native: native);
   @override
   Map<String, String> get services => {
+    if (requestUserInput) 'request_user_input': 'question.ask',
     if (webSearch && standaloneWebSearch) 'web__run': 'web.search',
     if (imageGeneration) 'image_gen__imagegen': 'image.generate',
     if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
@@ -78,9 +82,13 @@ class OpenAIToolInterface extends ToolInterface {
     if (deferred.isNotEmpty) describeTool(specs.toolSearchCatalog),
   ];
   @override
-  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) => _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool, codeModeOnly);
+  ToolRuntime createRuntime(String cwd, CancellationToken cancellation) =>
+    _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool, codeModeOnly, requestUserInput);
   @override
   String formatResult(ToolCall call, Json result) {
+    if (call.name == 'request_user_input') return jsonEncode([
+      {'type': 'input_text', 'text': jsonEncode(result)},
+    ]);
     if (call.format == 'search') return jsonEncode(result['tools'] ?? []);
     return jsonEncode([
     if (result['notification'] case final String notice) {'type': 'input_text', 'text': notice}
@@ -132,13 +140,13 @@ class OpenAIToolInterface extends ToolInterface {
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly)
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly, this.requestUserInput)
     : host = HostTools(cwd, cancellation), cells = CodeSession(cancellation);
   final HostTools host;
   final CodeSession cells;
   @override
   bool get hasRunningCells => cells.hasRunningCells;
-  final bool webSearch, sleepTool, codeModeOnly;
+  final bool webSearch, sleepTool, codeModeOnly, requestUserInput;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
       host.call(name, arguments, cancellation: cancellation, cwd: cwd);
@@ -147,6 +155,20 @@ class _OpenAITools extends ToolRuntime {
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
+    if (requestUserInput && call.name == 'request_user_input' &&
+        (call.namespace == null || call.namespace == 'functions')) {
+      final questions = requestUserInputQuestions(jsonDecode(call.input));
+      final result = jsonObject(await context.call('request_user_input', {
+        'questions': [for (final question in questions) {
+          'header': question['header'], 'question': question['question'], 'options': question['options'],
+        }],
+      }, cancellation: context.cancellation));
+      if (result.containsKey('error')) return result;
+      final answers = result['answers'] as List;
+      return {'answers': {
+        for (var i = 0; i < questions.length; i++) questions[i]['id'] as String: {'answers': answers[i]},
+      }};
+    }
     if (sleepTool && call.namespace == 'clock' && call.name == 'sleep') {
       final arguments = jsonObject(jsonDecode(call.input));
       final duration = arguments['duration_ms'];

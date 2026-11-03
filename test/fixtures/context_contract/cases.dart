@@ -2,6 +2,8 @@ import 'tldw.dart';
 
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': {}, 'contains': [], 'absent': []},
+  {'id': 'interactive-user-input', 'prompt': 'Reply READY.', 'request_user_input': true,
+    'files': {}, 'contains': [], 'absent': []},
   {
     'id': 'streamed-continuation', 'workflow': 'continuation',
     'prompt': 'Read receipt.txt using a tool after the introductory commentary, then reply READY.',

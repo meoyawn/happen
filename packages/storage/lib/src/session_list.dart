@@ -3,11 +3,12 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 import 'package:sqlite3/sqlite3.dart';
+import 'package:telemetry/telemetry.dart';
 
 String _directoryKey(String path) => Directory(path).absolute.uri.normalizePath().toString();
 
 Json? _sessionInfo(String path, String id) {
-  final db = sqlite3.open(path, mode: OpenMode.readOnly);
+  final db = openTracedDatabase(path, mode: OpenMode.readOnly);
   try {
     db.execute('PRAGMA query_only = ON');
     db.execute('BEGIN');
@@ -59,7 +60,8 @@ Json? _sessionInfo(String path, String id) {
 /// caches. Reading metadata never projects history or resumes interrupted work.
 Future<Json> listSessions(String directory, Json params, {required CancellationToken cancellation}) {
   cancellation.throwIfCancelled();
-  return CancellableIsolate.run(() {
+  final carrier = currentTrace?.carrier();
+  return CancellableIsolate.run(() => withTrace(traceContextFrom(carrier, service: 'storage'), () {
     final Json filter;
     try {
       filter = params['cursor'] == null ? ({...params}..remove('limit'))
@@ -122,5 +124,5 @@ Future<Json> listSessions(String directory, Json params, {required CancellationT
       if (page.isNotEmpty) 'previous': cursor(page.first, 'previous'),
       if (page.isNotEmpty) 'next': cursor(page.last, 'next'),
     }};
-  }, cancellation);
+  }), cancellation);
 }

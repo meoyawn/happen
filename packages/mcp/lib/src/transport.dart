@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:ai/ai.dart' show decodeSse;
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 const mcpProtocolVersion = '2026-07-28';
 // Independent of model output budgets, matching Codex's Code Mode frame limit.
@@ -353,7 +354,10 @@ class McpConnection {
         }
       }
       outgoing.write(jsonEncode(body));
-      final response = await outgoing.close().asCancellable(token);
+      final uri = Uri.parse(requiredString(config, 'url'));
+      final response = await traceAsync('mcp.http.headers', () => outgoing!.close().asCancellable(token),
+        category: 'http', attributes: {'http.request.method': 'POST', 'server.address': uri.host, 'url.path': uri.path});
+      traceInstant('mcp.http.response', category: 'http', attributes: {'http.response.status_code': response.statusCode});
       if (response.statusCode == 401 || response.statusCode == 403) {
         onAuthChallenge?.call(response.statusCode, response.headers['www-authenticate'] ?? [], sentToken: access != null);
       }
@@ -363,7 +367,7 @@ class McpConnection {
       if (!body.containsKey('id') && response.statusCode == 202) return {};
       if (response.headers.contentType?.mimeType != 'text/event-stream') {
         final bytes = <int>[];
-        final input = StreamIterator(response);
+        final input = StreamIterator(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length));
         try {
           while (await input.moveNext().asCancellable(
             token,
@@ -398,7 +402,7 @@ class McpConnection {
           status: response.statusCode,
         );
       }
-      final input = ownStream(response, token);
+      final input = ownStream(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length), token);
       closeBody = input.close;
       messages = StreamIterator(
         decodeSse(input.stream, maxEventBytes: _maxMessageBytes),

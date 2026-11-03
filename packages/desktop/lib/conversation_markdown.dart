@@ -9,6 +9,7 @@ import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl
 
 import 'code_highlight.dart';
 import 'appearance.dart';
+import 'browser.dart';
 import 'inline_reference.dart';
 import 'image_preview.dart';
 import 'inline_image.dart';
@@ -312,6 +313,7 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
       throw const FormatException('Unsupported link');
     }
     final target = uri.toString();
+    if ({'http', 'https'}.contains(uri.scheme) && ConversationBrowserScope.open(context, uri)) return;
     if (Platform.isMacOS) {
       await Process.start('/usr/bin/open', [target], mode: ProcessStartMode.detached);
     } else if (Platform.isLinux) {

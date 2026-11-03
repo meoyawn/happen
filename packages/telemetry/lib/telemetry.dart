@@ -1,4 +1,8 @@
-/// Fixed-name counters and bounded histograms. No network, timers, or SDK.
+export 'src/tracing.dart';
+export 'src/trace_store.dart';
+export 'src/sqlite.dart';
+
+/// Fixed-name counters and bounded histograms.
 class Telemetry {
   Telemetry({this.enabled = true});
   final bool enabled;

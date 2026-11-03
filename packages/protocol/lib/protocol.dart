@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:isolate';
 
 import 'package:cancellation_token/cancellation_token.dart';
+import 'package:telemetry/telemetry.dart';
 export 'package:cancellation_token/cancellation_token.dart';
 export 'src/attachments.dart';
 export 'src/session.dart';
@@ -189,6 +190,16 @@ Future<Object?> callIsolate(
   void Function(Json)? onEvent,
   Duration? timeout = const Duration(minutes: 10),
   CancellationToken? cancellation,
+}) => traceAsync('isolate.call $method', () => _callIsolate(target, method, params,
+  onEvent: onEvent, timeout: timeout, cancellation: cancellation), category: 'isolate');
+
+Future<Object?> _callIsolate(
+  SendPort target,
+  String method,
+  Json params, {
+  void Function(Json)? onEvent,
+  Duration? timeout,
+  CancellationToken? cancellation,
 }) async {
   cancellation?.throwIfCancelled();
   if (timeout == null && cancellation == null) {
@@ -231,6 +242,7 @@ Future<Object?> callIsolate(
     'params': params,
     'reply': port.sendPort,
     'operation_id': operationId,
+    '_trace': ?traceIsolateCarrier(method),
   });
   try {
     final exited = _ownerExits[target];
@@ -262,7 +274,9 @@ class IsolateOwner {
 
   static Future<IsolateOwner> start(
     void Function(List<Object?>) entry,
-    Json config,
+    Json config, {
+    String service = 'network',
+  }
   ) async {
     final ready = ReceivePort(), exit = ReceivePort(), errors = ReceivePort();
     final startup = Completer<SendPort>();
@@ -283,8 +297,8 @@ class IsolateOwner {
       if (!startup.isCompleted) startup.complete(message as SendPort);
     });
     final isolate = await Isolate.spawn(
-      entry,
-      [ready.sendPort, config],
+      _tracedOwnerMain,
+      [entry, ready.sendPort, {...config, '_trace': currentTrace?.carrier(), '_trace_service': service}],
       onExit: exit.sendPort,
       onError: errors.sendPort,
       errorsAreFatal: true,
@@ -321,4 +335,11 @@ class IsolateOwner {
       isolate.kill();
     }
   }
+}
+
+void _tracedOwnerMain(List<Object?> arguments) {
+  final entry = arguments[0] as void Function(List<Object?>);
+  final config = jsonObject(arguments[2]);
+  final context = traceContextFrom(config['_trace'], service: config['_trace_service'] as String);
+  withTrace(context, () => entry([arguments[1], config]));
 }
