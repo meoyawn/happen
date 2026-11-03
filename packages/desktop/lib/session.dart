@@ -50,6 +50,7 @@ class DesktopTask {
   final liveEvents = <Json>[];
   int through = 0;
   final pending = <String, Json>{};
+  String? lastSentID;
   final questions = <String, Json>{};
   final questionDrafts = <String, QuestionDraft>{};
   bool running = false, loaded = false, loading = false, archived = false, archiving = false;
@@ -101,6 +102,7 @@ class SessionDraft {
   final String id;
   String? checkoutKey, provider, model, reasoning;
   bool tracing;
+  DesktopTask? submission;
 }
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
@@ -1231,12 +1233,14 @@ class DesktopSession extends ChangeNotifier {
       target.retryStatus = target.running && page['status']?['type'] == 'retry'
         ? page['status']['message'] as String? : null;
       if (!target.running) target.runStartedAt = null;
+      final sending = target.pending.entries.where((entry) => entry.value['sending'] == true).toList();
       target.pending
         ..clear()
         ..addEntries((page['pending'] as List? ?? []).map((raw) {
           final item = jsonObject(raw);
           return MapEntry('msg_${item['id']}', item);
         }));
+      for (final entry in sending) { target.pending.putIfAbsent(entry.key, () => entry.value); }
       target.questions
         ..clear()
         ..addEntries((page['questions'] as List? ?? []).map((raw) {
@@ -1259,6 +1263,7 @@ class DesktopSession extends ChangeNotifier {
         ..clear()
         ..addAll(jsonObject(page['state'] ?? {}));
       _mergeHistory(target, page);
+      target.pending.removeWhere((id, item) => item['sending'] == true && target.messages.containsKey(id));
       final live = target.liveEvents.toList();
       target.liveEvents.clear();
       target.streamingText = '';
@@ -1312,14 +1317,9 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
+  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) {
     final enabled = (target ?? task)?.tracing ?? currentDraft.tracing;
-    final store = enabled ? await tracing : null;
-    final sideCommand = target == null && RegExp(r'^\s*/side(?:\s|$)').hasMatch(prompt);
-    final context = store == null ? null : TraceContext(sink: store.sink, service: 'desktop',
-      session: sideCommand ? null : (target ?? task)?.id);
-    return withTrace(context, () => traceAsync('desktop.submit',
-      () => _send(prompt, attachments: attachments, target: target, tracing: enabled)));
+    return _send(prompt, attachments: attachments, target: target, tracing: enabled);
   }
 
   Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target,
@@ -1366,123 +1366,145 @@ class DesktopSession extends ChangeNotifier {
       if (!_lifetime.isCancelled) notifyListeners();
     }
     final uploaded = <String>[];
+    final messageID = sideCommand == null ? newId() : null;
+    final inboxID = messageID == null ? null : 'msg_$messageID';
+    final sentAt = DateTime.now();
+    final local = sideCommand != null ? null : existing ?? (draft!.submission =
+      DesktopTask(draft.id, prompt.trim().split('\n').first, tracing: tracing)..loaded = true);
+    if (local != null) {
+      local.lastSentID = messageID;
+      local.pending[inboxID!] = {
+        'prompt': prompt, 'attachments': attachments.map((attachment) => attachment.toJson()).toList(),
+        'delivery': wasRunning ? deliveryMode : 'steer',
+        'created_at': sentAt.toIso8601String(), 'sending': true,
+      };
+    }
     var admitted = false;
     notifyListeners();
     try {
-      final input = <Json>[];
-      final images = attachments.where((attachment) => attachment.image).toList();
-      final remoteImages = <Json>[];
-      if (images.isNotEmpty && !client.sharedFilesystem) {
-        progress('Preparing images…');
-        remoteImages.addAll(await prepareRemoteImages(images.map((image) => image.toJson()).toList(),
-          cancellation: cancellation.merge(_lifetime)));
-        progress(null);
-      }
-      var imageIndex = 0;
-      for (final attachment in attachments) {
+      final store = tracing ? await this.tracing : null;
+      final context = store == null ? null : TraceContext(sink: store.sink, service: 'desktop',
+        session: sideCommand != null ? null : existing?.id);
+      return await withTrace(context, () => traceAsync('desktop.submit', () async {
+        final input = <Json>[];
+        final images = attachments.where((attachment) => attachment.image).toList();
+        final remoteImages = <Json>[];
+        if (images.isNotEmpty && !client.sharedFilesystem) {
+          progress('Preparing images…');
+          remoteImages.addAll(await prepareRemoteImages(images.map((image) => image.toJson()).toList(),
+            cancellation: cancellation.merge(_lifetime)));
+          progress(null);
+        }
+        var imageIndex = 0;
+        for (final attachment in attachments) {
+          cancellation.throwIfCancelled();
+          _lifetime.throwIfCancelled();
+          if (!client.sharedFilesystem && attachment.image) {
+            input.add(remoteImages[imageIndex++]);
+          } else if (!client.sharedFilesystem) {
+            if (await FileSystemEntity.isDirectory(attachment.path)) {
+              throw StateError('Folders must be on the server; upload individual files instead');
+            }
+            progress('Uploading ${attachment.name}…');
+            final part = await client.uploadAttachment(attachment.path,
+              name: attachment.name, type: attachment.image ? 'image' : 'file',
+              cancellation: cancellation.merge(_lifetime),
+              onProgress: (sent, total) {
+                progress('Uploading ${attachment.name} · ${total == 0 ? 100 : (sent * 100 ~/ total)}%');
+              });
+            uploaded.add(part['upload_id'] as String);
+            input.add(part);
+          } else {
+            input.add(attachment.toJson());
+          }
+        }
         cancellation.throwIfCancelled();
         _lifetime.throwIfCancelled();
-        if (!client.sharedFilesystem && attachment.image) {
-          input.add(remoteImages[imageIndex++]);
-        } else if (!client.sharedFilesystem) {
-          if (await FileSystemEntity.isDirectory(attachment.path)) {
-            throw StateError('Folders must be on the server; upload individual files instead');
+        progress(null);
+        if (existing == null) {
+          final reply = jsonObject(
+            await _request('task.start', {
+              'cwd': owner.path,
+              'prompt': prompt,
+              'message_id': messageID,
+              if (input.isNotEmpty) 'attachments': input,
+              'provider': provider,
+              'model': model,
+              'reasoning': effort,
+              'tracing': tracing,
+            }),
+          );
+          final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
+          final created = DesktopTask(
+            requiredString(reply, 'sessionID'),
+            title.length > 72 ? '${title.substring(0, 72)}…' : title,
+            tracing: tracing,
+          )..running = true
+            ..lastActivity = DateTime.now().millisecondsSinceEpoch;
+          bindTraceSession(created.id);
+          if (tracing) client.traceSession(created.id);
+          created.loaded = true;
+          created.provider = provider;
+          created.model = model;
+          created.reasoning = effort;
+          created.reasoningUpdates = info?['reasoning_updates'] == true;
+          created.pending.addAll(local!.pending);
+          created.lastSentID = messageID;
+          owner.tasks.insert(0, created);
+          _rememberTab(created);
+          terminals.adoptDraft(owner.checkoutKey, created.id, draft: draft?.id);
+          if (draft != null) {
+            final index = openTabIds.indexOf(draft.id);
+            openTabIds.remove(created.id);
+            if (index >= 0) { openTabIds[index] = created.id; }
+            else { openTabIds.add(created.id); }
+            sessionDrafts.remove(draft);
           }
-          progress('Uploading ${attachment.name}…');
-          final part = await client.uploadAttachment(attachment.path,
-            name: attachment.name, type: attachment.image ? 'image' : 'file',
-            cancellation: cancellation.merge(_lifetime),
-            onProgress: (sent, total) {
-              progress('Uploading ${attachment.name} · ${total == 0 ? 100 : (sent * 100 ~/ total)}%');
-            });
-          uploaded.add(part['upload_id'] as String);
-          input.add(part);
+          if (project == owner && task == null && _activeDraftId == draft?.id) {
+            task = created;
+            _saveNavigation('active_tab', created.id);
+          }
+          if (_activeDraftId == draft?.id) _activeDraftId = null;
+          _saveNavigation('open_tabs', jsonEncode(openTabIds));
+          for (final event in _earlyEvents) {
+            if ((event['data']?['sessionID'] ?? event['task_id']) == created.id) _applyEvent(created, event);
+          }
+          if (created.archived) {
+            await terminals.removeTask(created.id);
+            if (task == created) task = null;
+          }
+          try {
+            await callIsolate(database.port, 'task.add', {
+              'id': created.id,
+              'checkout_key': owner.checkoutKey,
+              'title': created.title,
+              'last_activity': created.lastActivity,
+            }, cancellation: _lifetime);
+          } on CancelledException {
+            rethrow;
+          } catch (failure) {
+            // The server already admitted this turn. Do not offer to resend it.
+            error =
+                'Task started, but its sidebar reference could not be saved: $failure';
+          }
+        } else if (sideCommand != null) {
+          await openSideChat(existing, prompt: prompt.substring(sideCommand.end).trimLeft(), attachments: input);
         } else {
-          input.add(attachment.toJson());
-        }
-      }
-      cancellation.throwIfCancelled();
-      _lifetime.throwIfCancelled();
-      progress(null);
-      if (existing == null) {
-        final reply = jsonObject(
-          await _request('task.start', {
-            'cwd': owner.path,
+          // Mark admission before awaiting: a very short turn can finish before
+          // the caller resumes from the WebSocket acknowledgement.
+          existing.running = true;
+          await _request('task.send', {
+            'task_id': existing.id,
             'prompt': prompt,
+            'message_id': messageID,
             if (input.isNotEmpty) 'attachments': input,
-            'provider': provider,
-            'model': model,
-            'reasoning': effort,
-            'tracing': tracing,
-          }),
-        );
-        final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
-        final created = DesktopTask(
-          requiredString(reply, 'sessionID'),
-          title.length > 72 ? '${title.substring(0, 72)}…' : title,
-          tracing: tracing,
-        )..running = true
-          ..lastActivity = DateTime.now().millisecondsSinceEpoch;
-        bindTraceSession(created.id);
-        if (tracing) client.traceSession(created.id);
-        created.loaded = true;
-        created.provider = provider;
-        created.model = model;
-        created.reasoning = effort;
-        created.reasoningUpdates = info?['reasoning_updates'] == true;
-        owner.tasks.insert(0, created);
-        _rememberTab(created);
-        terminals.adoptDraft(owner.checkoutKey, created.id, draft: draft?.id);
-        if (draft != null) {
-          final index = openTabIds.indexOf(draft.id);
-          openTabIds.remove(created.id);
-          if (index >= 0) { openTabIds[index] = created.id; }
-          else { openTabIds.add(created.id); }
-          sessionDrafts.remove(draft);
+            'delivery': deliveryMode,
+            if (!wasRunning || existing.reasoningUpdates) 'reasoning': effort,
+          });
         }
-        if (project == owner && task == null && _activeDraftId == draft?.id) {
-          task = created;
-          _saveNavigation('active_tab', created.id);
-        }
-        if (_activeDraftId == draft?.id) _activeDraftId = null;
-        _saveNavigation('open_tabs', jsonEncode(openTabIds));
-        for (final event in _earlyEvents) {
-          if ((event['data']?['sessionID'] ?? event['task_id']) == created.id) _applyEvent(created, event);
-        }
-        if (created.archived) {
-          await terminals.removeTask(created.id);
-          if (task == created) task = null;
-        }
-        try {
-          await callIsolate(database.port, 'task.add', {
-            'id': created.id,
-            'checkout_key': owner.checkoutKey,
-            'title': created.title,
-            'last_activity': created.lastActivity,
-          }, cancellation: _lifetime);
-        } on CancelledException {
-          rethrow;
-        } catch (failure) {
-          // The server already admitted this turn. Do not offer to resend it.
-          error =
-              'Task started, but its sidebar reference could not be saved: $failure';
-        }
-      } else if (sideCommand != null) {
-        await openSideChat(existing, prompt: prompt.substring(sideCommand.end).trimLeft(), attachments: input);
-      } else {
-        // Mark admission before awaiting: a very short turn can finish before
-        // the caller resumes from the WebSocket acknowledgement.
-        existing.running = true;
-        await _request('task.send', {
-          'task_id': existing.id,
-          'prompt': prompt,
-          if (input.isNotEmpty) 'attachments': input,
-          'delivery': deliveryMode,
-          if (!wasRunning || existing.reasoningUpdates) 'reasoning': effort,
-        });
-      }
-      admitted = true;
-      return true;
+        admitted = true;
+        return true;
+      }));
     } on CancelledException {
       rethrow;
     } catch (failure) {
@@ -1491,6 +1513,8 @@ class DesktopSession extends ChangeNotifier {
       else { target.sideError = failure.toString(); }
       return false;
     } finally {
+      if (!admitted && local?.pending[inboxID]?['sending'] == true) local!.pending.remove(inboxID);
+      if (draft != null) draft.submission = null;
       if (!admitted) for (final id in uploaded) { await client.discardAttachment(id); }
       cancellation.cancel();
       if (target == null) {
@@ -2012,7 +2036,9 @@ List<ChatEntry> conversation(DesktopTask task) {
   finishImages();
   for (final entry in task.pending.entries) {
     final item = entry.value;
-    result.add(ChatEntry('pending:${entry.key}', item['delivery'] == 'steer' ? 'Steer pending' : 'Queued', item['prompt'] as String? ?? '',
+    final queued = item['delivery'] == 'queue';
+    result.add(ChatEntry(queued ? 'pending:${entry.key}' : entry.key, queued ? 'Queued' : 'You',
+      item['prompt'] as String? ?? '',
       attachments: (item['attachments'] as List? ?? []).map(jsonObject).toList(),
       timestamp: DateTime.tryParse(item['created_at'] as String? ?? '')));
   }

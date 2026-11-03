@@ -475,6 +475,7 @@ class AgentServer {
     }[method] ?? method;
     if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
     if (method == 'task.start' || method == 'task.send' || method == 'session.side.create') {
+      if (params.containsKey('message_id')) validateTaskId(requiredString(params, 'message_id'));
       final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
       final claimed = await client.attachments.claim(params['attachments']);
       var committed = false;
@@ -886,7 +887,7 @@ class AgentServer {
               throw StateError('Pending message limit reached');
             }
             if (params.keys.any(
-              (key) => !{'task_id', 'prompt', 'attachments', 'delivery', 'reasoning'}.contains(key),
+              (key) => !{'task_id', 'prompt', 'message_id', 'attachments', 'delivery', 'reasoning'}.contains(key),
             )) {
               throw ArgumentError('Change task settings between turns');
             }
@@ -896,7 +897,7 @@ class AgentServer {
               throw StateError('Pending messages exceed 512 KiB');
             }
             final message = <String, dynamic>{
-              'id': newId(),
+              'id': params['message_id'] ?? newId(),
               'prompt': prompt,
               if (params['attachments'] != null) 'attachments': params['attachments'],
               'delivery': mode,
@@ -1316,6 +1317,7 @@ class AgentServer {
       throw StateError('Active agent limit reached');
     }
     final effective = {...settings};
+    if (!compact && !retry) effective['message_id'] ??= newId();
     if (effective['cwd'] != null) {
       final cwd = Directory(effective['cwd'] as String).absolute;
       if (!cwd.existsSync()) {
@@ -1329,7 +1331,7 @@ class AgentServer {
     task.ready = Completer<void>();
     _tasks[task.id] = task;
     task.cancelled = false;
-    task.startingInputID = settings['message_id'] == null ? null : 'msg_${settings['message_id']}';
+    task.startingInputID = effective['message_id'] == null ? null : 'msg_${effective['message_id']}';
     _activity.add(activeTaskCount);
     telemetry.add('turns_started');
     final context = task.pendingTraces[settings['message_id']] ?? currentTrace;
@@ -1377,15 +1379,28 @@ class AgentServer {
       task.config ??= jsonObject(
         await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}),
       );
-      for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
-        settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
-        cancellation: turnLifetime)) {
-        _broadcast(task.id, record);
-      }
       if (task.pending.isEmpty) {
         await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: turnLifetime);
         final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
         task.pending.addAll((inbox['data'] as List).map(jsonObject));
+      }
+      if (!compact && !retry && !task.pending.any((message) => message['id'] == settings['message_id'])) {
+        final message = <String, dynamic>{
+          'id': settings['message_id'], 'prompt': prompt, 'delivery': 'steer',
+          'created_at': settings['sent_at'] ?? DateTime.now().toUtc().toIso8601String(),
+          if (settings['attachments'] != null) 'attachments': settings['attachments'],
+          if (settings['reasoning'] != null) 'reasoning': settings['reasoning'],
+        };
+        final admitted = jsonObject(await callIsolate(task.writer!.port, 'append', {
+          'type': 'input.pending', 'data': message,
+        }, cancellation: turnLifetime));
+        task.pending.add(message);
+        _broadcast(task.id, admitted);
+      }
+      for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
+        settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
+        cancellation: turnLifetime)) {
+        _broadcast(task.id, record);
       }
       task.codeInterrupt = CodeInterrupt();
       task.agent = await startAgent(

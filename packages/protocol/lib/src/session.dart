@@ -202,6 +202,9 @@ List<Json> sessionEvents(String sessionID, Json record, Json state) {
     case 'context.compacted':
       add('session.compaction.ended', {'reason': data['reason'] == 'manual' ? 'manual' : 'auto',
         'text': data['summary'] ?? '', 'model': model(), 'tokens': sessionTokens(jsonObject(data['usage'] ?? {}))});
+    case 'compaction.cancelled':
+      add('session.compaction.ended', {'reason': data['reason'] == 'manual' ? 'manual' : 'auto',
+        'status': 'interrupted', 'text': ''});
     case 'turn.completed':
     case 'turn.failed':
     case 'turn.cancelled':
@@ -334,7 +337,9 @@ List<Json> applySessionEvent(Map<String, Json> messages, Json event, Json state)
       put({...base('compaction'), 'status': 'running', 'reason': data['reason'], 'summary': ''});
     case 'session.compaction.ended':
       final id = state.remove('compactionID') as String? ?? messageID;
-      put({...messages[id] ?? base('compaction', id), 'status': 'completed', 'reason': data['reason'],
+      put({...messages[id] ?? base('compaction', id),
+        'status': data['status'] == 'interrupted' ? 'failed' : 'completed',
+        if (data['status'] == 'interrupted') 'outcome': 'interrupted', 'reason': data['reason'],
         'time': {...jsonObject(messages[id]?['time'] ?? {'created': created}), 'completed': created},
         'summary': data['text'], if (data['tokens'] != null) 'tokens': data['tokens']});
     case 'session.execution.succeeded':

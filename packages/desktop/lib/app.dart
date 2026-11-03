@@ -521,6 +521,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _conversationPane(BuildContext context, Set<DesktopTask> tasks) {
     final home = _homeOpen;
+    final transcript = home ? null : session.task ?? session.currentDraft.submission;
     return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
       child: ConversationTypography(
           child: Padding(padding: const EdgeInsets.all(8), child: SessionPanelWorkspace(
@@ -531,7 +532,7 @@ class _DesktopViewState extends State<DesktopView> {
             child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
               if (!home) Column(children: [
                 _header(context),
-                if (session.task == null)
+                if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),
@@ -543,7 +544,7 @@ class _DesktopViewState extends State<DesktopView> {
                     ])))
                 else ...[
                   Expanded(child: ConversationDataScope(client: session.client, providers: session.providers, child: ConversationDeck(
-                      task: session.task,
+                      task: transcript,
                       tasks: tasks,
                       directory: session.project?.path ?? '',
                       empty: const SizedBox.shrink(),
@@ -692,13 +693,15 @@ class _ComposerState extends State<_Composer> {
   late String _draftKey = _currentDraftKey;
   late ComposerTextController _text = ComposerTextController(
     text: widget.session.drafts[_draftKey] ?? '',
+    selection: widget.session.draftSelections[_draftKey],
     files: widget.session.fileDrafts[_draftKey] ?? const [],
-  )..selection = widget.session.draftSelections[_draftKey] ?? const TextSelection.collapsed(offset: -1);
+  );
   final _focus = FocusNode();
   final _autocomplete = GlobalKey<ComposerAutocompleteState>();
   var _attachmentLifetime = CancellationToken();
   bool _receivingAttachments = false, _draggingAttachments = false;
-  List<ComposerAttachment> get _attachments => widget.session.attachmentDrafts[_draftKey] ?? const [];
+  List<ComposerAttachment> get _attachments => _submitting ? const []
+    : widget.session.attachmentDrafts[_draftKey] ?? const [];
   late Object _voiceOwner = Object();
   DictationService? _boundVoice;
   ComposerDictationSession? _voiceText;
@@ -810,9 +813,9 @@ class _ComposerState extends State<_Composer> {
     _draftKey = _currentDraftKey;
     _text = ComposerTextController(
       text: widget.session.drafts[_draftKey] ?? '',
+      selection: widget.session.draftSelections[_draftKey],
       files: widget.session.fileDrafts[_draftKey] ?? const [],
-    )..selection = widget.session.draftSelections[_draftKey] ?? const TextSelection.collapsed(offset: -1)
-      ..addListener(_saveDraft);
+    )..addListener(_saveDraft);
     // The editor and autocomplete detach their listeners during this build.
     WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
   }
@@ -938,18 +941,36 @@ class _ComposerState extends State<_Composer> {
   }
 
   Future<void> _sendPrompt() async {
-    if (_receivingAttachments) return;
+    if (_receivingAttachments || _submitting) return;
     if (_autocomplete.currentState?.consumeCommand() == true) return;
     final controller = _text, draftKey = _draftKey;
+    final value = controller.value;
+    final files = controller.files;
     final draft = _text.text;
     final prompt = _text.serializePrompt();
     final attachments = List<ComposerAttachment>.of(_attachments);
+    void restore() {
+      if (mounted && identical(_text, controller) && _text.text.isEmpty) {
+        controller.value = value;
+        controller.restoreFiles(0, files);
+      }
+    }
     try {
-      final accepted = await widget.session.send(prompt, attachments: attachments, target: widget.target);
+      final submission = widget.session.send(prompt, attachments: attachments, target: widget.target);
+      if (_submitting) {
+        _autocomplete.currentState?.dismiss();
+        // Keep the saved draft until acknowledgement so a failed send can be
+        // restored even after switching sessions or closing the application.
+        controller.removeListener(_saveDraft);
+        controller.clear();
+        controller.addListener(_saveDraft);
+      }
+      final accepted = await submission;
       if (accepted) {
         if (mounted && identical(_text, controller)) _autocomplete.currentState?.dismiss();
         if (widget.session.drafts[draftKey] == draft) {
           widget.session.drafts.remove(draftKey);
+          widget.session.draftSelections.remove(draftKey);
           widget.session.fileDrafts.remove(draftKey);
         }
         final ids = attachments.map((attachment) => attachment.id).toSet();
@@ -961,9 +982,10 @@ class _ComposerState extends State<_Composer> {
         if (mounted && identical(_text, controller) && _text.text == draft) _text.clear();
         _saveDrafts();
         if (mounted) setState(() {});
-      }
+      } else { restore(); }
     } on CancelledException {
       // Application exit owns cancellation.
+      restore();
     }
   }
 

@@ -35,7 +35,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
     working = true;
   }
   for (final entry in entries) {
-    if (!working && {'Queued', 'Steer pending'}.contains(entry.role)) {
+    if (!working && entry.role == 'Queued') {
       flush();
       addWorking();
     }
@@ -100,18 +100,25 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   bool _following = true, _scheduled = false, _showLatest = false, _jumping = false, _userScrolling = false;
   bool _pagingScheduled = false, _latestScheduled = false;
   bool _autofillBlocked = false;
+  String? _lastSentID;
   int _visibleRows = 0;
   ({double pixels, double extent, int rows, bool fill})? _pagingPosition;
 
   @override
   void initState() {
     super.initState();
+    _lastSentID = widget.task.lastSentID;
     _follow();
   }
 
   @override
   void didUpdateWidget(ConversationTranscript oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_lastSentID != widget.task.lastSentID) {
+      _lastSentID = widget.task.lastSentID;
+      _following = true;
+      _showLatest = false;
+    }
     if (!widget.task.loadingEarlier && _pagingPosition != null) {
       final previous = _pagingPosition!;
       _pagingPosition = null;
@@ -224,7 +231,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final entries = conversation(task);
     final compacting = entries.any((entry) => entry.compaction?.status == 'running');
     final rows = _transcriptRows(entries);
-    final latest = entries.where((entry) => !{'Queued', 'Steer pending'}.contains(entry.role)).lastOrNull;
+    final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
     final workingIndex = rows.indexWhere((row) => row.id == 'working');
     final activeRow = workingIndex > 0 ? rows[workingIndex - 1] : null;
     final activeGroup = task.running && activeRow != null && activeRow.activity.isNotEmpty &&
@@ -306,7 +313,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                           onRetry: !task.running && !task.archived && entry.id == latest?.id ? widget.onRetryTurn : null),
                         _ => _Message(entry: entry, directory: widget.directory,
                           running: task.running,
-                          onPendingAction: widget.onPendingAction == null ? null
+                          onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
+                              task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
                             : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
                           liveText: entry.streaming ? task.liveText : null),
                       },
@@ -495,8 +503,8 @@ class _MessageState extends State<_Message> {
   @override
   Widget build(BuildContext context) {
     final entry = widget.entry;
-    final user = {'You', 'Queued', 'Steer pending'}.contains(entry.role);
-    final pending = entry.role == 'Queued' || entry.role == 'Steer pending';
+    final pending = entry.role == 'Queued';
+    final user = entry.role == 'You' || pending;
     final body = user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
       : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText);
     return ConversationImageGroup(child: MouseRegion(
@@ -544,8 +552,7 @@ class _MessageState extends State<_Message> {
             if (pending) Text(entry.role, style: const TextStyle(fontSize: 11, color: conversationMuted)),
             if (entry.timestamp case final at?) _Timestamp(at: at),
             if (pending && widget.onPendingAction != null) ...[
-              if (entry.role == 'Steer pending') _action('queue', 'Move to queue', Icons.vertical_align_bottom_rounded)
-              else _action('steer', widget.running ? 'Steer' : 'Send', Icons.arrow_upward_rounded),
+              _action('steer', widget.running ? 'Steer' : 'Send', Icons.arrow_upward_rounded),
               _action('delete', 'Delete', Icons.delete_outline_rounded),
             ],
             if (!entry.streaming && entry.text.isNotEmpty) SizedBox(height: 20,

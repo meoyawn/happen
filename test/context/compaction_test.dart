@@ -31,7 +31,7 @@ void main() {
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requests = <Json>[];
     final waiting = <HttpResponse>[];
-    var compactMode = 'success', sequence = 0, overflows = 0;
+    var compactMode = 'success', sequence = 0, overflows = 0, compactFailures = 0;
     Completer<void>? compactStarted;
     provider.listen((request) async {
       final payload = await utf8.decoder.bind(request).join();
@@ -66,7 +66,8 @@ void main() {
           'data: ${jsonEncode({
             'type': 'response.failed',
             'response': {
-              'error': {'code': compact ? 'server_error' : 'context_length_exceeded', 'message': 'Fixture failure'},
+              'error': {'code': compact ? compactFailures++ == 0 ? 'server_error' : 'invalid_prompt'
+                : 'context_length_exceeded', 'message': 'Fixture failure'},
               'status': 'failed',
             },
           })}\n\n',
@@ -212,6 +213,26 @@ void main() {
       }) as List).any((v) => v['type'] == 'context.compacted'),
       isFalse,
     );
+    compactStarted = Completer<void>();
+    final steered = turn('task.compact', {'task_id': id});
+    await compactStarted.future.timeout(const Duration(seconds: 5));
+    await client.request('task.send', {
+      'task_id': id, 'prompt': 'steer during compaction', 'delivery': 'steer',
+    });
+    expect((await steered.timeout(const Duration(seconds: 5)))['type'], 'turn.completed',
+      reason: 'Steering must cancel the blocked compaction and continue in the active turn');
+    expect(openAIMessageText((requests.last['input'] as List).lastWhere((item) => item['role'] == 'user')),
+      'steer during compaction');
+    final projectionClient = await AgentClient.connect(server.uri);
+    final projectionRead = CancellationToken();
+    try {
+      final projection = await projectionClient.sessionRead('session.message.list', {'sessionID': id},
+        cancellation: projectionRead);
+      expect((projection['data'] as List).where((message) => message['type'] == 'compaction' && message['status'] == 'running'), isEmpty);
+    } finally {
+      projectionRead.cancel();
+      await projectionClient.close();
+    }
     compactMode = 'success';
     await File('${root.path}/repo/AGENTS.md')
         .writeAsString('Repository instruction: use cedar.');

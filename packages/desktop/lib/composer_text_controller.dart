@@ -22,7 +22,13 @@ class ComposerFileReference {
 
 /// Keeps reference identity out of editable text and serializes it at the edge.
 class ComposerTextController extends TextEditingController {
-  ComposerTextController({super.text, List<ComposerFileReference> files = const []}) {
+  ComposerTextController({super.text, TextSelection? selection, List<ComposerFileReference> files = const []}) {
+    if (selection != null) {
+      this.selection = selection.copyWith(
+        baseOffset: selection.baseOffset.clamp(-1, this.text.length),
+        extentOffset: selection.extentOffset.clamp(-1, this.text.length),
+      );
+    }
     _files.addAll(files.where(_valid));
     _remember();
   }

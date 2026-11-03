@@ -340,9 +340,15 @@ void main() {
       desktop.chooseReasoning('high');
       expect(desktop.reasoning, 'high');
       final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.enqueued' && event['data']['item']['text'] == 'steer this turn');
-      expect(await desktop.send('steer this turn'), isTrue, reason: desktop.error);
+      final submission = desktop.send('steer this turn');
+      final immediate = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
+      expect(immediate.role, 'You', reason: 'A normal user message must render synchronously, before any WebSocket reply');
+      expect(await submission, isTrue, reason: desktop.error);
       pendingTimes['steer this turn'] = DateTime.fromMillisecondsSinceEpoch((await steeredPending)['created'] as int);
       await _until(desktop, () => desktop.task!.pending.length == 1);
+      final delivered = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
+      expect(delivered.id, immediate.id, reason: 'Receipt and delivery must preserve the local message identity');
+      expect(delivered.role, 'You');
       expect(desktop.task!.streamingText, isEmpty, reason: 'Interrupted inference must not leave abandoned partial text visible');
       expect(desktop.task!.retryStatus, isNull, reason: 'Steering is an input change, not stream recovery');
       await expectLater(desktop.client.request('task.send', {

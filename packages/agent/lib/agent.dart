@@ -181,16 +181,14 @@ class _Agent {
   }
 
   CancellationToken? _cancellation;
-  CancellationToken? _responseCancellation;
-  CancellationToken? _toolCancellation;
+  CancellationToken? _workCancellation;
   Completer<void>? _toolPreemption;
   bool _accepting = false;
   final _steering = <Json>[];
   void steer(Json message) {
     if (_accepting && _cancellation?.isCancelled == false) {
       _steering.add(message);
-      _responseCancellation?.cancel();
-      _toolCancellation?.cancel();
+      _workCancellation?.cancel();
       if (_toolPreemption?.isCompleted == false) _toolPreemption!.complete();
     }
   }
@@ -234,7 +232,9 @@ class _Agent {
   }) async {
     final cancellation = CancellationToken();
     _cancellation = cancellation;
-    _accepting = !compact;
+    var work = _workCancellation = CancellationToken();
+    final workLink = CancellationHook(cancellation, () => _workCancellation?.cancel());
+    _accepting = true;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
@@ -283,7 +283,7 @@ class _Agent {
       final previousCwd = savedCwd ?? config['cwd'] as String;
       final cwd = settings['cwd'] as String? ?? previousCwd;
       var values = jsonObject(await _metadata('values') ?? {});
-      host = interface.createRuntime(cwd, cancellation);
+      host = interface.createRuntime(cwd, work);
       final persisted = await _metadata('config');
       if (persisted == null) {
         final effective = {...config}
@@ -308,6 +308,12 @@ class _Agent {
           metadata: {'status': 'running'},
         ),
       );
+      if (selectedEffort != previousEffort) {
+        event(await _append('configuration.updated', {
+          'effort': selectedEffort,
+          'item': ConversationItem(kind: 'configuration', settings: {'reasoning': selectedEffort}).toJson(),
+        }, metadata: {'effective_reasoning': selectedEffort}));
+      }
       var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
       var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': []});
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
@@ -316,7 +322,7 @@ class _Agent {
       Future<Json> readMcpCatalog([CancellationToken? token]) async {
         final current = jsonObject(await callIsolate(network, 'mcp.catalog', {
           'task_id': taskId, 'revision': mcpCatalog['revision'],
-        }, cancellation: token ?? cancellation));
+        }, cancellation: token ?? work));
         if (current['unchanged'] != true) mcpCatalog = current;
         return mcpCatalog;
       }
@@ -324,7 +330,7 @@ class _Agent {
         final current = clientTools == null ? const <String, dynamic>{'tools': []}
           : jsonObject(await callIsolate(clientTools, 'catalog', {
             'task_id': taskId, 'revision': clientCatalog['revision'],
-          }, cancellation: token ?? cancellation));
+          }, cancellation: token ?? work));
         if (current['unchanged'] != true) clientCatalog = current;
         return clientCatalog;
       }
@@ -347,18 +353,17 @@ class _Agent {
         final deferred = await currentDeferredCatalog(token);
         return runtimeCatalog ??= [...interface.hostCatalogFor(deferred), ...interface.externalCatalog(deferred)];
       }
-      await currentDeferredCatalog(cancellation);
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
       var skillsCatalog = <String, dynamic>{'skills': []};
       Future<Json> readSkills() async => jsonObject(await callIsolate(network, 'skills.catalog', {
           'task_id': taskId, 'cwd': cwd,
-        }, cancellation: cancellation));
+        }, cancellation: work));
       Future<void> refreshSkills([Json? current]) async {
         skillsCatalog = current ?? await readSkills();
         final next = skillContext(skillsCatalog, previous: skillsSnapshot,
           contextWindow: baseline['context_limit'] as int?);
         if (contextFingerprint(next.snapshot) == contextFingerprint(skillsSnapshot)) return;
-        cancellation.throwIfCancelled();
+        work.throwIfCancelled();
         final item = next.item;
         event(await _append('skills.updated', {
           'skills_state': next.snapshot,
@@ -370,22 +375,17 @@ class _Agent {
       Future<Json> readInstructions() async => loadAgentsMd(
         jsonObject(await callIsolate(network, 'agents.repository', {
           'task_id': taskId, 'cwd': cwd,
-        }, cancellation: cancellation)),
-        config['global_directory'] as String, cancellation,
+        }, cancellation: work)),
+        config['global_directory'] as String, work,
       );
-      if (interface.developerContextFirst) await refreshSkills();
-      var snapshot = await readInstructions();
       final previousSnapshot = await _metadata('agents_snapshot');
+      Json? snapshot = previousSnapshot is Map ? jsonObject(previousSnapshot) : null;
       final updates = <Json>[];
       void update(String type, ConversationItem item, [Json data = const {}]) =>
           updates.add({
             'type': type,
             'data': {...data, 'item': item.toJson()},
           });
-      if (instructionUpdate(interface, snapshot, previousSnapshot is Map ? jsonObject(previousSnapshot) : null)
-          case final ConversationItem item) {
-        update('agents.updated', item, {'snapshot': snapshot});
-      }
       final environment = interface.environmentContext(cwd, replacement: savedCwd != null);
       final previousEnvironment = input.where((item) => item.native['harness']?['context'] == 'environment').lastOrNull;
       if (savedCwd == null || previousCwd != cwd || interface.developerContextFirst && previousEnvironment?.text != environment.text) {
@@ -398,16 +398,6 @@ class _Agent {
             'developer',
             requiredString(settings, 'instructions'),
           ),
-        );
-      }
-      if (selectedEffort != previousEffort) {
-        update(
-          'configuration.updated',
-          ConversationItem(
-            kind: 'configuration',
-            settings: {'reasoning': selectedEffort},
-          ),
-          {'effort': selectedEffort},
         );
       }
       Json? pendingInput;
@@ -431,7 +421,7 @@ class _Agent {
         final current = loaded ?? await readInstructions();
         if (contextFingerprint(current) == contextFingerprint(snapshot)) return;
         final item = instructionUpdate(interface, current, snapshot);
-        cancellation.throwIfCancelled();
+        work.throwIfCancelled();
         if (item != null) {
           event(await _append('agents.updated', {'snapshot': current, 'item': item.toJson()},
             metadata: {'agents_snapshot': current}));
@@ -445,6 +435,11 @@ class _Agent {
         if (_steering.isEmpty) return false;
         final messages = _steering.toList();
         _steering.clear();
+        // Preserve input order even when steering interrupts the first refresh.
+        if (pendingInput case final Json data) {
+          event(await _append('input.committed', data));
+          pendingInput = null;
+        }
         final entries = await callIsolate(writer, 'session.inbox.commit', {
           'ids': [for (final message in messages) message['id']],
           'effort': effort, 'reasoningUpdates': config['reasoning_updates'] == true,
@@ -459,7 +454,7 @@ class _Agent {
       final nestedDiscovery = interface.nestedDiscovery;
       List<Json>? declaredCatalog;
       Future<void> refreshTools([List<Json>? loaded]) async {
-        final deferred = loaded ?? await currentDeferredCatalog(cancellation);
+        final deferred = loaded ?? await currentDeferredCatalog(work);
         if (!identical(declaredCatalog, deferred)) {
           final serialized = interface.definitionsFor(deferred).map((tool) => tool.toJson()).toList();
           if (_tools == null || contextFingerprint(_tools!.map((tool) => tool.toJson()).toList()) != contextFingerprint(serialized)) {
@@ -478,7 +473,7 @@ class _Agent {
             native: {'harness': {'context': 'tool_catalog'}}),
         ];
         if (updates.isNotEmpty) {
-          cancellation.throwIfCancelled();
+          work.throwIfCancelled();
           final entries = await _appendBatch([for (final item in updates) {
               'type': mcpChanged ? 'mcp.updated' : 'client_tools.updated',
               'data': {'item': item.toJson(), 'snapshot': mcpChanged ? mcpCatalog : clientCatalog},
@@ -489,19 +484,32 @@ class _Agent {
         mcpSnapshot = mcpCatalog; clientSnapshot = clientCatalog;
       }
 
-      if (interface.developerContextFirst) await refreshTools();
-      if (updates.isNotEmpty) {
-        cancellation.throwIfCancelled();
-        final committed = await _appendBatch(updates, {
-          'effective_reasoning': selectedEffort, 'current_cwd': cwd, 'agents_snapshot': snapshot,
-        });
-        for (final entry in committed) { event(entry); }
-      }
-
+      var initialContext = true;
       Future<void> refreshContext() async {
         // Independent live reads overlap; commits retain their protocol order.
         // No debounce/TTL: edits made by the preceding tool are visible now.
-        final current = await Future.wait<Object>([readInstructions(), readSkills(), currentDeferredCatalog(cancellation)]);
+        final current = await Future.wait<Object>([readInstructions(), readSkills(), currentDeferredCatalog(work)]);
+        work.throwIfCancelled();
+        if (initialContext) {
+          if (interface.developerContextFirst) {
+            await refreshSkills(current[1] as Json);
+            await refreshTools(current[2] as List<Json>);
+          }
+          final next = current[0] as Json;
+          final instructions = instructionUpdate(interface, next, snapshot);
+          final initial = [
+            if (instructions != null) {'type': 'agents.updated', 'data': {'snapshot': next, 'item': instructions.toJson()}},
+            ...updates,
+          ];
+          if (initial.isNotEmpty) {
+            work.throwIfCancelled();
+            for (final entry in await _appendBatch(initial, {
+              'effective_reasoning': effort, 'current_cwd': cwd, 'agents_snapshot': next,
+            })) { event(entry); }
+          }
+          snapshot = next;
+          initialContext = false;
+        }
         await refreshInstructions(current[0] as Json);
         await refreshSkills(current[1] as Json);
         await refreshTools(current[2] as List<Json>);
@@ -512,7 +520,7 @@ class _Agent {
       }
       String? assistantMessageID;
       Future<Json> networkCall(String method, [CancellationToken? token]) async {
-        final active = token ?? cancellation;
+        final active = token ?? work;
         active.throwIfCancelled();
         if (method == 'respond') {
           assistantMessageID = 'msg_${interface.id == 'openai' ? newUuidV7() : newId()}';
@@ -539,25 +547,6 @@ class _Agent {
         );
       }
 
-      Future<ModelReply?> respond() async {
-        // Inference and tools have fresh operation tokens; steering keeps the turn.
-        final token = _responseCancellation = CancellationToken();
-        final link = CancellationHook(cancellation, token.cancel);
-        try {
-          // Input may arrive during catalog refresh or automatic compaction.
-          if (_steering.isNotEmpty) return null;
-          return ModelReply.fromJson(await networkCall('respond', token));
-        } on CancelledException {
-          cancellation.throwIfCancelled();
-          if (!token.isCancelled || _steering.isEmpty) rethrow;
-          return null;
-        } finally {
-          _responseCancellation = null;
-          link.dispose();
-          token.cancel();
-        }
-      }
-
       Future<String> searchWeb(Object? commands, CancellationToken token) async =>
           await callIsolate(network, 'web.search', {
             'provider': config['provider'],
@@ -574,17 +563,23 @@ class _Agent {
       }
 
       Future<void> compactContext(String reason) async {
-        cancellation.throwIfCancelled();
+        work.throwIfCancelled();
         event(await _append('compaction.started', {'reason': reason}));
-        final result = CompactionResult.fromJson(await networkCall('compact'));
-        cancellation.throwIfCancelled();
+        final CompactionResult result;
+        try {
+          result = CompactionResult.fromJson(await networkCall('compact'));
+          work.throwIfCancelled();
+        } on CancelledException {
+          event(await _append('compaction.cancelled', {'reason': reason}));
+          rethrow;
+        }
         countUsage(result.usage);
         final freshSkills = skillContext(skillsCatalog,
           contextWindow: baseline['context_limit'] as int?);
         final restored = restoreContext(
           result.context,
           input,
-          snapshot,
+          snapshot!,
           cwd,
           baseline['reasoning'] as String,
           effort,
@@ -653,236 +648,242 @@ class _Agent {
         return notices.isNotEmpty;
       }
 
-      if (compact) {
-        await refreshContext();
-        await compactContext('manual');
-        await finish('Context compacted. Full history remains available.');
-        return;
-      }
-
+      var manualCompaction = compact;
       var overflowRecovered = false;
       while (true) {
-        cancellation.throwIfCancelled();
-        await refreshContext();
-        await takeSteering();
-        await takeNotifications();
-        final estimate = usageTokens > 0 && usageItems <= input.length
-            ? usageTokens + estimateTokens(input.skip(usageItems))
-            : estimateTokens(input) +
-                  request().instructions.length ~/ 3;
-        if (estimate >=
-            (baseline['context_limit'] as int) -
-                (baseline['compaction_headroom'] as int)) {
-          await compactContext('threshold');
-        }
-        final modelTime = Stopwatch()..start();
-        final ModelReply? reply;
         try {
-          reply = await respond();
-        } on RemoteFailure catch (error) {
-          if (error.code == 'context_overflow' && !overflowRecovered) {
-            overflowRecovered = true;
-            await compactContext('overflow');
-            continue;
-          }
-          rethrow;
-        }
-        cancellation.throwIfCancelled();
-        if (reply == null) continue;
-        telemetry.observe('model', modelTime.elapsed);
-        telemetry.add('model_requests');
-        countUsage(reply.usage);
-        final nextUsage = reply.usage.contextTokens;
-        final nextItems = input.length + reply.output.length;
-        final calls = reply.calls;
-        Json toolStarted(ToolCall call) => {
-          'type': 'tool.started', 'data': {
-            'call_id': call.id, 'name': call.name,
-            if (call.namespace != null) 'namespace': call.namespace,
-            'input': call.input,
-          },
-        };
-        // Admit the first call atomically with the model output. Host side
-        // effects still start only after this transaction is durable.
-        for (final entry in await _appendBatch([
-          {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID}},
-          if (calls.isNotEmpty) toolStarted(calls.first),
-        ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed})) { event(entry); }
-        usageTokens = nextUsage;
-        usageItems = nextItems;
-        if (calls.isEmpty) {
-          if (await takeSteering()) continue;
-          if (await takeNotifications()) continue;
-          if (!reply.endTurn) continue;
-          if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
-          await finish(reply.text);
-          return;
-        }
-        for (final call in calls) {
           cancellation.throwIfCancelled();
-          if (call.id != calls.first.id) {
-            final started = toolStarted(call);
-            event(await _append('tool.started', jsonObject(started['data'])));
+          work.throwIfCancelled();
+          await takeSteering();
+          await refreshContext();
+          work.throwIfCancelled();
+          await takeNotifications();
+          if (manualCompaction) {
+            await compactContext('manual');
+            await finish('Context compacted. Full history remains available.');
+            return;
           }
-          final watch = Stopwatch()..start();
-          Json result;
-          var images = <Json>[];
-          final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
-          _toolCancellation = cellCancellation;
-          final preemption = _toolPreemption = Completer<void>();
-          final link = CancellationHook(cancellation, cellCancellation.cancel);
+          final estimate = usageTokens > 0 && usageItems <= input.length
+              ? usageTokens + estimateTokens(input.skip(usageItems))
+              : estimateTokens(input) +
+                    request().instructions.length ~/ 3;
+          if (estimate >=
+              (baseline['context_limit'] as int) -
+                  (baseline['compaction_headroom'] as int)) {
+            await compactContext('threshold');
+          }
+          final modelTime = Stopwatch()..start();
+          final ModelReply reply;
           try {
-            if (_steering.isNotEmpty) throw const CancelledException();
-            result = await host.execute(call, ToolExecution(
-              catalog: currentRuntimeCatalog,
-              cancellation: cellCancellation,
-              values: values,
-              notify: (result) async {
-                cancellation.throwIfCancelled();
-                final item = interface.resultItem(call, result);
-                event(await _append('tool.notified', {'item': item.toJson()}));
-              },
-              call: (name, arguments, {required cancellation}) async {
-                cancellation.throwIfCancelled();
-                final nested = interface.isCodeCall(call);
-                final id = nested ? newId() : call.id;
-                if (nested) {
-                  event(await _append('host_tool.started', {
-                    'id': id, 'parent_call_id': call.id, 'name': name, 'arguments': arguments,
-                  }));
-                }
-                try {
-                  cancellation.throwIfCancelled();
-                  final Object? output;
-                  final service = interface.services[name];
-                  if (nestedDiscovery != null && name == nestedDiscovery.name) {
-                    output = interface.search(
-                      await currentDeferredCatalog(cancellation), jsonObject(arguments),
-                      native: call.format == 'search',
-                    );
-                  } else if (service == 'question.ask' || service == 'question.ask_async') {
-                    output = await callIsolate(config['questions'] as SendPort, service!.substring(9), {
-                      'task_id': taskId, 'call_id': id, 'arguments': arguments,
-                    }, timeout: null, cancellation: cancellation);
-                    if (jsonObject(output)['rejected'] == true) {
-                      cancel();
-                      cancellation.throwIfCancelled();
-                    }
-                  } else if (service == 'skills.read') {
-                    output = await callIsolate(network, 'skills.read', {
-                      ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
-                    }, cancellation: cancellation);
-                  } else if (service == 'web.search') {
-                    output = await searchWeb(arguments, cancellation);
-                  } else if (service == 'image.generate') {
-                    output = await callIsolate(network, 'image.generate', {
-                      'provider': config['provider'], ...request().toJson(),
-                      'arguments': arguments, 'call_id': id, 'turn_id': turnId,
-                    }, timeout: null, cancellation: cancellation);
-                  } else if (service?.startsWith('goal.') == true) {
-                    output = await goals!.call(service!.substring(5), jsonObject(arguments), cancellation: cancellation);
-                  } else if (service?.startsWith('history.') == true) {
-                    output = await callIsolate(
-                      writer,
-                      service!,
-                      jsonObject(arguments),
-                      cancellation: cancellation,
-                    );
-                  } else if (name.startsWith('client__')) {
-                    if (clientTools == null) {
-                      throw StateError('Client tools are unavailable');
-                    }
-                    output = await callIsolate(clientTools, 'call', {
-                      'task_id': taskId,
-                      'name': name.substring(8),
-                      'arguments': arguments,
-                    }, cancellation: cancellation);
-                  } else if (name.startsWith('mcp__')) {
-                    output = jsonObject(
-                      await callIsolate(network, 'mcp.call', {
-                        'task_id': taskId,
-                        'name': name,
-                        'arguments': arguments,
-                      }, cancellation: cancellation),
-                    )..remove('_meta');
-                  } else if (service != null) {
-                    output = await callIsolate(network, 'mcp.resources', {
-                      'task_id': taskId,
-                      'method': service,
-                      'arguments': arguments,
-                    }, cancellation: cancellation);
-                  } else {
-                    output = await callIsolate(config['task_tools'] as SendPort, 'call', {
-                      'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
-                      'name': name, 'arguments': arguments,
-                    }, timeout: null, cancellation: cancellation);
-                  }
-                  if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
-                  if (nested) {
-                    event(await _append('host_tool.completed', {
-                      'id': id, 'parent_call_id': call.id, 'name': name, 'output': output,
-                    }));
-                  }
-                  return output;
-                } catch (error) {
-                  if (nested) {
-                    event(await _append('host_tool.completed', {
-                      'id': id, 'parent_call_id': call.id, 'name': name,
-                      if (error is CancelledException) 'cancelled': true,
-                      'error': error.toString(),
-                    }));
-                  }
-                  rethrow;
-                }
-              },
-            ));
-            if (result['values'] != null) values = jsonObject(result['values']);
-            final separated = separateToolImages(result);
-            result = separated.$1;
-            if (separated.$2.isNotEmpty) {
-              // The interpreter closes its execution token when the cell ends.
-              // Image preparation is a new cancellable phase of the same tool.
-              final preparation = CancellationToken();
-              final preparationLink = CancellationHook(cancellation, preparation.cancel);
-              _toolCancellation = preparation;
-              try {
-                if (_steering.isNotEmpty) throw const CancelledException();
-                images = await interface.prepareImages(separated.$2, cancellation: preparation);
-              } finally {
-                preparationLink.dispose();
-                preparation.cancel();
-              }
+            reply = ModelReply.fromJson(await networkCall('respond'));
+          } on RemoteFailure catch (error) {
+            if (error.code == 'context_overflow' && !overflowRecovered) {
+              overflowRecovered = true;
+              await compactContext('overflow');
+              continue;
             }
-          } on CancelledException {
-            // Native JS can observe the server's atomic interrupt before this
-            // isolate services the corresponding steering/Stop mailbox message.
-            if (cellCancellation.interrupted && _steering.isEmpty) {
-              await preemption.future.asCancellable(cancellation);
-            }
-            cancellation.throwIfCancelled();
-            if (_steering.isEmpty) rethrow;
-            result = interface.id == 'openai' && call.namespace == 'clock' && call.name == 'sleep'
-              ? {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep interrupted by new input.'}
-              : {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
-          } catch (error) {
-            result = {'error': error.toString()};
-          } finally {
-            if (!host.hasRunningCells) cellCancellation.cancel();
-            _toolCancellation = null;
-            _toolPreemption = null;
-            link.dispose();
+            rethrow;
           }
-          telemetry.observe('code', watch.elapsed);
-          if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
-          telemetry.add('code_cells');
-          final item = interface.resultItem(call, result, images: images);
-          event(
-            await _append(
-              'tool.completed',
-              {'item': item.toJson(), 'values': values},
-              metadata: {'values': values},
-            ),
-          );
+          work.throwIfCancelled();
+          telemetry.observe('model', modelTime.elapsed);
+          telemetry.add('model_requests');
+          countUsage(reply.usage);
+          final nextUsage = reply.usage.contextTokens;
+          final nextItems = input.length + reply.output.length;
+          final calls = reply.calls;
+          Json toolStarted(ToolCall call) => {
+            'type': 'tool.started', 'data': {
+              'call_id': call.id, 'name': call.name,
+              if (call.namespace != null) 'namespace': call.namespace,
+              'input': call.input,
+            },
+          };
+          // Admit the first call atomically with the model output. Host side
+          // effects still start only after this transaction is durable.
+          for (final entry in await _appendBatch([
+            {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID}},
+            if (calls.isNotEmpty) toolStarted(calls.first),
+          ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed})) { event(entry); }
+          usageTokens = nextUsage;
+          usageItems = nextItems;
+          if (calls.isEmpty) {
+            if (_steering.isNotEmpty) continue;
+            if (await takeNotifications()) continue;
+            if (!reply.endTurn) continue;
+            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+            await finish(reply.text);
+            return;
+          }
+          for (final call in calls) {
+            cancellation.throwIfCancelled();
+            if (call.id != calls.first.id) {
+              final started = toolStarted(call);
+              event(await _append('tool.started', jsonObject(started['data'])));
+            }
+            final watch = Stopwatch()..start();
+            Json result;
+            var images = <Json>[];
+            final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
+            final preemption = _toolPreemption = Completer<void>();
+            final link = CancellationHook(work, cellCancellation.cancel);
+            try {
+              if (_steering.isNotEmpty) throw const CancelledException();
+              result = await host!.execute(call, ToolExecution(
+                catalog: currentRuntimeCatalog,
+                cancellation: cellCancellation,
+                values: values,
+                notify: (result) async {
+                  cellCancellation.throwIfCancelled();
+                  final item = interface.resultItem(call, result);
+                  event(await _append('tool.notified', {'item': item.toJson()}));
+                },
+                call: (name, arguments, {required cancellation}) async {
+                  cancellation.throwIfCancelled();
+                  final nested = interface.isCodeCall(call);
+                  final id = nested ? newId() : call.id;
+                  if (nested) {
+                    event(await _append('host_tool.started', {
+                      'id': id, 'parent_call_id': call.id, 'name': name, 'arguments': arguments,
+                    }));
+                  }
+                  try {
+                    cancellation.throwIfCancelled();
+                    final Object? output;
+                    final service = interface.services[name];
+                    if (nestedDiscovery != null && name == nestedDiscovery.name) {
+                      output = interface.search(
+                        await currentDeferredCatalog(cancellation), jsonObject(arguments),
+                        native: call.format == 'search',
+                      );
+                    } else if (service == 'question.ask' || service == 'question.ask_async') {
+                      output = await callIsolate(config['questions'] as SendPort, service!.substring(9), {
+                        'task_id': taskId, 'call_id': id, 'arguments': arguments,
+                      }, timeout: null, cancellation: cancellation);
+                      if (jsonObject(output)['rejected'] == true) {
+                        cancel();
+                        cancellation.throwIfCancelled();
+                      }
+                    } else if (service == 'skills.read') {
+                      output = await callIsolate(network, 'skills.read', {
+                        ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
+                      }, cancellation: cancellation);
+                    } else if (service == 'web.search') {
+                      output = await searchWeb(arguments, cancellation);
+                    } else if (service == 'image.generate') {
+                      output = await callIsolate(network, 'image.generate', {
+                        'provider': config['provider'], ...request().toJson(),
+                        'arguments': arguments, 'call_id': id, 'turn_id': turnId,
+                      }, timeout: null, cancellation: cancellation);
+                    } else if (service?.startsWith('goal.') == true) {
+                      output = await goals!.call(service!.substring(5), jsonObject(arguments), cancellation: cancellation);
+                    } else if (service?.startsWith('history.') == true) {
+                      output = await callIsolate(
+                        writer,
+                        service!,
+                        jsonObject(arguments),
+                        cancellation: cancellation,
+                      );
+                    } else if (name.startsWith('client__')) {
+                      if (clientTools == null) {
+                        throw StateError('Client tools are unavailable');
+                      }
+                      output = await callIsolate(clientTools, 'call', {
+                        'task_id': taskId,
+                        'name': name.substring(8),
+                        'arguments': arguments,
+                      }, cancellation: cancellation);
+                    } else if (name.startsWith('mcp__')) {
+                      output = jsonObject(
+                        await callIsolate(network, 'mcp.call', {
+                          'task_id': taskId,
+                          'name': name,
+                          'arguments': arguments,
+                        }, cancellation: cancellation),
+                      )..remove('_meta');
+                    } else if (service != null) {
+                      output = await callIsolate(network, 'mcp.resources', {
+                        'task_id': taskId,
+                        'method': service,
+                        'arguments': arguments,
+                      }, cancellation: cancellation);
+                    } else {
+                      output = await callIsolate(config['task_tools'] as SendPort, 'call', {
+                        'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
+                        'name': name, 'arguments': arguments,
+                      }, timeout: null, cancellation: cancellation);
+                    }
+                    if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+                    if (nested) {
+                      event(await _append('host_tool.completed', {
+                        'id': id, 'parent_call_id': call.id, 'name': name, 'output': output,
+                      }));
+                    }
+                    return output;
+                  } catch (error) {
+                    if (nested) {
+                      event(await _append('host_tool.completed', {
+                        'id': id, 'parent_call_id': call.id, 'name': name,
+                        if (error is CancelledException) 'cancelled': true,
+                        'error': error.toString(),
+                      }));
+                    }
+                    rethrow;
+                  }
+                },
+              ));
+              if (result['values'] != null) values = jsonObject(result['values']);
+              final separated = separateToolImages(result);
+              result = separated.$1;
+              if (separated.$2.isNotEmpty) {
+                // The interpreter closes its execution token when the cell ends.
+                // Image preparation is a new cancellable phase of the same tool.
+                final preparation = CancellationToken();
+                final preparationLink = CancellationHook(work, preparation.cancel);
+                try {
+                  if (_steering.isNotEmpty) throw const CancelledException();
+                  images = await interface.prepareImages(separated.$2, cancellation: preparation);
+                } finally {
+                  preparationLink.dispose();
+                  preparation.cancel();
+                }
+              }
+            } on CancelledException {
+              // Native JS can observe the server's atomic interrupt before this
+              // isolate services the corresponding steering/Stop mailbox message.
+              if (cellCancellation.interrupted && _steering.isEmpty) {
+                await preemption.future.asCancellable(cancellation);
+              }
+              cancellation.throwIfCancelled();
+              if (_steering.isEmpty) rethrow;
+              result = interface.id == 'openai' && call.namespace == 'clock' && call.name == 'sleep'
+                ? {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep interrupted by new input.'}
+                : {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
+            } catch (error) {
+              result = {'error': error.toString()};
+            } finally {
+              if (!host!.hasRunningCells) cellCancellation.cancel();
+              _toolPreemption = null;
+              link.dispose();
+            }
+            telemetry.observe('code', watch.elapsed);
+            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+            telemetry.add('code_cells');
+            final item = interface.resultItem(call, result, images: images);
+            event(
+              await _append(
+                'tool.completed',
+                {'item': item.toJson(), 'values': values},
+                metadata: {'values': values},
+              ),
+            );
+          }
+        } on CancelledException {
+          cancellation.throwIfCancelled();
+          if (_steering.isEmpty) rethrow;
+          await host?.close();
+          work = _workCancellation = CancellationToken();
+          host = interface.createRuntime(cwd, work);
+          manualCompaction = false;
         }
       }
     } catch (error) {
@@ -902,6 +903,8 @@ class _Agent {
       } finally {
         cancellation.cancel();
         await host?.close();
+        workLink.dispose();
+        _workCancellation = null;
         _cancellation = null;
       }
     }
