@@ -367,7 +367,7 @@ class McpConnection {
       if (!body.containsKey('id') && response.statusCode == 202) return {};
       if (response.headers.contentType?.mimeType != 'text/event-stream') {
         final bytes = <int>[];
-        final input = StreamIterator(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length));
+        final input = StreamIterator(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length, cancellation: token));
         try {
           while (await input.moveNext().asCancellable(
             token,
@@ -402,7 +402,7 @@ class McpConnection {
           status: response.statusCode,
         );
       }
-      final input = ownStream(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length), token);
+      final input = ownStream(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length, cancellation: token), token);
       closeBody = input.close;
       messages = StreamIterator(
         decodeSse(input.stream, maxEventBytes: _maxMessageBytes),

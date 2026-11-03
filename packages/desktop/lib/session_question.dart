@@ -276,14 +276,14 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
                 ]),
               )),
               LayoutBuilder(builder: (context, constraints) => Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 12, 8), child: Row(children: [
+                padding: const EdgeInsets.fromLTRB(8, 6, 12, 8), child: Wrap(
+                  alignment: WrapAlignment.end, crossAxisAlignment: WrapCrossAlignment.center, spacing: 8,
+                  children: [
                 TextButton(style: secondaryStyle, onPressed: available ? () => unawaited(_finish(dismiss: true)) : null,
                   child: const Text('Dismiss', style: TextStyle(fontSize: 12, color: opencodeMuted))),
-                const Spacer(),
                 if (draft.tab > 0) ...[
                   TextButton(style: secondaryStyle, onPressed: available ? () => _jump(draft.tab - 1) : null,
                     child: const Text('Back', style: TextStyle(fontSize: 12))),
-                  const SizedBox(width: 8),
                 ],
                 Tooltip(message: shortcut, child: FilledButton(
                   onPressed: available ? _next : null,
@@ -330,19 +330,33 @@ class QuestionToolResult extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConversationData(value: tool.rawInput, builder: (context, input) {
     final decoded = _decodeQuestionResult(input);
-    final questions = decoded is Map ? decoded['questions'] as List? ?? const [] : const [];
+    final rawQuestions = decoded is Map && decoded['questions'] is List ? decoded['questions'] as List : const [];
+    final questions = [for (final question in rawQuestions.whereType<Map>())
+      if (question['question'] is String || question['title'] is String) {
+        'id': question['id'],
+        'question': question['question'] is String ? question['question'] : question['title'],
+      },
+    ];
     return ConversationData(value: tool.rawOutput, builder: (context, output) {
       final result = _decodeQuestionResult(output);
       final rawAnswers = result is Map ? result['answers'] : null;
-      final answers = rawAnswers is List ? rawAnswers : [
-        for (final question in questions)
-          if (rawAnswers is Map) rawAnswers[question['id']]?['answers'] ?? const [] else const [],
-      ];
+      final answers = <List<String>>[];
+      for (var i = 0; i < questions.length; i++) {
+        Object? answer;
+        if (rawAnswers is List && i < rawAnswers.length) answer = rawAnswers[i];
+        if (rawAnswers is Map) {
+          final value = rawAnswers[questions[i]['id']];
+          if (value is Map) answer = value['answers'];
+        }
+        answers.add(answer is List ? answer.whereType<String>().toList() : const []);
+      }
       final running = tool.status == 'running';
+      final asynchronous = tool.name.split('.').last == 'request_user_input_async';
       final count = questions.length;
       return ConversationDisclosure(
         key: PageStorageKey('question:${tool.id}'),
-        label: running ? 'Waiting for your answer' : tool.status == 'done'
+        label: asynchronous && tool.status == 'done' ? 'Asked $count question${count == 1 ? '' : 's'}'
+          : running ? 'Waiting for your answer' : tool.status == 'done'
           ? 'Answered $count question${count == 1 ? '' : 's'}'
           : tool.status == 'failed' ? 'Questions failed' : 'Question dismissed',
         fontSize: 13, initiallyExpanded: true, onExpand: onExpand,
@@ -356,10 +370,12 @@ class QuestionToolResult extends StatelessWidget {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 SelectableText(questions[i]['question'] as String,
                   style: const TextStyle(fontSize: 13, color: opencodeMuted)),
-                const SizedBox(height: 2),
-                SelectableText(i < answers.length && (answers[i] as List).isNotEmpty
-                  ? (answers[i] as List).join(', ') : running ? 'Waiting for your answer…' : 'Unanswered',
-                  style: const TextStyle(fontSize: 13, color: opencodeInk)),
+                if (!asynchronous) ...[
+                  const SizedBox(height: 2),
+                  SelectableText(answers[i].isNotEmpty
+                    ? answers[i].join(', ') : running ? 'Waiting for your answer…' : 'Unanswered',
+                    style: const TextStyle(fontSize: 13, color: opencodeInk)),
+                ],
               ])),
           ])),
       );

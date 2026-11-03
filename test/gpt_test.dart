@@ -226,7 +226,7 @@ void main() {
   }
 
   for (final transport in ['http', 'websocket']) {
-    test('GPT $transport resets its idle limit, bounds retries, and remains cancellable', () async {
+    test('GPT $transport resets its idle limit, retries until cancelled, and keeps the shared pool usable', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final http = HttpClient();
       final sockets = <WebSocket>[];
@@ -278,7 +278,6 @@ void main() {
           }
         }
       });
-      final cancellation = CancellationToken();
       final client = ResponsesClient(
         http: http,
         endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
@@ -287,7 +286,6 @@ void main() {
         },
       );
       addTearDown(() async {
-        cancellation.cancel();
         release.complete();
         for (final socket in sockets) {
           await socket.close();
@@ -298,40 +296,40 @@ void main() {
       final deltas = <String>[];
       final retries = <int>[];
       final progress = <String>[];
-      var cancelOnRetry = false;
-      Future<ResponsesReply> run(String mode) => runZoned(
-        () => client.respond(
-          model: 'gpt-6.1-sol', instructions: mode, input: [], tools: [],
-          sessionId: newId(), cancellation: cancellation, transport: transport,
-          onEvent: (event) {
-            progress.add(event['type'] as String);
-            if (event['type'] == 'text.delta') deltas.add(event['delta'] as String);
-            if (event['type'] == 'model.retrying') {
-              retries.add(event['attempt'] as int);
-              if (cancelOnRetry) cancellation.cancel();
-            }
-          },
-        ),
-        zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
-          parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 100
-              : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
-      );
+      Future<ResponsesReply> run(String mode) {
+        final cancellation = CancellationToken();
+        addTearDown(cancellation.cancel);
+        return runZoned(
+          () => client.respond(
+            model: 'gpt-6.1-sol', instructions: mode, input: [], tools: [],
+            sessionId: newId(), cancellation: cancellation, transport: transport,
+            onEvent: (event) {
+              progress.add(event['type'] as String);
+              if (event['type'] == 'text.delta') deltas.add(event['delta'] as String);
+              if (event['type'] == 'model.retrying') {
+                retries.add(event['attempt'] as int);
+                if (event['attempt'] == 4) cancellation.cancel();
+              }
+            },
+          ),
+          zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
+            parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 100
+                : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
+        );
+      }
       expect((await run('active')).text, 'Long response finished');
       expect(deltas, ['tick', 'tick']);
       expect(progress, ['model.connected', 'text.delta', 'text.delta']);
       progress.clear();
-      await expectLater(run('silent'), throwsA(isA<ModelFailure>().having(
-        (error) => error.code, 'code', 'stream_idle_timeout',
-      )));
-      expect(retries, [1, 2]);
-      expect(progress, [for (var attempt = 0; attempt < 3; attempt++) ...[
-        'model.connected', if (attempt < 2) 'model.retrying',
+      await expectLater(run('silent').timeout(const Duration(seconds: 5)),
+        throwsA(isA<CancelledException>()));
+      expect(retries, [1, 2, 3, 4]);
+      expect(progress, [for (var attempt = 0; attempt < 4; attempt++) ...[
+        'model.connected', 'model.retrying',
       ]], reason: 'Accepted retries must report recovery even before the first text delta');
+      expect(requests, 5, reason: 'Cancellation during backoff must not send another request');
       expect((await run('active')).text, 'Long response finished');
-      expect(requests, 5, reason: 'Retry exhaustion must not close the shared pool');
-      cancelOnRetry = true;
-      await expectLater(run('silent'), throwsA(isA<CancelledException>()));
-      expect(requests, 6, reason: 'Cancellation during backoff must not send another request');
+      expect(requests, 6, reason: 'Cancellation must not close the shared pool');
     });
   }
 

@@ -451,7 +451,7 @@ class McpOAuth {
         return (status: response.statusCode, body: <String, dynamic>{}, headers: headers);
       }
       final bytes = <int>[];
-      final input = StreamIterator(traceStream(response, 'mcp.oauth.http.body', size: (chunk) => chunk.length));
+      final input = StreamIterator(traceStream(response, 'mcp.oauth.http.body', size: (chunk) => chunk.length, cancellation: token));
       try {
         while (await input.moveNext().asCancellable(token, onCancel: () => unawaited(input.cancel()))) {
           bytes.addAll(input.current);

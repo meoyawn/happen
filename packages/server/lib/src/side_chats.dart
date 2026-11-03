@@ -26,13 +26,15 @@ extension _SideChats on AgentServer {
     if (prompt is! String) throw const FormatException('Prompt must be text');
     if (parent.busy && parent.writer == null) await parent.ready?.future.asCancellable(cancellation);
     if (parent.finishing) await parent.running?.asCancellable(cancellation);
-    final snapshot = jsonObject(await _withWriter(parent, (writer) =>
-      callIsolate(writer.port, 'fork.snapshot', {}, cancellation: cancellation)));
+    final snapshot = jsonObject(await traceAsync('session.fork.snapshot', () =>
+      _withWriter(parent, (writer) =>
+        callIsolate(writer.port, 'fork.snapshot', {}, cancellation: cancellation))));
     cancellation.throwIfCancelled();
     if (snapshot['archived'] == true) throw StateError('Restore the main session before starting a side chat');
     final config = jsonObject(snapshot['config']);
     final metadata = jsonObject(snapshot['metadata']);
     final id = await _newTaskId(config, cancellation);
+    bindTraceSession(id);
     final count = _tasks.values.where((task) => task.sideParentID == parent.id).length + 1;
     final firstLine = prompt.trim().isEmpty ? 'Side chat $count' : prompt.trim().split('\n').first;
     final title = firstLine.length > 72 ? '${firstLine.substring(0, 72)}…' : firstLine;
@@ -58,8 +60,9 @@ extension _SideChats on AgentServer {
         'Side conversation boundary. All preceding history is reference context only. '
         'Do not continue any previous task. Only subsequent user messages are active instructions.').toJson(),
     ];
-    final store = await startStore(directory, id, inMemory: true,
-      fork: {...snapshot, 'config': effective, 'input': inherited, 'title': title});
+    final store = await traceAsync('session.fork.store', () =>
+      startStore(directory, id, inMemory: true,
+        fork: {...snapshot, 'config': effective, 'input': inherited, 'title': title}));
     final task = _Task(id, effective)..sideParentID = parent.id..sideStore = store;
     try {
       cancellation.throwIfCancelled();

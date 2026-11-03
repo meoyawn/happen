@@ -442,7 +442,7 @@ String _toolLabel(ToolActivity tool) => switch (tool.name.split('.').last) {
   'read' || 'read_file' => 'Read',
   'write' || 'write_file' || 'apply_patch' || 'edit' => 'Edit',
   'exec' => 'JavaScript',
-  'question' || 'request_user_input' => 'Questions',
+  'question' || 'request_user_input' || 'request_user_input_async' => 'Questions',
   _ => tool.name,
 };
 
@@ -694,7 +694,7 @@ class _ToolRow extends StatelessWidget {
     final running = tool.status == 'running';
     final failed = tool.status == 'failed';
     if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, directory: directory, onExpand: onExpand);
-    if ({'question', 'request_user_input'}.contains(tool.name.split('.').last)) {
+    if ({'question', 'request_user_input', 'request_user_input_async'}.contains(tool.name.split('.').last)) {
       return QuestionToolResult(tool: tool, onExpand: onExpand);
     }
     if (tool.name.split('.').last == 'skill' && toolSkillReads(tool).isNotEmpty) return SkillReadRows(tool: tool);

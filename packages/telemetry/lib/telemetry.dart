@@ -1,4 +1,5 @@
 export 'src/tracing.dart';
+export 'src/export.dart';
 export 'src/trace_store.dart';
 export 'src/sqlite.dart';
 

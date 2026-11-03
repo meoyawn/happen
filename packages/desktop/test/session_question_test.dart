@@ -87,9 +87,6 @@ void main() {
   });
 
   testWidgets('Escape dismisses a question and a small dock scrolls without overflowing', (tester) async {
-    final report = FlutterError.onError;
-    FlutterError.onError = (details) { debugPrint(details.toString()); report?.call(details); };
-    addTearDown(() => FlutterError.onError = report);
     var dismissed = false;
     await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: Scaffold(body: Center(
       child: SizedBox(width: 320, height: 150, child: SessionQuestionDock(
@@ -113,7 +110,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  test('desktop questions recover after reconnect, reach both models, and cancel with their turn',
+  test('desktop questions reconnect, deliver blocking and async answers, and cancel with their turn',
     () => HttpOverrides.runWithHttpOverrides(() async {
     final root = await Directory.systemTemp.createTemp('desktop-questions-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -141,6 +138,8 @@ void main() {
     }));
     final requests = <Json>[];
     var asking = true;
+    var asyncStage = -1;
+    final asyncReceipt = Completer<Json>();
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
       requests.add(body);
@@ -152,13 +151,30 @@ void main() {
             ? [{'label': 'None', 'description': 'No additional details'}] : _questions[i]['options'],
         },
       ] : _questions;
-      final output = asking ? <Json>[{
+      var output = asking ? <Json>[{
         'type': 'function_call', 'name': openai ? 'request_user_input' : 'question', 'call_id': 'question_${requests.length}',
         'arguments': jsonEncode({'questions': prompts}),
       }] : <Json>[{
         'type': 'message', 'role': 'assistant',
         'content': [{'type': 'output_text', 'text': 'Saved your answers'}],
       }];
+      if (openai && asyncStage == 0) {
+        asyncStage = 1;
+        output = [{
+          'type': 'function_call', 'name': 'request_user_input_async', 'call_id': 'async_question',
+          'arguments': jsonEncode({'questions': [
+            {'title': 'Which approach should we use?', 'options': ['Safe', 'Fast']},
+            {'title': 'Any constraints?'},
+          ]}),
+        }];
+      } else if (openai && asyncStage == 1) {
+        asyncStage = 2;
+        asyncReceipt.complete(body);
+        output = [{
+          'type': 'function_call', 'namespace': 'clock', 'name': 'sleep', 'call_id': 'while_waiting',
+          'arguments': '{"duration_ms":60000}',
+        }];
+      }
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode(openai
         ? {'type': 'response.completed', 'response': {'status': 'completed', 'output': output}}
@@ -228,6 +244,27 @@ void main() {
         expect(requests, hasLength(before), reason: 'Dismiss and Stop end the waiting turn');
       }
     }
+
+    await session.select(session.project!);
+    session.chooseModel('gpt-6-astra');
+    asking = false;
+    asyncStage = 0;
+    expect(await session.send('Ask a question and continue working'), true, reason: session.error);
+    await _until(session, () => session.task!.questions.isNotEmpty);
+    final target = session.task!, request = target.questions.values.single;
+    final receipt = await asyncReceipt.future.timeout(const Duration(seconds: 10));
+    expect(jsonEncode(receipt['input']), contains(r'\"accepted\":true'),
+      reason: 'Async questions must return to inference before the user answers');
+    expect(target.running, true);
+    expect(request['async'], true);
+    await session.answerQuestion(target, request['id'] as String, [['Fast'], ['Only local files']],
+      cancellation: lifetime);
+    await _until(session, () => !target.running);
+    expect(target.questions, isEmpty);
+    final user = (requests.last['input'] as List).lastWhere((item) => item['role'] == 'user');
+    expect(jsonEncode(user['content']), allOf(
+      contains('send_user_message_question_reply'), contains('Which approach should we use?'),
+      contains('Fast'), contains('Only local files')));
   }, _RealHttp()));
 }
 

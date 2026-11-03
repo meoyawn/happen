@@ -776,8 +776,8 @@ class _Agent {
                       await currentDeferredCatalog(cancellation), jsonObject(arguments),
                       native: call.format == 'search',
                     );
-                  } else if (service == 'question.ask') {
-                    output = await callIsolate(config['questions'] as SendPort, 'ask', {
+                  } else if (service == 'question.ask' || service == 'question.ask_async') {
+                    output = await callIsolate(config['questions'] as SendPort, service!.substring(9), {
                       'task_id': taskId, 'call_id': id, 'arguments': arguments,
                     }, timeout: null, cancellation: cancellation);
                     if (jsonObject(output)['rejected'] == true) {

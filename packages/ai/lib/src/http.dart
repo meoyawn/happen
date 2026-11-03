@@ -371,7 +371,7 @@ Future<HttpReply> httpRequest(HttpClient http, String method, Uri uri, {
         span?.end(attributes: {'http.response.status_code': response.statusCode, 'network.protocol.version': response.version});
       } catch (error) { span?.end(error: error); rethrow; }
       response = HttpReply(withTrace(span?.context ?? currentTrace, () =>
-        traceStream(response, 'http.body', size: (chunk) => chunk.length,
+        traceStream(response, 'http.body', size: (chunk) => chunk.length, cancellation: cancellation,
           attributes: {'http.response.status_code': response.statusCode})),
         response.statusCode, response.headers, response.version, reasonPhrase: response.reasonPhrase);
       if (!followRedirects || method != 'GET' || !{301, 302, 303, 307, 308}.contains(response.statusCode) ||

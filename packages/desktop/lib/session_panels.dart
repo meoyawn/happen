@@ -154,7 +154,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                           onPageChanged: (url, title) => widget.session.updateBrowserPanel(task, tab, url, title)))),
                   for (final tab in state.tabs.where(isSideChatPanel))
                     if (widget.session.sideChats[sideChatID(tab)] case final side?)
-                      Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                      Offstage(key: ValueKey((task!.id, side.draftKey)), offstage: state.active != tab,
                         child: ExcludeFocus(excluding: !opened || state.active != tab,
                           child: TickerMode(enabled: opened && state.active == tab,
                             child: _sideChat(side, opened && state.active == tab)))),
@@ -178,7 +178,22 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     const Padding(padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
       child: Align(alignment: Alignment.centerLeft, child: Text('Temporary side chat',
         style: TextStyle(fontSize: 12, color: opencodeFaint)))),
-    Expanded(child: side.loaded && side.messages.isEmpty && !side.running
+    Expanded(child: side.sidePreparing
+      ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(
+          mainAxisSize: MainAxisSize.min, children: [
+            if (side.sideError == null)
+              const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2))
+            else const Icon(Icons.error_outline_rounded, color: opencodeFaint),
+            const SizedBox(height: 12),
+            Text(side.sideError == null ? 'Preparing side chat…' : 'Couldn’t prepare side chat',
+              style: const TextStyle(fontSize: 14, color: opencodeMuted)),
+            if (side.sideError == null) ...[
+              const SizedBox(height: 6),
+              const Text('You can start typing below.',
+                style: TextStyle(fontSize: 12, color: opencodeFaint)),
+            ],
+          ])))
+      : side.loaded && side.messages.isEmpty && !side.running
       ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Column(
           mainAxisSize: MainAxisSize.min, children: [
             Icon(Icons.chat_bubble_outline_rounded, size: 24, color: opencodeFaint),
@@ -203,7 +218,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
       Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
         key: ValueKey('question:${request['id']}'), request: request,
         draft: side.questionDrafts.putIfAbsent(request['id'] as String,
-          () => QuestionDraft((request['questions'] as List).length)),
+          () => QuestionDraft.fromRequest(request)),
         enabled: widget.session.connected,
         onAnswer: (answers, cancellation) => widget.session.answerQuestion(
           side, request['id'] as String, answers, cancellation: cancellation))),
@@ -275,6 +290,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         enabled: widget.session.connected && !widget.task!.archived && !widget.task!.archiving,
         onTap: () => unawaited(() async {
           try { await widget.session.openSideChat(widget.task!); }
+          on CancelledException { /* The pending side chat was closed. */ }
           catch (error) { widget.session.showError(error); }
         }())),
       ListTile(key: const ValueKey('open-context-panel'), contentPadding: EdgeInsets.zero,

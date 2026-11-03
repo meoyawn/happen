@@ -35,13 +35,13 @@ class OpenAIToolInterface extends ToolInterface {
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
   List<ToolDefinition> definitionsFor(List<Json> deferred) => [
-    if (requestUserInput) requestUserInputDefinition,
     specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (deferred.isNotEmpty) ...mcpResourceCatalog.map(specs.directDefinition),
-      specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == 'curr_time')),
     ],
+    if (requestUserInput) ...[requestUserInputDefinition, requestUserInputAsyncDefinition],
+    if (!codeModeOnly) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == 'curr_time')),
     if (sleepTool) specs.sleepDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['apply_patch', 'view_image']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
@@ -64,6 +64,7 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   Map<String, String> get services => {
     if (requestUserInput) 'request_user_input': 'question.ask',
+    if (requestUserInput) 'request_user_input_async': 'question.ask_async',
     if (webSearch && standaloneWebSearch) 'web__run': 'web.search',
     if (imageGeneration) 'image_gen__imagegen': 'image.generate',
     if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
@@ -86,7 +87,7 @@ class OpenAIToolInterface extends ToolInterface {
     _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool, codeModeOnly, requestUserInput);
   @override
   String formatResult(ToolCall call, Json result) {
-    if (call.name == 'request_user_input') return jsonEncode([
+    if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) return jsonEncode([
       {'type': 'input_text', 'text': jsonEncode(result)},
     ]);
     if (call.format == 'search') return jsonEncode(result['tools'] ?? []);
@@ -155,6 +156,12 @@ class _OpenAITools extends ToolRuntime {
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
+    if (requestUserInput && call.name == 'request_user_input_async' &&
+        (call.namespace == null || call.namespace == 'functions')) {
+      final questions = requestUserInputAsyncQuestions(jsonDecode(call.input));
+      return jsonObject(await context.call('request_user_input_async', {'questions': questions},
+        cancellation: context.cancellation));
+    }
     if (requestUserInput && call.name == 'request_user_input' &&
         (call.namespace == null || call.namespace == 'functions')) {
       final questions = requestUserInputQuestions(jsonDecode(call.input));

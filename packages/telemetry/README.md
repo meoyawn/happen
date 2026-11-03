@@ -16,6 +16,8 @@ readable by Perfetto and other trace viewers. Export pages both databases into
 an atomic file without loading the whole session into the UI isolate. Each
 source's sequence boundary is frozen during export. Running spans remain open:
 the document is a snapshot, not a signal to stop the session.
+Zero-duration transport slices anchor flow arrows in viewers, including when
+exporting records captured by earlier versions.
 
 Recorded data includes operation names, SQL templates, timings, HTTP status,
 stream/chunk sizes, model event types, retries, transport flows, backpressure,

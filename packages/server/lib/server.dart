@@ -414,17 +414,23 @@ class AgentServer {
     // Export reads must not recursively record their own trace pages.
     if (method.startsWith('session.trace.')) return _dispatchUntraced(method, params, client, requestId);
     final store = await traces;
-    final context = traceContextFrom(trace, sink: store.sink, service: 'server') ??
+    final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
+    final incoming = traceContextFrom(trace, sink: store.sink, service: 'server');
+    final context = incoming != null && (!forking || incoming.session == null) ? incoming :
       TraceContext(sink: store.sink, service: 'server',
-        session: (params['sessionID'] ?? params['task_id']) as String?);
-    if ((params['sessionID'] ?? params['task_id']) case final String session) context.session = session;
+        session: forking ? null : (params['sessionID'] ?? params['task_id']) as String?);
+    if (!forking) {
+      if ((params['sessionID'] ?? params['task_id']) case final String session) context.session = session;
+    }
     return withTrace(context, () {
       traceReceive(trace, 'websocket', attributes: {'rpc.method': method, 'rpc.id': requestId});
       return traceAsync('server.$method', () {
         client.requestTraces[requestId] = currentTrace!;
         return _dispatchUntraced(method, params, client, requestId);
       },
-        category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id});
+        category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id,
+          if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
+          if (forking && params['through'] != null) 'fork.through': params['through']});
     });
   }
 
@@ -655,7 +661,9 @@ class AgentServer {
         if (method == 'session.question.reply' || method == 'session.question.reject') {
           final requestID = requiredString(params, 'requestID');
           if (method == 'session.question.reply') {
-            _questions.reply(id, requestID, params['answers']);
+            await _questions.reply(id, requestID, params['answers'], send: (prompt) async {
+              await _dispatchUntraced('task.send', {'task_id': id, 'prompt': prompt, 'delivery': 'steer'}, client, requestId);
+            });
           } else {
             _questions.reject(id, requestID);
           }
@@ -937,6 +945,7 @@ class AgentServer {
                 final config = jsonObject(await callIsolate(writer.port, 'metadata',
                   {'key': 'config'}, cancellation: client.cancellation) ?? {});
                 final child = await _newTaskId(config, client.cancellation);
+                bindTraceSession(child);
                 await callIsolate(writer.port, 'fork', {
                   'id': child, 'through': params['through'],
                 }, cancellation: client.cancellation);
@@ -1498,6 +1507,7 @@ class AgentServer {
   }
 
   void _broadcast(String taskId, Json event) {
+    if ({'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) _questions.endTurn(taskId);
     final task = _tasks[taskId];
     if (task != null) {
       if (event['type'] == 'model.retrying') {
@@ -1958,12 +1968,17 @@ class AgentClient {
     Duration timeout = const Duration(minutes: 5),
   }) {
     final store = _traceStore;
-    final context = currentTrace ?? (store == null ? null : TraceContext(sink: store.sink,
-      service: 'desktop', session: (params['sessionID'] ?? params['task_id']) as String?));
+    final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
+    final inherited = currentTrace;
+    final context = inherited != null && (!forking || inherited.session == null) ? inherited
+      : store == null ? null : TraceContext(sink: store.sink,
+          service: 'desktop', session: forking ? null : (params['sessionID'] ?? params['task_id']) as String?);
     if (context?.session case final session?) _sessionTraces[session] = context!;
     return withTrace(context, () => traceAsync('desktop.$method',
       () => _requestUntraced(method, params, cancellation: cancellation, timeout: timeout),
-      category: 'websocket'));
+      category: 'websocket', attributes: {
+        if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
+      }));
   }
 
   Future<Object?> _requestUntraced(String method, Json params, {

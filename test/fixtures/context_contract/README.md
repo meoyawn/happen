@@ -122,7 +122,9 @@ the shared comparison excludes it. Raw captures retain Codex's telemetry unchang
 The `interactive-user-input` case enables Codex's direct `request_user_input`
 tool and Default-mode availability, matching desktop sessions in Happen. Its
 name, description, schema, registration order, and exclusion from Code Mode's
-nested declarations are part of the same strict request comparison. Other cases
+nested declarations are part of the same strict request comparison. The case
+also invokes `request_user_input_async` and retains its immediate accepted
+receipt in the next inference without a human reply. Other cases
 keep interactive questions disabled in both harnesses.
 Every extracted timing value is retained separately in the report, with its
 request path, kind and units.

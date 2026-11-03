@@ -154,7 +154,6 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   Future<WebViewController> _open() async {
     final controller = WebViewController();
     await controller.setJavaScriptMode(JavaScriptMode.unrestricted).asCancellable(_lifetime);
-    await controller.setBackgroundColor(Colors.white).asCancellable(_lifetime);
     await controller.setNavigationDelegate(NavigationDelegate(
       onNavigationRequest: (request) {
         final uri = Uri.tryParse(request.url);

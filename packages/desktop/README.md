@@ -33,6 +33,13 @@ appear inline; **View code** opens the JavaScript source.
 Hover a finished OpenCode response to copy it or see its model, reasoning level,
 and turn duration, rounded to seconds (or minutes and seconds for longer turns).
 
+Questions appear above the composer. Choose an option, select several when
+allowed, or type your own answer. **Back** and **Next** move between questions;
+draft answers survive switching tabs. Use number keys to choose, **⌘Enter**
+(**Ctrl+Enter**) to advance or submit, and **Escape** to dismiss.
+OpenCode and GPT sessions support questions. GPT can also ask while continuing
+work; submitting that answer sends a user message into the current turn.
+
 **Settings → Interface** offers **Top tabs**, **Side
 tabs**, and **Inbox**, using OpenCode's layout previews. Top and side tabs can
 be dragged to reorder or closed without archiving their sessions. **Home** and

@@ -512,7 +512,7 @@ class _DesktopViewState extends State<DesktopView> {
     return Flexible(fit: FlexFit.loose, child: SessionQuestionDock(
       key: ValueKey('question:$id'), request: request,
       draft: target.questionDrafts.putIfAbsent(id,
-        () => QuestionDraft((request['questions'] as List).length)),
+        () => QuestionDraft.fromRequest(request)),
       enabled: session.connected,
       onAnswer: (answers, cancellation) => session.answerQuestion(
         target, id, answers, cancellation: cancellation),
@@ -525,7 +525,7 @@ class _DesktopViewState extends State<DesktopView> {
       child: ConversationTypography(
           child: Padding(padding: const EdgeInsets.all(8), child: SessionPanelWorkspace(
             session: session, task: home ? null : session.task,
-            sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.id}'),
+            sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.draftKey}'),
               session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
             child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
@@ -683,7 +683,7 @@ class _ComposerState extends State<_Composer> {
   Project? get _project => widget.target == null ? widget.session.project
     : widget.session.projects.where((project) =>
         project.tasks.any((task) => task.id == widget.target!.sideParentID)).firstOrNull;
-  String get _currentDraftKey => widget.target?.id ?? widget.session.draftKey;
+  String get _currentDraftKey => widget.target?.draftKey ?? widget.session.draftKey;
   bool get _submitting => widget.target?.sideSubmitting ?? widget.session.submitting;
   String? get _attachmentStatus => widget.target == null
     ? widget.session.attachmentStatus : widget.target!.sideAttachmentStatus;
@@ -1014,6 +1014,7 @@ class _ComposerState extends State<_Composer> {
         session.connected &&
         !_receivingAttachments &&
         !_submitting &&
+        _target?.sidePreparing != true &&
         _target?.archived != true && _target?.archiving != true &&
         _target?.loading != true &&
         _target?.loadError == null;
@@ -1079,6 +1080,7 @@ class _ComposerState extends State<_Composer> {
                   '/side': (description: 'Ask a side question in a temporary chat',
                     run: () => unawaited(() async {
                       try { await session.openSideChat(session.task!); }
+                      on CancelledException { /* The pending side chat was closed. */ }
                       catch (error) { session.showError(error); }
                     }())),
                 if (_project case final project?)
@@ -1195,7 +1197,8 @@ class _ComposerState extends State<_Composer> {
                               minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                             ),
-                            tooltip: stopWorking ? 'Stop task and clear pending messages' : running
+                            tooltip: _target?.sidePreparing == true ? 'Preparing side chat…'
+                                : stopWorking ? 'Stop task and clear pending messages' : running
                                 ? (session.deliveryMode == 'steer'
                                       ? 'Steer task'
                                       : 'Queue message')

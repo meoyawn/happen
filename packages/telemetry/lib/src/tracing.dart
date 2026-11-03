@@ -195,7 +195,7 @@ Map<String, dynamic>? traceIsolateCarrier([String? method]) {
 }
 
 Stream<T> traceStream<T>(Stream<T> source, String name, {String category = 'http',
-  int Function(T)? size, Map<String, dynamic> attributes = const {}}) {
+  int Function(T)? size, CancellationToken? cancellation, Map<String, dynamic> attributes = const {}}) {
   final parent = currentTrace;
   if (parent == null) return source;
   return Stream<T>.multi((controller) {
@@ -212,14 +212,16 @@ Stream<T> traceStream<T>(Stream<T> source, String name, {String category = 'http
       span.end(error: error, attributes: {'chunks': chunks, 'bytes': bytes});
       controller.addErrorSync(error, stack);
     }, onDone: () {
-      span.end(attributes: {'chunks': chunks, 'bytes': bytes});
+      span.end(attributes: {'chunks': chunks, 'bytes': bytes, 'stream.end': 'eof'});
       controller.closeSync();
     });
     controller.onPause = subscription.pause;
     controller.onResume = subscription.resume;
     controller.onCancel = () async {
+      final cancelled = cancellation?.isCancelled == true;
       await subscription.cancel();
-      span.end(error: CancelledException(), attributes: {'chunks': chunks, 'bytes': bytes});
+      span.end(error: cancelled ? CancelledException() : null,
+        attributes: {'chunks': chunks, 'bytes': bytes, 'stream.end': cancelled ? 'cancelled' : 'consumer_closed'});
     };
   });
 }

@@ -32,9 +32,12 @@ class Project {
 }
 
 class DesktopTask {
-  DesktopTask(this.id, this.title, {this.sideParentID});
+  DesktopTask(this.id, this.title, {this.sideParentID, this.sideDraftID});
   final String id, title;
   final String? sideParentID;
+  final String? sideDraftID;
+  String get draftKey => sideDraftID ?? id;
+  bool sidePreparing = false;
   String? sideError;
   String? sideAttachmentStatus;
   CancellationToken? sideSubmission;
@@ -68,6 +71,17 @@ class QuestionDraft {
   QuestionDraft(int count)
     : answers = List.generate(count, (_) => <String>{}),
       custom = List.filled(count, '');
+  factory QuestionDraft.fromRequest(Json request) {
+    final questions = (request['questions'] as List).cast<Json>();
+    final draft = QuestionDraft(questions.length);
+    if (request['async'] == true) {
+      for (var i = 0; i < questions.length; i++) {
+        final options = questions[i]['options'] as List;
+        if (options.isNotEmpty) draft.answers[i].add(options.first['label'] as String);
+      }
+    }
+    return draft;
+  }
   int tab = 0;
   bool minimized = false;
   final List<Set<String>> answers;
@@ -436,23 +450,67 @@ class DesktopSession extends ChangeNotifier {
   Future<DesktopTask> openSideChat(DesktopTask parent, {String prompt = '', List<Json> attachments = const []}) async {
     if (!connected || parent.archived || parent.archiving) throw StateError('Session is unavailable');
     if (parent.sideParentID != null) throw StateError('Start side chats from the main session');
-    final reply = jsonObject(await _request('session.side.create', {
-      'sessionID': parent.id, 'prompt': prompt,
-      if (attachments.isNotEmpty) 'attachments': attachments,
-    }));
-    final id = requiredString(reply, 'sessionID');
-    final config = jsonObject(reply['configuration']);
-    final side = DesktopTask(id, reply['title'] as String? ?? 'Side chat', sideParentID: parent.id)
-      ..running = reply['running'] == true
-      ..provider = config['provider'] as String?
-      ..model = config['model'] as String?
-      ..reasoning = config['provider_settings']?['reasoning'] as String?
-      ..reasoningUpdates = config['reasoning_updates'] == true
-      ..contextLimit = config['provider_settings']?['context_limit'] as num?;
-    sideChats[id] = side;
-    openSessionPanel(parent, sideChatPanel(id));
-    await loadHistory(side);
-    return side;
+    final inherited = currentTrace;
+    final context = inherited?.session == null && inherited != null ? inherited
+      : _traceStore == null ? null : TraceContext(sink: _traceStore!.sink, service: 'desktop');
+    return withTrace(context, () => traceAsync('desktop.side.open', () async {
+      final key = 'opening:${newId()}';
+      final count = sideChats.values.where((side) => side.sideParentID == parent.id).length + 1;
+      final firstLine = prompt.trim().isEmpty ? 'Side chat $count' : prompt.trim().split('\n').first;
+      final pending = DesktopTask(key, firstLine.length > 72 ? '${firstLine.substring(0, 72)}…' : firstLine,
+        sideParentID: parent.id, sideDraftID: key)
+        ..sidePreparing = true
+        ..provider = parent.provider
+        ..model = parent.model
+        ..reasoning = parent.nextReasoning ?? parent.reasoning
+        ..reasoningUpdates = parent.reasoningUpdates
+        ..contextLimit = parent.contextLimit;
+      sideChats[key] = pending;
+      openSessionPanel(parent, sideChatPanel(key));
+      traceInstant('desktop.side.pane.opened');
+      final trace = currentTrace;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (!_lifetime.isCancelled) withTrace(trace, () => traceInstant('desktop.side.pane.presented'));
+      });
+      try {
+        final reply = jsonObject(await _request('session.side.create', {
+          'sessionID': parent.id, 'prompt': prompt,
+          if (attachments.isNotEmpty) 'attachments': attachments,
+        }));
+        final id = requiredString(reply, 'sessionID');
+        bindTraceSession(id);
+        if (pending.archiving || sideChats[key] != pending) {
+          await _request('session.side.close', {'sessionID': id});
+          throw CancelledException();
+        }
+        final config = jsonObject(reply['configuration']);
+        final side = DesktopTask(id, reply['title'] as String? ?? pending.title,
+          sideParentID: parent.id, sideDraftID: key)
+          ..running = reply['running'] == true
+          ..provider = config['provider'] as String?
+          ..model = config['model'] as String?
+          ..reasoning = config['provider_settings']?['reasoning'] as String?
+          ..nextReasoning = pending.nextReasoning
+          ..reasoningUpdates = config['reasoning_updates'] == true
+          ..contextLimit = config['provider_settings']?['context_limit'] as num?;
+        sideChats..remove(key)..[id] = side;
+        pending.liveText.dispose();
+        final panels = panelsFor(parent), oldTab = sideChatPanel(key), tab = sideChatPanel(id);
+        final index = panels.tabs.indexOf(oldTab);
+        if (index >= 0) panels.tabs[index] = tab;
+        if (panels.active == oldTab) panels.active = tab;
+        _savePanels(parent);
+        await loadHistory(side);
+        traceInstant('desktop.side.ready');
+        return side;
+      } catch (failure) {
+        if (sideChats[key] == pending) {
+          pending.sideError = failure.toString();
+          if (!_lifetime.isCancelled) notifyListeners();
+        }
+        rethrow;
+      }
+    }, attributes: {'parent.session_id': parent.id}));
   }
 
   Future<void> _discardSideChat(DesktopTask parent, String id) async {
@@ -460,6 +518,11 @@ class DesktopSession extends ChangeNotifier {
     if (side == null) return;
     side.archiving = true;
     side.sideSubmission?.cancel();
+    if (side.sidePreparing) {
+      sideChats.remove(id);
+      await _releaseSideDraft(side);
+      return;
+    }
     try {
       await _request('session.side.close', {'sessionID': id});
       if (sideChats.remove(id) != null) await _releaseSideDraft(side);
@@ -474,10 +537,10 @@ class DesktopSession extends ChangeNotifier {
   Future<void> _releaseSideDraft(DesktopTask side) async {
     side.sideSubmission?.cancel();
     side.liveText.dispose();
-    drafts.remove(side.id);
-    draftSelections.remove(side.id);
-    fileDrafts.remove(side.id);
-    final attachments = attachmentDrafts.remove(side.id) ?? const <ComposerAttachment>[];
+    drafts.remove(side.draftKey);
+    draftSelections.remove(side.draftKey);
+    fileDrafts.remove(side.draftKey);
+    final attachments = attachmentDrafts.remove(side.draftKey) ?? const <ComposerAttachment>[];
     for (final attachment in attachments) { await attachment.discard(); }
   }
 
@@ -1226,7 +1289,9 @@ class DesktopSession extends ChangeNotifier {
   Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
     final store = _traceStore;
     if (store == null) return _send(prompt, attachments: attachments, target: target);
-    final context = TraceContext(sink: store.sink, service: 'desktop', session: (target ?? task)?.id);
+    final sideCommand = target == null && RegExp(r'^\s*/side(?:\s|$)').hasMatch(prompt);
+    final context = TraceContext(sink: store.sink, service: 'desktop',
+      session: sideCommand ? null : (target ?? task)?.id);
     return withTrace(context, () => traceAsync('desktop.submit',
       () => _send(prompt, attachments: attachments, target: target)));
   }
@@ -1247,6 +1312,7 @@ class DesktopSession extends ChangeNotifier {
         owner.removing ||
         (prompt.trim().isEmpty && attachments.isEmpty) ||
         (target?.sideSubmitting ?? submitting) ||
+        target?.sidePreparing == true ||
         target != null && sideChats[target.id] != target ||
         !connected ||
         existing?.archived == true ||
@@ -1494,7 +1560,11 @@ class DesktopSession extends ChangeNotifier {
     final trace = event['_trace'] == null ? null : client.eventTrace(event);
     withTrace(trace, () => traceSync('desktop.event.apply', () => _applyIncomingEvent(event),
       attributes: {'event.type': event['type']}));
-    if (trace == null || trace.session != task?.id || !_traceFrames.add(trace.trace)) return;
+    final side = sideChats[trace?.session];
+    final panels = task == null ? null : panelLayouts[task!.id];
+    final visible = trace?.session == task?.id || side?.sideParentID == task?.id &&
+      panels?.opened == true && panels?.active == sideChatPanel(side!.id);
+    if (trace == null || !visible || !_traceFrames.add(trace.trace)) return;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       _traceFrames.remove(trace.trace);
       withTrace(trace, () => traceInstant('desktop.frame.presented',
