@@ -161,14 +161,14 @@ TraceSpan? startTraceSpan(String name, {String category = 'session',
 }
 
 T traceSync<T>(String name, T Function() action, {String category = 'session',
-  Map<String, dynamic> attributes = const {}}) {
+  Map<String, dynamic> attributes = const {}, bool includeErrorMessage = true}) {
   final span = startTraceSpan(name, category: category, attributes: attributes);
   if (span == null) return action();
   try {
     final result = withTrace(span.context, action);
     span.end();
     return result;
-  } catch (error) { span.end(error: error); rethrow; }
+  } catch (error) { span.end(error: error, includeErrorMessage: includeErrorMessage); rethrow; }
 }
 
 Future<T> traceAsync<T>(String name, Future<T> Function() action, {String category = 'session',

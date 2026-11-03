@@ -20,11 +20,15 @@ typedef HostTool = Future<Object?> Function(String name, Object? arguments, {
 
 /// A runtime belongs to exactly one Dart isolate, never used concurrently.
 class QuickJs {
-  QuickJs({int memoryLimit = 32 * 1024 * 1024}) : _handle = jsNew(memoryLimit) {
-    if (_handle == nullptr) {
-      throw StateError('Could not allocate QuickJS runtime');
-    }
-  }
+  QuickJs({int memoryLimit = 32 * 1024 * 1024}) : _handle =
+    traceSync('code_mode.runtime.init', () {
+      final handle = jsNew(memoryLimit);
+      if (handle == nullptr) throw StateError('Could not allocate QuickJS runtime');
+      return handle;
+    }, category: 'code_mode', attributes: {
+      'runtime.name': 'quickjs', 'runtime.memory_limit_bytes': memoryLimit,
+      'runtime.includes_initial_context': true,
+    }, includeErrorMessage: false);
   Pointer<Void> _handle;
   bool _running = false;
   void Function()? _closeExit;
@@ -63,16 +67,16 @@ class QuickJs {
     }
   }
 
-  void resetContext() {
+  void resetContext() => traceSync('code_mode.cell.reset', () {
     if (_running) throw StateError('Cannot reset an executing cell');
     jsResetContext(_handle);
     _closeExit?.call(); _closeExit = null;
     _closeMedia?.call(); _closeMedia = null;
     _exited = false;
-  }
+  }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
 
   /// Consume only output produced since the preceding observation.
-  Json takeOutput({int maxTokens = 10000}) {
+  Json takeOutput({int maxTokens = 10000}) => traceSync('code_mode.cell.output.render', () {
     final result = takeCollectedOutput();
     final rendered = renderCellContent(jsonObject(result['output']), maxTokens);
     return {
@@ -81,9 +85,10 @@ class QuickJs {
       if (rendered.items.any((part) => part['type'] != 'input_text')) 'text_audio_tokens': rendered.textAudioTokens,
       if ((result['images'] as List).isNotEmpty) 'images': result['images'],
     };
-  }
+  }, category: 'code_mode', includeErrorMessage: false);
 
-  Json takeCollectedOutput() => jsonObject(evaluate('__cell.takeOutput()'));
+  Json takeCollectedOutput() => traceSync('code_mode.cell.output.collect',
+    () => jsonObject(evaluate('__cell.takeOutput()')), category: 'code_mode', includeErrorMessage: false);
 
   Future<Json> run(
     String source, {
@@ -122,6 +127,17 @@ class QuickJs {
     var wake = Completer<void>();
     void ready() { if (!wake.isCompleted) wake.complete(); }
     final clock = Stopwatch()..start();
+    final timings = currentTrace == null ? null : <String, int>{};
+    T measure<T>(String operation, T Function() action) {
+      if (timings == null) return action();
+      final watch = Stopwatch()..start();
+      try { return action(); }
+      finally {
+        timings.update('$operation.duration_us', (value) => value + watch.elapsedMicroseconds,
+          ifAbsent: () => watch.elapsedMicroseconds);
+        timings.update('$operation.calls', (value) => value + 1, ifAbsent: () => 1);
+      }
+    }
     int budget() {
       cell.throwIfCancelled();
       signal?.throwIfCancelled();
@@ -133,8 +149,9 @@ class QuickJs {
       }
       return cpuBudgetMs.clamp(1, remaining.inMilliseconds.clamp(1, cpuBudgetMs));
     }
-    Object? evaluateCell(String source) => evaluate(source, cpuBudgetMs: budget());
-    Json snapshot() {
+    Object? evaluateCell(String source) =>
+      measure('code.evaluate', () => evaluate(source, cpuBudgetMs: budget()));
+    Json snapshot() => traceSync('code_mode.cell.output.collect', () {
       final result = jsonObject(evaluateCell(retainOutput ? '({values: __cell.values, writes: __cell.writes})'
         : '({output: __cell.output.collect(), images: __cell.images, values: __cell.values})'));
       final rendered = !retainOutput && module ? renderCellContent(jsonObject(result['output']), maxOutputTokens) : null;
@@ -146,17 +163,23 @@ class QuickJs {
         if (retainOutput) 'writes': result['writes'],
         if (!retainOutput && (result['images'] as List).isNotEmpty) 'images': result['images'],
       };
-    }
+    }, category: 'code_mode', includeErrorMessage: false);
     jsSetInterrupt(_handle, Pointer.fromAddress(signal?.address ?? localSignal!.address), signal?.generation ?? localSignal!.generation);
     try {
-      evaluateCell(_bootstrap);
-      _closeExit = jsInstallExit(_handle, () { _exited = true; });
-      if (module) _closeMedia = jsInstallAudioMetadata(_handle, (url) { budget(); final value = audioMetadata(url); budget(); return value; });
-      evaluateCell('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
-      evaluateCell('__cell.configureTools($module); null');
-      evaluateCell('__cell.values = ${jsonEncode(values)}; null');
-      if (module) { _evaluateModule(source, budget()); }
-      else { evaluateCell('__cell.start(${jsonEncode(source)}); null'); }
+      traceSync('code_mode.cell.init', () {
+        evaluateCell(_bootstrap);
+        _closeExit = jsInstallExit(_handle, () { _exited = true; });
+        if (module) _closeMedia = jsInstallAudioMetadata(_handle, (url) { budget(); final value = audioMetadata(url); budget(); return value; });
+        evaluateCell('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
+        evaluateCell('__cell.configureTools($module); null');
+        evaluateCell('__cell.values = ${jsonEncode(values)}; null');
+      }, category: 'code_mode', attributes: {
+        'code.catalog_count': catalog.length, 'code.values_count': values.length,
+      }, includeErrorMessage: false);
+      traceSync('code_mode.cell.start', () {
+        if (module) { measure('code.module', () => _evaluateModule(source, budget())); }
+        else { evaluateCell('__cell.start(${jsonEncode(source)}); null'); }
+      }, category: 'code_mode', includeErrorMessage: false);
       while (true) {
         budget();
         while (replies.isNotEmpty) {
@@ -164,7 +187,7 @@ class QuickJs {
             '__cell.resolve(${jsonEncode(replies.removeAt(0))}); null',
           );
         }
-        final error = jsPump(_handle, 128, budget());
+        final error = measure('code.pump', () => jsPump(_handle, 128, budget()));
         if (error != nullptr) _decode(error);
         final state = jsonObject(evaluateCell('__cell.poll()'));
         for (final timer in state['timers'] as List) {
@@ -210,7 +233,10 @@ class QuickJs {
         }
         // Let cancellation and async host I/O run between bounded native calls.
         if (jsHasJobs(_handle) == 0 && replies.isEmpty) {
-          await wake.future.asCancellable(cell);
+          await traceAsync('code_mode.cell.idle', () => wake.future.asCancellable(cell),
+            category: 'code_mode', attributes: {
+              'code.pending_host_calls': pending.length, 'code.pending_timers': timers.length,
+            }, includeErrorMessage: false);
           wake = Completer<void>();
         } else {
           await cancellableDelay(Duration.zero, cell);
@@ -228,29 +254,38 @@ class QuickJs {
       }
       rethrow;
     } finally {
-      deadline?.cancel();
-      link.dispose();
-      cell.cancel();
-      for (final timer in timers.values) { timer.cancel(); }
-      await Future.wait(pending.values.toList());
-      replies.clear();
-      jsSetInterrupt(_handle, nullptr, 0);
-      localSignal?.close();
-      _running = false;
+      try {
+        await traceAsync('code_mode.cell.cleanup', () async {
+          deadline?.cancel();
+          link.dispose();
+          cell.cancel();
+          for (final timer in timers.values) { timer.cancel(); }
+          await Future.wait(pending.values.toList());
+          replies.clear();
+          jsSetInterrupt(_handle, nullptr, 0);
+          localSignal?.close();
+          _running = false;
+        }, category: 'code_mode', includeErrorMessage: false);
+      } finally {
+        if (timings != null) traceInstant('code_mode.cell.metrics', category: 'code_mode', attributes: timings);
+      }
     }
   }, category: 'code_mode', attributes: {
     'code.cell_id': ?cellId, 'code.source_length': source.length,
-    'code.mode': module ? 'module' : 'script',
+    'code.mode': module ? 'module' : 'script', 'runtime.name': 'quickjs',
+    'code.cpu_budget_ms': cpuBudgetMs, 'code.await_pending': awaitPending,
+    'code.retain_output': retainOutput,
+    if (timeout != null) 'code.timeout_ms': timeout.inMilliseconds,
   }, includeErrorMessage: false);
 
-  void close() {
+  void close() => traceSync('code_mode.runtime.close', () {
     if (_handle != nullptr) {
       jsFree(_handle);
       _handle = nullptr;
       _closeExit?.call(); _closeExit = null;
       _closeMedia?.call(); _closeMedia = null;
     }
-  }
+  }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
 }
 
 String _describeCellError(String error, String source) {

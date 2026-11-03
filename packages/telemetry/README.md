@@ -19,12 +19,24 @@ agent execution and model HTTP/WebSocket operations inherit that identity.
 Responses return it to desktop event application and frame presentation.
 Queued prompts retain their identity when execution begins later.
 
-JavaScript cells record their full execution lifetime, including time spent
-waiting for host tools after an exec observation yields. Exec and wait observations,
-explicit yields, and nested host calls are recorded separately in the `code_mode`
-category. Cell IDs link observations to execution; host calls and their downstream
-operations inherit the cell's span. Records include source length, execution mode,
-observation limits, completion state, timings, and error/cancellation status.
+JavaScript operations use the `code_mode` category. Timings cover runtime
+initialization and disposal, cell context reset, cell bootstrap/configuration,
+starting the program, idle waits, output collection/rendering, and cancellation
+cleanup. QuickJS currently creates the runtime and its first context together;
+`runtime.init` includes both. `cell.init` measures installing the cell's helpers,
+tool catalog, and stored values. These names describe operations so future shared
+runtimes, reused contexts, or other engines can record the same boundaries.
+
+The `code_mode.cell` span covers `run`, including host waiting after an exec
+observation yields; runtime allocation and disposal are separate spans.
+Exec/wait observations, explicit yields, and nested host calls are recorded
+separately. Cell IDs link observations to execution; host calls and their
+downstream operations inherit the cell's span. One metrics event per execution
+reports counts and accumulated elapsed time for evaluate, module evaluation,
+and job-pump calls without recording every pump iteration. These bridge timings
+include conversion work and are not CPU measurements. Records also include runtime
+name, memory/CPU/time limits, execution mode, source length, observation limits,
+completion state, and error/cancellation status.
 JavaScript source, output, stored values, tool arguments/results, and error messages
 that could contain those contents are excluded.
 

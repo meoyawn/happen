@@ -110,7 +110,8 @@ class CodeSession {
       else {
         final collected = jsonObject(completed['collected']);
         if (completed['error'] != null && !cell.terminated) collected['tail'] = [...(collected['tail'] as List), 'Script error:\n${completed['error']}'];
-        final rendered = renderCellContent(collected, tokens);
+        final rendered = traceSync('code_mode.cell.output.render', () => renderCellContent(collected, tokens),
+          category: 'code_mode', includeErrorMessage: false);
         result = {...completed..remove('collected'), 'content': rendered.items,
           'output': rendered.items.where((part) => part['type'] == 'input_text').map((part) => part['text']).toList(),
           if (rendered.items.any((part) => part['type'] != 'input_text')) 'text_audio_tokens': rendered.textAudioTokens};
