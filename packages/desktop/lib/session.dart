@@ -32,12 +32,14 @@ class Project {
 }
 
 class DesktopTask {
-  DesktopTask(this.id, this.title, {this.sideParentID, this.sideDraftID});
+  DesktopTask(this.id, this.title, {this.sideParentID, this.sideDraftID, this.tracing = false});
   final String id, title;
   final String? sideParentID;
   final String? sideDraftID;
+  bool tracing;
   String get draftKey => sideDraftID ?? id;
   bool sidePreparing = false;
+  CancellationToken? sidePreparation;
   String? sideError;
   String? sideAttachmentStatus;
   CancellationToken? sideSubmission;
@@ -95,9 +97,10 @@ class QuestionDraft {
 }
 
 class SessionDraft {
-  SessionDraft(this.id, this.checkoutKey, {this.provider, this.model, this.reasoning});
+  SessionDraft(this.id, this.checkoutKey, {this.provider, this.model, this.reasoning, this.tracing = false});
   final String id;
   String? checkoutKey, provider, model, reasoning;
+  bool tracing;
 }
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
@@ -135,6 +138,13 @@ class DesktopSession extends ChangeNotifier {
   TraceStore? _traceStore;
   Future<TraceStore> get tracing async =>
     _traceStore ??= await client.startTracing(File(attachmentDirectory).parent.path);
+  Future<void> _restoreTracing(DesktopTask target, bool enabled) async {
+    target.tracing = enabled;
+    if (!enabled) return;
+    await tracing;
+    _lifetime.throwIfCancelled();
+    client.traceSession(target.id);
+  }
   final _traceFrames = <String>{};
   final attachmentDrafts = <String, List<ComposerAttachment>>{};
   CancellationToken? _submission;
@@ -256,6 +266,7 @@ class DesktopSession extends ChangeNotifier {
         final existing = project.tasks.where((task) => task.id == id).firstOrNull;
         final target = existing ?? DesktopTask(id, info['title'] as String? ?? 'New session');
         if (existing == null) project.tasks.add(target);
+        await _restoreTracing(target, info['tracing'] == true);
         if (!target.loaded) target.running = active.containsKey(id);
         target.projectionState['summary'] = info;
         final busy = info['time']?['busy'] as int?;
@@ -450,16 +461,18 @@ class DesktopSession extends ChangeNotifier {
   Future<DesktopTask> openSideChat(DesktopTask parent, {String prompt = '', List<Json> attachments = const []}) async {
     if (!connected || parent.archived || parent.archiving) throw StateError('Session is unavailable');
     if (parent.sideParentID != null) throw StateError('Start side chats from the main session');
+    final store = parent.tracing ? await tracing : null;
     final inherited = currentTrace;
-    final context = inherited?.session == null && inherited != null ? inherited
-      : _traceStore == null ? null : TraceContext(sink: _traceStore!.sink, service: 'desktop');
+    final context = store == null ? null : inherited?.session == null && inherited != null ? inherited
+      : TraceContext(sink: store.sink, service: 'desktop');
     return withTrace(context, () => traceAsync('desktop.side.open', () async {
       final key = 'opening:${newId()}';
       final count = sideChats.values.where((side) => side.sideParentID == parent.id).length + 1;
       final firstLine = prompt.trim().isEmpty ? 'Side chat $count' : prompt.trim().split('\n').first;
       final pending = DesktopTask(key, firstLine.length > 72 ? '${firstLine.substring(0, 72)}…' : firstLine,
-        sideParentID: parent.id, sideDraftID: key)
+        sideParentID: parent.id, sideDraftID: key, tracing: parent.tracing)
         ..sidePreparing = true
+        ..sidePreparation = CancellationToken()
         ..provider = parent.provider
         ..model = parent.model
         ..reasoning = parent.nextReasoning ?? parent.reasoning
@@ -473,10 +486,8 @@ class DesktopSession extends ChangeNotifier {
         if (!_lifetime.isCancelled) withTrace(trace, () => traceInstant('desktop.side.pane.presented'));
       });
       try {
-        final reply = jsonObject(await _request('session.side.create', {
-          'sessionID': parent.id, 'prompt': prompt,
-          if (attachments.isNotEmpty) 'attachments': attachments,
-        }));
+        final reply = await client.createSideChat(parent.id, prompt: prompt, attachments: attachments,
+          cancellation: pending.sidePreparation!.merge(_lifetime));
         final id = requiredString(reply, 'sessionID');
         bindTraceSession(id);
         if (pending.archiving || sideChats[key] != pending) {
@@ -485,7 +496,7 @@ class DesktopSession extends ChangeNotifier {
         }
         final config = jsonObject(reply['configuration']);
         final side = DesktopTask(id, reply['title'] as String? ?? pending.title,
-          sideParentID: parent.id, sideDraftID: key)
+          sideParentID: parent.id, sideDraftID: key, tracing: config['tracing'] == true)
           ..running = reply['running'] == true
           ..provider = config['provider'] as String?
           ..model = config['model'] as String?
@@ -493,6 +504,7 @@ class DesktopSession extends ChangeNotifier {
           ..nextReasoning = pending.nextReasoning
           ..reasoningUpdates = config['reasoning_updates'] == true
           ..contextLimit = config['provider_settings']?['context_limit'] as num?;
+        if (side.tracing) client.traceSession(id);
         sideChats..remove(key)..[id] = side;
         pending.liveText.dispose();
         final panels = panelsFor(parent), oldTab = sideChatPanel(key), tab = sideChatPanel(id);
@@ -509,6 +521,9 @@ class DesktopSession extends ChangeNotifier {
           if (!_lifetime.isCancelled) notifyListeners();
         }
         rethrow;
+      } finally {
+        pending.sidePreparation?.cancel();
+        pending.sidePreparation = null;
       }
     }, attributes: {'parent.session_id': parent.id}));
   }
@@ -519,6 +534,7 @@ class DesktopSession extends ChangeNotifier {
     side.archiving = true;
     side.sideSubmission?.cancel();
     if (side.sidePreparing) {
+      side.sidePreparation?.cancel();
       sideChats.remove(id);
       await _releaseSideDraft(side);
       return;
@@ -814,6 +830,13 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  void chooseTracing(bool enabled) {
+    if (task != null || submitting) return;
+    currentDraft.tracing = enabled;
+    saveDrafts();
+    notifyListeners();
+  }
+
   void chooseReasoning(String value, {DesktopTask? target}) {
     final selected = target ?? task;
     final provider = selected?.provider ?? providerId, model = selected?.model ?? modelId;
@@ -851,6 +874,7 @@ class DesktopSession extends ChangeNotifier {
     'drafts': [for (final draft in sessionDrafts) {
       'id': draft.id, 'project': draft.checkoutKey,
       'provider': draft.provider, 'model': draft.model, 'reasoning': draft.reasoning,
+      'tracing': draft.tracing,
       'text': drafts[draft.id] ?? '',
       if (draftSelections[draft.id] case final selection?)
         'selection': [selection.baseOffset, selection.extentOffset],
@@ -931,6 +955,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> load() async {
+    await _request('client.capabilities', {'questions': true});
     final saved = jsonObject(
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
@@ -1010,7 +1035,7 @@ class DesktopSession extends ChangeNotifier {
       final value = jsonObject(raw);
       final id = requiredString(value, 'id');
       sessionDrafts.add(SessionDraft(id, value['project'] as String?, provider: value['provider'] as String?,
-        model: value['model'] as String?, reasoning: value['reasoning'] as String?));
+        model: value['model'] as String?, reasoning: value['reasoning'] as String?, tracing: value['tracing'] == true));
       drafts[id] = value['text'] as String? ?? '';
       if (value['selection'] case [final int base, final int extent]) {
         draftSelections[id] = TextSelection(baseOffset: base, extentOffset: extent);
@@ -1219,6 +1244,7 @@ class DesktopSession extends ChangeNotifier {
           return MapEntry(question['id'] as String, question);
         }));
       final config = jsonObject(page['configuration'] ?? {});
+      await _restoreTracing(target, config['tracing'] == true);
       target.provider = config['provider'] as String?;
       target.model = config['model'] as String?;
       target.reasoning = page['reasoning'] as String? ?? config['provider_settings']?['reasoning'] as String?;
@@ -1287,16 +1313,17 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
-    final store = _traceStore;
-    if (store == null) return _send(prompt, attachments: attachments, target: target);
+    final enabled = (target ?? task)?.tracing ?? currentDraft.tracing;
+    final store = enabled ? await tracing : null;
     final sideCommand = target == null && RegExp(r'^\s*/side(?:\s|$)').hasMatch(prompt);
-    final context = TraceContext(sink: store.sink, service: 'desktop',
+    final context = store == null ? null : TraceContext(sink: store.sink, service: 'desktop',
       session: sideCommand ? null : (target ?? task)?.id);
     return withTrace(context, () => traceAsync('desktop.submit',
-      () => _send(prompt, attachments: attachments, target: target)));
+      () => _send(prompt, attachments: attachments, target: target, tracing: enabled)));
   }
 
-  Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) async {
+  Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target,
+      required bool tracing}) async {
     final owner = target == null ? project : projects.where((project) =>
       project.tasks.any((task) => task.id == target.sideParentID)).firstOrNull;
     final existing = target ?? task;
@@ -1386,16 +1413,18 @@ class DesktopSession extends ChangeNotifier {
             'provider': provider,
             'model': model,
             'reasoning': effort,
-            if (provider == 'openai') 'settings': {'request_user_input': true},
+            'tracing': tracing,
           }),
         );
         final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
         final created = DesktopTask(
           requiredString(reply, 'sessionID'),
           title.length > 72 ? '${title.substring(0, 72)}…' : title,
+          tracing: tracing,
         )..running = true
           ..lastActivity = DateTime.now().millisecondsSinceEpoch;
         bindTraceSession(created.id);
+        if (tracing) client.traceSession(created.id);
         created.loaded = true;
         created.provider = provider;
         created.model = model;
@@ -1767,7 +1796,10 @@ class DesktopSession extends ChangeNotifier {
     await terminals.close();
     terminals.dispose();
     _submission?.cancel();
-    for (final side in sideChats.values) { side.sideSubmission?.cancel(); }
+    for (final side in sideChats.values) {
+      side.sidePreparation?.cancel();
+      side.sideSubmission?.cancel();
+    }
     await _dictation?.cancel();
     _dictation?.dispose();
     _dictation = null;

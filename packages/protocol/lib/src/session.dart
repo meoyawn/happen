@@ -269,7 +269,9 @@ List<Json> applySessionEvent(Map<String, Json> messages, Json event, Json state)
       }
       for (final previous in messages.values.toList()) {
         if (previous['type'] == 'assistant' && previous['time']?['completed'] == null) {
-          put({...previous, 'time': {...jsonObject(previous['time']), 'completed': created}});
+          put({...previous,
+            if (previous['time']?['streamed'] == null) 'content': <Json>[],
+            'time': {...jsonObject(previous['time']), 'completed': created}});
         }
       }
       put({...base('assistant', data['assistantMessageID'] as String), 'agent': data['agent'], 'model': data['model'], 'content': <Json>[]});

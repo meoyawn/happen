@@ -15,6 +15,7 @@ export 'src/session_list.dart' show listSessions;
 
 part 'src/session.dart';
 part 'src/kv.dart';
+part 'src/tool_runtime.dart';
 
 /// Access this object only from its dedicated SQLite owner isolate.
 class TaskStore {

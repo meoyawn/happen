@@ -35,6 +35,21 @@ class NewSessionScreen extends StatelessWidget {
                   letterSpacing: -2, color: Color(0xffc8c8c8)))),
               const SizedBox(height: 24),
               composer,
+              ListenableBuilder(listenable: session, builder: (context, _) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Align(alignment: Alignment.centerLeft, child: Tooltip(
+                  message: 'Record this session’s timings. Export the trace from Context.',
+                  child: InkWell(
+                    onTap: session.submitting ? null : () => session.chooseTracing(!session.currentDraft.tracing),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Checkbox(value: session.currentDraft.tracing,
+                        onChanged: session.submitting ? null : (value) => session.chooseTracing(value!),
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                      const Padding(padding: EdgeInsets.only(right: 8), child: Text('Trace this session',
+                        style: TextStyle(fontSize: 12, color: opencodeMuted))),
+                    ])))))),
               Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: LayoutBuilder(builder: (context, tray) => Row(children: [
                   if (hasProjects) ...[

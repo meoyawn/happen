@@ -110,7 +110,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  test('desktop questions reconnect, deliver blocking and async answers, and cancel with their turn',
+  test('desktop questions resume headless sessions, reconnect, deliver answers, and cancel with their turn',
     () => HttpOverrides.runWithHttpOverrides(() async {
     final root = await Directory.systemTemp.createTemp('desktop-questions-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -140,10 +140,12 @@ void main() {
     var asking = true;
     var asyncStage = -1;
     final asyncReceipt = Completer<Json>();
+    final questionRequest = Completer<Json>();
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
       requests.add(body);
       final openai = request.uri.path == '/responses';
+      if (openai && asking && !questionRequest.isCompleted) questionRequest.complete(body);
       final prompts = openai ? [
         for (var i = 0; i < _questions.length; i++) {
           'id': 'q$i', 'header': _questions[i]['header'], 'question': _questions[i]['question'],
@@ -190,15 +192,38 @@ void main() {
     });
     server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml',
       port: 0, endpoint: 'http://127.0.0.1:${provider.port}/responses');
+    final headless = await AgentClient.connect(server.uri);
+    addTearDown(headless.close);
+    asking = false;
+    final completed = headless.events.stream.firstWhere(
+      (event) => event['type'] == 'session.execution.succeeded');
+    final created = jsonObject(await headless.request('session.create', {
+      'cwd': await root.resolveSymbolicLinks(), 'provider': 'openai', 'model': 'gpt-6-astra',
+      'prompt': 'Save a session without interactive tools',
+      'settings': {'request_user_input': false},
+    }));
+    await completed.timeout(const Duration(seconds: 20));
+    final savedID = created['sessionID'] as String;
+    expect((requests.last['tools'] as List).map((tool) => tool['name']),
+      isNot(contains('request_user_input_async')));
+    await headless.request('session.hibernate', {'sessionID': savedID});
+    await headless.close();
     var session = desktop = DesktopSession(await AgentClient.connect(server.uri), await openDesktopDatabase(root.path));
     await session.load();
     await session.addProject(root.path);
 
     for (final model in ['gpt-6-astra', 'deepseek-v4.1-flash-free']) {
-      await session.select(session.project!);
-      session.chooseModel(model);
+      await session.select(session.project!, model == 'gpt-6-astra'
+        ? session.project!.tasks.singleWhere((task) => task.id == savedID) : null);
+      if (model != 'gpt-6-astra') session.chooseModel(model);
       asking = true;
       expect(await session.send('Ask me about the plan'), true, reason: session.error);
+      if (model == 'gpt-6-astra') {
+        final request = await questionRequest.future.timeout(const Duration(seconds: 10));
+        expect((request['tools'] as List).map((tool) => tool['name']),
+          containsAll(['request_user_input', 'request_user_input_async']),
+          reason: 'The desktop can answer questions in a session created without interactive tools');
+      }
       await _until(session, () => session.task!.questions.isNotEmpty);
       var target = session.task!;
       final id = target.id, requestID = target.questions.keys.single;
@@ -265,6 +290,21 @@ void main() {
     expect(jsonEncode(user['content']), allOf(
       contains('send_user_message_question_reply'), contains('Which approach should we use?'),
       contains('Fast'), contains('Only local files')));
+
+    await session.close();
+    desktop = null;
+    final resumed = await AgentClient.connect(server.uri);
+    addTearDown(resumed.close);
+    final finished = resumed.events.stream.firstWhere(
+      (event) => event['type'] == 'session.execution.succeeded');
+    asyncStage = -1;
+    await resumed.request('session.prompt', {
+      'sessionID': savedID, 'prompt': 'Continue without a desktop connected',
+    });
+    await finished.timeout(const Duration(seconds: 20));
+    expect((requests.last['tools'] as List).map((tool) => tool['name']),
+      isNot(anyOf(contains('request_user_input'), contains('request_user_input_async'))),
+      reason: 'Closing the desktop must not leave blocking question tools enabled for a headless client');
   }, _RealHttp()));
 }
 

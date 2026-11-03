@@ -197,7 +197,7 @@ class QuickJs {
           );
           unawaited(pending[id]!.whenComplete(() => pending.remove(id)));
         }
-        if (state['error'] != null) throw StateError(state['error'] as String);
+        if (state['error'] != null) throw StateError(_describeCellError(state['error'] as String, source));
         if (state['done'] == true && (!awaitPending || pending.isEmpty && replies.isEmpty)) {
           return snapshot();
         }
@@ -243,9 +243,42 @@ class QuickJs {
   }
 }
 
+String _describeCellError(String error, String source) {
+  final frame = RegExp(r'\bexec_main\.mjs:(\d+):(\d+)').firstMatch(error);
+  if (frame == null) return error;
+  final lineNumber = int.parse(frame[1]!), columnNumber = int.parse(frame[2]!);
+  final lines = source.split('\n');
+  if (lineNumber < 1 || lineNumber > lines.length) return error;
+  final line = lines[lineNumber - 1];
+  final column = (columnNumber - 1).clamp(0, line.length);
+  final start = (column - 80).clamp(0, line.length), end = (column + 120).clamp(0, line.length);
+  final prefix = start == 0 ? '' : '…', suffix = end == line.length ? '' : '…';
+  final indent = '${start == 0 ? '' : ' '}${line.substring(start, column).replaceAll(RegExp(r'[^\t]'), ' ')}';
+  return '${error.trimRight()}\n\nexec_main.mjs:$lineNumber:$columnNumber\n'
+    '$prefix${line.substring(start, end)}$suffix\n$indent^';
+}
+
 const _bootstrap = outputBootstrap + r'''
 var ALL_TOOLS = [];
 var __cell = (() => {
+  // Match V8's useful JSON diagnostics while preserving native parsing,
+  // reviver context/receivers, and exceptions raised by the reviver itself.
+  const parseJson = JSON.parse, apply = Reflect.apply;
+  JSON.parse = {parse(value, reviver) {
+    let reviving = false;
+    const revive = typeof reviver === "function" ? function(...args) {
+      reviving = true;
+      return apply(reviver, this, args);
+    } : reviver;
+    try { return parseJson(value, revive); }
+    catch (cause) {
+      if (!reviving && typeof value === "string" && cause instanceof SyntaxError) {
+        const preview = value.length > 240 ? value.slice(0, 240) + "…" : value;
+        cause.message += "\nJSON input: " + JSON.stringify(preview);
+      }
+      throw cause;
+    }
+  }}.parse;
   const pending = new Map();
   const requests = [];
   let output = __createOutput();

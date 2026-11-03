@@ -46,7 +46,11 @@ server package; the desktop continues using its private local Unix socket.
 
 Dart applications can embed `AgentServer.startEmbedded(directory: ...)` and
 connect to its `uri`. Call `close()` on the client and server when their owner
-exits. Build a distributable CLI with its native libraries using:
+exits. Clients that can present and answer questions call `client.capabilities`
+with `{"questions": true}` on each connection. This enables GPT question tools
+on subsequent turns in their subscribed sessions, including saved sessions.
+The capability is not persisted in the session's provider settings.
+Build a distributable CLI with its native libraries using:
 
 ```sh
 dart build cli --target=packages/cli/bin/happen.dart --output=build/happen

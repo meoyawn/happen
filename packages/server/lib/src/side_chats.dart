@@ -19,7 +19,7 @@ extension _SideChats on AgentServer {
     'configuration': task.config, 'running': task.busy,
   };
 
-  Future<Json> _createSide(_Task parent, Json params, _Client client,
+  Future<Json> _createSide(_Task parent, Json params, _Client client, Object requestID,
       CancellationToken cancellation) async {
     if (parent.sideParentID != null) throw StateError('Start side chats from the main session');
     final prompt = params['prompt'] ?? '';
@@ -68,6 +68,7 @@ extension _SideChats on AgentServer {
       cancellation.throwIfCancelled();
       _lifetime.throwIfCancelled();
       _tasks[id] = task;
+      client.sideCreations[requestID] = id;
       client.subscriptions.add(id);
       client.sessionSubscriptions.add(id);
       final attachments = params['attachments'] as List? ?? [];
@@ -92,30 +93,49 @@ extension _SideChats on AgentServer {
     ? await readSession(directory, task.id, method, params, cancellation: cancellation)
     : jsonObject(await callIsolate(task.sideStore!.port, method, params, cancellation: cancellation));
 
-  Future<void> _closeSide(_Task task) =>
-    task.closingSide ??= _disposeSide(task);
+  Future<void> _closeSide(_Task task) => task.closingSide ??= _traceSideClose(task);
+
+  Future<void> _traceSideClose(_Task task) async {
+    final inherited = currentTrace;
+    final context = task.config?['tracing'] != true ? null : inherited?.session == task.id ? inherited
+      : TraceContext(sink: (await traces).sink, service: 'server', session: task.id);
+    return withTrace(context, () => traceAsync('session.side.dispose', () => _disposeSide(task),
+      attributes: {'parent.session_id': task.sideParentID}));
+  }
 
   Future<void> _disposeSide(_Task task) async {
     task.disposing = true;
     task.cancelled = true;
-    if (task.busy && task.agent == null) await task.ready?.future;
-    task.codeInterrupt?.interrupt();
-    if (task.agent case final agent?) await callIsolate(agent.port, 'cancel', {});
-    await task.running;
-    while (task.maintenance) { await task.maintenanceDone!.future; }
     try {
+      if (task.busy && task.agent == null) await task.ready?.future;
+      task.codeInterrupt?.interrupt();
+      if (task.agent case final agent?) await callIsolate(agent.port, 'cancel', {});
+      await task.running;
+      while (task.maintenance) { await task.maintenanceDone!.future; }
       await _taskTools.release(task.id);
       _clientTools.archive(task.id);
       if (!_networkExited) await callIsolate(network.port, 'agents.forget', {'task_id': task.id});
     } finally {
-      await task.sideStore?.close();
-      _broadcast(task.id, {'type': 'side.closed', 'data': {'parentID': task.sideParentID}});
-      _tasks.remove(task.id);
-      for (final client in _clients) {
-        client.subscriptions.remove(task.id);
-        client.sessionSubscriptions.remove(task.id);
+      try {
+        try {
+          await task.agent?.close();
+          task.agent = null;
+        } finally {
+          await traceAsync('session.side.store.close', () async { await task.sideStore?.close(); });
+        }
+        traceInstant('session.side.disposed', attributes: {
+          'store.stopped': true, 'agent.stopped': task.agent == null,
+        });
+      } finally {
+        _broadcast(task.id, {'type': 'side.closed', 'data': {'parentID': task.sideParentID}});
+        _tasks.remove(task.id);
+        for (final client in _clients) {
+          client.subscriptions.remove(task.id);
+          client.sessionSubscriptions.remove(task.id);
+          client.sideCreations.removeWhere((_, id) => id == task.id);
+        }
+        _activity.add(activeTaskCount);
       }
-      _activity.add(activeTaskCount);
     }
   }
 }

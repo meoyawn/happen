@@ -290,6 +290,10 @@ class AgentServer {
             client.acknowledge(((request['params']?['count'] as int?) ?? 1).clamp(0, 256));
             return;
           }
+          if (request['method'] == 'session.read.cancel' && id == null) {
+            await _cancelSessionRead(client, request['params']?['request_id']);
+            return;
+          }
           if (request['method'] == 'files.cancel') {
             if (request['params']?['request_id'] == client.fileSearchId) {
               client.fileSearch?.cancel();
@@ -411,34 +415,48 @@ class AgentServer {
   }
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
-    // Export reads must not recursively record their own trace pages.
-    if (method.startsWith('session.trace.')) return _dispatchUntraced(method, params, client, requestId);
-    final store = await traces;
-    final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
-    final incoming = traceContextFrom(trace, sink: store.sink, service: 'server');
-    final context = incoming != null && (!forking || incoming.session == null) ? incoming :
-      TraceContext(sink: store.sink, service: 'server',
-        session: forking ? null : (params['sessionID'] ?? params['task_id']) as String?);
-    if (!forking) {
-      if ((params['sessionID'] ?? params['task_id']) case final String session) context.session = session;
+    final preparation = method == 'session.side.create'
+      ? client.sessionReads.putIfAbsent(requestId, CancellationToken.new) : null;
+    try {
+      // Export reads must not recursively record their own trace pages.
+      if (method.startsWith('session.trace.') || trace == null ||
+          {'session.create', 'task.start'}.contains(method) && params['tracing'] != true) {
+        return await withTrace(null, () => _dispatchUntraced(method, params, client, requestId));
+      }
+      final store = await traces;
+      final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
+      final incoming = traceContextFrom(trace, sink: store.sink, service: 'server');
+      if (incoming == null) return await withTrace(null, () => _dispatchUntraced(method, params, client, requestId));
+      final context = forking && incoming.session != null
+        ? TraceContext(sink: store.sink, service: 'server') : incoming;
+      if (!forking) {
+        if ((params['sessionID'] ?? params['task_id']) case final String session) context.session = session;
+      }
+      return await withTrace(context, () {
+        traceReceive(trace, 'websocket', attributes: {'rpc.method': method, 'rpc.id': requestId});
+        return traceAsync('server.$method', () {
+          client.requestTraces[requestId] = currentTrace!;
+          return _dispatchUntraced(method, params, client, requestId);
+        },
+          category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id,
+            if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
+            if (forking && params['through'] != null) 'fork.through': params['through']});
+      });
+    } finally {
+      if (preparation != null) { client.sessionReads.remove(requestId); preparation.cancel(); }
     }
-    return withTrace(context, () {
-      traceReceive(trace, 'websocket', attributes: {'rpc.method': method, 'rpc.id': requestId});
-      return traceAsync('server.$method', () {
-        client.requestTraces[requestId] = currentTrace!;
-        return _dispatchUntraced(method, params, client, requestId);
-      },
-        category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id,
-          if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
-          if (forking && params['through'] != null) 'fork.through': params['through']});
-    });
+  }
+
+  Future<void> _cancelSessionRead(_Client client, Object? requestId) async {
+    client.sessionReads[requestId]?.cancel();
+    if (_tasks[client.sideCreations[requestId]] case final side?) await _closeSide(side);
   }
 
   Future<Object?> _dispatchUntraced(String method, Json params, _Client client, Object requestId) async {
     _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
     if (method == 'session.read.cancel') {
-      client.sessionReads[params['request_id']]?.cancel();
+      await _cancelSessionRead(client, params['request_id']);
       return null;
     }
     final receivedAt = DateTime.now().toUtc().toIso8601String();
@@ -457,6 +475,7 @@ class AgentServer {
     }[method] ?? method;
     if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
     if (method == 'task.start' || method == 'task.send' || method == 'session.side.create') {
+      final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
       final claimed = await client.attachments.claim(params['attachments']);
       var committed = false;
       try {
@@ -464,13 +483,13 @@ class AgentServer {
       if (prompt is! String) throw const FormatException('Prompt must be text');
       final envelope = {...params}..remove('attachments');
       final attachments = await prepareInputAttachments(claimed.parts,
-        cancellation: client.cancellation,
+        cancellation: cancellation,
         envelopeBytes: utf8.encode(jsonEncode({'id': requestId, 'method': method, 'params': envelope})).length);
       if (method != 'session.side.create' || prompt.isNotEmpty || attachments.isNotEmpty) {
         validateUserInput(prompt, attachments);
       }
       params = {...params, 'prompt': prompt, if (attachments.isNotEmpty) 'attachments': attachments};
-      client.cancellation.throwIfCancelled();
+      cancellation.throwIfCancelled();
       final result = await _dispatchPrepared(method, params, client, requestId, receivedAt, identityKey);
       committed = true;
       return result;
@@ -531,6 +550,13 @@ class AgentServer {
       }, cancellation: client.cancellation);
     }
     switch (method) {
+      case 'client.capabilities':
+        final questions = params['questions'];
+        if (questions is! bool || params.keys.any((key) => key != 'questions')) {
+          throw const FormatException('Provide a boolean questions capability');
+        }
+        client.questions = questions;
+        return null;
       case 'session.list':
         return listSessions(directory, params, cancellation: cancellation);
       case 'session.active':
@@ -603,11 +629,15 @@ class AgentServer {
       case 'session.trace.status':
         final id = requiredString(params, 'task_id');
         validateTaskId(id);
-        final store = await traces;
-        if (method == 'session.trace.status') return store.status(id, cancellation: cancellation);
         final after = params['after'] as int? ?? 0;
         final through = params['through'] as int?;
         if (after < 0 || through != null && through < after) throw const FormatException('Invalid trace cursor');
+        if (_traces == null && !await File('$directory/telemetry.sqlite').exists()) {
+          return method == 'session.trace.status' ? {'categories': <String, int>{}}
+            : {'through': through ?? 0, 'after': through ?? 0, 'done': true, 'events': <Json>[]};
+        }
+        final store = await traces;
+        if (method == 'session.trace.status') return store.status(id, cancellation: cancellation);
         return store.page(id, after: after, through: through, cancellation: cancellation);
       case 'maintenance.run':
         return maintain();
@@ -686,7 +716,7 @@ class AgentServer {
             task = _tasks[id] ?? _Task(id, null);
           }
         }
-        if (method == 'session.side.create') return _createSide(task, params, client, cancellation);
+        if (method == 'session.side.create') return _createSide(task, params, client, requestId, cancellation);
         if (method == 'session.side.list') {
           final sides = _tasks.values.where((side) => side.sideParentID == id && !side.disposing).toList();
           for (final side in sides) {
@@ -1007,6 +1037,14 @@ class AgentServer {
     }};
   }
 
+  Json _agentConfig(String id, Json config) {
+    if (config['provider'] != 'openai' || !_clients.any((client) =>
+        client.questions && client.sessionSubscriptions.contains(id))) return config;
+    return {...config, 'provider_settings': {
+      ...jsonObject(config['provider_settings']), 'request_user_input': true,
+    }};
+  }
+
   Future<Json> _agentContext(String id, CancellationToken cancellation) async {
     while (true) {
       cancellation.throwIfCancelled();
@@ -1032,7 +1070,7 @@ class AgentServer {
         // A sleeping task uses the very same actor and restore operation as
         // inference, without admitting a turn or doing provider/tool I/O.
         final config = jsonObject(await callIsolate(writer.port, 'metadata', {'key': 'config'}, cancellation: cancellation));
-        final restored = await startAgent(taskId: id, config: config,
+        final restored = await startAgent(taskId: id, config: _agentConfig(id, config),
           writer: writer.port, network: network.port, taskTools: _taskTools.port,
           clientTools: _clientTools.port, questions: _questions.port, codeInterrupt: 0);
         try {
@@ -1339,6 +1377,11 @@ class AgentServer {
       task.config ??= jsonObject(
         await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}),
       );
+      for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
+        settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
+        cancellation: turnLifetime)) {
+        _broadcast(task.id, record);
+      }
       if (task.pending.isEmpty) {
         await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: turnLifetime);
         final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
@@ -1347,7 +1390,7 @@ class AgentServer {
       task.codeInterrupt = CodeInterrupt();
       task.agent = await startAgent(
         taskId: task.id,
-        config: task.config!,
+        config: _agentConfig(task.id, task.config!),
         writer: task.writer!.port,
         network: network.port,
         clientTools: _clientTools.port,
@@ -1672,6 +1715,7 @@ class _Client {
   final mcpInventories = <Object, CancellationToken>{};
   final mcpLogins = <Object, CancellationToken>{};
   final sessionReads = <Object, CancellationToken>{};
+  final sideCreations = <Object, String>{};
   final contextSnapshots = <String, Json>{};
   final requestTraces = <Object, TraceContext>{};
   final sessionTraces = <String, TraceContext>{};
@@ -1680,6 +1724,7 @@ class _Client {
   final subscriptions = <String>{};
   final sessionSubscriptions = <String>{};
   bool sessionProtocol = false;
+  bool questions = false;
   final _events = Queue<({Json event, int bytes, int queuedAt, TraceContext? trace})>();
   int _queuedBytes = 0;
   int credits = 256, inFlight = 0;
@@ -1806,11 +1851,19 @@ class AgentClient {
   Future<TraceStore>? _tracing;
   TraceStore? _traceStore;
   final _sessionTraces = <String, TraceContext>{};
+  late final _tracedSessions = <String>{};
   bool _disconnectRecorded = false;
   final _traceLifetime = CancellationToken();
   Future<TraceStore> startTracing(String directory) => _tracing ??=
     TraceStore.open('$directory/telemetry-desktop.sqlite', cancellation: _traceLifetime)
       .then((store) => _traceStore = store);
+  void traceSession(String sessionID) {
+    final store = _traceStore;
+    if (store == null) throw StateError('Start the trace recorder before enabling a session');
+    _tracedSessions.add(sessionID);
+    _sessionTraces.putIfAbsent(sessionID,
+      () => TraceContext(sink: store.sink, service: 'desktop', session: sessionID));
+  }
   TraceContext? _receiveTrace(Json message) {
     final context = _traceStore == null ? null
       : traceContextFrom(message['_trace'], sink: _traceStore!.sink, service: 'desktop');
@@ -1868,6 +1921,12 @@ class AgentClient {
   }
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
+
+  Future<Json> createSideChat(String parentID, {String prompt = '', List<Json> attachments = const [],
+    required CancellationToken cancellation}) async => jsonObject(await _request('session.side.create', {
+      'sessionID': parentID, 'prompt': prompt,
+      if (attachments.isNotEmpty) 'attachments': attachments,
+    }, cancellation: cancellation));
 
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
     if (!{'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
@@ -1969,10 +2028,13 @@ class AgentClient {
   }) {
     final store = _traceStore;
     final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
-    final inherited = currentTrace;
-    final context = inherited != null && (!forking || inherited.session == null) ? inherited
-      : store == null ? null : TraceContext(sink: store.sink,
-          service: 'desktop', session: forking ? null : (params['sessionID'] ?? params['task_id']) as String?);
+    final session = (params['sessionID'] ?? params['task_id']) as String?;
+    final parent = currentTrace;
+    final inherited = session == null || parent?.session == null || parent?.session == session ? parent : null;
+    final context = {'session.create', 'task.start'}.contains(method) && params['tracing'] != true ? null
+      : inherited != null && (!forking || inherited.session == null) ? inherited
+      : store == null || !_tracedSessions.contains(session) ? null : TraceContext(sink: store.sink,
+          service: 'desktop', session: forking ? null : session);
     if (context?.session case final session?) _sessionTraces[session] = context!;
     return withTrace(context, () => traceAsync('desktop.$method',
       () => _requestUntraced(method, params, cancellation: cancellation, timeout: timeout),
@@ -1998,6 +2060,9 @@ class AgentClient {
       final token = cancellation == null ? deadline : cancellation.merge(deadline);
       final hook = CancellationHook(token, () {
         state.sessionReads[id]?.cancel();
+        if (method == 'session.side.create') {
+          if (server._tasks[state.sideCreations[id]] case final side?) unawaited(server._closeSide(side));
+        }
         if (method == 'files.search') state.fileSearch?.cancel();
         if (method == 'skills.search') state.skillSearch?.cancel();
         state.mcpInventories[id]?.cancel();
@@ -2030,7 +2095,8 @@ class AgentClient {
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
-      if ({'session.message.list', 'session.context', 'session.event.list', 'session.trace.page', 'session.trace.status'}.contains(method) && socket!.readyState == WebSocket.open) {
+      if ({'session.message.list', 'session.context', 'session.event.list', 'session.trace.page', 'session.trace.status',
+        'session.side.create'}.contains(method) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {
@@ -2061,6 +2127,7 @@ class AgentClient {
     if (_disconnectRecorded) return;
     _disconnectRecorded = true;
     for (final context in _sessionTraces.values) {
+      if (!_tracedSessions.contains(context.session)) continue;
       withTrace(context, () => traceInstant('websocket.disconnected', category: 'websocket',
         attributes: {'pending_requests': _pending.length, 'close.code': socket?.closeCode}));
     }

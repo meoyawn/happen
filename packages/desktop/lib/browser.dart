@@ -27,14 +27,15 @@ Uri browserAddress(String input) {
     final uri = Uri.tryParse('https://$value');
     if (uri != null && (uri.host.contains('.') || uri.host == 'localhost' ||
         InternetAddress.tryParse(uri.host) != null || uri.hasPort)) {
-      final local = uri.host == 'localhost' || uri.host.endsWith('.localhost') ||
-        InternetAddress.tryParse(uri.host)?.isLoopback == true;
-      final address = local ? uri.replace(scheme: 'http') : uri;
+      final address = browserHostIsLocal(uri.host) ? uri.replace(scheme: 'http') : uri;
       if (browserLocationAllowed(address)) return address;
     }
   }
   return Uri.https('www.google.com', '/search', {'q': value});
 }
+
+bool browserHostIsLocal(String host) => host == 'localhost' || host.endsWith('.localhost') ||
+  InternetAddress.tryParse(host)?.isLoopback == true;
 
 bool browserLocationAllowed(Uri uri) => !uri.toString().contains('\x00') &&
   uri.userInfo.isEmpty && (

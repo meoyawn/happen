@@ -1730,6 +1730,7 @@ class _Client implements AgentClient {
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'client.capabilities') return null;
     if (method == 'session.list') return {'data': [], 'cursor': {}};
     if (method == 'session.active') return {'data': {}};
     if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};

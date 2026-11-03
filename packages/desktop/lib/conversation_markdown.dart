@@ -313,7 +313,8 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
       throw const FormatException('Unsupported link');
     }
     final target = uri.toString();
-    if ({'http', 'https'}.contains(uri.scheme) && ConversationBrowserScope.open(context, uri)) return;
+    if ({'http', 'https'}.contains(uri.scheme) && browserHostIsLocal(uri.host) &&
+        ConversationBrowserScope.open(context, uri)) return;
     if (Platform.isMacOS) {
       await Process.start('/usr/bin/open', [target], mode: ProcessStartMode.detached);
     } else if (Platform.isLinux) {

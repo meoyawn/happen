@@ -126,6 +126,9 @@ nested declarations are part of the same strict request comparison. The case
 also invokes `request_user_input_async` and retains its immediate accepted
 receipt in the next inference without a human reply. Other cases
 keep interactive questions disabled in both harnesses.
+Desktop connection capabilities, resuming sessions created without questions,
+and delivering user answers are exercised by
+`packages/desktop/test/session_question_test.dart`.
 Every extracted timing value is retained separately in the report, with its
 request path, kind and units.
 Shell IDs and timings inside indexed fulfilled `Promise.allSettled` receipts use

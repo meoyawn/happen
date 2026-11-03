@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:desktop/database.dart';
 import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
@@ -11,8 +13,13 @@ import 'package:server/server.dart';
 void main() {
   for (final projectCount in [1, 12]) {
     testWidgets('project dropdown opens, filters, and selects with $projectCount projects', (tester) async {
-      final session = DesktopSession(_Client(), _Database());
-      addTearDown(session.close);
+      final root = (await tester.runAsync(() => Directory.systemTemp.createTemp('new-session-')))!;
+      final session = DesktopSession(_Client(), (await tester.runAsync(() => openDesktopDatabase(root.path)))!);
+      var closed = false;
+      addTearDown(() => tester.runAsync(() async {
+        if (!closed) await session.close();
+        await root.delete(recursive: true);
+      }));
       session.projects.addAll([
         for (var index = 0; index < projectCount; index++)
           Project('checkout-$index', 'project-$index', '/projects/project-$index'),
@@ -24,6 +31,27 @@ void main() {
         onSelect: (project) => selected = project, onAddProject: () {},
         onRemoveProject: (_) {}, onReturnFocus: () {},
       ))));
+      if (projectCount == 1) {
+        final checkbox = find.byType(Checkbox);
+        expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+        await tester.tap(find.text('Trace this session'));
+        await tester.pump();
+        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        final tracedDraft = session.currentDraft;
+        session.newSession();
+        await tester.pump();
+        expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+        session.openDraft(tracedDraft);
+        await tester.pump();
+        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        session.submitting = true;
+        session.notifyListeners();
+        await tester.pump();
+        expect(tester.widget<Checkbox>(checkbox).onChanged, isNull);
+        session.submitting = false;
+        session.notifyListeners();
+        await tester.pump();
+      }
 
       final dropdown = find.byTooltip('Select project');
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
@@ -59,6 +87,8 @@ void main() {
         reason: 'The dropdown remains usable after closing and reopening');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async { await session.close(); closed = true; });
+      await tester.pump();
     });
   }
 }
@@ -67,9 +97,4 @@ class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');
-}
-
-class _Database implements IsolateOwner {
-  @override Future<void> close() async {}
-  @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected database operation');
 }

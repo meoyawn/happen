@@ -22,6 +22,27 @@ class TaskToolBridge {
   bool _closed = false;
   SendPort get port => _mailbox.sendPort;
 
+  _Tools _owner(String task, String provider, String cwd) {
+    if (_closed) throw StateError('Task tools are closed');
+    if (_releasing.containsKey(task)) throw StateError('Task tools are hibernating');
+    final owner = _tasks.putIfAbsent(task, () => _Tools(switch (provider) {
+      'openai' => const OpenAIToolInterface(),
+      'opencode' => const OpenCodeToolInterface(),
+      _ => throw StateError('Unknown task tool interface'),
+    }, cwd));
+    if (owner.provider != provider) throw StateError('Task tool interface changed');
+    return owner;
+  }
+
+  Future<List<Json>> prepare(String task, String provider, String cwd, SendPort writer, {
+    required CancellationToken cancellation,
+  }) async {
+    cancellation.throwIfCancelled();
+    final owner = _owner(task, provider, cwd);
+    return (await callIsolate(writer, 'tool_runtime.start', {'id': owner.id},
+      cancellation: cancellation) as List).map(jsonObject).toList();
+  }
+
   Future<void> _handle(Json request) async {
     final reply = request['reply'] as SendPort?;
     final params = jsonObject(request['params']);
@@ -47,13 +68,7 @@ class TaskToolBridge {
         result = owner == null ? <String>[] : await owner.runtime.notifications(cancellation: cancellation);
       } else if (request['method'] == 'call') {
         final provider = requiredString(params, 'provider');
-        final interface = switch (provider) {
-          'openai' => const OpenAIToolInterface(),
-          'opencode' => const OpenCodeToolInterface(),
-          _ => throw StateError('Unknown task tool interface'),
-        };
-        owner ??= _tasks[task] = _Tools(interface, requiredString(params, 'cwd'));
-        if (owner.provider != interface.id) throw StateError('Task tool interface changed');
+        owner = _owner(task, provider, requiredString(params, 'cwd'));
         owner.pending.add(settled.future);
         result = await owner.runtime.call(requiredString(params, 'name'), params['arguments'],
           cancellation: cancellation.merge(owner.lifetime), cwd: requiredString(params, 'cwd'));
@@ -98,6 +113,7 @@ class _Tools {
   _Tools(ToolInterface interface, String cwd) : provider = interface.id {
     runtime = interface.createRuntime(cwd, lifetime);
   }
+  final id = newId();
   final String provider;
   final lifetime = CancellationToken();
   late final ToolRuntime runtime;

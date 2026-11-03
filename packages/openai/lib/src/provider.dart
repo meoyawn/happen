@@ -121,8 +121,8 @@ class OpenAIProvider implements ModelProvider {
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
       'code_mode_only': selected['code_mode_only'] ?? true,
-      // Interactive clients opt in when creating the session. Headless agents
-      // must not wait for a question that no client can answer.
+      // Interactive connections enable questions for their subscribed sessions.
+      // Headless agents must opt in explicitly.
       'request_user_input': selected['request_user_input'] ?? false,
     };
   }

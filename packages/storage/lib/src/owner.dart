@@ -90,13 +90,14 @@ void _storeMain(List<Object?> args) async {
       await traceIncoming(request, () async {
       try {
         cancellation.throwIfCancelled();
-        if (store != null && {'append', 'append_batch', 'context', 'fork.snapshot', 'session.prepare',
+        if (store != null && {'append', 'append_batch', 'context', 'fork.snapshot', 'session.prepare', 'tool_runtime.start',
           'session.message.list', 'session.event.list', 'session.inbox',
           'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
           await store.prepareSession(cancellation: cancellation);
         }
         final Object? result = switch (request['method']) {
           'session.prepare' => null,
+          'tool_runtime.start' => store!.startToolRuntime(requiredString(params, 'id')),
           'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
           'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
           'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),

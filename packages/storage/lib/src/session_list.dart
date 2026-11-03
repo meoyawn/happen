@@ -13,7 +13,8 @@ Json? _sessionInfo(String path, String id) {
     db.execute('PRAGMA query_only = ON');
     db.execute('BEGIN');
     final configuration = db.select("SELECT json_extract(value, '\$.cwd') AS directory, "
-      "json_extract(value, '\$.provider') AS provider, json_extract(value, '\$.model') AS model "
+      "json_extract(value, '\$.provider') AS provider, json_extract(value, '\$.model') AS model, "
+      "json_extract(value, '\$.tracing') AS tracing "
       "FROM metadata WHERE key IS 'config'").firstOrNull;
     final directory = configuration?['directory'] as String?;
     if (directory == null || directory.isEmpty) return null;
@@ -45,6 +46,7 @@ Json? _sessionInfo(String path, String id) {
       'id': id, 'title': title, 'location': {'directory': directory},
       'parentID': ?parent,
       'model': {'providerID': configuration!['provider'], 'id': configuration['model']},
+      'tracing': configuration['tracing'] == 1,
       if (ended != null) 'outcome': switch (ended['type']) {
         'turn.completed' => 'succeeded', 'turn.failed' => 'failed', _ => 'interrupted',
       },

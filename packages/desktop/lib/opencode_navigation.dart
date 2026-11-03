@@ -20,10 +20,10 @@ inboxSections(DesktopSession session) {
     ..sort((a, b) => b.$2.lastActivity.compareTo(a.$2.lastActivity));
   final needs = entries.where((entry) =>
     {'failed', 'interrupted'}.contains(_taskStatus(session, entry.$2))).toList();
-  // OpenCode's inbox-working.ts: oldest run first; live steps never move rows.
+  // Newest runs first; live steps never move rows.
   final working = entries.where((entry) => entry.$2.running).toList()
     ..sort((a, b) {
-      final start = (a.$2.runStartedAt ?? double.infinity).compareTo(b.$2.runStartedAt ?? double.infinity);
+      final start = (b.$2.runStartedAt ?? b.$2.lastActivity).compareTo(a.$2.runStartedAt ?? a.$2.lastActivity);
       return start != 0 ? start : a.$2.id.compareTo(b.$2.id);
     });
   final recent = entries.where((entry) => !entry.$2.running && !needs.contains(entry) &&

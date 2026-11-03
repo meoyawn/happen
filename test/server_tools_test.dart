@@ -8,7 +8,7 @@ import 'package:test/test.dart';
 import 'support/openai_output.dart';
 
 void main() {
-  test('yielded exec resumes through native wait and notifications survive cold resume', () async {
+  test('yielded exec resumes through wait and cold resume durably resets native sessions', () async {
     final root = await Directory.systemTemp.createTemp('server-code-cells-');
     await File('${root.path}/auth.json').writeAsString(jsonEncode({
       'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
@@ -20,12 +20,14 @@ void main() {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(http).join()));
       requests.add(body);
       final output = <Json>[];
-      if (requests.length == 1 || requests.length == 4) {
+      if (requests.length == 1 || requests.length == 4 || requests.length == 6) {
         output.add({'type': 'custom_tool_call', 'name': 'exec', 'namespace': 'functions', 'call_id': 'cell_${requests.length}',
-          'input': requests.length == 4 ? 'text(load("done"));' : '''// @exec: {"yield_time_ms": 0}
+          'input': requests.length != 1 ? 'text(load("done"));' : '''// @exec: {"yield_time_ms": 0}
 text("first"); notify("live notification");
 await new Promise(resolve => setTimeout(resolve, 100));
 text(await tools.exec_command({cmd: "printf receipt > receipt.txt; printf second", login: false}));
+const pending = await tools.exec_command({cmd: "read value", shell: "/bin/sh", login: false, yield_time_ms: 250});
+store("commandSession", pending.session_id);
 store("done", true);
 setTimeout(() => { throw new Error("discarded timer"); }, 60000);
 '''});
@@ -74,11 +76,23 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
     expect(notices, hasLength(1));
     expect(jsonEncode(finalInput.last), contains('second'));
     expect(jsonEncode(finalInput.last), isNot(contains('first')));
+    expect(jsonEncode(finalInput), isNot(contains('The tool runtime was restarted.')));
     await client!.close(); client = null; await server!.close(); server = null;
     await start();
     await turn(id);
     expect(jsonEncode(requests[3]['input']), contains('live notification'));
+    expect(jsonEncode(requests[3]['input']), contains('The tool runtime was restarted.'));
+    expect(jsonEncode(requests[3]['input']), contains('Do not reuse earlier session or cell IDs.'));
     expect(printedOpenAIOutput((requests.last['input'] as List).last['output']), ['true']);
+    final history = (await client!.request('history.page', {'task_id': id}) as List).map(jsonObject).toList();
+    final resets = history.where((event) => event['type'] == 'input.committed' &&
+      event['data']['item']?['native']?['harness']?['reason'] == 'tool_runtime_restarted');
+    expect(resets, hasLength(1), reason: 'The reset must be committed before the resumed model request');
+    await turn(id);
+    final warmHistory = (await client!.request('history.page', {'task_id': id}) as List).map(jsonObject);
+    expect(warmHistory.where((event) => event['type'] == 'input.committed' &&
+      event['data']['item']?['native']?['harness']?['reason'] == 'tool_runtime_restarted'), hasLength(1),
+      reason: 'A live runtime must survive turn completion without another reset');
   });
 
   test('MCP cells filter complete results while model output is bounded', () async {

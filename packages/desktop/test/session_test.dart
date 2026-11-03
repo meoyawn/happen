@@ -78,7 +78,7 @@ void main() {
       expect(requests.last.path, path);
       expect(requests.last.body['model'], model);
       expect(requests.last.body[id == 'openai' ? 'reasoning' : 'reasoning_effort'],
-        id == 'openai' ? {'effort': effort} : effort);
+        id == 'openai' ? {'effort': effort, 'summary': 'auto'} : effort);
       expect(session.task!.provider, id);
       expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
     }
@@ -218,9 +218,9 @@ void main() {
         );
         requests.add(body);
         final input = (body['input'] as List).map(jsonObject).toList();
-        final prompt = input.lastWhere(
+        final prompt = (input.lastWhere(
           (item) => item['role'] == 'user',
-        )['content'];
+        )['content'] as List).map((part) => part['text'] as String).join();
         request.response.headers.contentType = ContentType(
           'text',
           'event-stream',
@@ -377,16 +377,19 @@ void main() {
       }
       expect(inputs[1]['metadata']['seq'], lessThan(finishes[0]['metadata']['seq'] as int));
       expect(inputs[2]['metadata']['seq'], greaterThan(finishes[0]['metadata']['seq'] as int));
-      expect((requests[2]['input'] as List).where((e) => e['role'] == 'user').last['content'], 'steer this turn');
-      expect((requests[2]['input'] as List).any((e) => e['content'] == 'queued follow-up'), isFalse);
-      expect((requests.last['input'] as List).where((e) => e['role'] == 'user').last['content'], 'queued follow-up');
+      final steeredUsers = (requests[2]['input'] as List).where((item) => item['role'] == 'user');
+      expect(steeredUsers.last['content'], [{'type': 'input_text', 'text': 'steer this turn'}]);
+      expect(steeredUsers.map((item) => item['content']),
+        isNot(contains([{'type': 'input_text', 'text': 'queued follow-up'}])));
+      expect((requests.last['input'] as List).where((item) => item['role'] == 'user').last['content'],
+        [{'type': 'input_text', 'text': 'queued follow-up'}]);
       for (final (request, effort) in [(requests[2], 'high'), (requests.last, 'max')]) {
         final input = (request['input'] as List).map(jsonObject).toList();
         final user = input.lastIndexWhere((item) => item['role'] == 'user');
         expect(input[user - 1], {'type': 'configuration_update', 'reasoning': {'effort': effort}});
       }
       for (final request in requests) {
-        expect(request['reasoning'], {'effort': 'low'});
+        expect(request['reasoning'], {'effort': 'low', 'summary': 'auto'});
         expect(request['instructions'], requests.first['instructions']);
         expect(request['tools'], requests.first['tools']);
       }
@@ -430,8 +433,10 @@ void main() {
       expect(desktop.modelId, 'gpt-6-astra');
       final archivedTask = desktop.task!;
       await desktop.setArchived(archivedTask, true);
-      expect(desktop.task, isNull);
+      expect(desktop.viewingConversation, isFalse);
+      expect(desktop.openTabIds, isNot(contains(archivedTask.id)));
       expect(archivedTask.archived, isTrue);
+      desktop.newSession(desktop.project!);
       desktop.chooseModel('deepseek-v4.1-flash-free');
       expect(desktop.providerId, 'opencode');
       expect(desktop.modelId, 'deepseek-v4.1-flash-free');

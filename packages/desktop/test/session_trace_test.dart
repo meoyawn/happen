@@ -12,20 +12,22 @@ import 'package:server/server.dart';
 
 void main() {
   for (final transport in ['http', 'websocket']) {
-    testWidgets('$transport session trace crosses real sockets and isolates, including a queued turn', (tester) async {
+    testWidgets('$transport tracing is opt-in per session across sockets, isolates, and queued turns', (tester) async {
       late Directory root;
       late HttpServer provider;
       late AgentServer server;
       late DesktopSession session;
       final sockets = <WebSocket>[];
       final requests = <Json>[];
-      late Completer<void> arrived, release, completed;
+      late Completer<void> arrived, release;
+      late List<Completer<void>> completed;
+      final observed = <Json>[];
       var turns = 0;
       StreamSubscription<Json>? events;
       await tester.runAsync(() => HttpOverrides.runWithHttpOverrides(() async {
         arrived = Completer<void>();
         release = Completer<void>();
-        completed = Completer<void>();
+        completed = List.generate(4, (_) => Completer<void>());
         root = await Directory.systemTemp.createTemp('session-trace-');
         provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         await File('${root.path}/config.yaml').writeAsString(jsonEncode({
@@ -37,7 +39,7 @@ void main() {
         }));
         Future<String> reply(Json body) async {
           requests.add(body);
-          if (requests.length == 1) {
+          if (requests.length == 2) {
             arrived.complete();
             await release.future;
           }
@@ -65,18 +67,50 @@ void main() {
           endpoint: 'http://127.0.0.1:${provider.port}/responses');
         session = DesktopSession(await AgentClient.connect(server.uri), await openDesktopDatabase(root.path),
           attachmentDirectory: '${root.path}/attachments');
-        await session.tracing;
         await session.load();
         await session.addProject(root.path);
         session.chooseModel('gpt-6-astra');
-        session.deliveryMode = 'queue';
-        events = session.client.events.stream.listen((event) {
-          if (event['type'] == 'session.execution.succeeded') {
-            if (++turns == 2) completed.complete();
-          } else if (event['type'] == 'session.execution.failed' && !completed.isCompleted) {
-            completed.completeError(StateError('$event'));
-          }
-        });
+        await session.chooseDeliveryMode('queue');
+        void watch() {
+          events = session.client.events.stream.listen((event) {
+            observed.add(event);
+            if (event['type'] == 'session.execution.succeeded') {
+              completed[turns++].complete();
+            } else if (event['type'] == 'session.execution.failed') {
+              completed[turns].completeError(StateError('$event'));
+            }
+          });
+        }
+        watch();
+        expect(session.currentDraft.tracing, isFalse);
+        expect(await session.send('Private untraced prompt'), isTrue, reason: session.error);
+        await completed[0].future.timeout(const Duration(seconds: 20));
+        final untracedID = session.task!.id;
+        expect(await session.send('/side'), isTrue, reason: session.error);
+        final side = session.sideChats.values.single;
+        expect(side.tracing, isFalse);
+        expect((await session.client.sessionRead('session.message.list', {'sessionID': side.id},
+          cancellation: CancellationToken()))['configuration']['tracing'], isFalse);
+        await session.client.request('session.side.close', {'sessionID': side.id});
+        expect((await session.client.traceStatus(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
+        expect((await session.client.tracePage(untracedID, cancellation: CancellationToken()))['events'], isEmpty);
+        for (final file in ['telemetry.sqlite', 'telemetry-desktop.sqlite']) {
+          expect(await File('${root.path}/$file').exists(), isFalse,
+            reason: 'An unchecked session and its trace reads must not create a recorder');
+        }
+        expect(observed.where((event) => event['data']?['sessionID'] == untracedID)
+          .any((event) => event.containsKey('_trace')), isFalse);
+        session.newSession();
+        session.chooseTracing(true);
+        final draftID = session.currentDraft.id;
+        await events!.cancel();
+        await session.close();
+        session = DesktopSession(await AgentClient.connect(server.uri), await openDesktopDatabase(root.path),
+          attachmentDirectory: '${root.path}/attachments');
+        await session.load();
+        expect(session.currentDraft.id, draftID);
+        expect(session.currentDraft.tracing, isTrue, reason: 'Opt-in must survive restoring the draft');
+        watch();
       }, _LocalHttp()));
       addTearDown(() => tester.runAsync(() async {
         if (!release.isCompleted) release.complete();
@@ -94,14 +128,23 @@ void main() {
         await arrived.future.timeout(const Duration(seconds: 15));
         expect(await session.send('Private queued prompt'), isTrue, reason: session.error);
         release.complete();
-        await completed.future.timeout(const Duration(seconds: 20));
+        await completed[2].future.timeout(const Duration(seconds: 20));
       });
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(requests, hasLength(2));
+      expect(requests, hasLength(3));
       expect(jsonEncode(requests), contains('Private queued prompt'));
       expect(session.task!.pending, isEmpty);
       final sessionID = session.task!.id;
+      expect(session.task!.tracing, isTrue);
+      await tester.runAsync(() async {
+        expect(await session.send('/side'), isTrue, reason: session.error);
+        final side = session.sideChats.values.single;
+        expect(side.tracing, isTrue);
+        expect((await session.client.sessionRead('session.message.list', {'sessionID': side.id},
+          cancellation: CancellationToken()))['configuration']['tracing'], isTrue);
+        await session.client.request('session.side.close', {'sessionID': side.id});
+      });
       final encoded = (await tester.runAsync(() async {
         final file = await saveSessionTrace(session.client, await session.tracing,
           title: 'Session', sessionID: sessionID, downloadsDirectory: Directory('${root.path}/Downloads'),
@@ -149,6 +192,32 @@ void main() {
         cancellation: CancellationToken()));
       expect(empty!['events'], isEmpty);
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() => HttpOverrides.runWithHttpOverrides(() async {
+        session.newSession();
+        expect(session.currentDraft.tracing, isFalse, reason: 'Tracing is not a sticky preference');
+        expect(await session.send('Private untraced prompt after recording'), isTrue, reason: session.error);
+        await completed[3].future.timeout(const Duration(seconds: 20));
+        final untracedID = session.task!.id;
+        expect((await session.client.traceStatus(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
+        expect((await (await session.tracing).status(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
+        expect(observed.where((event) => event['data']?['sessionID'] == untracedID)
+          .any((event) => event.containsKey('_trace')), isFalse);
+        await events!.cancel();
+        await session.close();
+        session = DesktopSession(await AgentClient.connect(server.uri), await openDesktopDatabase(root.path),
+          attachmentDirectory: '${root.path}/attachments');
+        await session.load();
+        final traced = session.projects.expand((project) => project.tasks).singleWhere((task) => task.id == sessionID);
+        final untraced = session.projects.expand((project) => project.tasks).singleWhere((task) => task.id == untracedID);
+        expect(traced.tracing, isTrue, reason: 'The durable session inventory must restore its tracing choice');
+        expect(untraced.tracing, isFalse);
+        final store = await session.tracing;
+        final before = await store.status(sessionID, cancellation: CancellationToken());
+        await session.loadHistory(traced);
+        final after = await store.status(sessionID, cancellation: CancellationToken());
+        expect(after['categories']['websocket'], greaterThan(before['categories']['websocket'] as int),
+          reason: 'Reopened traced sessions must also trace their new requests');
+      }, _LocalHttp()));
     });
   }
 }

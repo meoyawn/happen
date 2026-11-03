@@ -29,7 +29,6 @@ void main() {
     await client.connect();
     session = DesktopSession(client, await openDesktopDatabase(root.path),
       attachmentDirectory: '${root.path}/attachments');
-    await session.tracing;
     task = DesktopTask(client.id, 'Inspect context');
     final page = await client.sessionRead('session.message.list', {'sessionID': client.id},
       cancellation: CancellationToken());
@@ -100,6 +99,11 @@ void main() {
   }
 
   testWidgets('trace download copies its path and both JSON exports attach to a new composer', (tester) async {
+    await tester.runAsync(() async {
+      await session.tracing;
+      task.tracing = true;
+      client.traceSession(task.id);
+    });
     String? copiedPath;
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
       if (call.method == 'Clipboard.setData') copiedPath = (call.arguments as Map)['text'] as String;
@@ -170,6 +174,20 @@ void main() {
 
   testWidgets('real context shows the saved prompt and usage, expands input, and exports the session', (tester) async {
     await showContext(tester, indicator: true);
+    expect(find.text('Tracing was not enabled for this session.'), findsOneWidget);
+    final traceDownload = tester.widget<TextButton>(find.ancestor(of: find.text('Export & copy path'),
+      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
+    expect(traceDownload.onPressed, isNull);
+    for (final label in ['Refresh session trace counts', 'Attach End-to-end trace to new session']) {
+      expect(tester.widget<IconButton>(find.byWidgetPredicate(
+        (widget) => widget is IconButton && widget.tooltip == label)).onPressed, isNull);
+    }
+    expect(client.traceReading, isNull);
+    await tester.runAsync(() async {
+      for (final file in ['telemetry.sqlite', 'telemetry-desktop.sqlite']) {
+        expect(await File('${root.path}/$file').exists(), isFalse);
+      }
+    });
     expect(find.text('Total Tokens'), findsOneWidget);
     expect(find.text('120'), findsNWidgets(2));
     await reveal(tester, find.text('System Prompt'));
@@ -389,6 +407,7 @@ class _Client implements AgentClient {
 
   @override Future<TraceStore> startTracing(String directory) =>
     _ioZone.run(() => remote.startTracing(directory));
+  @override void traceSession(String sessionID) => remote.traceSession(sessionID);
   @override Future<Json> traceStatus(String sessionID, {required CancellationToken cancellation}) =>
     traceReading = _ioZone.run<Future<Json>>(() => remote.traceStatus(sessionID, cancellation: cancellation));
   @override Future<Json> tracePage(String sessionID, {int after = 0, int? through,

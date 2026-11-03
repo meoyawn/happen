@@ -69,7 +69,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   }
 
   Future<void> _loadTraceStatus() async {
-    if (_traceLoading) return;
+    if (_traceLoading || !widget.task.tracing) return;
     _traceLoading = true;
     try {
       final store = await widget.session.tracing;
@@ -91,7 +91,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
 
   Future<void> _export({bool trace = false, bool attach = false}) async {
     final snapshot = _snapshot;
-    if (_exporting || !trace && snapshot == null) return;
+    if (_exporting || trace && !widget.task.tracing || !trace && snapshot == null) return;
     setState(() => _exporting = true);
     final destination = attach ? Directory('${widget.session.attachmentDirectory}/${newId()}')
       : widget.downloadsDirectory;
@@ -144,7 +144,10 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   Widget _exports() => Padding(padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
     child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       _exportRow('LLM context', enabled: _snapshot != null, trace: false),
-      _exportRow('End-to-end trace', enabled: true, trace: true),
+      _exportRow('End-to-end trace', enabled: widget.task.tracing, trace: true),
+      if (!widget.task.tracing) const Padding(padding: EdgeInsets.only(right: 8, bottom: 4),
+        child: Text('Tracing was not enabled for this session.',
+          style: TextStyle(fontSize: 11, color: opencodeFaint))),
       if (_traceError != null) Padding(padding: const EdgeInsets.only(right: 8, top: 4),
         child: Text(_traceError!, style: const TextStyle(fontSize: 11, color: Colors.red))),
       if (_traceCounts case final counts?) Padding(padding: const EdgeInsets.only(right: 8, bottom: 4),
@@ -155,9 +158,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   Widget _exportRow(String label, {required bool enabled, required bool trace}) => Row(children: [
     Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: opencodeMuted))),
     if (trace) IconButton(tooltip: 'Refresh session trace counts', visualDensity: VisualDensity.compact,
-      onPressed: _traceLoading ? null : _loadTraceStatus, icon: const Icon(Icons.refresh, size: 16)),
+      onPressed: _traceLoading || !enabled ? null : _loadTraceStatus, icon: const Icon(Icons.refresh, size: 16)),
     if (trace) Tooltip(message: 'Export end-to-end trace JSON and copy its path',
-      child: TextButton.icon(onPressed: _exporting ? null : () => _export(trace: true),
+      child: TextButton.icon(onPressed: _exporting || !enabled ? null : () => _export(trace: true),
         style: TextButton.styleFrom(foregroundColor: opencodeMuted, padding: const EdgeInsets.symmetric(horizontal: 6),
           textStyle: const TextStyle(fontSize: 11)),
         icon: const Icon(Icons.file_download_outlined, size: 16),

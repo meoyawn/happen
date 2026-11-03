@@ -15,6 +15,7 @@ Json initialConfiguration(Json input, String cwd, bool telemetry) {
     'instructions': interface.baseInstructions(input['model'] as String, input['instructions'] as String),
     'tool_interface': interface.id,
     'telemetry': input['telemetry'] ?? telemetry,
+    'tracing': input['tracing'] == true,
     'global_directory': input['global_directory'],
   };
 }
