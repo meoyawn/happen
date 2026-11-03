@@ -68,7 +68,7 @@ class ConversationMarkdown extends StatelessWidget {
           tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
           tableBody: body.copyWith(fontSize: 13),
           tableHeadAlign: TextAlign.left,
-          tableColumnWidth: const IntrinsicColumnWidth(),
+          tableColumnWidth: const FlexColumnWidth(),
           tableBorder: TableBorder.all(color: conversationBorder),
           tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           tableHeadCellsDecoration: const BoxDecoration(color: Color(0xfff4f4f6)),

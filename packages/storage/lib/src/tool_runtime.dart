@@ -4,15 +4,24 @@ extension ToolRuntimeHistory on TaskStore {
   /// Bind restored history to its live tool owner before the model can reuse
   /// process or cell handles from a previous execution environment.
   List<Json> startToolRuntime(String id) {
+    final input = modelContext().map((item) => ConversationItem.fromJson(item)).toList();
+    final completed = input.expand((item) => item.content)
+      .where((part) => part['type'] == 'tool_result').map((part) => part['call_id']).toSet();
+    final events = <Json>[
+      for (final call in input.expand((item) => item.calls))
+        if (!completed.contains(call.id)) {'type': 'tool.completed', 'data': {
+          'item': ConversationItem.toolResult(call,
+            'Interrupted before a durable result. Side effects may have occurred; inspect state before retrying.',
+            isError: true).toJson(),
+        }},
+    ];
     final previous = db.select(
       "SELECT json_extract(data, '\$.id') AS id FROM events "
       "WHERE type IS 'tool_runtime.started' ORDER BY seq DESC LIMIT 1",
     ).firstOrNull;
-    if (previous?['id'] == id) return [];
-    final restarted = previous != null || db.select(
-      "SELECT 1 FROM events WHERE type IN ('model.completed', 'context.compacted') LIMIT 1",
-    ).isNotEmpty;
-    return appendBatch([
+    if (previous?['id'] == id) return events.isEmpty ? [] : appendBatch(events);
+    final restarted = previous != null || input.isNotEmpty;
+    return appendBatch([...events,
       {'type': 'tool_runtime.started', 'data': {'id': id}},
       if (restarted) {'type': 'input.committed', 'data': {
         'item': ConversationItem(role: 'user', content: [{

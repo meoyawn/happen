@@ -308,22 +308,6 @@ class _Agent {
           metadata: {'status': 'running'},
         ),
       );
-      final completed = input
-          .expand((item) => item.content)
-          .where((p) => p['type'] == 'tool_result')
-          .map((p) => p['call_id'])
-          .toSet();
-      for (final call in input.expand((item) => item.calls).toList()) {
-        if (!completed.contains(call.id)) {
-          final result = ConversationItem.toolResult(
-            call,
-            'Interrupted before a durable result. Side effects may have occurred; inspect state before retrying.',
-            isError: true,
-          );
-          event(await _append('tool.completed', {'item': result.toJson()}));
-        }
-      }
-
       var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
       var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': []});
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;

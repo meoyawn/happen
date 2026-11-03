@@ -21,6 +21,12 @@ or pass the global `--data-dir PATH` option to select another directory. It hold
 authentication references, `AGENTS.md`, and task databases. Global configuration
 defaults to `~/.config/happen/config.yaml`, independently of the data directory.
 
+`happen exec --help` lists execution options, including `--[no-]telemetry`.
+Telemetry is disabled by default. With `--telemetry`, after the turn completes,
+fails, or is cancelled, `exec` exports a local Chrome Trace Event JSON file under
+`DATA_DIR/telemetry/` and prints its absolute path. With `--json`, the final output
+is a `telemetry.exported` event whose `data.path` contains that path.
+
 Set `code_mode_only: false` in that file to expose direct OpenAI tools alongside
 `exec`/`wait`, including native MCP discovery. This boolean defaults to `true`;
 Code Mode remains enabled in both modes. The choice is fixed when a session is

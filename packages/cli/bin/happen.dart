@@ -8,6 +8,7 @@ import 'package:opencode/opencode.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:telemetry/telemetry.dart';
 
 ArgParser parser() {
   final parser = ArgParser()
@@ -38,7 +39,8 @@ ArgParser parser() {
       ..addOption('api-key-env', defaultsTo: 'OPENAI_API_KEY')
       ..addOption('resume')
       ..addFlag('json', negatable: false)
-      ..addFlag('telemetry', defaultsTo: true),
+      ..addFlag('telemetry',
+        help: 'Record local telemetry and export a JSON trace after the turn; print its absolute path (off by default)'),
   );
   parser.addCommand(
     'request',
@@ -67,6 +69,10 @@ Future<void> run(List<String> arguments) async {
   final command = parsed.command;
   if (parsed['version'] == true) {
     stdout.writeln('happen 0.1.0');
+    return;
+  }
+  if (parsed['help'] == true && command?.name == 'exec') {
+    stdout.writeln('Usage: happen exec [options] "task"\n\n${options.commands['exec']!.usage}');
     return;
   }
   if (parsed['help'] == true || command == null) {
@@ -145,9 +151,16 @@ Future<void> run(List<String> arguments) async {
       AgentServer? embedded;
       AgentClient? client;
       StreamSubscription<Json>? events;
+      TraceStore? traces;
+      String? taskId = command['resume'] as String?;
+      final terminal = Completer<Json>();
       final cancellation = CancellationToken();
+      CancellationToken? exportCancellation;
       final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
-        .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
+        .map((signal) => signal.watch().listen((_) {
+          if (cancellation.isCancelled) { exportCancellation?.cancel(); }
+          else { cancellation.cancel(); }
+        })).toList();
       try {
         final endpoint = _localResponsesEndpoint(command);
         if (endpoint != null && command.wasParsed('provider') && !{'openai', 'gpt'}.contains(command['provider'])) {
@@ -162,8 +175,9 @@ Future<void> run(List<String> arguments) async {
         );
         cancellation.throwIfCancelled();
         client = AgentClient.local(embedded);
-        final terminal = Completer<Json>();
-        String? taskId = command['resume'] as String?;
+        final trace = command['telemetry'] == true
+          ? TraceContext(sink: (traces = await embedded.traces).sink, service: 'cli', session: taskId)
+          : null;
         events = client.events.stream.listen(
           (event) {
             if (taskId != null && event['task_id'] != taskId) return;
@@ -186,7 +200,7 @@ Future<void> run(List<String> arguments) async {
           },
         );
         final result = jsonObject(
-          await client.request(taskId == null ? 'task.start' : 'task.send', {
+          await withTrace(trace, () => client!.request(taskId == null ? 'task.start' : 'task.send', {
             'task_id': ?taskId,
             'prompt': prompt,
             if (taskId == null || command.wasParsed('cwd'))
@@ -197,9 +211,11 @@ Future<void> run(List<String> arguments) async {
             if (command.wasParsed('reasoning'))
               'reasoning': command['reasoning'],
             'telemetry': command['telemetry'],
-          }).asCancellable(cancellation),
+            'tracing': command['telemetry'],
+          })).asCancellable(cancellation),
         );
         taskId = result['task_id'] as String;
+        withTrace(trace, () => bindTraceSession(taskId!));
         final completed = await terminal.future.asCancellable(cancellation);
         if (command['json'] == false) {
           if (completed['type'] == 'turn.completed') {
@@ -213,10 +229,29 @@ Future<void> run(List<String> arguments) async {
         exitCode = 130;
       } finally {
         cancellation.cancel();
-        await events?.cancel();
-        await client?.close();
-        await embedded?.close();
-        for (final signal in signals) { await signal.cancel(); }
+        try {
+          if (traces != null && taskId != null) {
+            final exporting = exportCancellation = TimeoutCancellationToken(const Duration(seconds: 30));
+            if (!terminal.isCompleted) {
+              await client!.request('task.cancel', {'task_id': taskId}).asCancellable(exporting);
+              await terminal.future.asCancellable(exporting);
+            }
+            final file = await _saveTelemetry(traces, directory, taskId, cancellation: exporting);
+            if (command['json'] == true) {
+              stdout.writeln(jsonEncode({
+                'type': 'telemetry.exported', 'task_id': taskId, 'data': {'path': file.path},
+              }));
+            } else {
+              stdout.writeln('Telemetry: ${file.path}');
+            }
+          }
+        } finally {
+          exportCancellation?.cancel();
+          await events?.cancel();
+          await client?.close();
+          await embedded?.close();
+          for (final signal in signals) { await signal.cancel(); }
+        }
       }
     case 'request':
       if (command.rest.isEmpty) {
@@ -241,6 +276,45 @@ Future<void> run(List<String> arguments) async {
       }
     default:
       throw ArgumentError('Unknown command');
+  }
+}
+
+Future<File> _saveTelemetry(TraceStore traces, String directory, String sessionID, {
+  required CancellationToken cancellation,
+}) async {
+  cancellation.throwIfCancelled();
+  final file = File('$directory/telemetry/$sessionID-${newId()}.json').absolute;
+  await file.parent.create(recursive: true);
+  final partial = File('${file.path}.part');
+  final output = partial.openWrite();
+  var closed = false;
+  try {
+    output.write('{"displayTimeUnit":"ms","metadata":${jsonEncode({
+      'source': 'Happen', 'sessionID': sessionID,
+      'capturedAt': DateTime.now().toUtc().toIso8601String(),
+      'capture': 'snapshot',
+    })},"traceEvents":[');
+    output.write(traceProcessMetadata().map(jsonEncode).join(','));
+    var after = 0;
+    int? through;
+    while (true) {
+      final page = await traces.page(sessionID, after: after, through: through, cancellation: cancellation);
+      through ??= page['through'] as int;
+      after = page['after'] as int;
+      final events = traceExportEvents((page['events'] as List).cast<Map>());
+      for (final event in events) { output.write(',${jsonEncode(event)}'); }
+      await output.flush();
+      if (page['done'] == true) break;
+    }
+    output.write(']}\n');
+    await output.flush();
+    await output.close();
+    closed = true;
+    cancellation.throwIfCancelled();
+    return await partial.rename(file.path);
+  } finally {
+    if (!closed) await output.close();
+    if (await partial.exists()) await partial.delete();
   }
 }
 

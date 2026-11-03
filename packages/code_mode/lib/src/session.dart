@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'cancellation.dart';
 import 'content.dart';
@@ -42,7 +43,7 @@ class CodeSession {
           catalog: catalog, cancellation: cell.cancellation, timeout: null,
           interrupt: cancellation is CodeCancellationToken ? cancellation : null,
           awaitPending: false, retainOutput: true,
-          module: true,
+          module: true, cellId: id,
           onYield: () { cell.yielded = true; cell.changed(); }, onNotify: notify);
       } catch (error) {
         result = {'error': error is StateError ? error.message.toString() : error.toString()};
@@ -67,7 +68,7 @@ class CodeSession {
         cell.changed();
       }
     }();
-    return _observe(id, cell, parsed.yieldTimeMs, parsed.maxOutputTokens, cancellation);
+    return _observe('exec', id, cell, parsed.yieldTimeMs, parsed.maxOutputTokens, cancellation);
   }
 
   Future<Json> wait(Json input, {required CancellationToken cancellation}) async {
@@ -84,10 +85,11 @@ class CodeSession {
       cell.terminated = true;
       cell.cancellation.cancel();
     }
-    return _observe(id, cell, yieldTime, maxTokens, cancellation);
+    return _observe('wait', id, cell, yieldTime, maxTokens, cancellation);
   }
 
-  Future<Json> _observe(String id, _Cell cell, int milliseconds, int tokens, CancellationToken token) async {
+  Future<Json> _observe(String operation, String id, _Cell cell, int milliseconds, int tokens, CancellationToken token) =>
+    traceAsync('code_mode.$operation', () async {
     if (cell.observing) throw StateError('A wait is already pending for cell $id');
     cell.observing = true;
     final watch = Stopwatch()..start();
@@ -114,6 +116,9 @@ class CodeSession {
           if (rendered.items.any((part) => part['type'] != 'input_text')) 'text_audio_tokens': rendered.textAudioTokens};
       }
       if (completed != null) _cells.remove(id);
+      traceInstant('code_mode.observed', category: 'code_mode', attributes: {
+        'code.cell_id': id, 'code.running': completed == null, 'code.terminated': cell.terminated,
+      });
       return {
         ...result,
         'values': {...?_values},
@@ -129,7 +134,10 @@ class CodeSession {
     } finally {
       timer.cancel(); hook.dispose(); cell.observing = false;
     }
-  }
+  }, category: 'code_mode', attributes: {
+    'code.cell_id': id, 'code.yield_time_ms': milliseconds, 'code.max_output_tokens': tokens,
+    'code.terminate': cell.terminated,
+  }, includeErrorMessage: false);
 
   Future<void> close() async {
     _closed = true;

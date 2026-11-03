@@ -4,6 +4,7 @@ import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart';
 
 import 'bindings.dart';
 import 'cancellation.dart';
@@ -95,10 +96,11 @@ class QuickJs {
     bool awaitPending = true,
     bool retainOutput = false,
     bool module = false,
+    String? cellId,
     CodeCancellationToken? interrupt,
     void Function()? onYield,
     Future<void> Function(String)? onNotify,
-  }) async {
+  }) => traceAsync('code_mode.cell', () async {
     cancellation.throwIfCancelled();
     if (_running) throw StateError('Only one cell may run in a context');
     if (_closeExit != null) resetContext();
@@ -179,13 +181,18 @@ class QuickJs {
         for (final notice in state['notices'] as List) {
           await onNotify?.call(notice as String);
         }
-        if (state['yielded'] == true) onYield?.call();
+        if (state['yielded'] == true) {
+          traceInstant('code_mode.yield', category: 'code_mode');
+          onYield?.call();
+        }
         for (final raw in state['requests'] as List) {
           budget();
           final request = jsonObject(raw);
           final id = request['id'] as int;
-          final operation = Future<Object?>.sync(
+          final operation = traceAsync<Object?>('code_mode.host_tool',
             () => tool(request['name'] as String, request['args'] ?? {}, cancellation: cell),
+            category: 'code_mode', attributes: {'tool.name': request['name']},
+            includeErrorMessage: false,
           );
           pending[id] = operation.then<void>(
             (value) {
@@ -231,7 +238,10 @@ class QuickJs {
       localSignal?.close();
       _running = false;
     }
-  }
+  }, category: 'code_mode', attributes: {
+    'code.cell_id': ?cellId, 'code.source_length': source.length,
+    'code.mode': module ? 'module' : 'script',
+  }, includeErrorMessage: false);
 
   void close() {
     if (_handle != nullptr) {

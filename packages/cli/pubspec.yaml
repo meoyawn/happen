@@ -13,3 +13,4 @@ dependencies:
   opencode: any
   protocol: any
   server: any
+  telemetry: any

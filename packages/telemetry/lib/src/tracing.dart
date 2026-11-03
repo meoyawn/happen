@@ -13,6 +13,7 @@ int traceTime() => DateTime.now().toUtc().microsecondsSinceEpoch;
 const traceServices = {
   'desktop': 1, 'server': 2, 'storage': 3, 'agent': 4,
   'openai': 5, 'network': 6, 'desktop.storage': 7,
+  'cli': 8,
 };
 
 /// The carrier is explicit at socket and isolate boundaries. It contains no
@@ -131,7 +132,8 @@ class TraceSpan {
   final Stopwatch watch;
   bool _ended = false;
 
-  void end({Object? error, Map<String, dynamic> attributes = const {}, int? durationUs}) {
+  void end({Object? error, Map<String, dynamic> attributes = const {}, int? durationUs,
+    bool includeErrorMessage = true}) {
     if (_ended) return;
     _ended = true;
     watch.stop();
@@ -141,7 +143,7 @@ class TraceSpan {
         ...attributes, 'duration_us': durationUs ?? watch.elapsedMicroseconds,
         'status': error == null ? 'ok' : error is CancelledException ? 'cancelled' : 'error',
         if (error != null) 'error.type': error.runtimeType.toString(),
-        if (error != null) 'error.message': traceErrorMessage(error),
+        if (error != null && includeErrorMessage) 'error.message': traceErrorMessage(error),
       }});
   }
 }
@@ -170,14 +172,14 @@ T traceSync<T>(String name, T Function() action, {String category = 'session',
 }
 
 Future<T> traceAsync<T>(String name, Future<T> Function() action, {String category = 'session',
-  Map<String, dynamic> attributes = const {}}) async {
+  Map<String, dynamic> attributes = const {}, bool includeErrorMessage = true}) async {
   final span = startTraceSpan(name, category: category, attributes: attributes);
   if (span == null) return action();
   try {
     final result = await withTrace(span.context, action);
     span.end();
     return result;
-  } catch (error) { span.end(error: error); rethrow; }
+  } catch (error) { span.end(error: error, includeErrorMessage: includeErrorMessage); rethrow; }
 }
 
 Future<T> traceIncoming<T>(Map<String, dynamic> request, Future<T> Function() action, {required String service}) {

@@ -19,6 +19,15 @@ agent execution and model HTTP/WebSocket operations inherit that identity.
 Responses return it to desktop event application and frame presentation.
 Queued prompts retain their identity when execution begins later.
 
+JavaScript cells record their full execution lifetime, including time spent
+waiting for host tools after an exec observation yields. Exec and wait observations,
+explicit yields, and nested host calls are recorded separately in the `code_mode`
+category. Cell IDs link observations to execution; host calls and their downstream
+operations inherit the cell's span. Records include source length, execution mode,
+observation limits, completion state, timings, and error/cancellation status.
+JavaScript source, output, stored values, tool arguments/results, and error messages
+that could contain those contents are excluded.
+
 Each fork starts a separate trace at the fork request, before reading the
 parent's snapshot or copying history. Once the child ID is allocated, that
 trace is bound to the child, including the earlier preparation spans. The
