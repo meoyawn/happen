@@ -6,7 +6,8 @@ import 'appearance.dart';
 
 final _toastRegions = Expando<({OverlayEntry entry, List<_DesktopToast> toasts})>();
 
-void showDesktopToast(BuildContext context, String title, {
+VoidCallback? showDesktopToast(BuildContext context, String title, {
+  Object? tag,
   String? description,
   IconData? icon,
   String? actionLabel,
@@ -14,7 +15,7 @@ void showDesktopToast(BuildContext context, String title, {
   Duration duration = const Duration(seconds: 5),
 }) {
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
-  if (overlay == null) return;
+  if (overlay == null) return null;
   var region = _toastRegions[overlay];
   if (region == null) {
     final toasts = <_DesktopToast>[];
@@ -54,17 +55,20 @@ void showDesktopToast(BuildContext context, String title, {
     }
   }
 
-  toasts.removeWhere((toast) => toast.title == title && toast.description == description && toast.actionLabel == actionLabel);
+  toasts.removeWhere((toast) => tag != null ? toast.tag == tag
+    : toast.tag == null && toast.title == title && toast.description == description && toast.actionLabel == actionLabel);
   if (toasts.length == 3) toasts.removeAt(0);
-  toasts.add(_DesktopToast(key: key, title: title, description: description, icon: icon,
+  toasts.add(_DesktopToast(key: key, tag: tag, title: title, description: description, icon: icon,
     actionLabel: actionLabel, onAction: onAction, duration: duration, onDismiss: dismiss));
   entry.markNeedsBuild();
+  return dismiss;
 }
 
 class _DesktopToast extends StatefulWidget {
-  const _DesktopToast({super.key, required this.title, this.description, this.icon,
+  const _DesktopToast({super.key, this.tag, required this.title, this.description, this.icon,
     this.actionLabel, this.onAction, required this.duration, required this.onDismiss});
   final String title;
+  final Object? tag;
   final String? description, actionLabel;
   final IconData? icon;
   final VoidCallback? onAction;

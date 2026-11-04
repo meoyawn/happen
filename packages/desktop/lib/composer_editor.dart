@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart';
 
 import 'appearance.dart';
@@ -247,6 +248,41 @@ class _ComposerEditorState extends State<ComposerEditor> {
     if (textChanged) _measure();
   }
 
+  CodeLinePosition _wordTarget(bool forward) {
+    final position = _code.selection.extent;
+    final text = _code.extentLine.text;
+    if (forward ? position.offset == text.length : position.offset == 0) {
+      final index = position.index + (forward ? 1 : -1);
+      return index < 0 || index >= _code.codeLines.length ? position
+        : CodeLinePosition(index: index, offset: forward ? 0 : _code.codeLines[index].length);
+    }
+    // Share Flutter's Unicode word boundaries across deletion and navigation.
+    // The editor's built-in word operations only recognize ASCII letters/digits.
+    final painter = TextPainter(text: TextSpan(text: text), textDirection: TextDirection.ltr);
+    try {
+      painter.layout();
+      final boundary = painter.wordBoundaries.moveByWordBoundary;
+      var target = forward ? boundary.getTrailingTextBoundaryAt(position.offset) ?? text.length
+        : boundary.getLeadingTextBoundaryAt(position.offset - 1) ?? 0;
+      final start = _lines[position.index];
+      for (final ref in _references) {
+        if (start + target > ref.start && start + target < ref.end) {
+          target = (forward ? ref.end : ref.start) - start;
+          break;
+        }
+      }
+      return CodeLinePosition(index: position.index, offset: target);
+    } finally { painter.dispose(); }
+  }
+
+  void _deleteWord(bool forward) {
+    final selection = _code.selection;
+    if (!selection.isCollapsed) { _code.deleteSelection(); return; }
+    final target = _wordTarget(forward);
+    if (target == selection.extent) return;
+    _code.replaceSelection('', selection.copyWith(extentIndex: target.index, extentOffset: target.offset));
+  }
+
   TextSpan _span({required BuildContext context, required int index, required CodeLine codeLine,
       required TextSpan textSpan, required TextStyle style}) {
     final start = index < _lines.length ? _lines[index] : 0;
@@ -338,6 +374,17 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 else { _code.extendSelection(intent.direction); }
                 return null;
               }),
+              CodeShortcutCursorMoveWordBoundaryIntent: _ComposerAction<CodeShortcutCursorMoveWordBoundaryIntent>(_code, onInvoke: (intent) {
+                _code.selection = CodeLineSelection.fromPosition(position: _wordTarget(intent.forward));
+                _code.makeCursorVisible();
+                return null;
+              }),
+              CodeShortcutSelectionExtendWordBoundaryIntent: _ComposerAction<CodeShortcutSelectionExtendWordBoundaryIntent>(_code, onInvoke: (intent) {
+                final target = _wordTarget(intent.forward);
+                _code.selection = _code.selection.copyWith(extentIndex: target.index, extentOffset: target.offset);
+                _code.makeCursorVisible();
+                return null;
+              }),
               CodeShortcutIndentIntent: _ComposerAction<CodeShortcutIndentIntent>(_code, enabled: widget.enabled, onInvoke: (_) {
                 if (autocomplete?.completeSelection() != true) _code.applyIndent();
                 return null;
@@ -355,6 +402,10 @@ class _ComposerEditorState extends State<ComposerEditor> {
                   }
                 }
                 if (intent.forward) { _code.deleteForward(); } else { _code.deleteBackward(); }
+                return null;
+              }),
+              ShortcutWordDeleteDirectionIntent: _ComposerAction<ShortcutWordDeleteDirectionIntent>(_code, enabled: widget.enabled, onInvoke: (intent) {
+                _deleteWord(intent.forward);
                 return null;
               }),
               CodeShortcutPasteIntent: _ComposerAction<CodeShortcutPasteIntent>(_code, enabled: widget.enabled, onInvoke: (_) { unawaited(widget.paste(SelectionChangedCause.keyboard)); return null; }),
@@ -401,6 +452,12 @@ class _ComposerShortcuts extends DefaultCodeShortcutsActivatorsBuilder {
     CodeShortcutType.multiLineComment || CodeShortcutType.save || CodeShortcutType.find ||
     CodeShortcutType.replace || CodeShortcutType.lineSelect => const [],
     CodeShortcutType.outdent when completing => const [],
+    CodeShortcutType.selectionExtendWordBoundaryForward => const [
+      SingleActivator(LogicalKeyboardKey.arrowRight, alt: true, shift: true),
+    ],
+    CodeShortcutType.selectionExtendWordBoundaryBackward => const [
+      SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true, shift: true),
+    ],
     _ => super.build(type),
   };
 }

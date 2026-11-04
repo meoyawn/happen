@@ -21,12 +21,12 @@ inboxSections(DesktopSession session) {
   final needs = entries.where((entry) =>
     {'failed', 'interrupted'}.contains(_taskStatus(session, entry.$2))).toList();
   // Newest runs first; live steps never move rows.
-  final working = entries.where((entry) => entry.$2.running).toList()
+  final working = entries.where((entry) => entry.$2.running || _taskStatus(session, entry.$2) == 'input').toList()
     ..sort((a, b) {
       final start = (b.$2.runStartedAt ?? b.$2.lastActivity).compareTo(a.$2.runStartedAt ?? a.$2.lastActivity);
       return start != 0 ? start : a.$2.id.compareTo(b.$2.id);
     });
-  final recent = entries.where((entry) => !entry.$2.running && !needs.contains(entry) &&
+  final recent = entries.where((entry) => !working.contains(entry) && !needs.contains(entry) &&
     _finishedAt(entry.$2) >= (session.inboxSince ?? 0)).toList()
     ..sort((a, b) => _finishedAt(b.$2).compareTo(_finishedAt(a.$2)));
   return (pinned: session.pinnedTasks, working: working, needs: needs, recent: recent);
@@ -489,6 +489,7 @@ TextStyle _taskTitleStyle(String status, {bool selected = false}) => TextStyle(
 Widget _taskStatusIndicator(DesktopTask task, String status, {bool compact = false}) {
   final (label, color, icon) = switch (status) {
     'working' => ('Working', const Color(0xff2872b5), null),
+    'input' => ('Input', const Color(0xff4f46e5), Icons.question_answer_outlined),
     'done' => ('Done', const Color(0xff43825c), Icons.check_circle_outline),
     'failed' => ('Failed', const Color(0xffc44848), Icons.error_outline),
     'interrupted' => ('Interrupted', const Color(0xffb67a2a), Icons.pause_circle_outline),
@@ -510,6 +511,8 @@ Widget _taskStatusIndicator(DesktopTask task, String status, {bool compact = fal
 }
 
 String _taskStatus(DesktopSession session, DesktopTask task) {
+  if (task.questions.isNotEmpty || session.sideChats.values.any((side) =>
+      side.sideParentID == task.id && side.questions.isNotEmpty)) { return 'input'; }
   if (task.running) return 'working';
   if (task.loadError != null) return 'failed';
   final terminal = _lastTerminal(task);

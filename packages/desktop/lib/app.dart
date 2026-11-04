@@ -485,7 +485,10 @@ class _DesktopViewState extends State<DesktopView> {
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
       onToggle: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
-      unread: session.openTasks.any((entry) => !entry.$2.running && entry.$2.lastActivity > (session.viewedTasks[entry.$2.id] ?? -1)),
+      unread: session.openTasks.any((entry) => !entry.$2.running && entry.$2.lastActivity > (session.viewedTasks[entry.$2.id] ?? -1)) ||
+        session.projects.where((project) => !project.removing).expand((project) => project.tasks)
+          .any((task) => !task.archived && task.questions.isNotEmpty) ||
+        session.sideChats.values.any((task) => task.questions.isNotEmpty),
       sidebar: OpenCodeSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,

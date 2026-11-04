@@ -83,6 +83,58 @@ void main() {
   });
 
   final pinView = ValueVariant<String>({'inbox', 'side', 'top', 'home'});
+  testWidgets('pending questions override working and stay visible until answered', (tester) async {
+    final session = DesktopSession(_Client(), _Database())
+      ..openCodeLayout = OpenCodeLayout.inbox
+      ..inboxSince = DateTime.now().millisecondsSinceEpoch;
+    addTearDown(session.close);
+    final task = DesktopTask('question', 'Waiting for your answer')..running = true;
+    final project = Project('project', '/project', '/project', [task]);
+    session.projects.add(project);
+    session.openTabIds.add(task.id);
+    final focus = FocusNode();
+    addTearDown(focus.dispose);
+    DesktopTask? opened;
+    final view = pinView.currentValue!;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: TickerMode(enabled: false, child: ListenableBuilder(
+      listenable: session, builder: (context, _) => switch (view) {
+        'home' => OpenCodeHome(session: session, focusNode: focus,
+          onSelect: (_, task) => opened = task, onNew: (_) {}, onAddProject: () {}, onArchive: (_, _) {}),
+        'inbox' => SizedBox(width: 276, child: OpenCodeSidebar(session: session, home: true, windowControls: false,
+          onHome: () {}, onSearch: () {}, onNew: () {}, onSettings: () {},
+          onSelect: (_, task) => opened = task, onDraft: (_) {}, onArchive: (_, _) {})),
+        _ => SizedBox(height: view == 'top' ? 44 : 200, width: 276,
+          child: OpenCodeTabStrip(session: session, vertical: view == 'side', home: true,
+            onSelect: (_, task) => opened = task, onDraft: (_) {}, onArchive: (_, _) {})),
+      },
+    )))));
+    final client = session.client as _Client;
+    void event(String type, Json data) => client.events.add({
+      'id': 'evt_$type', 'type': 'session.$type', 'created': 1,
+      'data': {'sessionID': task.id, ...data},
+    });
+    event('question.asked', {'request': {'id': 'request', 'questions': []}});
+    await tester.pump();
+    expect(find.byTooltip('Input'), findsOneWidget);
+    expect(find.byTooltip('Working'), findsNothing);
+    expect(find.byIcon(Icons.question_answer_outlined), findsOneWidget);
+    final input = tester.widget<Icon>(find.byIcon(Icons.question_answer_outlined));
+    expect(input.color, const Color(0xff4f46e5));
+
+    // Non-blocking questions still need an answer after execution goes idle.
+    event('status', {'status': {'type': 'idle'}});
+    await tester.pump();
+    expect(find.byTooltip('Input'), findsOneWidget);
+    final row = find.byKey(ValueKey('${view == 'home' ? 'home' : view == 'inbox' ? 'inbox' : 'opencode-tab'}:${task.id}'));
+    await tester.tap(row);
+    expect(opened, same(task));
+    event('question.replied', {'requestID': 'request'});
+    await tester.pump();
+    expect(find.byTooltip('Input'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: pinView);
+
   testWidgets('sessions pin on hover and unpin by right click without opening history', (tester) async {
     late DesktopSession session;
     await tester.runAsync(() async {

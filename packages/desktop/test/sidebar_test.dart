@@ -48,6 +48,8 @@ void main() {
       await session.pinProject(secondProject, true);
       await session.chooseSidebarSection('pinned', true);
       await session.chooseSidebarSection('recents', true);
+      await session.chooseNotificationMode('sound');
+      await session.chooseInAppNotifications(true);
       expect(session.recentTasks.map((entry) => entry.$2.id), ['middle', 'old']);
 
       client.events.add({
@@ -77,6 +79,8 @@ void main() {
       expect(session.pinnedTaskIds, ['new']);
       expect(session.pinnedProjectKeys, ['beta']);
       expect(session.collapsedSidebarSections, {'pinned', 'recents'});
+      expect(session.notificationMode, 'sound');
+      expect(session.inAppNotificationsEnabled, true);
       expect(session.recentTasks.map((entry) => entry.$2.id), ['old', 'middle']);
       expect(session.recentTasks.first.$2.lastActivity, DateTime.utc(2030, 1, 2).millisecondsSinceEpoch);
       await session.pinTask(session.projects.first.tasks.singleWhere((task) => task.id == 'new'), false);

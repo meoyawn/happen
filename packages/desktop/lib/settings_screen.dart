@@ -13,6 +13,8 @@ import 'composer_attachments.dart';
 import 'interface_mode.dart';
 import 'project_avatar.dart';
 import 'session.dart';
+import 'desktop_notifications.dart';
+import 'notification_preferences.dart';
 import 'window_chrome.dart';
 
 const _pages = [
@@ -199,6 +201,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
           : 'Record first, then insert the transcription when you stop.',
         _choice('Dictation', widget.session.dictationMode, const {'live': 'Live', 'on_stop': 'On stop'},
           (value) => widget.run(() => widget.session.chooseDictationMode(value)))),
+      _NotificationPreferences(session: widget.session, run: widget.run),
     ]),
   ]);
 
@@ -287,6 +290,52 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         ]),
     ]);
   }
+}
+
+class _NotificationPreferences extends StatefulWidget {
+  const _NotificationPreferences({required this.session, required this.run});
+  final DesktopSession session;
+  final Future<void> Function(Future<void> Function()) run;
+
+  @override
+  State<_NotificationPreferences> createState() => _NotificationPreferencesState();
+}
+
+class _NotificationPreferencesState extends State<_NotificationPreferences> {
+  final _lifetime = CancellationToken();
+  bool _requesting = false;
+  String? _message;
+
+  Future<void> _choose(String mode) async {
+    if (_requesting) return;
+    setState(() { _requesting = true; _message = null; });
+    try {
+      if (hasSystemNotifications(mode) &&
+          !await requestDesktopNotificationPermission(cancellation: _lifetime)) {
+        if (mounted) setState(() => _message = 'Allow Happen notifications in system settings, then choose this option again.');
+        return;
+      }
+      await widget.session.chooseNotificationMode(mode).asCancellable(_lifetime);
+    } on MissingPluginException {
+      if (mounted) setState(() => _message = 'Relaunch Happen to enable system notifications.');
+    } finally {
+      if (mounted) setState(() => _requesting = false);
+    }
+  }
+
+  @override
+  void dispose() { _lifetime.cancel(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    _settingsRow('Chat notifications', _message ?? (_requesting ? 'Waiting for notification permission…'
+        : 'System alerts when a chat finishes, fails, or needs input. Applies to this device while Happen is open.'),
+      AbsorbPointer(absorbing: _requesting, child: _choice('Chat notifications',
+        widget.session.notificationMode, notificationModes, (mode) => unawaited(widget.run(() => _choose(mode)))))),
+    _settingsRow('In-app notifications', 'Show an alert for other chats while Happen is in the foreground.',
+      Switch.adaptive(value: widget.session.inAppNotificationsEnabled,
+        onChanged: (enabled) => unawaited(widget.run(() => widget.session.chooseInAppNotifications(enabled))))),
+  ]);
 }
 
 class _ProjectSettings extends StatefulWidget {

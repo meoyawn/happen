@@ -54,9 +54,11 @@ class _Session extends Fake implements DesktopSession {
   @override
   Json? get modelInfo => choices.firstOrNull;
   @override
+  Json? modelFor(DesktopTask? target) => modelInfo;
+  @override
   void chooseModel(String id) => selectedModel = id;
   @override
-  void chooseReasoning(String level) => selectedReasoning = level;
+  void chooseReasoning(String level, {DesktopTask? target}) => selectedReasoning = level;
 }
 
 typedef _Composer = ({ComposerTextController text, FocusNode focus, CodeLineEditingController code,
@@ -117,6 +119,59 @@ void _testComposer(String description, WidgetTesterCallback body) {
 }
 
 void main() {
+  _testComposer('word shortcuts use Unicode boundaries for deletion, movement, and selection', (tester) async {
+    final composer = await _open(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    try {
+      for (final (prefix, word) in [
+        ('первое второе ', 'слово'),
+        ('first ', 'word'),
+        ('πρώτη ', 'λέξη'),
+        ('أول ', 'كلمة'),
+        ('ראשון ', 'מילה'),
+        ('पहला ', 'शब्द'),
+        ('প্রথম ', 'শব্দ'),
+        ('你好世', '界'),
+        ('日本', '語'),
+        ('첫째 ', '단어'),
+        ('แรก ', 'ภาษา'),
+        ('first ', 'cafe\u0301'),
+        ('first ', '👩🏽‍💻'),
+      ]) {
+        final text = '$prefix$word tail', end = prefix.length + word.length;
+        composer.text.value = TextEditingValue(text: text, selection: TextSelection.collapsed(offset: end));
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+        expect(composer.text.text, '${prefix} tail', reason: 'Backward deletion: $word');
+        composer.code.undo();
+        expect(composer.text.text, text, reason: 'Undo: $word');
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        expect(composer.text.selection, TextSelection.collapsed(offset: prefix.length), reason: 'Move left: $word');
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        expect(composer.text.selection, TextSelection(baseOffset: prefix.length, extentOffset: end), reason: 'Select right: $word');
+        await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+        expect(composer.text.text, '${prefix} tail', reason: 'Selected deletion: $word');
+        composer.code.undo();
+
+        composer.text.selection = TextSelection.collapsed(offset: prefix.length);
+        await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+        expect(composer.text.text, '${prefix} tail', reason: 'Forward deletion: $word');
+        composer.code.undo();
+        composer.text.selection = TextSelection.collapsed(offset: prefix.length);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        expect(composer.text.selection, TextSelection.collapsed(offset: end), reason: 'Move right: $word');
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        expect(composer.text.selection, TextSelection(baseOffset: end, extentOffset: prefix.length), reason: 'Select left: $word');
+      }
+    } finally { await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft); }
+    expect(tester.takeException(), isNull);
+  });
+
   _testComposer('Up/Down wraps suggestions, scrolls their highlight, and leaves the caret in place', (tester) async {
     final client = _Client()..paths = [for (var i = 0; i < 24; i++) 'lib/file$i.dart'];
     final composer = await _open(tester, client: client);
@@ -178,6 +233,22 @@ void main() {
     expect(composer.text.files, isEmpty);
     composer.code.undo();
     expect(composer.text.serializePrompt(), '[main.dart](lib/main.dart) ');
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    try {
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      expect(composer.text.text, ' ');
+      expect(composer.text.files, isEmpty);
+      composer.code.undo();
+      expect(composer.text.serializePrompt(), '[main.dart](lib/main.dart) ');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      expect(composer.text.selection.extentOffset, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      expect(composer.text.selection.extentOffset, 1);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      expect(composer.text.selection, const TextSelection(baseOffset: 1, extentOffset: 0));
+    } finally { await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft); }
     expect(tester.takeException(), isNull);
   });
 
@@ -397,6 +468,13 @@ void main() {
     expect(find.text('Add context'), findsNothing);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
     expect(composer.text.value, before);
     composer.code.composing = TextRange.empty;
     await tester.pump(const Duration(milliseconds: 220));
@@ -411,6 +489,10 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
     await tester.sendKeyEvent(LogicalKeyboardKey.delete);
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
     expect(composer.text.text, 'Keep this draft');
     expect(tester.takeException(), isNull);
   });

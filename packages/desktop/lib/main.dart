@@ -8,8 +8,10 @@ import 'package:server/server.dart';
 import 'app.dart';
 import 'appearance.dart';
 import 'database.dart';
+import 'desktop_notifications.dart';
 import 'lifecycle.dart';
 import 'local_task_sleep.dart';
+import 'panel_state.dart';
 import 'session.dart';
 
 void main() {
@@ -26,10 +28,12 @@ class HappenDesktop extends StatefulWidget {
 
 class _HappenDesktopState extends State<HappenDesktop> {
   final _lifetime = CancellationToken();
+  final _navigator = GlobalKey<NavigatorState>();
   AgentServer? _server;
   IsolateOwner? _database;
   AgentClient? _client;
   DesktopSession? _session;
+  DesktopNotifications? _notifications;
   LocalTaskSleepInhibitor? _sleep;
   StreamSubscription<int>? _activity;
   String? _error;
@@ -72,6 +76,27 @@ class _HappenDesktopState extends State<HappenDesktop> {
     }
   }
 
+  void _openNotification(DesktopTask target) {
+    final session = _session;
+    if (session == null || _lifetime.isCancelled) return;
+    final parent = target.sideParentID == null ? target : session.projects
+      .expand((project) => project.tasks).where((task) => task.id == target.sideParentID).firstOrNull;
+    if (parent == null) return;
+    final project = session.projects.where((project) => project.tasks.contains(parent)).firstOrNull;
+    if (project == null) return;
+    _navigator.currentState?.popUntil((route) => route.isFirst);
+    unawaited(() async {
+      try {
+        await session.select(project, parent);
+        if (!_lifetime.isCancelled && parent != target) session.openSessionPanel(parent, sideChatPanel(target.id));
+      } on CancelledException {
+        // Application exit owns cancellation.
+      } catch (error) {
+        session.showError(error);
+      }
+    }());
+  }
+
   Future<void> _open() async {
     try {
       final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
@@ -92,6 +117,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       );
       _lifetime.throwIfCancelled();
       final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
+      _notifications = DesktopNotifications(session);
       await session.load();
       _lifetime.throwIfCancelled();
       if (mounted) setState(() {});
@@ -110,20 +136,24 @@ class _HappenDesktopState extends State<HappenDesktop> {
     await _opening;
     await _activity?.cancel();
     try {
-      if (_session case final session?) {
-        await session.close();
-      } else {
-        try {
-          await _client?.close();
-        } finally {
-          await _database?.close();
-        }
-      }
+      await _notifications?.close();
     } finally {
       try {
-        await _server?.close();
+        if (_session case final session?) {
+          await session.close();
+        } else {
+          try {
+            await _client?.close();
+          } finally {
+            await _database?.close();
+          }
+        }
       } finally {
-        await _sleep?.close();
+        try {
+          await _server?.close();
+        } finally {
+          await _sleep?.close();
+        }
       }
     }
   }
@@ -137,6 +167,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Happen',
+    navigatorKey: _navigator,
     builder: (context, child) => DesktopLifecycle(
       onQuit: _close,
       onResume: () => unawaited(_refreshProjects()),
@@ -156,6 +187,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
           )
         : _session == null
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
-        : DesktopView(session: _session!),
+        : DesktopNotificationWindow(notifications: _notifications!, onOpen: _openNotification,
+            child: DesktopView(session: _session!)),
   );
 }

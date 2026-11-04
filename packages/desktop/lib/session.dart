@@ -17,6 +17,10 @@ import 'composer_text_controller.dart';
 import 'appearance.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
+import 'notification_preferences.dart';
+
+enum TaskNotificationKind { input, completion, failure }
+typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
 
 class Project {
   Project(this.checkoutKey, this.id, this.path, [List<DesktopTask>? tasks])
@@ -53,6 +57,8 @@ class DesktopTask {
   String? lastSentID;
   final questions = <String, Json>{};
   final questionDrafts = <String, QuestionDraft>{};
+  late final _notifiedEvents = <String>{};
+  bool _stopRequested = false;
   bool running = false, loaded = false, loading = false, archived = false, archiving = false;
   bool loadingEarlier = false;
   String? historyBefore;
@@ -154,11 +160,15 @@ class DesktopSession extends ChangeNotifier {
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
+  late final _notifications = StreamController<TaskNotification>.broadcast();
+  Stream<TaskNotification> get notifications => _notifications.stream;
   List<Json> providers = [];
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
   String projectAvatarStyle = 'letters';
+  String notificationMode = 'off';
+  bool inAppNotificationsEnabled = false;
   OpenCodeLayout openCodeLayout = OpenCodeLayout.top;
   bool sidebarOpen = true, inboxWorkingExpanded = true;
   bool viewingConversation = true;
@@ -303,6 +313,19 @@ class DesktopSession extends ChangeNotifier {
     if (!{'live', 'on_stop'}.contains(mode)) throw ArgumentError('Invalid dictation mode');
     await _setting('dictation_mode', mode);
     dictationMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> chooseNotificationMode(String mode) async {
+    if (!notificationModes.containsKey(mode)) throw ArgumentError('Invalid notification mode');
+    await _setting('notification_mode', mode);
+    notificationMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> chooseInAppNotifications(bool enabled) async {
+    await _setting('in_app_notifications', enabled.toString());
+    inAppNotificationsEnabled = enabled;
     notifyListeners();
   }
 
@@ -579,8 +602,9 @@ class DesktopSession extends ChangeNotifier {
     if (task case final target?) _rememberTab(target);
     final targets = openCodeLayout == OpenCodeLayout.inbox
         ? projects.expand((project) => project.tasks).where((target) =>
-            target == task || !target.projectionState.containsKey('summary')).toList()
-        : openTasks.map((entry) => entry.$2).toList();
+            target == task || target.running || !target.projectionState.containsKey('summary')).toList()
+        : {...openTasks.map((entry) => entry.$2),
+            ...projects.expand((project) => project.tasks).where((target) => target.running && !target.archived)}.toList();
     for (var index = 0; index < targets.length; index += 4) {
       _lifetime.throwIfCancelled();
       await Future.wait([
@@ -824,7 +848,7 @@ class DesktopSession extends ChangeNotifier {
     if (task != null) return;
     final model = models.where((m) => m['id'] == id).firstOrNull;
     if (model == null) throw ArgumentError('Unknown model');
-    _rememberModel(model['provider'] as String, id, model['default_reasoning'] as String?);
+    _rememberModel(model['provider'] as String, id, currentDraft.reasoning ?? reasoning);
     notifyListeners();
   }
 
@@ -961,6 +985,9 @@ class DesktopSession extends ChangeNotifier {
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
+    final savedNotificationMode = settings['notification_mode'] as String?;
+    notificationMode = notificationModes.containsKey(savedNotificationMode) ? savedNotificationMode! : 'off';
+    inAppNotificationsEnabled = settings['in_app_notifications'] == 'true';
     openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == settings['opencode_layout']).firstOrNull ?? OpenCodeLayout.top;
     sidebarOpen = settings['sidebar_open'] != 'false';
     inboxWorkingExpanded = settings['inbox_working_expanded'] != 'false';
@@ -1551,7 +1578,13 @@ class DesktopSession extends ChangeNotifier {
   Future<void> stop({DesktopTask? target}) async {
     final selected = target ?? task;
     if (selected == null || !selected.running) return;
-    await _request('task.cancel', {'task_id': selected.id});
+    selected._stopRequested = true;
+    try {
+      await _request('task.cancel', {'task_id': selected.id});
+    } catch (_) {
+      selected._stopRequested = false;
+      rethrow;
+    }
   }
 
   Future<void> changePending(DesktopTask target, String inboxID, String action) async {
@@ -1718,18 +1751,38 @@ class DesktopSession extends ChangeNotifier {
   void _applyEvent(DesktopTask target, Json event) {
     if (event['type'].toString().startsWith('session.')) {
       if (target.loading) target.liveEvents.add(event);
-      _applySessionEvent(target, event);
+      if (_applySessionEvent(target, event)) _notifyEvent(target, event);
       return;
     }
     final state = jsonObject(target.projectionState['execution'] ?? {});
-    for (final native in sessionEvents(target.id, event, state)) { _applySessionEvent(target, native); }
+    for (final native in sessionEvents(target.id, event, state)) {
+      if (_applySessionEvent(target, native)) _notifyEvent(target, native);
+    }
     target.projectionState['execution'] = state;
   }
 
-  void _applySessionEvent(DesktopTask target, Json event) {
+  void _notifyEvent(DesktopTask target, Json event) {
+    final kind = switch (event['type']) {
+      'session.question.asked' => TaskNotificationKind.input,
+      'session.execution.succeeded' => TaskNotificationKind.completion,
+      'session.execution.failed' => TaskNotificationKind.failure,
+      _ => null,
+    };
+    if (kind == null) return;
+    final key = kind == TaskNotificationKind.input
+      ? 'question:${event['data']['request']['id']}' : event['id'] as String;
+    if (!target._notifiedEvents.add(key)) return;
+    if (target._notifiedEvents.length > 64) target._notifiedEvents.remove(target._notifiedEvents.first);
+    if (!target.archived && !target.archiving && !_lifetime.isCancelled &&
+        !(kind == TaskNotificationKind.completion && target._stopRequested)) {
+      _notifications.add((task: target, kind: kind));
+    }
+  }
+
+  bool _applySessionEvent(DesktopTask target, Json event) {
     final data = jsonObject(event['data'] ?? {});
     final sequence = event['durable']?['seq'] as int?;
-    if (sequence != null && sequence <= target.through) return;
+    if (sequence != null && sequence <= target.through) return false;
     if (sequence != null) target.through = sequence;
     applySessionEvent(target.messages, event, target.projectionState);
     switch (event['type']) {
@@ -1741,7 +1794,10 @@ class DesktopSession extends ChangeNotifier {
         target.reasoningUpdates = data['metadata']?['reasoningUpdates'] == true;
       case 'session.execution.started':
       case 'session.step.started':
-        if (event['type'] == 'session.execution.started') target.runStartedAt = event['created'] as int?;
+        if (event['type'] == 'session.execution.started') {
+          target.runStartedAt = event['created'] as int?;
+          target._stopRequested = false;
+        }
         target.running = true;
         target.streamingText = '';
         target.retryStatus = null;
@@ -1808,6 +1864,7 @@ class DesktopSession extends ChangeNotifier {
       target.lastActivity = activity;
       unawaited(_saveActivity(target).catchError((Object failure) { if (failure is! CancelledException) showError(failure); }));
     }
+    return true;
   }
 
   Future<void> close() async {
@@ -1826,6 +1883,7 @@ class DesktopSession extends ChangeNotifier {
     _lifetime.cancel();
     _disconnect.dispose();
     await _events.cancel();
+    await _notifications.close();
     await client.close();
     await database.close();
     for (final side in sideChats.values) { side.liveText.dispose(); }

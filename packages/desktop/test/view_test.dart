@@ -994,7 +994,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('one model and reasoning menu combines both providers and preserves existing-task restrictions', (tester) async {
+  testWidgets('model and reasoning menus include both providers and preserve existing-task restrictions', (tester) async {
     (session.providers.first['models'] as List).first['reasoning_levels'] = ['low', 'high'];
     (session.providers.first['models'] as List).add({'id': 'gpt-6-astra', 'default_reasoning': 'low', 'reasoning_levels': ['low', 'high']});
     session.providers.last['models'] = [
@@ -1027,30 +1027,31 @@ void main() {
     expect(session.providers.map((p) => p['id']), ['openai', 'opencode']);
     expect(session.models.map((m) => m['id']), isNot(contains('deepseek-flash')));
     await open(tester);
-    final menu = find.byTooltip('Model and reasoning effort');
+    final menu = find.byTooltip('Model');
+    final effortMenu = find.byTooltip('Reasoning effort');
+    ComposerEditor editor() => tester.widget<ComposerEditor>(find.byType(ComposerEditor));
     Finder item(String label) => find.ancestor(of: find.text(label), matching: find.byType(PopupMenuItem<String>));
     Future<void> frame() async { await tester.pump(); await tester.pump(const Duration(milliseconds: 300)); }
     expect(menu, findsOneWidget);
+    expect(effortMenu, findsOneWidget);
     expect(find.byType(DropdownButton<String>), findsNothing);
-    await tester.enterText(find.byType(TextField), 'Keep new draft');
+    editor().controller.text = 'Keep new draft';
+    await tester.pump();
     await tester.tap(menu);
     await tester.pumpAndSettle();
-    expect(find.text('MODEL'), findsOneWidget);
-    expect(find.text('REASONING EFFORT'), findsOneWidget);
     expect(find.text('gpt-6.1-sol'), findsOneWidget);
     expect(find.text('deepseek-v4.1-flash-free'), findsOneWidget);
+    expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, true);
     await tester.tap(item('deepseek-v4.1-flash-free'));
     await tester.pumpAndSettle();
     expect(session.providerId, 'opencode');
     expect(session.modelId, 'deepseek-v4.1-flash-free');
-    expect(session.reasoning, 'high');
+    expect(session.reasoning, 'low');
     expect(session.authenticated, false);
-    await tester.tap(menu);
+    await tester.tap(effortMenu);
     await tester.pumpAndSettle();
     expect(find.text('Off'), findsOneWidget);
     expect(find.text('Max'), findsOneWidget);
-    expect(find.text('gpt-6.1-sol'), findsOneWidget);
-    expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, true);
     await tester.tap(item('Max'));
     await tester.pumpAndSettle();
     expect(session.reasoning, 'max');
@@ -1065,8 +1066,8 @@ void main() {
     expect(session.modelId, 'gpt-6-astra');
     expect(session.reasoning, 'low');
     expect(session.authenticated, true);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep new draft');
-    await tester.tap(menu);
+    expect(editor().controller.text, 'Keep new draft');
+    await tester.tap(effortMenu);
     await tester.pumpAndSettle();
     await tester.tap(item('High'));
     await tester.pumpAndSettle();
@@ -1074,27 +1075,33 @@ void main() {
     await tester.runAsync(() => session.select(session.project!, existing));
     await tester.pumpAndSettle();
     expect(session.modelId, 'gpt-6.1-sol');
-    client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': {}});
+    client.events.add({'id': 'started', 'type': 'session.execution.started', 'data': {'sessionID': 'task'}});
     await frame();
     await tester.tap(menu);
     await frame();
     expect(tester.widget<PopupMenuItem<String>>(item('gpt-6-astra')).enabled, false);
     expect(tester.widget<PopupMenuItem<String>>(item('deepseek-v4.1-flash-free')).enabled, false);
     expect(find.text('Start a new task to change models.'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await frame();
+    await tester.tap(effortMenu);
+    await frame();
     expect(tester.widget<PopupMenuItem<String>>(item('High')).enabled, true);
     await tester.tap(item('High'));
     await frame();
     expect(session.reasoning, 'high');
-    await tester.enterText(find.byType(TextField), 'Use more reasoning');
+    editor().controller.text = 'Use more reasoning';
+    editor().focusNode.requestFocus();
+    await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(client.sent.single['reasoning'], 'high');
     expect(client.sent.single['delivery'], 'steer');
 
     session.task!.reasoningUpdates = false;
-    client.events.add({'task_id': 'task', 'type': 'model.completed', 'data': {}});
+    client.events.add({'id': 'completed', 'type': 'session.execution.succeeded', 'data': {'sessionID': 'task'}});
     await tester.pump();
-    await tester.tap(menu);
+    await tester.tap(effortMenu);
     await frame();
     expect(tester.widget<PopupMenuItem<String>>(item('Light')).enabled, false);
     expect(find.text('Reasoning effort is fixed for this task.'), findsOneWidget);
@@ -1102,6 +1109,8 @@ void main() {
     await frame();
     session.chooseReasoning('low');
     expect(session.reasoning, 'high');
+    await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+    await tester.pump();
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
@@ -1734,18 +1743,18 @@ class _Client implements AgentClient {
     if (method == 'session.list') return {'data': [], 'cursor': {}};
     if (method == 'session.active') return {'data': {}};
     if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};
-    if (method == 'task.cancel') {
-      cancelled.add(params['task_id'] as String);
+    if (method == 'session.interrupt') {
+      cancelled.add(params['sessionID'] as String);
       return {};
     }
     if (method == 'session.unarchive' || method == 'session.archive') {
       if (method == 'session.unarchive') restored.add(params['sessionID'] as String);
       return {'sessionID': params['sessionID'], 'archived': method == 'session.archive'};
     }
-    if (method != 'task.send') throw StateError('Unexpected request: $method');
+    if (method != 'session.prompt') throw StateError('Unexpected request: $method');
     sent.add(params);
     if (rejectSend) throw StateError('fixture rejection');
-    return {'task_id': params['task_id']};
+    return {'sessionID': params['sessionID']};
   }
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');

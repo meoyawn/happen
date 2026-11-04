@@ -71,8 +71,23 @@ until restored.
 
 Session status uses a blue animated **Working** indicator, a neutral idle ring
 with its age, and distinct **Done**, **Failed**, and **Interrupted** cues.
+Chats awaiting an answer show a purple **Input** indicator instead of Working,
+including questions from side chats. Input remains visible until answered or
+dismissed, even for questions that let the agent continue working.
 Pins remain neutral and visible alongside activity; the selected session uses
 a neutral background. These cues are shared by Inbox, tabs, and Home.
+
+**Settings → Preferences** includes **Chat notifications** (Off, notifications
+only, sound only, or notifications with sound) and **In-app notifications**.
+Both default to off. Live questions, completed chats, and failures trigger
+alerts; stopped runs and restored history stay quiet. Foreground alerts for
+other chats include **Open chat**; system alerts appear while Happen is in the
+background and open their chat when clicked. macOS shows the unread alert count
+on the Dock icon and clears it when Happen regains focus. Notifications and sounds
+live with the desktop process: closing the macOS window keeps them active until
+Quit. Notification clicks reopen the window and select their chat. Notification sounds
+come from T3 Code; their MIT license is bundled beside the audio assets.
+Adding the native notification plugins requires a rebuild and relaunch.
 
 Archiving works even when the conversation history cannot load; saved history is
 kept. **Settings → Archived tasks** also lets you restore an archived session.
@@ -174,6 +189,8 @@ after compaction.
 The composer groups the model/reasoning menu, microphone, and Send/Stop.
 The model/reasoning menu keeps models fixed for existing tasks; supported reasoning
 changes apply to the next message.
+Switching models keeps the draft's reasoning preference. Models that do not support
+it use their default until you switch to a model that supports it again.
 One action button sends messages, or stops a running task when the draft is empty.
 With a draft or attachments during a running task, it steers or queues the message
 according to Settings.
