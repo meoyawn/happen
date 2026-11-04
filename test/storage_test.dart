@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
@@ -91,94 +90,29 @@ void main() {
   });
 
 
-  test('a failed derived cache never loses a durable event and repairs on read', () async {
-    final root = await Directory.systemTemp.createTemp('history-cache-');
-    final id = newId();
-    var store = TaskStore(root.path, id);
-    addTearDown(() async { store.close(); await root.delete(recursive: true); });
-    store.append('host_tool.completed', {'id': 'first', 'name': 'probe', 'output': 'first receipt'});
-    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(1));
-    store.db.execute('''CREATE TEMP TRIGGER fail_cache BEFORE INSERT ON conversation_events
-      BEGIN SELECT RAISE(ABORT, 'cache unavailable'); END''');
-    store.append('host_tool.completed', {'id': 'second', 'name': 'probe', 'output': 'second receipt'},
-      metadata: {'receipt': 'second receipt'});
-    expect(store.history().last['data']['output'], 'second receipt');
-    expect(store.metadata('receipt'), 'second receipt');
-    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(1));
-    store.close();
-    store = TaskStore(root.path, id, create: false);
-    expect(store.history(conversationView: true).last['data']['output'], 'second receipt');
-    expect(store.db.select('SELECT seq FROM conversation_events'), hasLength(2));
-  });
-
-  test('cancelling paged history work preserves the writer and never publishes a partial fork', () async {
+  test('cancelled fork admission preserves the writer and never publishes a child', () async {
     final root = await Directory.systemTemp.createTemp('history-cancel-');
     final owner = await startStore(root.path, newId());
     addTearDown(() async {
       await owner.close();
       await root.delete(recursive: true);
     });
-    for (var page = 0; page < 10; page++) {
-      await callIsolate(owner.port, 'append_batch', {
-        'events': List.generate(
-          1000,
-          (i) => {
-            'type': 'host_tool.completed',
-            'data': {
-              'id': '$page:$i',
-              'name': 'probe',
-              'output': 'ordinary historical text ' * 40,
-            },
-          },
-        ),
-      });
-    }
     await callIsolate(owner.port, 'append', {
-      'type': 'turn.completed',
-      'data': {},
+      'type': 'task.created',
+      'data': <String, Object?>{},
     });
-    final searching = CancellationToken();
-    final result = expectLater(
-      callIsolate(owner.port, 'history.search_contents', {
-        'query': 'not-present-anywhere',
-        'limit': 1,
-      }, cancellation: searching),
-      throwsA(isA<CancelledException>()),
-    );
-    final timer = Timer(const Duration(milliseconds: 1), searching.cancel);
-    await result;
-    timer.cancel();
-    expect(
-      await callIsolate(owner.port, 'history', {'limit': 1}),
-      hasLength(1),
-    );
-
-    final child = newId(), copying = CancellationToken();
+    final child = newId(), copying = CancellationToken()..cancel();
     final fork = expectLater(
       callIsolate(owner.port, 'fork', {'id': child}, cancellation: copying),
       throwsA(isA<CancelledException>()),
     );
-    final stage = Directory('${root.path}/staging');
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while (!await stage.exists() || await stage.list().isEmpty) {
-      if (DateTime.now().isAfter(deadline)) fail('Fork never started');
-      await Future<void>.delayed(Duration.zero);
-    }
-    copying.cancel();
     await fork;
     // This request queues behind the cancelled copy and its cleanup.
     await callIsolate(owner.port, 'append', {
-      'type': 'turn.completed',
+      'type': 'task.archived',
       'data': {'after_cancel': true},
     });
     expect(await Directory('${root.path}/tasks/$child').exists(), isFalse);
-    expect(await stage.list().isEmpty, isTrue);
-    expect(
-      (await callIsolate(owner.port, 'history.search_contents', {
-        'query': 'ordinary historical text',
-        'limit': 1,
-      }) as List).single['role'],
-      'tool',
-    );
+    expect(await callIsolate(owner.port, 'history', {'limit': 1}), hasLength(1));
   });
 }

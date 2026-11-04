@@ -10,7 +10,6 @@ import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'composer_attachments.dart';
-import 'interface_mode.dart';
 import 'project_avatar.dart';
 import 'session.dart';
 import 'desktop_notifications.dart';
@@ -187,9 +186,6 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   }
 
   Widget _preferences() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-    OpenCodeInterfacePicker(selected: widget.session.openCodeLayout,
-      onSelected: (layout) => unawaited(widget.run(() => widget.session.chooseOpenCodeLayout(layout)))),
-    const SizedBox(height: 32),
     _settingsList([
       _settingsRow('Messages sent while a task is working', widget.session.deliveryMode == 'steer'
           ? 'Guide the current turn at the next model step.'

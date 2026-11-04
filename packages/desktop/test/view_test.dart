@@ -31,7 +31,7 @@ void main() {
       {'id': 'openai', 'name': 'ChatGPT', 'auth': 'chatgpt', 'status': 'signed_in', 'default_model': 'gpt-6.1-sol', 'models': [
         {'id': 'gpt-6.1-sol', 'default_reasoning': 'low', 'reasoning_levels': ['low'], 'reasoning_updates': true},
       ]},
-      {'id': 'opencode', 'name': 'OpenCode', 'auth': 'opencode', 'status': 'signed_out', 'models': []},
+      {'id': 'opencode', 'name': 'OpenCode', 'auth': 'opencode', 'status': 'signed_out', 'models': <Object?>[]},
     ];
     client.providers = session.providers;
     final task = DesktopTask('task', 'Example')
@@ -59,7 +59,7 @@ void main() {
     // Settle the conversation's initial connection inventory before exercising
     // a composer command. Auth rendering has its own browser/lifecycle tests.
     for (final inventory in client.inventories) {
-      if (!inventory.reply.isCompleted) inventory.reply.complete({'servers': []});
+      if (!inventory.reply.isCompleted) inventory.reply.complete({'servers': <Object?>[]});
     }
     client.inventories.clear();
     await tester.pumpAndSettle();
@@ -523,10 +523,12 @@ void main() {
 
   testWidgets('context circle uses the latest response and retains cache hits across replay and live events', (tester) async {
     final task = session.task!;
-    task.events.addAll({
-      3: {'seq': 3, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 39000, 'output_tokens': 1000, 'cached_input_tokens': 30000}}},
-      1: {'seq': 1, 'type': 'task.created', 'data': {'provider_settings': {'context_limit': 100000}}},
-      2: {'seq': 2, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 10000, 'output_tokens': 1000, 'cached_input_tokens': 0}}},
+    task.contextLimit = 100000;
+    task.messages.addAll({
+      'first': {'id': 'first', 'type': 'agentMessage', 'text': '', 'order': 1,
+        'tokens': sessionTokens({'input_tokens': 10000, 'output_tokens': 1000, 'cached_input_tokens': 0})},
+      'latest': {'id': 'latest', 'type': 'agentMessage', 'text': '', 'order': 2,
+        'tokens': sessionTokens({'input_tokens': 39000, 'output_tokens': 1000, 'cached_input_tokens': 30000})},
     });
     await open(tester);
     final circle = find.bySemanticsLabel(RegExp(r'^Context usage:'));
@@ -560,7 +562,7 @@ void main() {
     expect(find.textContaining('40k / 100k tokens used', findRichText: true), findsOneWidget);
     expect(find.textContaining('Cache hits\nConversation: 61.2% (30000 / 49000 input tokens)\nLatest response: 76.9% (30000 / 39000 input tokens)', findRichText: true), findsOneWidget);
     await leave();
-    client.events.add({'task_id': 'task', ...task.events[3]!});
+    client.events.add({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'task', 'tokenUsage': {'input_tokens': 39000, 'output_tokens': 1000, 'cached_input_tokens': 30000}}});
     client.events.add({'task_id': 'task', 'seq': 4, 'type': 'model.completed', 'data': {'usage': {'input_tokens': 59000, 'output_tokens': 1000, 'cached_input_tokens': 50000}}});
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('Context usage: 60%'), findsOneWidget);
@@ -653,7 +655,7 @@ void main() {
     await tester.tap(find.byTooltip('Stop task and clear pending messages'));
     await tester.pump();
     expect(client.cancelled, ['task']);
-    client.events.add({'task_id': 'task', 'type': 'turn.cancelled', 'data': {}});
+    client.events.add({'task_id': 'task', 'type': 'turn.cancelled', 'data': <String, Object?>{}});
     await tester.pumpAndSettle();
     expect(find.byTooltip('Stop task and clear pending messages'), findsNothing);
     expect(action('Send message').onPressed, isNull);
@@ -714,7 +716,7 @@ void main() {
     expect(find.text('dart'), findsOneWidget);
     await tester.tap(find.byTooltip('Send message'));
     await tester.pump();
-    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': {}});
+    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': <String, Object?>{}});
     await tester.pumpAndSettle();
     expect(client.sent.single['prompt'], 'dar');
     expect(find.text('dart'), findsNothing);
@@ -731,7 +733,7 @@ void main() {
   testWidgets('MCP verbose shows tool and resource details during an unauthenticated running task', (tester) async {
     session.providers.first['status'] = 'signed_out';
     await open(tester);
-    client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': {}});
+    client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': <String, Object?>{}});
     Future<void> frame() async {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
@@ -747,7 +749,7 @@ void main() {
       'name': 'dart', 'enabled': true, 'state': 'ready', 'tool_count': 2, 'auth_status': 'configured_headers',
       'tools': ['analyze_files', 'hot_reload'],
       'resources': [{'name': 'docs', 'title': 'Documentation', 'uri': 'docs://index'}],
-      'resource_templates': [], 'resource_templates_error': 'Unable to load resource templates',
+      'resource_templates': <Object?>[], 'resource_templates_error': 'Unable to load resource templates',
     }]});
     await frame();
     expect(find.text('Configured HTTP headers'), findsOneWidget);
@@ -791,10 +793,10 @@ void main() {
     expect(find.text('Unable to load MCP status. Retry'), findsOneWidget);
     await tester.tap(find.text('Unable to load MCP status. Retry'));
     await tester.pumpAndSettle();
-    client.inventories.last.reply.complete({'servers': []});
+    client.inventories.last.reply.complete({'servers': <Object?>[]});
     await tester.pumpAndSettle();
     expect(find.text('No MCP servers configured'), findsOneWidget);
-    client.events.add({'type': 'mcp.config.reloaded', 'data': {}});
+    client.events.add({'type': 'mcp.config.reloaded', 'data': <String, Object?>{}});
     await tester.pumpAndSettle();
     final refresh = client.inventories.last;
     refresh.reply.complete({'servers': [{'name': 'external', 'enabled': false, 'state': 'disabled', 'tool_count': 0, 'auth_status': 'unsupported'}]});
@@ -828,10 +830,11 @@ void main() {
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('expanded tool details survive switching away from the task and back', (tester) async {
-    session.task!.events.addAll({
-      1: {'seq': 1, 'type': 'tool.started', 'data': {'call_id': 'cell', 'namespace': 'functions', 'name': 'exec', 'input': 'text(await tools.exec_command({cmd: "pwd"}));'}},
-      2: {'seq': 2, 'type': 'host_tool.started', 'data': {'id': 'shell', 'parent_call_id': 'cell', 'name': 'exec_command', 'arguments': {'cmd': 'pwd'}}},
-      3: {'seq': 3, 'type': 'host_tool.completed', 'data': {'id': 'shell', 'output': {'output': '/project'}}},
+    session.task!.messages.addAll({
+      'cell': {'id': 'cell', 'type': 'dynamicToolCall', 'tool': 'functions.exec', 'status': 'completed', 'order': 1,
+        'arguments': 'text(await tools.exec_command({cmd: "pwd"}));'},
+      'shell': {'id': 'shell', 'type': 'dynamicToolCall', 'tool': 'exec_command', 'status': 'completed', 'order': 2,
+        'parentCallId': 'cell', 'arguments': {'cmd': 'pwd'}, 'contentItems': [{'type': 'inputText', 'text': '/project'}]},
     });
     await open(tester);
     await tester.tap(find.text('functions.exec'));
@@ -885,7 +888,7 @@ void main() {
     await tester.runAsync(() => session.select(project, second));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Same draft');
-    clipboard.complete({'text': 'Late paste', 'images': [], 'files': []});
+    clipboard.complete({'text': 'Late paste', 'images': <Object?>[], 'files': <Object?>[]});
     await tester.pumpAndSettle();
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Same draft');
     expect(session.drafts[first.id], 'Same draft');
@@ -907,8 +910,8 @@ void main() {
     messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async => call.method == 'Clipboard.getData' && text != null ? {'text': text} : null);
     messenger.setMockMethodCallHandler(channel, (call) async => call.method == 'read' ? {
       'text': text,
-      'images': text == null ? [{'name': 'Pasted image.png', 'path': image.path}] : [],
-      'files': text == null ? [report.path] : [],
+      'images': text == null ? [{'name': 'Pasted image.png', 'path': image.path}] : <Object?>[],
+      'files': text == null ? [report.path] : <Object?>[],
     } : null);
     addTearDown(() {
       messenger.setMockMethodCallHandler(channel, null);
@@ -937,7 +940,7 @@ void main() {
     client.rejectSend = false;
     await tester.tap(find.byTooltip('Send message'));
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
-    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': {}});
+    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': <String, Object?>{}});
     await tester.pumpAndSettle();
     expect(client.sent.last['attachments'], [
       {'type': 'image', 'name': 'Pasted image.png', 'path': image.path},
@@ -968,7 +971,7 @@ void main() {
     final event = <String, Object?>{
       'view': tester.view.viewId, 'generation': 0, 'session': 7, 'request': 1, 'phase': 1,
       'operation': 1, 'x': point.dx, 'y': point.dy,
-      'offer': {'allowedOperations': ['copy'], 'isComplete': true, 'strings': [], 'files': [
+      'offer': {'allowedOperations': ['copy'], 'isComplete': true, 'strings': <Object?>[], 'files': [
         {'name': 'drop.png', 'path': image.path}, {'name': 'drop.txt', 'path': report.path},
       ]},
     };
@@ -1215,28 +1218,28 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(pending.cancellation.isCancelled, true);
-    pending.reply.complete({'skills': [], 'truncated': false});
+    pending.reply.complete({'skills': <Object?>[], 'truncated': false});
     await tester.enterText(find.byType(TextField), '/da');
     await tester.pump(const Duration(milliseconds: 200));
     final command = client.skillSearches.last;
     await tester.enterText(find.byType(TextField), 'plain text');
     await tester.pump();
     expect(command.cancellation.isCancelled, true);
-    command.reply.complete({'skills': [], 'truncated': false});
+    command.reply.complete({'skills': <Object?>[], 'truncated': false});
     await tester.enterText(find.byType(TextField), r'$blur');
     await tester.pump(const Duration(milliseconds: 200));
     final blurred = client.skillSearches.last;
     tester.widget<TextField>(find.byType(TextField)).focusNode!.unfocus();
     await tester.pumpAndSettle();
     expect(blurred.cancellation.isCancelled, true);
-    blurred.reply.complete({'skills': [], 'truncated': false});
+    blurred.reply.complete({'skills': <Object?>[], 'truncated': false});
     await tester.enterText(find.byType(TextField), r'$deploy');
     await tester.pump(const Duration(milliseconds: 200));
     final navigating = client.skillSearches.last;
     await tester.runAsync(() => session.select(session.project!));
     await tester.pumpAndSettle();
     expect(navigating.cancellation.isCancelled, true);
-    navigating.reply.complete({'skills': [], 'truncated': false});
+    navigating.reply.complete({'skills': <Object?>[], 'truncated': false});
     expect(client.sent, isEmpty);
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
@@ -1329,9 +1332,8 @@ void main() {
 
   testWidgets('autocomplete never moves the composer, transcript viewport or reading position', (tester) async {
     for (var i = 1; i <= 30; i++) {
-      session.task!.events[i] = {'seq': i, 'type': 'input.committed', 'data': {
-        'item': {'role': 'user', 'content': [{'type': 'text', 'text': List.filled(8, 'Conversation message $i.').join('\n')}]},
-      }};
+      session.task!.messages['$i'] = {'id': '$i', 'type': 'userMessage', 'order': i,
+        'content': [{'type': 'text', 'text': List.filled(8, 'Conversation message $i.').join('\n')}]};
     }
     await open(tester);
     final transcript = find.byType(ConversationTranscript);
@@ -1681,7 +1683,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.runAsync(() => session.select(session.project!, archived));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('opencode-tab:archived')), buttons: kSecondaryMouseButton);
+    await tester.tap(find.byKey(const ValueKey('thread:archived')), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Archive session'));
     await tester.pump();
@@ -1719,7 +1721,7 @@ class _Client implements AgentClient {
   final skillSearches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
   bool deferSkills = false;
   @override Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) {
-    if (!deferSkills) return Future.value({'skills': [], 'truncated': false});
+    if (!deferSkills) return Future.value({'skills': <Object?>[], 'truncated': false});
     final reply = Completer<Json>();
     skillSearches.add((cwd: cwd, query: query, cancellation: cancellation, reply: reply));
     return reply.future;
@@ -1740,8 +1742,8 @@ class _Client implements AgentClient {
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'client.capabilities') return null;
-    if (method == 'session.list') return {'data': [], 'cursor': {}};
-    if (method == 'session.active') return {'data': {}};
+    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
+    if (method == 'session.active') return {'data': <String, Object?>{}};
     if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};
     if (method == 'session.interrupt') {
       cancelled.add(params['sessionID'] as String);

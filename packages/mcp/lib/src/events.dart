@@ -7,7 +7,8 @@ import 'package:protocol/protocol.dart';
 
 import 'transport.dart';
 
-/// A client-owned subscription. No event automatically starts a model turn.
+/// A subscription owned by an MCP client or a server-hosted thread. The server
+/// decides how occurrences enter a thread; transport control never runs a model.
 class McpEventSubscription {
   McpEventSubscription({
     required this.id,
@@ -22,6 +23,8 @@ class McpEventSubscription {
     this.maxAgeMs,
     this.ttlMs,
     this.publicUrl,
+    this.threadId,
+    this.acceptEvent,
   }) {
     if (!['push', 'poll', 'webhook'].contains(mode)) {
       throw ArgumentError('Unknown MCP event delivery mode');
@@ -49,11 +52,14 @@ class McpEventSubscription {
   final Json arguments;
   final int? maxAgeMs, ttlMs;
   final String? publicUrl;
+  final String? threadId;
   final Future<McpConnection> Function(CancellationToken) connection;
   final void Function(Json) onEvent;
+  final Future<void> Function(Json event, CancellationToken cancellation)? acceptEvent;
   final lifetime = CancellationToken();
   final ready = Completer<void>();
   final _seen = <String>{};
+  final _delivering = <String, Future<void>>{};
   String? cursor, callback, upstreamId;
   List<int>? secret;
   Future<void>? _running, _stopping;
@@ -73,6 +79,7 @@ class McpEventSubscription {
     'mode': mode,
     'state': state,
     'cursor': cursor,
+    if (threadId != null) 'threadId': threadId,
   };
 
   Future<void> start(CancellationToken cancellation) async {
@@ -100,7 +107,7 @@ class McpEventSubscription {
     if (!ready.isCompleted) ready.complete();
   }
 
-  void _event(Json params) {
+  Future<void> _event(Json params, CancellationToken cancellation) async {
     if (state != 'active') {
       throw const McpFailure('MCP event arrived before activation');
     }
@@ -111,11 +118,24 @@ class McpEventSubscription {
         utf8.encode(jsonEncode(params)).length > 256 * 1024) {
       throw const McpFailure('Invalid or oversized MCP event');
     }
-    if (_seen.add(eventId)) {
+    final key = sha256.convert(utf8.encode(eventId)).toString();
+    if (_seen.contains(key)) {
+      if (params.containsKey('cursor')) cursor = params['cursor'] as String?;
+      return;
+    }
+    final pending = _delivering[key];
+    if (pending != null) { await pending.asCancellable(cancellation); return; }
+    if (_delivering.length >= 32) throw const McpFailure('MCP event delivery backlog is full', status: 503);
+    final delivery = () async {
+      await acceptEvent?.call(params, cancellation);
+      _seen.add(key);
       if (_seen.length > 2048) _seen.remove(_seen.first);
       _emit('notifications/events/event', params);
-    }
-    if (params.containsKey('cursor')) cursor = params['cursor'] as String?;
+      if (params.containsKey('cursor')) cursor = params['cursor'] as String?;
+    }();
+    _delivering[key] = delivery;
+    try { await delivery; }
+    finally { unawaited(_delivering.remove(key)); }
   }
 
   Future<void> _run() async {
@@ -156,6 +176,8 @@ class McpEventSubscription {
       final token = lifetime.merge(attempt);
       final connected = Stopwatch()..start();
       var active = false;
+      var queued = 0;
+      Future<void> notifications = Future<void>.value();
       Timer? liveness;
       final activation = Timer(
         const Duration(seconds: 15),
@@ -181,50 +203,56 @@ class McpEventSubscription {
           cancellation: token,
           timeout: null,
           onNotification: (notification) {
-            try {
-              final method = notification['method'];
-              final params = jsonObject(notification['params'] ?? {});
-              switch (method) {
-                case 'notifications/events/active':
-                  active = true;
-                  activation.cancel();
-                  heartbeat();
-                  _active(params);
-                case 'notifications/events/event':
-                  if (!active) {
-                    throw const McpFailure(
-                      'MCP event arrived before activation',
-                    );
-                  }
-                  heartbeat();
-                  _event(params);
-                case 'notifications/events/heartbeat':
-                  if (!active) {
-                    throw const McpFailure(
-                      'MCP heartbeat arrived before activation',
-                    );
-                  }
-                  heartbeat();
-                  if (params.containsKey('cursor')) {
-                    cursor = params['cursor'] as String?;
-                  }
-                  _emit(method as String, params);
-                case 'notifications/events/error':
-                  _emit(method as String, params);
-                case 'notifications/events/terminated':
-                  _terminated = true;
-                  _emit(method as String, params);
-                  attempt.cancel();
-              }
-            } catch (error) {
-              attempt.cancel(
-                error is Exception
-                    ? error
-                    : const McpFailure('Invalid MCP event notification'),
-              );
-            }
+            if (queued >= 64) { attempt.cancel(const McpFailure('MCP event stream backlog is full')); return; }
+            queued++;
+            notifications = notifications.then((_) async {
+              try {
+                token.throwIfCancelled();
+                final method = notification['method'];
+                final params = jsonObject(notification['params'] ?? {});
+                switch (method) {
+                  case 'notifications/events/active':
+                    active = true;
+                    activation.cancel();
+                    heartbeat();
+                    _active(params);
+                  case 'notifications/events/event':
+                    if (!active) {
+                      throw const McpFailure(
+                        'MCP event arrived before activation',
+                      );
+                    }
+                    heartbeat();
+                    await _event(params, token);
+                  case 'notifications/events/heartbeat':
+                    if (!active) {
+                      throw const McpFailure(
+                        'MCP heartbeat arrived before activation',
+                      );
+                    }
+                    heartbeat();
+                    if (params.containsKey('cursor')) {
+                      cursor = params['cursor'] as String?;
+                    }
+                    _emit(method as String, params);
+                  case 'notifications/events/error':
+                    _emit(method as String, params);
+                  case 'notifications/events/terminated':
+                    _terminated = true;
+                    _emit(method as String, params);
+                    attempt.cancel();
+                }
+              } catch (error) {
+                attempt.cancel(
+                  error is Exception
+                      ? error
+                      : const McpFailure('Invalid MCP event notification'),
+                );
+              } finally { queued--; }
+            });
           },
         );
+        await notifications.asCancellable(token);
       } catch (error) {
         if (_terminated) return;
         lifetime.throwIfCancelled();
@@ -269,7 +297,7 @@ class McpEventSubscription {
         }
         state = 'active';
         for (final raw in events) {
-          _event(jsonObject(raw));
+          await _event(jsonObject(raw), lifetime);
         }
         cursor = result['cursor'] as String?;
         _emit('notifications/events/heartbeat', {'cursor': cursor});
@@ -358,7 +386,7 @@ class McpEventSubscription {
 
   /// Runs only after the HTTP owner has enforced the body bound. Headers and
   /// signing material are never sent to model history or ordinary event output.
-  Json webhook(Json headers, List<int> body) {
+  Future<Json> webhook(Json headers, List<int> body, CancellationToken cancellation) async {
     if (mode != 'webhook' || lifetime.isCancelled || _terminated) {
       return {'status': 410};
     }
@@ -412,11 +440,15 @@ class McpEventSubscription {
           _emit('notifications/events/terminated', {'error': value['error']});
         case null:
           if (value['eventId'] != eventId) return {'status': 400};
-          _event(value);
+          await _event(value, cancellation.merge(lifetime));
         default:
           return {'status': 400};
       }
-      return {'status': 200, 'body': {}};
+      return {'status': 200, 'body': <String, Object?>{}};
+    } on McpFailure catch (error) {
+      return {'status': error.status ?? 400};
+    } on CancelledException {
+      return {'status': 503};
     } catch (_) {
       return {'status': 400};
     }

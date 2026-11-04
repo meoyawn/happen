@@ -207,7 +207,7 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
     await tester.pump();
     await tester.runAsync(() async {
-      expect(await client.request('providers.list'), isA<Map>());
+      expect(await client.request('providers.list'), isA<Map<String, Object?>>());
     });
     expect(closes, 0);
     expect(binding.exits, isEmpty);

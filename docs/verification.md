@@ -47,7 +47,7 @@ checkout. See [api.md](api.md) for configuration and the public API.
 - Run `dart test test/tool_cancellation_test.dart test/code_mode_test.dart --concurrency=1 -r expanded`
   for both providers' process lifetimes: foreground process trees and native JS
   stop on steering/Stop, while task sessions survive cells and later turns until
-  hibernation/archive/shutdown. The server fixture also holds a sibling MCP call
+  idle thread unloading/archive/shutdown. The server fixture also holds a sibling MCP call
   while cancelling every direct/nested call belonging to the interrupted task.
   The native regression signals an atomic interrupt from another isolate during
   a ten-second CPU-bound cell; it must stop within two seconds. Cell regressions
@@ -56,6 +56,11 @@ checkout. See [api.md](api.md) for configuration and the public API.
 - Run `dart test test/mcp_inventory_test.dart test/mcp_test.dart test/config_reload_test.dart -r expanded`
   for read-only desktop MCP inventory, disabled entries, resource pagination,
   sanitized failures and request-scoped cancellation over real transports.
+  `packages/server/test/thread_unsubscribe_test.dart` additionally ports Codex's
+  unsubscribe delay/ephemeral/source matrices and exercises MCP draft push, poll,
+  and signed webhook wake-up, with connected and disconnected desktop clients.
+  The MultiAgentV2 mail/follow-up case is explicitly skipped until collaboration
+  execution exists. These fixtures do not prove public webhook interoperability.
   The desktop `view_test.dart` covers `/mcp` and `/mcp verbose` in the same
   autocomplete popover as file search, including selected command text, hover,
   draft/file-chip preservation, new-mention handoff, retry and navigation.

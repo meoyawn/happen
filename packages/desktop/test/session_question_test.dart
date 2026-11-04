@@ -223,17 +223,20 @@ void main() {
     addTearDown(headless.close);
     asking = false;
     final completed = headless.events.stream.firstWhere(
-      (event) => event['type'] == 'session.execution.succeeded');
-    final created = jsonObject(await headless.request('session.create', {
+      (event) => event['method'] == 'turn/completed');
+    final created = jsonObject(await headless.request('thread/start', {
       'cwd': await root.resolveSymbolicLinks(), 'provider': 'openai', 'model': 'gpt-6-astra',
-      'prompt': 'Save a session without interactive tools',
       'settings': {'request_user_input': false},
+      'config': {'thread_unload_delay_secs': 0},
     }));
+    final savedID = created['thread']['id'] as String;
+    await headless.request('turn/start', {'threadId': savedID, 'input': [{'type': 'text', 'text': 'Save a session without interactive tools'}]});
     await completed.timeout(const Duration(seconds: 20));
-    final savedID = created['sessionID'] as String;
     expect((requests.last['tools'] as List).map((tool) => tool['name']),
       isNot(contains('request_user_input_async')));
-    await headless.request('session.hibernate', {'sessionID': savedID});
+    final unloaded = headless.events.stream.firstWhere((event) => event['method'] == 'thread/closed' && event['params']['threadId'] == savedID);
+    await headless.request('thread/unsubscribe', {'threadId': savedID});
+    await unloaded.timeout(const Duration(seconds: 10));
     await headless.close();
     var session = desktop = DesktopSession(await AgentClient.connect(server.uri), await openDesktopDatabase(root.path));
     await session.load();
@@ -273,11 +276,7 @@ void main() {
         allOf(contains('Detailed custom answer'), contains('More')));
       final question = conversation(target).where((entry) =>
         {'question', 'request_user_input'}.contains(entry.tool?.name.split('.').last)).first.tool!;
-      var part = question.rawOutput;
-      if (part is Map && part[r'$part'] is String) {
-        part = await session.client.conversationPart(part[r'$part'] as String, cancellation: lifetime);
-      }
-      expect(jsonEncode(part), contains('Detailed custom answer'));
+      expect(jsonEncode(question.rawOutput), contains('Detailed custom answer'));
       await session.loadHistory(target);
       expect(conversation(target).where((entry) => entry.role == 'Happen').last.text, 'Saved your answers');
 
@@ -323,10 +322,10 @@ void main() {
     final resumed = await AgentClient.connect(server.uri);
     addTearDown(resumed.close);
     final finished = resumed.events.stream.firstWhere(
-      (event) => event['type'] == 'session.execution.succeeded');
+      (event) => event['method'] == 'turn/completed');
     asyncStage = -1;
-    await resumed.request('session.prompt', {
-      'sessionID': savedID, 'prompt': 'Continue without a desktop connected',
+    await resumed.request('turn/start', {
+      'threadId': savedID, 'input': [{'type': 'text', 'text': 'Continue without a desktop connected'}],
     });
     await finished.timeout(const Duration(seconds: 20));
     expect((requests.last['tools'] as List).map((tool) => tool['name']),

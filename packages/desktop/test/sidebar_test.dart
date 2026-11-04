@@ -54,12 +54,12 @@ void main() {
 
       client.events.add({
         'task_id': 'old', 'seq': 1, 'type': 'turn.completed',
-        'created_at': '2030-01-02T00:00:00Z', 'data': {},
+        'created_at': '2030-01-02T00:00:00Z', 'data': <String, Object?>{},
       });
       // Later arrivals and token deltas must not rewind or reshuffle activity.
       client.events.add({
         'task_id': 'old', 'seq': 2, 'type': 'turn.completed',
-        'created_at': '2030-01-01T00:00:00Z', 'data': {},
+        'created_at': '2030-01-01T00:00:00Z', 'data': <String, Object?>{},
       });
       client.events.add({
         'task_id': 'middle', 'type': 'text.delta', 'delta': 'Partial reply',
@@ -102,9 +102,9 @@ class _Client implements AgentClient {
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'client.capabilities') return null;
-    if (method == 'session.list') return {'data': [], 'cursor': {}};
-    if (method == 'session.active') return {'data': {}};
-    if (method == 'providers.list') return {'providers': []};
+    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
+    if (method == 'session.active') return {'data': <String, Object?>{}};
+    if (method == 'providers.list') return {'providers': <Object?>[]};
     throw StateError('Unexpected request: $method');
   }
   @override Future<void> close() => events.close();

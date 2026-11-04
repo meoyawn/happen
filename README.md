@@ -41,12 +41,18 @@ I believe this is the way.
   through model streaming, JavaScript cells, and nested tool calls. A native
   QuickJS interrupt reaches running JavaScript even while its Dart isolate
   is inside FFI.
+- **MCP Events draft support.** [Our MCP client](packages/mcp/) implements
+  [experimental-ext-triggers-events](https://github.com/modelcontextprotocol/experimental-ext-triggers-events),
+  including push, polling, and signed webhooks. Server-owned subscriptions can
+  wake unloaded conversations without a connected desktop client. This is an
+  experimental protocol, not part of the released MCP core specification.
 - **100% harness parity with Codex at the model boundary.** The
   [Codex context contract](test/contracts/codex_context_test.dart) runs the
   same scenarios through both harnesses and compares the actual outgoing
   model requests. It checks instructions, context, tools, results, and
   continuation behavior. Run-specific IDs, timings, and client telemetry
   are normalized; the remaining fields and array order are compared strictly.
+  Pass/fail is based on functional contracts, not speed.
 
 ## Run the desktop app
 

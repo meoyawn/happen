@@ -5,7 +5,15 @@ import 'tracing.dart';
 /// The application uses this small SQL surface for history and desktop state.
 /// Each execution is timed, including prepared statements and cursor steps.
 class TracedDatabase {
-  TracedDatabase(this.raw, this.name);
+  TracedDatabase(this.raw, this.name) {
+    // Native commit hooks include implicit writes and exclude savepoint release.
+    // Traces can therefore diagnose actual transaction amplification, not just
+    // count application-level append calls or explicit COMMIT statements.
+    raw.commitFilter = () {
+      traceInstant('sqlite.commit', category: 'sqlite', attributes: {'db.name': name});
+      return true;
+    };
+  }
   final Database raw;
   final String name;
   int get lastInsertRowId => raw.lastInsertRowId;

@@ -139,14 +139,14 @@ receiving OpenAI endpoint. At the end of each session it compares their final
 full inference requests with strict deep JSON equality, preserving array order.
 The top-level `client_metadata` telemetry field is excluded explicitly: Happen
 does not send it, and every case checks that omission on the received requests.
-Scoped generated IDs and numeric timing fields are removed; the original timing
-values are reported separately. Message shapes and all other fields remain
+Scoped generated IDs and numeric timing fields are normalized; the original
+values remain in raw captures. Message shapes and all other fields remain
 strict. Codex's built-in compaction
 trace omits transport fields and is not used. The app's internal read-only
 context snapshot remains available for inspection; it is not comparison evidence.
 Request files contain full context and tool results; authorization headers and
 credential values are not recorded. See [the context contract](../test/fixtures/context_contract/README.md)
-for strict comparisons, isolated configs, real Dart MCP, and timing assertions.
+for deterministic strict comparisons, isolated configs, and real Dart MCP.
 
 ## Desktop development
 
@@ -378,10 +378,10 @@ because its background command completed, and a persistent server does not keep
 the turn open. Each call uses its current working directory even when native
 tool state was created in an earlier turn.
 
-`task.hibernate`, archive, and server shutdown close task-owned sessions and reap
-their processes. Hibernation preserves history and permits later turns with fresh
+Idle thread unloading, archive, and server shutdown close task-owned sessions and reap
+their processes. Unloading preserves history and permits later turns with fresh
 sessions. Session IDs are ephemeral; fork, export/import, and restart never copy
-or recreate live processes. Finishing a turn does not hibernate the task.
+or recreate live processes. A subscribed thread retains its tool runtime between turns.
 
 MCP and client-tool calls always follow their invoking cell or turn. Cancellation
 is forwarded to the remote owner, without stopping shared MCP servers or another
@@ -470,12 +470,13 @@ current Codex model-driven default. `duration_ms` must be an integer in
 `1..43200000`. Steering interrupts sleep with a successful interruption receipt;
 Stop cancels the turn. `providers.openai.settings.sleep_tool: false` disables it.
 
-Goal tools are enabled by default: `get_goal`, `create_goal`, and `update_goal`
+Goal tools are always enabled for saved OpenAI threads: `get_goal`, `create_goal`, and `update_goal`
 are available inside `functions.exec`. Goals require an explicit user request.
 Their objectives, status, optional token budget, noncached token usage, and active
 elapsed time are persisted by the task's existing storage owner. Unfinished goals
 cannot be overwritten, and pausing cannot bypass an exhausted budget.
-`providers.openai.settings.goals: false` omits these tools.
+There is no goals-disable option in global configuration. Ephemeral threads,
+including side conversations, do not support persistent goals.
 
 ## Repository instructions
 
@@ -557,22 +558,39 @@ through this route is still unverified. See the [evidence](evidence/deepseek-con
 ## WebSocket API
 
 Requests are JSON objects with `id`, `method`, and `params`. Replies contain the
-same `id` and either `result` or `error`. Notifications use `{"event": {...}}`.
-The desktop uses OpenCode's shared session/message/part model over this WebSocket
-transport. `session.*` methods take `sessionID`; admission returns `sessionID`
-(and `inboxID` for queued inputs). Notifications carry `id`, millisecond `created`,
-`type`, and `data.sessionID`. Durable events also carry
-`durable: {aggregateID, seq, version}`. Execution ends with
-`session.execution.succeeded`, `.failed`, or `.interrupted`.
+same `id` and either `result` or `error`. Notifications use `method` and `params`.
+Initialize each connection with `initialize` and `clientInfo: {name, version}`.
+The desktop uses native Codex-style threads, turns, and typed items, not OpenCode
+projections. `turn/completed` carries the terminal turn's `completed`, `failed`,
+or `interrupted` status. Happen extensions use `happen/…` notifications.
 
-`session.create`, `.prompt`, `.interrupt`, `.compact`, `.hibernate`, `.archive`,
-`.unarchive`, `.subscribe`, and `.fork` expose the corresponding task operations
-below. Existing `task.*` clients retain their event contract.
+| Thread operation | Parameters and behavior |
+| --- | --- |
+| `thread/start` | Optional `cwd`, `provider`, `model`, `settings`, `developerInstructions`, `dynamicTools`, `ephemeral`. Creates and subscribes to a thread; returns `thread` and configuration. |
+| `thread/resume` | `threadId`, optional `excludeTurns`. Loads a saved thread and subscribes this connection. Warm resume preserves cached status. |
+| `thread/read` | `threadId`, optional `includeTurns`. Read-only snapshot; does not load or subscribe. |
+| `thread/loaded/list` | Returns currently loaded IDs, including unsubscribed threads awaiting their idle deadline. |
+| `thread/list` | Pages saved thread summaries. |
+| `thread/items/list` / `thread/turns/list` | `threadId`, optional opaque `cursor`, `limit`, and view/direction options. Reads native history without loading it. |
+| `thread/unsubscribe` | `threadId`. Removes only this connection's subscription; returns `unsubscribed`, `notSubscribed`, or `notLoaded`. Never cancels a running turn. |
+| `turn/start` | `threadId`, `input`, optional `effort`, `delivery`. Starts or queues input and subscribes this connection. |
+| `turn/steer` / `turn/interrupt` | `threadId`, `expectedTurnId` and `input` for steering, or `turnId` for interruption. |
+| `thread/fork` | `threadId`, optional `lastTurnId` or `beforeTurnId`. Structurally shares the immutable committed prefix. |
+| `thread/archive` / `thread/unarchive` | `threadId`. Archives/restores metadata in place without moving history. |
+| `thread/goal/get` / `thread/goal/set` / `thread/goal/clear` | `threadId`; set accepts partial objective/status/budget changes. |
+
+Happen's global `idle_unload_seconds` defaults to 60. A full delay must elapse
+after both turn activity and the final subscriber are gone. Resubscription
+cancels the countdown; turn completion starts a fresh countdown when nobody is
+subscribed. Disconnect removes that connection's subscriptions. Unloading emits
+`thread/closed` and `thread/status/changed` with `notLoaded`; cold resume reloads
+saved history. Ordinary ephemeral threads use in-memory SQLite and cannot resume
+after unloading. The native wire's per-thread `config.thread_unload_delay_secs`
+override is runtime-only; it is not restored by a cold resume. Happen does not
+import Codex's global configuration schema.
 
 | Session read | Parameters and behavior |
 | --- | --- |
-| `session.message.list` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Returns chronological `data` from the newest page, `cursor.next` for earlier messages, and a durable `through` fence. Includes configuration, effective reasoning, running/pending state, and archive state. Subscribes before taking the snapshot. |
-| `session.event.list` | `sessionID`, optional `after` durable sequence, `limit` (1–500). Returns persisted OpenCode events, `through`, and `cursor.next` for replay. |
 | `session.context` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Reads the agent's actual normalized model buffer and request envelope. Returns chronological `input`, `instructions`, `tools`, frozen `settings`, `effectiveReasoning`, `inputCount`, counts, token/cache usage, context limit, `through`, `sourceThrough`, `windowID`, and `snapshotID`. `cursor.next` appends the next input page from the same immutable snapshot, even if execution or compaction changes the live context. |
 | `session.read.cancel` | `request_id` of a pending session read on this connection. Cancels snapshot/replay work without interrupting the session writer or execution. |
 
@@ -587,20 +605,20 @@ The writer rechecks steering offers before committing them, so a late mailbox
 offer cannot deliver an input that was deleted or moved to the queue. Changes
 preserve attachments, creation time, reasoning choice, and admission order.
 
-Each session stores its event log, normalized messages/parts, and durable inbox in
+Each session stores canonical Codex RolloutLines, native projections, and its durable inbox in
 one `tasks/<sessionID>/history.sqlite`. Its writer updates them in one transaction.
 Independent read-only connections take WAL snapshots without acquiring a writer.
-Existing execution histories project in bounded transactions on their owning
-writer; live events and reopened history use the same reducer in `protocol`.
+Canonical writes and projections share one outer transaction; a projection
+savepoint protects canonical durability if materialization fails.
 
-Tool/plugin state uses OpenCode-style namespaced JSON KV (`get`, `set`, `remove`,
+Tool state uses namespaced JSON KV (`get`, `set`, `remove`,
 and ordered, prefix-paginated `scan`) in the `kv` table of that same session SQLite.
 There is no separate state database. Callers own their namespaces and validation;
-the storage package has no goal-specific methods or lifecycle rules. Goal state
-keys include the session ID, so a fork does not inherit its parent's goal.
+goal state uses dedicated tables in that same database. Forks inherit goal
+progress while deferring automatic continuation until explicit input.
 
 Context inspection does not read the message/part projection. A running agent
-serializes the same buffer and envelope used by inference. Sleeping sessions
+serializes the same buffer and envelope used by inference. Unloaded sessions
 restore through that same agent initialization path, without admitting a turn,
 refreshing repository/skill/tool context, or calling a provider. Completed model
 output and tool results enter the buffer only after their durable commit;
@@ -633,7 +651,7 @@ base prompt as the first developer message. Internal snapshot accounting and
 transcript projections are not included in the desktop export.
 
 Task operations acknowledge admission before emitting their durable events;
-wait for `turn.completed`, `turn.failed`, or `turn.cancelled` to learn the outcome.
+wait for `turn/completed` to learn the outcome.
 
 Task IDs are opaque strings generated by the task's provider. New `openai`
 tasks use Codex-style hyphenated UUIDv7 IDs; `opencode` and `deepseek` tasks use
@@ -643,7 +661,7 @@ optional `operation_id` is a separate retry key: concurrent or later retries,
 including after a server restart, return the same imported task ID.
 
 Turns and model/compaction calls have no cumulative wall-clock deadline or model
-step limit. Stop cancels turn-owned work; hibernation,
+step limit. Stop cancels turn-owned work; idle unloading,
 archive, and server shutdown also close task-owned sessions. Quitting the desktop
 stops its embedded server. GPT HTTP/SSE and WebSocket
 responses have a five-minute idle limit between provider events; each event
@@ -690,13 +708,10 @@ shown as interrupted rather than left spinning.
 | `attachments.cancel` | `upload_id`. Releases a pending upload and its staged bytes. |
 | `task.compact` | `task_id`. Installs a checkpoint only after successful compaction. |
 | `task.cancel` | `task_id`. Cancels the turn and caller-owned tools; task-owned sessions survive. |
-| `task.hibernate` | `task_id`. Cancels the turn and closes task-owned sessions, retaining history for a later turn. |
 | `task.archive` / `task.unarchive` | `task_id`. Stops work and archives a task, or restores it. History is retained. |
 | `task.subscribe` | `task_id`. Subscribes this connection to future task events and returns `running` and pending inputs. |
-| `task.fork` | `task_id`, optional `through` event sequence. Copies an independent committed prefix; returns a new `task_id`. |
+| `task.fork` | `task_id`, optional `through` event sequence. References an immutable committed prefix; returns a new `task_id`. |
 | `history.page` | `task_id`, optional `after` sequence and `limit` (1–500). |
-| `history.list` | `task_id`, optional `before` sequence and `limit` (1–500). Subscribes to live events before reading newest-first display `data` with `next_cursor` for earlier events. The first page also includes `running`/`pending`, configuration, summaries of the latest five turns (start, first user input, latest model output, terminal event), effective reasoning, archive state, and a `through` sequence fence. Images and large tool results use `$part` references, loaded only when displayed. |
-| `history.part` | `task_id`, `id` from a `$part` reference. Returns the original display content; canonical records remain available through `history.page`. |
 | `history.export` | `task_id`, `path` on the server. Requires an idle task. |
 | `history.import` | `path` on the server, optional `operation_id` for idempotent retries. Validates the bundle before publishing a task. |
 | `tools.register` | `task_id`, `tools`. Replaces the caller's client tool catalog. |
@@ -708,10 +723,9 @@ shown as interrupted rather than left spinning.
 | `auth.desktop` | Local Unix sockets only. Optional `refresh` boolean; returns `access_token` and `account_id` for the desktop's direct OpenAI requests. Never returns a refresh token. TCP listeners reject it. |
 | `maintenance.run` | Runs the same coalesced maintenance sweep used at startup and every 24 hours. |
 
-Saved events and task metadata commit before the display cache is updated.
-Cache updates use a separate transaction; failures are logged without failing
-the event write. `history.list` rebuilds missing display records and their
-`$part` payloads from saved history when read.
+Saved canonical records, metadata, and native projections use the same writer
+and transaction. Missing projections rebuild from canonical records in bounded
+batches; they are never the authoritative history.
 
 Steer messages cancel active inference, cells, and caller-owned tools, then join
 the same turn before its next model request. Task-owned sessions survive. Queue messages
@@ -770,9 +784,9 @@ the time history was loaded.
 
 Maintenance checkpoints archived SQLite WALs and removes abandoned staging
 directories older than one day while no history transfer is active. It does not
-expire archived conversations or delete project files. Idle agent and SQLite
-owners release their isolates after each turn. Task-owned tool state
-stays in the server until hibernation, archive, or shutdown. Telemetry includes active/resident task,
+expire archived conversations or delete project files. Agent isolates release
+after each turn; loaded threads retain their SQLite writer and tool state until
+idle unloading, archive, or shutdown. Telemetry includes active/resident task,
 connection, pending-message, and maintenance counts for monitoring long runs.
 
 The model is fixed for each task. GPT effort updates are appended to history;
@@ -781,15 +795,11 @@ after compaction. Compaction keeps the full durable transcript available through
 code mode's `history__list_windows`, `history__list_items`, `history__read_item`,
 and `history__search_contents`. Forks and imports preserve historical item IDs.
 
-Clients acknowledge consumed notifications with
-`{"method":"events.ack","params":{"count":1}}`. Each connection starts with
-256 event credits. When credits are exhausted, notifications wait in an ordered
-queue bounded to 1,024 events and 64 MiB. Acknowledgements drain that queue;
-RPC replies bypass it, so a file search can finish while task events are waiting.
-Clients exceeding either backlog bound are disconnected; reconnect and read
-durable task events with `history.page`. `AgentClient` handles
-these acknowledgements automatically. Event subscriptions themselves belong to
-the live connection.
+Outbound messages drain through one ordered writer, bounded to 32,768 queued
+frames and 64 MiB. There is no application-level acknowledgement protocol.
+Clients exceeding either backlog bound disconnect; reconnect, resume, and page
+native history to reconcile. Thread notification subscriptions belong to the
+connection; server-hosted MCP event subscriptions have a separate lifetime.
 
 Requests are dispatched concurrently and replies are correlated by `id`; replies
 may arrive out of request order. The 32-request admission bound counts pending
@@ -872,9 +882,9 @@ implemented. Discovery and event delivery are distinct from model execution.
 | `mcp.auth.callback` | `server`, `login_id`, `callback_url`. Completes this connection's own pending login without requiring the browser to reach the server's loopback listener. |
 | `mcp.auth.logout` | `server`. Deletes local OAuth credentials and reconciles the shared connection. |
 | `mcp.request` | `server`, `method`, optional `arguments`; supports event discovery/polling, resources, and prompts. |
-| `mcp.events.subscribe` | `server`, `name`, optional `arguments`, `mode` (`push`, `poll`, `webhook`), `cursor`, `max_age_ms`, `ttl_ms`, `task_id`. |
-| `mcp.events.subscriptions` | Lists this connection's subscriptions. |
-| `mcp.events.unsubscribe` | `subscription_id`. |
+| `mcp.events.subscribe` | `server`, `name`, optional `arguments`, `mode` (`push`, `poll`, `webhook`), `cursor`, `max_age_ms`, `ttl_ms`, `threadId`. |
+| `mcp.events.subscriptions` | Optional `threadId`; lists that thread's server-owned subscriptions, or this connection's subscriptions if omitted. |
+| `mcp.events.unsubscribe` | `subscription_id`, and `threadId` for a thread-owned subscription. |
 
 `mcp.inventory` returns `{servers: [...]}` sorted by name. Each row contains
 `name`, `enabled`, `state`, `auth_status`, `oauth_supported`, `tool_count`, and an optional sanitized
@@ -904,8 +914,20 @@ Subscription creation waits for activation. `mcp.event` notifications carry
 `subscription_id`, `server`, and the draft `notification` method and parameters.
 Clients receive activation, events, heartbeat, gap, and termination messages.
 Transport recovery preserves cursors and bounds retries; explicit termination
-ends the subscription. A client disconnect cancels its subscriptions. An arriving
-event does not start a model turn.
+ends the subscription. Without `threadId`, subscriptions belong to the connection
+and disconnect cancels them; these events are display-only. With `threadId`, the
+running server owns the subscription, independently of desktop connections.
+An event occurrence cold-loads its saved thread, durably queues untrusted user
+input, and runs it according to the existing conversation instructions. An active
+turn is not interrupted. Activation, heartbeat, empty polls, gap, verification,
+termination, invalid signatures, and duplicates never start a turn. Normal idle
+unloading applies after event processing. Thread ownership is local metadata,
+not an extra parameter sent to the upstream MCP server. Archive stops the thread's
+subscriptions. Webhook `2xx` waits for durable inbox admission; inbox pressure
+returns `503` and retrying the same occurrence remains safe. A bounded receipt
+joins that admission's transaction rather than adding a second commit.
+Subscription/cursor restoration across a server process restart is not yet
+implemented; thread unload and desktop reconnect preserve them.
 
 Webhook delivery requires an HTTPS `public_url` in global configuration, routed
 to this server's `/mcp-events/...` callback paths. The server verifies webhook

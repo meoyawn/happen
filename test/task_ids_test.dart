@@ -31,11 +31,11 @@ void main() {
     expect(ids.create(), 'ses_ffffffc16ffe0z070z070z070z');
     final generated = List.generate(5000, (_) => ids.create());
     expect(generated.toSet(), hasLength(5000));
-    expect(generated, orderedEquals([...generated]..sort((a, b) => b.compareTo(a))));
+    expect(generated, orderedEquals(<String>[...generated]..sort((a, b) => b.compareTo(a))));
     expect(generated, everyElement(matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$')));
   });
 
-  test('task ID validation accepts provider and legacy IDs while rejecting unsafe path components', () {
+  test('task ID validation accepts provider IDs while rejecting unsafe path components', () {
     for (final id in [newId(), UuidV7Ids().create(), opencode.TaskIds().create()]) {
       expect(() => validateTaskId(id), returnsNormally);
     }

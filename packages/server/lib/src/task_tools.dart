@@ -5,16 +5,18 @@ import 'package:ai/ai.dart';
 import 'package:openai/openai.dart';
 import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
+import 'package:storage/src/codex_native.dart' show projectedCodexItem;
 import 'package:telemetry/telemetry.dart';
 
 /// Task-owned native tool state survives the short-lived agent/SQLite owners.
 /// Each invocation still has its own cancellation; only explicitly persistent
 /// processes use the task lifetime inside the provider's runtime.
 class TaskToolBridge {
-  TaskToolBridge() {
+  TaskToolBridge(this.emit) {
     _mailbox.listen((raw) => unawaited(traceIncoming(jsonObject(raw),
       () => _handle(jsonObject(raw)), service: 'server')));
   }
+  final void Function(String, Json) emit;
   final _mailbox = ReceivePort();
   final _tasks = <String, _Tools>{};
   final _operations = <String, CancellationToken>{};
@@ -24,7 +26,7 @@ class TaskToolBridge {
 
   _Tools _owner(String task, String provider, String cwd) {
     if (_closed) throw StateError('Task tools are closed');
-    if (_releasing.containsKey(task)) throw StateError('Task tools are hibernating');
+    if (_releasing.containsKey(task)) throw StateError('Thread tools are unloading');
     final owner = _tasks.putIfAbsent(task, () => _Tools(switch (provider) {
       'openai' => const OpenAIToolInterface(),
       'opencode' => const OpenCodeToolInterface(),
@@ -39,6 +41,7 @@ class TaskToolBridge {
   }) async {
     cancellation.throwIfCancelled();
     final owner = _owner(task, provider, cwd);
+    owner.writer = writer;
     return (await callIsolate(writer, 'tool_runtime.start', {'id': owner.id},
       cancellation: cancellation) as List).map(jsonObject).toList();
   }
@@ -58,7 +61,7 @@ class TaskToolBridge {
       }
       if (_closed) throw StateError('Task tools are closed');
       final task = requiredString(params, 'task_id');
-      if (_releasing.containsKey(task)) throw StateError('Task tools are hibernating');
+      if (_releasing.containsKey(task)) throw StateError('Thread tools are unloading');
       cancellation = CancellationToken();
       _operations[operation!] = cancellation;
       owner = _tasks[task];
@@ -70,8 +73,27 @@ class TaskToolBridge {
         final provider = requiredString(params, 'provider');
         owner = _owner(task, provider, requiredString(params, 'cwd'));
         owner.pending.add(settled.future);
-        result = await owner.runtime.call(requiredString(params, 'name'), params['arguments'],
-          cancellation: cancellation.merge(owner.lifetime), cwd: requiredString(params, 'cwd'));
+        final runtime = owner;
+        var foreground = true;
+        try {
+          result = await runtime.runtime.call(requiredString(params, 'name'), params['arguments'],
+            cancellation: cancellation.merge(runtime.lifetime), cwd: requiredString(params, 'cwd'),
+            callId: params['call_id'] as String?, onItem: (phase, item) async {
+              final data = <String, dynamic>{'turnId': params['turn_id'], 'item': projectedCodexItem(item),
+                'canonicalItem': item, if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch};
+              if (phase == 'completed' && foreground) {
+                // Admit to the writer's memory queue. Its next ordinary record
+                // (including cancellation) durably flushes this completion in
+                // that same transaction, before broadcasting it to clients.
+                await callIsolate(runtime.writer!, 'native.item.queue', data);
+              } else {
+                final record = jsonObject(await callIsolate(runtime.writer!, 'append', {
+                  'type': 'native.item.$phase', 'data': data,
+                }));
+                emit(task, record);
+              }
+            });
+        } finally { foreground = false; }
       } else {
         throw StateError('Unknown task tool operation');
       }
@@ -92,7 +114,7 @@ class TaskToolBridge {
     if (owner != null) await Future.wait(owner.pending.toList());
   }
 
-  Future<void> release(String task) => _releasing[task] ??= _release(task).whenComplete(() { _releasing.remove(task); });
+  Future<void> release(String task) => _releasing[task] ??= _release(task).whenComplete(() { unawaited(_releasing.remove(task)); });
   Future<void> _release(String task) async {
     final owner = _tasks.remove(task);
     if (owner == null) return;
@@ -117,5 +139,6 @@ class _Tools {
   final String provider;
   final lifetime = CancellationToken();
   late final ToolRuntime runtime;
+  SendPort? writer;
   final pending = <Future<void>>{};
 }

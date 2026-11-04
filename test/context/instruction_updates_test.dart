@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 import '../support/openai_output.dart';
+import '../support/thread.dart';
 
 void main() {
   for (final lab in ['openai', 'opencode']) {
@@ -88,12 +89,9 @@ void main() {
         await provider.close(force: true);
         await root.delete(recursive: true);
       });
-      Future<Json> turn(String method, Json params) async {
-        final terminal = client.events.stream.firstWhere((event) =>
-          ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']));
-        await client.request(method, params);
-        final result = await terminal.timeout(const Duration(seconds: 15));
-        expect(result['type'], 'turn.completed', reason: result.toString());
+      Future<Json> turn(String id, {String prompt = '', bool compact = false}) async {
+        final result = await runTurn(client, id, prompt: prompt, compact: compact);
+        expect(result['status'], 'completed', reason: result.toString());
         return result;
       }
       List<Json> input(Json request) => (request[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
@@ -101,10 +99,10 @@ void main() {
         text.startsWith('# AGENTS.md instructions') || text.contains('Instructions from: ') ||
         text.startsWith('The instructions from ') || text == 'Previously loaded instructions no longer apply.').toList();
 
-      final started = await turn('task.start', {'cwd': work.path, 'prompt': 'Update the instructions.'});
-      final id = started['task_id'];
-      Future<List<Json>> updates() async => (await client.request('history.page', {'task_id': id, 'limit': 500}) as List)
-          .map(jsonObject).where((event) => event['type'] == 'agents.updated').toList();
+      final id = await createThread(client, {'cwd': work.path});
+      await turn(id, prompt: 'Update the instructions.');
+      Future<List<Json>> updates() async => (await rolloutLines(client, id)).where((line) =>
+        line['type'] == 'response_item' && instructions({'input': [line['payload']], 'messages': [line['payload']]}).isNotEmpty).toList();
       expect(requests, hasLength(3));
       expect(input(requests[1]).take(input(requests[0]).length).toList(), input(requests[0]));
       expect(input(requests[2]).take(input(requests[1]).length).toList(), input(requests[1]));
@@ -127,16 +125,15 @@ void main() {
       expect(await project.readAsString(), changed);
       final changes = await updates();
       expect(changes, hasLength(2));
-      expect((changes.last['data']['snapshot']['files'] as List).map((file) => file['text']),
+      expect((jsonObject(threadMetadata(data.path, id, 'agents_snapshot'))['files'] as List).map((file) => file['text']),
         ['Global updated.\n', changed, 'Nested addition.\n']);
 
       // Move the tool exchanges out of the summarizer's retained recent tail.
       for (var i = 0; i < 2; i++) {
-        await turn('task.send', {'task_id': id, 'prompt': 'Continue $i.'});
+        await turn(id, prompt: 'Continue $i.');
       }
-      await turn('task.compact', {'task_id': id});
-      final history = await client.request('history.page', {'task_id': id, 'limit': 500}) as List;
-      final restored = (history.lastWhere((event) => event['type'] == 'context.compacted')['data']['input'] as List)
+      await turn(id, compact: true);
+      final restored = (await contextItems(client, id))
           .where((item) => item['native']?['harness']?['context'] == 'agents_md').toList();
       expect(restored, hasLength(1));
       expect(jsonEncode(restored.single), contains('Updated rule.'));
@@ -145,19 +142,19 @@ void main() {
       expect(jsonEncode(restored.single), isNot(contains('replace all previously')));
       expect(jsonEncode(restored.single), isNot(contains('```diff')));
 
-      await turn('task.send', {'task_id': id, 'prompt': 'Continue after compaction.'});
+      await turn(id, prompt: 'Continue after compaction.');
       expect(instructions(requests.last), hasLength(1));
       final prefix = input(requests.last);
       await File('${project.path}.save').writeAsString(changed);
       await File('${project.path}.save').rename(project.path);
-      await turn('task.send', {'task_id': id, 'prompt': 'Same contents, new file.'});
+      await turn(id, prompt: 'Same contents, new file.');
       expect(input(requests.last).take(prefix.length).toList(), prefix);
       expect(input(requests.last).length, prefix.length + 2);
       expect(await updates(), hasLength(2));
 
       await global.delete();
       await nested.delete();
-      await turn('task.send', {'task_id': id, 'prompt': 'Only repository rules remain.'});
+      await turn(id, prompt: 'Only repository rules remain.');
       final removal = instructions(requests.last).last;
       if (lab == 'opencode') {
         expect(removal, 'The instructions from ${global.path} no longer apply.\n\n'
@@ -171,16 +168,16 @@ void main() {
       expect(await updates(), hasLength(3));
 
       await project.delete();
-      await turn('task.send', {'task_id': id, 'prompt': 'No rules remain.'});
+      await turn(id, prompt: 'No rules remain.');
       final empty = instructions(requests.last);
       expect(empty.last, contains(lab == 'opencode' ? 'Previously loaded instructions no longer apply.'
         : 'The previously provided AGENTS.md instructions no longer apply.'));
-      await turn('task.send', {'task_id': id, 'prompt': 'Still empty.'});
+      await turn(id, prompt: 'Still empty.');
       expect(instructions(requests.last), empty);
       expect(await updates(), hasLength(4));
 
       await project.writeAsString('Restored instructions.');
-      await turn('task.send', {'task_id': id, 'prompt': 'Rules apply again.'});
+      await turn(id, prompt: 'Rules apply again.');
       expect(instructions(requests.last).last, contains('Restored instructions.'));
       expect(instructions(requests.last).last, isNot(contains('replace all previously')));
       expect(await updates(), hasLength(5));

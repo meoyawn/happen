@@ -3,6 +3,9 @@ const _stringMap = {
   'type': 'object',
   'additionalProperties': {'type': 'string'},
 };
+// Provider tuning is separate from host-owned goal availability. Saved threads
+// always have goals; this is not a user-selectable provider/config feature flag.
+const _providerSettings = {'type': 'object', 'not': {'required': ['goals']}};
 const _webSearch = {
   'type': 'object',
   'additionalProperties': false,
@@ -20,6 +23,7 @@ const globalConfigSchema = <String, Object?>{
   'additionalProperties': false,
   'properties': {
     'code_mode_only': {'type': 'boolean', 'default': true},
+    'idle_unload_seconds': {'type': 'integer', 'minimum': 0, 'maximum': 9223372036854, 'default': 60},
     'default_provider': {
       'enum': ['openai', 'gpt', 'deepseek', 'opencode'],
     },
@@ -35,7 +39,7 @@ const globalConfigSchema = <String, Object?>{
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
             'api_key_env': _nonemptyString,
-            'settings': {'type': 'object'},
+            'settings': _providerSettings,
           },
           'dependencies': {'api_key_env': ['endpoint']},
         },
@@ -46,7 +50,7 @@ const globalConfigSchema = <String, Object?>{
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
             'api_key_env': _nonemptyString,
-            'settings': {'type': 'object'},
+            'settings': _providerSettings,
           },
           'dependencies': {'api_key_env': ['endpoint']},
         },
@@ -64,7 +68,7 @@ const globalConfigSchema = <String, Object?>{
             'transport': {
               'enum': ['messages', 'chat'],
             },
-            'settings': {'type': 'object'},
+            'settings': _providerSettings,
           },
         },
         'opencode': {
@@ -74,7 +78,7 @@ const globalConfigSchema = <String, Object?>{
             'model': _nonemptyString,
             'endpoint': {'type': 'string', 'format': 'uri'},
             'web_search': _webSearch,
-            'settings': {'type': 'object'},
+            'settings': _providerSettings,
           },
         },
       },

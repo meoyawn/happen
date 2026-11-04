@@ -146,7 +146,7 @@ class _Renderer {
     if (exhausted) return 'unknown';
     if (map.containsKey(r'$ref')) return reference(map);
     if (map.containsKey('const')) return literal(map['const']);
-    if (map['enum'] case final List values) {
+    if (map['enum'] case final List<Object?> values) {
       final rendered = <String>[];
       for (final value in values) {
         final item = literal(value);
@@ -156,7 +156,7 @@ class _Renderer {
       if (rendered.isNotEmpty) return rendered.join(' | ');
     }
     for (final key in ['anyOf', 'oneOf', 'allOf']) {
-      if (map[key] case final List variants) {
+      if (map[key] case final List<Object?> variants) {
         final rendered = <String>[];
         for (final variant in variants) {
           if (exhausted) return 'unknown';
@@ -166,7 +166,7 @@ class _Renderer {
         if (rendered.isNotEmpty) return rendered.join(key == 'allOf' ? ' & ' : ' | ');
       }
     }
-    if (map['type'] case final List types) {
+    if (map['type'] case final List<Object?> types) {
       final rendered = <String>[];
       for (final type in types.whereType<String>()) {
         if (exhausted) return 'unknown';
@@ -214,7 +214,7 @@ class _Renderer {
       final type = render(map['items']);
       return exhausted ? 'unknown' : 'Array<$type>';
     }
-    if (map['prefixItems'] case final List items) {
+    if (map['prefixItems'] case final List<Object?> items) {
       final types = <String>[];
       for (final item in items) {
         if (exhausted) return 'unknown';

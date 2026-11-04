@@ -7,19 +7,28 @@ import 'package:telemetry/telemetry.dart';
 import '../storage.dart';
 import 'session_reader.dart';
 
+final _writers = <String>{};
 Future<IsolateOwner> startStore(
   String directory,
   String id, {
   bool create = true,
   bool inMemory = false,
   Json? fork,
-}) => IsolateOwner.start(_storeMain, {
+}) async {
+  final key = inMemory ? 'memory:$id' : Uri.directory(directory).resolve('tasks/$id/history.sqlite').normalizePath().toString();
+  if (!_writers.add(key)) throw StateError('Thread $id already has an active writer');
+  try {
+    final owner = await IsolateOwner.start(_storeMain, {
   'directory': directory,
   'task_id': id,
   'create': create,
   'in_memory': inMemory,
   'fork': fork,
-}, service: 'storage');
+    }, service: 'storage');
+    unawaited(owner.done.whenComplete(() => _writers.remove(key)));
+    return owner;
+  } catch (_) { _writers.remove(key); rethrow; }
+}
 
 Future<String> importHistory(
   String directory,
@@ -42,7 +51,7 @@ Future<String> importHistory(
   }
 }
 
-void _storeMain(List<Object?> args) async {
+Future<void> _storeMain(List<Object?> args) async {
   final config = jsonObject(args[1]);
   final store = config['import_only'] == true
       ? null
@@ -52,7 +61,7 @@ void _storeMain(List<Object?> args) async {
           create: config['create'] as bool,
           inMemory: config['in_memory'] == true,
         );
-  if (config['fork'] case final Map snapshot) store!.initializeFork(jsonObject(snapshot));
+  if (config['fork'] case final Map<Object?, Object?> snapshot) store!.initializeFork(jsonObject(snapshot));
   final port = ReceivePort(), queue = StreamController<Json>();
   final operations = <String, CancellationToken>{};
   var closing = false;
@@ -90,14 +99,13 @@ void _storeMain(List<Object?> args) async {
       await traceIncoming(request, () async {
       try {
         cancellation.throwIfCancelled();
-        if (store != null && {'append', 'append_batch', 'context', 'fork.snapshot', 'session.prepare', 'tool_runtime.start',
-          'session.message.list', 'session.event.list', 'session.inbox',
-          'session.inbox.update', 'session.inbox.commit'}.contains(request['method'])) {
+        if (store != null && request['method'] == 'session.prepare') {
           await store.prepareSession(cancellation: cancellation);
         }
         final Object? result = switch (request['method']) {
           'session.prepare' => null,
           'tool_runtime.start' => store!.startToolRuntime(requiredString(params, 'id')),
+          'native.item.queue' => store!.queueNativeCompletion(params),
           'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
           'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
           'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),
@@ -111,38 +119,25 @@ void _storeMain(List<Object?> args) async {
             (params['events'] as List).map(jsonObject).toList(),
             metadata: jsonObject(params['metadata'] ?? {}),
           ),
-          'metadata' => store!.metadata(params['key'] as String),
+           'metadata' => store!.metadata(params['key'] as String),
+           final String method when method.startsWith('goal.') => store!.goal(method.substring(5), params),
           'kv.get' || 'kv.set' || 'kv.remove' || 'kv.scan' => store!.keyValue((request['method'] as String).substring(3), params),
           'archive' => store!.archive(params['archived'] as bool),
           'maintain' => store!.maintain(),
           'context' => store!.modelSnapshot(),
           'fork.snapshot' => store!.forkSnapshot(),
-          'session.message.list' || 'session.event.list' || 'session.inbox' =>
-            readStoredSession(store!.db, request['method'] as String, params),
-          'history' => store!.history(
-            after: params['after'] as int? ?? 0,
-            limit: params['limit'] as int? ?? 100,
-          ),
-          'history.list' => store!.historyPage(
-            before: params['before'] as int?,
-            limit: params['limit'] as int? ?? 100,
-          ),
-          'history.part' => store!.conversationPart(requiredString(params, 'id')),
-          'history.list_windows' => store!.listWindows(params),
-          'history.list_items' => await store!.listItems(
-            params,
-            cancellation: cancellation,
-          ),
-          'history.read_item' => store!.readItem(params),
-          'history.search_contents' => await store!.searchContents(
-            params,
-            cancellation: cancellation,
-          ),
+          'thread/read' || 'thread/items/list' || 'thread/turns/list' || 'thread/boundary' || 'session.inbox' =>
+            readStoredSession(store!.db, request['method'] as String, params, directory: store.directory, id: store.taskId),
+          'history' => store!.rolloutPage(params),
+          'history.list_windows' || 'history.list_items' || 'history.read_item' || 'history.search_contents' =>
+            await store!.recall(request['method'] as String, params, cancellation: cancellation),
           'fork' =>
             await store!
                 .fork(
                   params['id'] as String,
-                  through: params['through'] as int?,
+                   through: params['through'] as int?,
+                   lastTurnId: params['lastTurnId'] as String?,
+                   beforeTurnId: params['beforeTurnId'] as String?,
                   cancellation: cancellation,
                 )
                 .then((_) => null),

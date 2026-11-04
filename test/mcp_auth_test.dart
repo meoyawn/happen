@@ -49,12 +49,12 @@ void main() {
       expect(fixture.exchangeCount, 1);
       expect(fixture.leakedHeaders, isEmpty);
       final result = jsonObject(await callIsolate(server.network.port, 'mcp.call', {
-        'name': 'mcp__strength__workout_history', 'arguments': {},
+        'name': 'mcp__strength__workout_history', 'arguments': <String, Object?>{},
       }, cancellation: token));
       expect(result['structuredContent'], {'workouts': 3});
       fixture.access = 'opaque-revoked';
       await expectLater(callIsolate(server.network.port, 'mcp.call', {
-        'name': 'mcp__strength__workout_history', 'arguments': {},
+        'name': 'mcp__strength__workout_history', 'arguments': <String, Object?>{},
       }, cancellation: token), throwsA(isA<RemoteFailure>()));
       final deadline = DateTime.now().add(const Duration(seconds: 10));
       while ((await client.mcpInventory(cancellation: token))['servers'][0]['tool_count'] != 1) {
@@ -258,9 +258,9 @@ class _OAuthFixture {
       return;
     }
     final result = switch (body['method']) {
-      'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': {}}},
+      'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': <String, Object?>{}}},
       'tools/list' => {'tools': [{'name': 'workout_history', 'description': 'Read workout history', 'inputSchema': {'type': 'object'}}]},
-      _ => {'structuredContent': {'workouts': 3}, 'content': []},
+      _ => {'structuredContent': {'workouts': 3}, 'content': <Object?>[]},
     };
     await _reply(request, {'jsonrpc': '2.0', 'id': body['id'], 'result': result});
   }

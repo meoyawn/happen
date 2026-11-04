@@ -110,7 +110,7 @@ String _render(Json schema, Json definitions, bool pretty, [int depth = 0, Set<S
     return _intersection([_render(_object(nested[name]), nested, pretty, depth, {...seen, name}), render(without([r'$ref']))]);
   }
   if (schema.containsKey('const')) return jsonEncode(schema['const']);
-  if (schema['enum'] case final List values) return values.map(jsonEncode).join(' | ');
+  if (schema['enum'] case final List<Object?> values) return values.map(jsonEncode).join(' | ');
   final listed = schema['anyOf'] ?? schema['oneOf'];
   if (listed is List) {
     bool sentinel(dynamic value) => value['type'] == 'string' && value['enum'] is List &&
@@ -124,11 +124,11 @@ String _render(Json schema, Json definitions, bool pretty, [int depth = 0, Set<S
     if (members.contains('unknown')) return 'unknown';
     return _intersection([members.join(' | '), render(without(['anyOf', 'oneOf']))]);
   }
-  if (schema['allOf'] case final List members) {
+  if (schema['allOf'] case final List<Object?> members) {
     if (members.any((value) => _unresolved(_object(value), nested))) return 'unknown';
     return _intersection([render(without(['allOf'])), ...members.map((value) => render(_object(value)))]);
   }
-  if (schema['type'] case final List types) return types.map((type) => render({...schema, 'type': type})).join(' | ');
+  if (schema['type'] case final List<Object?> types) return types.map((type) => render({...schema, 'type': type})).join(' | ');
   switch (schema['type']) {
     case 'string': return 'string';
     case 'number':

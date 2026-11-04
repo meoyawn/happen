@@ -153,6 +153,8 @@ Future<void> run(List<String> arguments) async {
       StreamSubscription<Json>? events;
       TraceStore? traces;
       String? taskId = command['resume'] as String?;
+      String? activeTurnId;
+      final outputItems = <String, Json>{};
       final terminal = Completer<Json>();
       final cancellation = CancellationToken();
       CancellationToken? exportCancellation;
@@ -180,13 +182,12 @@ Future<void> run(List<String> arguments) async {
           : null;
         events = client.events.stream.listen(
           (event) {
-            if (taskId != null && event['task_id'] != taskId) return;
+            if (taskId != null && event['params']?['threadId'] != taskId) return;
             if (command['json'] == true) stdout.writeln(jsonEncode(event));
-            if ([
-                  'turn.completed',
-                  'turn.failed',
-                  'turn.cancelled',
-                ].contains(event['type']) &&
+            if (event['method'] == 'item/completed') {
+              final item = jsonObject(event['params']['item']); outputItems[item['id'] as String] = item;
+            }
+            if (event['method'] == 'turn/completed' &&
                 !terminal.isCompleted) {
               terminal.complete(event);
             }
@@ -199,10 +200,8 @@ Future<void> run(List<String> arguments) async {
             }
           },
         );
-        final result = jsonObject(
-          await withTrace(trace, () => client!.request(taskId == null ? 'task.start' : 'task.send', {
-            'task_id': ?taskId,
-            'prompt': prompt,
+        if (taskId == null) {
+          final result = jsonObject(await withTrace(trace, () => client!.request('thread/start', {
             if (taskId == null || command.wasParsed('cwd'))
               'cwd': command['cwd'],
             if (endpoint != null) 'provider': 'openai'
@@ -212,19 +211,26 @@ Future<void> run(List<String> arguments) async {
               'reasoning': command['reasoning'],
             'telemetry': command['telemetry'],
             'tracing': command['telemetry'],
-          })).asCancellable(cancellation),
-        );
-        taskId = result['task_id'] as String;
+          })).asCancellable(cancellation));
+          taskId = result['thread']['id'] as String;
+        } else {
+          await client.request('thread/resume', {'threadId': taskId, 'excludeTurns': true}).asCancellable(cancellation);
+        }
+        final started = jsonObject(await withTrace(trace, () => client!.request('turn/start', {
+          'threadId': taskId, 'input': [{'type': 'text', 'text': prompt}],
+          if (command.wasParsed('reasoning')) 'effort': command['reasoning'],
+        })).asCancellable(cancellation));
+        activeTurnId = started['turn']['id'] as String;
         withTrace(trace, () => bindTraceSession(taskId!));
         final completed = await terminal.future.asCancellable(cancellation);
         if (command['json'] == false) {
-          if (completed['type'] == 'turn.completed') {
-            stdout.writeln(completed['data']?['text'] ?? '');
+          if (completed['params']['turn']['status'] == 'completed') {
+            stdout.writeln(outputItems.values.where((item) => item['type'] == 'agentMessage').lastOrNull?['text'] ?? '');
           } else {
-            stderr.writeln(completed['data']?['error'] ?? 'Turn failed');
+            stderr.writeln(completed['params']['turn']['error'] ?? 'Turn failed');
           }
         }
-        if (completed['type'] != 'turn.completed') exitCode = 1;
+        if (completed['params']['turn']['status'] != 'completed') exitCode = 1;
       } on CancelledException {
         exitCode = 130;
       } finally {
@@ -233,7 +239,7 @@ Future<void> run(List<String> arguments) async {
           if (traces != null && taskId != null) {
             final exporting = exportCancellation = TimeoutCancellationToken(const Duration(seconds: 30));
             if (!terminal.isCompleted) {
-              await client!.request('task.cancel', {'task_id': taskId}).asCancellable(exporting);
+              await client!.request('turn/interrupt', {'threadId': taskId, 'turnId': activeTurnId}).asCancellable(exporting);
               await terminal.future.asCancellable(exporting);
             }
             final file = await _saveTelemetry(traces, directory, taskId, cancellation: exporting);
@@ -301,7 +307,7 @@ Future<File> _saveTelemetry(TraceStore traces, String directory, String sessionI
       final page = await traces.page(sessionID, after: after, through: through, cancellation: cancellation);
       through ??= page['through'] as int;
       after = page['after'] as int;
-      final events = traceExportEvents((page['events'] as List).cast<Map>());
+      final events = traceExportEvents((page['events'] as List).map(jsonObject));
       for (final event in events) { output.write(',${jsonEncode(event)}'); }
       await output.flush();
       if (page['done'] == true) break;

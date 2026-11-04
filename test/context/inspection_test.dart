@@ -8,7 +8,7 @@ import 'package:ai/ai.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
-import 'package:storage/storage.dart';
+import '../support/thread.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -60,7 +60,7 @@ void main() {
     expect(reads, 2);
   });
 
-  test('inspection equals inference, preserves bootstrap order, and restores through sleep, restart and compaction', () async {
+  test('inspection equals inference, preserves bootstrap order, and restores through unloading, restart and compaction', () async {
     final root = await Directory.systemTemp.createTemp('agent-inspection-');
     final data = await Directory('${root.path}/data').create();
     final work = await Directory('${root.path}/work').create();
@@ -85,6 +85,7 @@ void main() {
       incoming.add((body: body, response: request.response));
     });
     final endpoint = 'http://127.0.0.1:${provider.port}/responses';
+    await File('${data.path}/config.yaml').writeAsString('idle_unload_seconds: 0');
     Future<AgentServer> start() => AgentServer.startEmbedded(directory: data.path,
       configPath: '${data.path}/config.yaml', skillsHome: home.path, endpoint: endpoint);
     var server = await start();
@@ -103,9 +104,8 @@ void main() {
       expect(await requests.moveNext().timeout(const Duration(seconds: 15)), true);
       return requests.current;
     }
-    Future<Json> terminal() => client.events.stream.firstWhere((event) =>
-      {'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'}.contains(event['type']))
-        .timeout(const Duration(seconds: 15));
+    Future<Json> terminal() async => jsonObject((await client.events.stream.firstWhere((event) =>
+      event['method'] == 'turn/completed').timeout(const Duration(seconds: 15)))['params']['turn']);
     Future<void> respond(HttpResponse response, List<Json> output) async {
       response.headers.contentType = ContentType('text', 'event-stream');
       response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
@@ -115,12 +115,12 @@ void main() {
     }
     List<Json> wire(Json context) => withGptInstructions(context['instructions'] as String, gptInput((context['input'] as List)
       .map((item) => ConversationItem.fromJson(jsonObject(item)))), sessionId: context['sessionID'] as String);
-    final admitted = jsonObject(await client.request('session.create', {
-      'cwd': work.path, 'prompt': 'Inspect this exact context', 'client_tools': [{
+    final id = await createThread(client, {
+      'cwd': work.path, 'dynamicTools': [{
         'name': 'lookup', 'description': 'Deferred lookup', 'inputSchema': {'type': 'object'},
       }],
-    }));
-    final id = admitted['sessionID'] as String;
+    });
+    await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Inspect this exact context'}]});
     Future<Json> inspect([Json params = const {}]) => client.sessionRead('session.context',
       {'sessionID': id, ...params}, cancellation: lifetime);
     final firstRequest = await nextRequest();
@@ -141,7 +141,7 @@ void main() {
         throwsA(isA<StateError>()));
     } finally { await observer.close(); }
     await respond(firstRequest.response, [
-      {'type': 'reasoning', 'id': 'reasoning_fixture', 'summary': [], 'encrypted_content': 'opaque-native-state'},
+      {'type': 'reasoning', 'id': 'reasoning_fixture', 'summary': <Object?>[], 'encrypted_content': 'opaque-native-state'},
       {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'inspect_call',
         'input': 'text("visible tool output");'},
     ]);
@@ -154,15 +154,12 @@ void main() {
     await respond(secondRequest.response, [
       {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]},
     ]);
-    expect((await finished)['type'], 'session.execution.succeeded');
+    expect((await finished)['status'], 'completed');
     final idle = await inspect();
     final countBeforeInspection = requestCount;
     expect((idle['input'] as List).take((afterTool['input'] as List).length), afterTool['input']);
     expect(idle['running'], false);
-    final store = TaskStore(data.path, id, create: false);
-    try { expect(idle['input'], store.modelContext()); }
-    finally { store.close(); }
-    await client.request('session.hibernate', {'sessionID': id});
+    await unloadThread(client, id, cancellation: lifetime);
     expect((await inspect())['input'], idle['input']);
     await client.close();
     await server.close();
@@ -181,11 +178,11 @@ void main() {
     // A compaction replaces the actual model buffer, rather than just hiding
     // transcript messages. The inspector must include its opaque native item.
     final compacted = terminal();
-    await client.request('session.compact', {'sessionID': id});
+    await client.request('thread/compact/start', {'threadId': id});
     final compactRequest = await nextRequest();
     expect(compactRequest.body['input'].last['type'], 'compaction_trigger');
     await respond(compactRequest.response, [{'type': 'compaction', 'encrypted_content': 'replacement-history'}]);
-    expect((await compacted)['type'], 'session.execution.succeeded');
+    expect((await compacted)['status'], 'completed');
     final replacement = await inspect();
     expect((replacement['input'] as List).where((item) => item['kind'] == 'compaction'), hasLength(1));
     expect(jsonEncode(replacement['input']), contains('replacement-history'));
@@ -199,14 +196,14 @@ void main() {
     }
     expect(beforeCompactionInput, reopened['input']);
     final resumed = terminal();
-    await client.request('session.prompt', {'sessionID': id, 'prompt': 'Continue'});
+    await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Continue'}]});
     final continuation = await nextRequest();
     expect((continuation.body['input'] as List).take(wire(replacement).length), wire(replacement));
     expect(wire(await inspect()), continuation.body['input']);
     await respond(continuation.response, [
       {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Continued'}]},
     ]);
-    expect((await resumed)['type'], 'session.execution.succeeded');
+    expect((await resumed)['status'], 'completed');
     // The first connection owned its cursor. Closing it releases that snapshot.
     await expectLater(inspect({'cursor': paged['cursor']['next']}), throwsA(isA<StateError>()));
     // A new multi-page snapshot remains fixed even as another turn appends data.
@@ -214,12 +211,12 @@ void main() {
     final frozen = await inspect();
     final frozenInput = <Json>[...(page['input'] as List).map(jsonObject)];
     final nextTurn = terminal();
-    await client.request('session.prompt', {'sessionID': id, 'prompt': 'Another turn'});
+    await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Another turn'}]});
     final another = await nextRequest();
     await respond(another.response, [
       {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Another answer'}]},
     ]);
-    expect((await nextTurn)['type'], 'session.execution.succeeded');
+    expect((await nextTurn)['status'], 'completed');
     while (page['cursor']['next'] != null) {
       final next = await inspect({'limit': 2, 'cursor': page['cursor']['next']});
       expect(next['snapshotID'], page['snapshotID']);

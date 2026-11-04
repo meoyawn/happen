@@ -10,12 +10,13 @@ import 'transport.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
-  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged});
+  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent});
   final HttpClient http;
   final void Function(String owner, Json event) onEvent;
   final String? publicUrl;
   final String? directory;
   final void Function(String server)? onAuthChanged;
+  final Future<void> Function(Json event, CancellationToken cancellation)? acceptThreadEvent;
   final lifetime = CancellationToken();
   final _servers = <String, _Server>{};
   Json _configured = {};
@@ -91,7 +92,7 @@ class McpManager {
         'state': server.state,
         'protocol_version': server.connection?.version,
         'pid': server.connection?.processId,
-        'capabilities': server.connection?.discovery['capabilities'] ?? {},
+        'capabilities': server.connection?.discovery['capabilities'] ?? <String, Object?>{},
         if (server.error != null) 'error': server.error,
       },
   ];
@@ -381,7 +382,8 @@ class McpManager {
     if (!supported.contains(mode)) {
       throw ArgumentError('Event does not support the requested delivery mode');
     }
-    final subscription = McpEventSubscription(
+    late final McpEventSubscription subscription;
+    subscription = McpEventSubscription(
       id: newId(),
       owner: owner,
       server: server,
@@ -392,9 +394,15 @@ class McpManager {
       maxAgeMs: params['max_age_ms'] as int?,
       ttlMs: params.containsKey('ttl_ms') ? params['ttl_ms'] as int? : 300000,
       publicUrl: publicUrl,
+      threadId: params['threadId'] as String?,
+      acceptEvent: params['threadId'] == null ? null : (occurrence, token) async {
+        if (acceptThreadEvent == null) throw const McpFailure('Thread event delivery is unavailable', status: 503);
+        await acceptThreadEvent!({'threadId': params['threadId'], 'subscription_id': subscription.id,
+          'server': server, 'notification': {'method': 'notifications/events/event', 'params': occurrence}}, token);
+      },
       connection: target.ready,
       onEvent: (event) =>
-          onEvent(owner, {'task_id': params['task_id'], ...event}),
+          onEvent(owner, {if (params['threadId'] != null) 'threadId': params['threadId'], ...event}),
     );
     _subscriptions[subscription.id] = subscription;
     try {
@@ -431,10 +439,10 @@ class McpManager {
     );
   }
 
-  Json webhook(String id, Json headers, List<int> body) {
+  Future<Json> webhook(String id, Json headers, List<int> body, CancellationToken cancellation) async {
     final subscription = _subscriptions[id];
     if (subscription == null) return {'status': 410};
-    return subscription.webhook(headers, body);
+    return subscription.webhook(headers, body, cancellation);
   }
 
   Future<void> close() async {

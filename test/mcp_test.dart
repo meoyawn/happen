@@ -27,7 +27,7 @@ void main() {
       final result = switch (method) {
         'server/discover' => {
           'supportedVersions': ['2026-07-28'],
-          'capabilities': {'tools': {}},
+          'capabilities': {'tools': <String, Object?>{}},
         },
         'tools/list' => {
           'tools': [
@@ -214,7 +214,7 @@ void main() {
         case 'server/discover':
           result = {
             'supportedVersions': ['2026-07-28'],
-            'capabilities': {'events': {}},
+            'capabilities': {'events': <String, Object?>{}},
           };
         case 'events/list':
           result = {
@@ -244,7 +244,7 @@ void main() {
         case 'events/poll':
           polls++;
           result = {
-            'events': polls == 1 ? [occurrence('polled', 'poll-1')] : [],
+            'events': polls == 1 ? [occurrence('polled', 'poll-1')] : <Object?>[],
             'cursor': 'poll-$polls',
             'hasMore': polls == 1,
             'truncated': polls == 1,

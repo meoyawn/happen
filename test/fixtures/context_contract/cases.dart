@@ -2,9 +2,9 @@ import 'fermented_beetroot.dart';
 import 'tldw.dart';
 
 const contextCases = <Map<String, dynamic>>[
-  {'id': 'empty', 'prompt': 'Reply READY.', 'files': {}, 'contains': [], 'absent': []},
+  {'id': 'empty', 'prompt': 'Reply READY.', 'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[]},
   {'id': 'interactive-user-input', 'prompt': 'Reply READY.', 'request_user_input': true,
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'function_call', 'name': 'request_user_input_async', 'call_id': 'async_question',
         'arguments': '{"questions":[{"title":"Which approach should we use?","options":["Safe","Fast"]},{"title":"Any constraints?"}]}'}],
@@ -16,7 +16,7 @@ const contextCases = <Map<String, dynamic>>[
     'id': 'streamed-continuation', 'workflow': 'continuation',
     'prompt': 'Read receipt.txt using a tool after the introductory commentary, then reply READY.',
     'files': {'receipt.txt': 'STREAMED_TOOL_RECEIPT=mango-47\n'},
-    'contains': [], 'absent': ['STREAMED_TOOL_RECEIPT'], 'continue_after': [0], 'indexless_stream': true,
+    'contains': <Object?>[], 'absent': ['STREAMED_TOOL_RECEIPT'], 'continue_after': [0], 'indexless_stream': true,
     'responses': [
       [{'type': 'message', 'role': 'assistant', 'phase': 'commentary',
         'content': [{'type': 'output_text', 'text': "I'll check the requested tools."}]}],
@@ -29,7 +29,7 @@ const contextCases = <Map<String, dynamic>>[
   {
     'id': 'web-search', 'workflow': 'web',
     'prompt': 'Search the web for the context-contract fixture, cite its source, and record the receipt.',
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [
         {'type': 'web_search_call', 'action': {'type': 'search', 'query': 'context-contract web fixture'}},
@@ -49,7 +49,7 @@ const contextCases = <Map<String, dynamic>>[
   tldwYoutubeCase,
   {
     'id': 'clock-sleep', 'workflow': 'sleep', 'prompt': 'Pause briefly using clock.sleep, then reply READY.',
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'function_call', 'namespace': 'clock', 'name': 'sleep', 'call_id': 'invalid_sleep', 'arguments': '{"duration_ms":0}'}],
       [{'type': 'function_call', 'namespace': 'clock', 'name': 'sleep', 'call_id': 'clock_sleep', 'arguments': '{"duration_ms":1}'}],
@@ -64,8 +64,8 @@ const contextCases = <Map<String, dynamic>>[
       'Explicitly create a goal named GOAL_CONTEXT_RECEIPT with a 1000-token budget. Inspect it, mark it complete, then inspect the completed goal.',
       'Read the saved completed goal without creating another goal, then reply READY.',
     ],
-    'hibernate_between_turns': true,
-    'files': {}, 'contains': [], 'absent': [],
+    'unload_between_turns': true,
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_lifecycle',
         'input': 'text(await tools.get_goal({})); '
@@ -96,10 +96,10 @@ const contextCases = <Map<String, dynamic>>[
   {
     'id': 'empty-override', 'prompt': 'Reply READY.',
     'files': {'AGENTS.md': 'EVAL_SUPPRESSED_RULE: never inject this.\n', 'AGENTS.override.md': ''},
-    'contains': [], 'absent': ['EVAL_SUPPRESSED_RULE'],
+    'contains': <Object?>[], 'absent': ['EVAL_SUPPRESSED_RULE'],
   },
   {
-    'id': 'global-skills', 'prompt': 'Reply READY without selecting a skill.', 'files': {},
+    'id': 'global-skills', 'prompt': 'Reply READY without selecting a skill.', 'files': <String, Object?>{},
     'global_skills': {'fixture-global/SKILL.md': _globalSkill},
     'catalog_skills': ['fixture-global'],
     'contains': ['fixture-global', 'Use for the isolated global-skill fixture.'],
@@ -151,7 +151,7 @@ const contextCases = <Map<String, dynamic>>[
       [_ready],
     ],
     'files': _dartProject,
-    'contains': [], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'REAL_DART_MCP_RECEIPT',
+    'contains': <Object?>[], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'REAL_DART_MCP_RECEIPT',
   },
   {
     'id': 'dart-evaluation-discovery', 'workflow': 'search', 'mcp': true,
@@ -177,7 +177,7 @@ const contextCases = <Map<String, dynamic>>[
       [_ready],
     ],
     'files': _dartProject,
-    'contains': [], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'vm_service',
+    'contains': <Object?>[], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'vm_service',
   },
   {
     'id': 'compaction', 'workflow': 'compaction',
@@ -200,7 +200,7 @@ const contextCases = <Map<String, dynamic>>[
     'id': 'resume', 'workflow': 'resume',
     'prompt': 'Remember the fixture value mango-47 and reply READY. Do not use tools.',
     'files': {'AGENTS.md': 'EVAL_RESUME_RULE: keep this guidance across turns.\n'},
-    'contains': ['EVAL_RESUME_RULE'], 'absent': [],
+    'contains': ['EVAL_RESUME_RULE'], 'absent': <Object?>[],
   },
   {
     'id': 'multi-user-compaction', 'workflow': 'compaction',
@@ -228,7 +228,7 @@ const contextCases = <Map<String, dynamic>>[
   {
     'id': 'patch-and-shell', 'workflow': 'shell',
     'prompt': 'Write receipt.txt using apply_patch, read it using the shell, then reply READY.',
-    'files': {}, 'contains': [], 'absent': ['PATCH_CONTEXT_RECEIPT'],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': ['PATCH_CONTEXT_RECEIPT'],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_receipt',
         'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_CONTEXT_RECEIPT\\n*** End Patch"));'}],
@@ -247,7 +247,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'shell-unicode-output', 'workflow': 'shell', 'prompt': 'Run the Unicode shell-output fixture.',
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'unicode_output',
         'input': 'text(await tools.exec_command({cmd:"printf \'AB😀CD😀EF\'",login:false,max_output_tokens:2}));'}],
@@ -257,7 +257,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'pty-output', 'workflow': 'shell', 'prompt': 'Run the shell command in a real terminal.',
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'pty_output',
         'input': 'text(await tools.exec_command({cmd:"test -t 0 && test -t 1 && test -t 2 && printf PTY-CONTEXT",login:false,tty:true}));'}],
@@ -267,7 +267,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'generated-image-output', 'workflow': 'image', 'prompt': 'Inspect the image and return its generated-image result.',
-    'files': {}, 'binary_files': {'sample.png': _png}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'binary_files': {'sample.png': _png}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'image_result',
         'input': 'const result = await tools.view_image({path:"sample.png"}); '
@@ -278,7 +278,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'recorded-audio-output', 'workflow': 'audio', 'prompt': 'Forward the recorded audio as an audio result. Do not play it.',
-    'files': {}, 'binary_sources': {'recording.wav': 'media/jfk-excerpt.wav'}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'binary_sources': {'recording.wav': 'media/jfk-excerpt.wav'}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'audio_result',
         'input': 'const clip = await tools.exec_command({cmd:"base64 < recording.wav",login:false,max_output_tokens:20000}); '
@@ -289,7 +289,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'resumable-cells', 'workflow': 'cells', 'prompt': 'Yield, resume, and terminate real JavaScript cells.',
-    'files': {}, 'contains': [], 'absent': [],
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'yield_cell',
         'input': 'export const moduleValue = 7; text({moduleValue,moduleThis:this === undefined,console:typeof console,missingTool:typeof tools.not_registered}); '
@@ -318,4 +318,4 @@ const _dartProject = {
   'pubspec.yaml': "name: context_contract\nenvironment:\n  sdk: '>=3.13.0 <4.0.0'\n",
   'lib/fixture.dart': "const contextContractReceipt = 'REAL_DART_MCP_RECEIPT';\n",
 };
-const _ready = {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'READY', 'annotations': []}]};
+const _ready = {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'READY', 'annotations': <Object?>[]}]};

@@ -55,7 +55,7 @@ void main() {
       'data': {'sessionID': task.id, ...data},
     });
     void ask(DesktopTask task, String id) => event(task, id, 'question.asked', {
-      'request': {'id': id, 'questions': []},
+      'request': {'id': id, 'questions': <Object?>[]},
     });
     Future<void> clickNotification(int id, String taskID) async {
       final response = Completer<void>();
@@ -90,7 +90,7 @@ void main() {
     expect(shown().single.arguments['payload'], 'other');
     expect(shown().single.arguments['platformSpecifics']['presentSound'], false);
     expect(calls.lastWhere((call) => call.method == 'updateBadge').arguments['count'], 1);
-    final notificationID = shown().single.arguments['id'];
+    final notificationID = shown().single.arguments['id'] as int;
     event(other, 'complete', 'execution.succeeded');
     event(other, 'complete', 'execution.succeeded');
     await tester.pumpAndSettle();
@@ -171,13 +171,13 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     client.events.add({
       'id': 'evt_live', 'type': 'session.question.asked', 'created': 0, 'durable': {'seq': 2},
-      'data': {'sessionID': task.id, 'request': {'id': 'live', 'questions': []}},
+      'data': {'sessionID': task.id, 'request': {'id': 'live', 'questions': <Object?>[]}},
     });
     await Future<void>.delayed(Duration.zero);
     expect(notices.map((notice) => notice.kind), [TaskNotificationKind.input]);
     client.page.complete({
-      'running': true, 'through': 1, 'configuration': {}, 'state': {},
-      'questions': [{'id': 'restored', 'questions': []}], 'data': [
+      'running': true, 'through': 1, 'configuration': <String, Object?>{}, 'state': <String, Object?>{},
+      'questions': [{'id': 'restored', 'questions': <Object?>[]}], 'data': [
         {'id': 'saved-idle', 'type': 'idle', 'outcome': 'succeeded',
           'time': {'created': 0}, 'metadata': {'seq': 1}},
       ],

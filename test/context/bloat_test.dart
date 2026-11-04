@@ -7,6 +7,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 import '../support/openai_output.dart';
+import '../support/thread.dart';
 
 void main() {
   test('multi-turn model context adds only new work and compaction restores one current baseline', () async {
@@ -74,27 +75,20 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    Future<Json> turn(String method, Json params) async {
-      final terminal = client.events.stream.firstWhere((event) =>
-        ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']),
-      );
-      await client.request(method, params);
-      final result = await terminal.timeout(const Duration(seconds: 15));
-      expect(result['type'], 'turn.completed', reason: result.toString());
+    Future<Json> turn(String id, {String prompt = '', bool compact = false, Json settings = const {}}) async {
+      final result = await runTurn(client, id, prompt: prompt, compact: compact, settings: settings);
+      expect(result['status'], 'completed', reason: result.toString());
       return result;
     }
 
-    String? id;
-    List? previousInput;
+    final id = await createThread(client, {'cwd': work.path});
+    List<Object?>? previousInput;
     for (var i = 0; i < 5; i++) {
       final before = requests.length;
-      final result = await turn(id == null ? 'task.start' : 'task.send', {
-        if (id == null) 'cwd': work.path else 'task_id': id,
-        'prompt': 'turn-$i',
-        'reasoning': i == 0 ? 'low' : 'high',
-        if (i == 2) 'instructions': 'Keep responses short.',
+      await turn(id, prompt: 'turn-$i', settings: {
+        'effort': i == 0 ? 'low' : 'high',
+        if (i == 2) 'developerInstructions': 'Keep responses short.',
       });
-      id = result['task_id'] as String;
       expect(requests.length, before + 2);
       final initial = requests[before];
       final completed = requests[before + 1];
@@ -142,14 +136,14 @@ void main() {
       'inputSchema': {'type': 'object'},
     };
     await client.request('tools.register', {'task_id': id, 'tools': [browser, stable]});
-    await turn('task.send', {'task_id': id, 'prompt': 'catalog baseline'});
+    await turn(id, prompt: 'catalog baseline');
     previousInput = requests.last['input'] as List;
     await client.request('tools.register', {'task_id': id, 'tools': [stable, {
       ...browser,
       'inputSchema': {'properties': {'tab': {'type': 'integer'}}, 'type': 'object'},
     }]});
     final beforeReorder = requests.length;
-    await turn('task.send', {'task_id': id, 'prompt': 'same catalog, different order'});
+    await turn(id, prompt: 'same catalog, different order');
     final reordered = requests[beforeReorder]['input'] as List;
     expect(reordered.take(previousInput.length).toList(), previousInput);
     expect(reordered.length, previousInput.length + 2,
@@ -160,7 +154,7 @@ void main() {
       ...browser, 'description': 'Changed title guidance',
     }]});
     final beforeChange = requests.length;
-    await turn('task.send', {'task_id': id, 'prompt': 'one changed tool'});
+    await turn(id, prompt: 'one changed tool');
     final changed = (requests[beforeChange]['input'] as List).skip(previousInput.length).toList();
     expect(changed.where((item) => item['type'] == 'additional_tools'), isEmpty);
     expect(jsonEncode(changed), isNot(contains('browser_title')));
@@ -169,9 +163,9 @@ void main() {
     final discovery = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
     expect(printedOpenAIOutput(discovery['output']).join('\n'), contains('Changed title guidance'));
 
-    await client.request('tools.register', {'task_id': id, 'tools': []});
+    await client.request('tools.register', {'task_id': id, 'tools': <Object?>[]});
     final beforeRemoval = requests.length;
-    await turn('task.send', {'task_id': id, 'prompt': 'removed tools'});
+    await turn(id, prompt: 'removed tools');
     final notice = (requests[beforeRemoval]['input'] as List).lastWhere((item) => item['role'] == 'developer');
     expect(openAIMessageText(notice as Map), '<tools>\nRemoved deferred tool namespaces:\n'
       '- client: Tools in the client namespace.\nNo deferred tool namespaces remain.\n</tools>');
@@ -185,16 +179,15 @@ void main() {
     );
     client = await AgentClient.connect(server.uri);
     final beforeResume = requests.length;
-    await turn('task.send', {'task_id': id, 'prompt': 'after restart'});
+    await turn(id, prompt: 'after restart');
     final resumed = requests[beforeResume]['input'] as List;
     expect(resumed.take(previousInput.length).toList(), previousInput);
-    expect(resumed.length, previousInput.length + 2);
+    expect(resumed.length, previousInput.length + 3);
+    expect(jsonEncode(resumed.skip(previousInput.length).toList()), contains('The tool runtime was restarted.'));
 
     for (var i = 0; i < 2; i++) {
-      await turn('task.compact', {'task_id': id});
-      final history = await client.request('history.page', {'task_id': id, 'limit': 500}) as List;
-      final checkpoint = history.lastWhere((event) => event['type'] == 'context.compacted');
-      final context = checkpoint['data']['input'] as List;
+      await turn(id, compact: true);
+      final context = await contextItems(client, id);
       expect(context.where((item) => item['native']?['harness']?['context'] == 'environment'), hasLength(1));
       expect(context.where((item) => ['agents_md', 'mcp', 'client_tools'].contains(item['native']?['harness']?['context'])), isEmpty);
       expect(context.where((item) => item['role'] == 'developer'), hasLength(1));
@@ -205,9 +198,8 @@ void main() {
       expect(context.where((item) => item['kind'] == 'configuration'), hasLength(1));
       expect(context.where((item) => item['role'] == 'tool'), isEmpty);
       expect(jsonEncode(context), isNot(contains(privateReceipt)));
-      final stored = history.lastWhere((event) => event['type'] == 'tool.completed');
-      expect(stored['data']['values']['unprinted'], privateReceipt);
-      await turn('task.send', {'task_id': id, 'prompt': 'after compact-$i'});
+      expect(jsonObject(threadMetadata(root.path, id, 'values'))['unprinted'], privateReceipt);
+      await turn(id, prompt: 'after compact-$i');
       expect((requests.last['input'] as List).first, (requests.first['input'] as List).first);
       expect(requests.last['tools'], requests.first['tools']);
       expect(jsonEncode(requests.last['input']), isNot(contains(privateReceipt)));

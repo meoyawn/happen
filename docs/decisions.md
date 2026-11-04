@@ -3,6 +3,21 @@
 This is the decision record for this agent server. Measurements are observations on the
 listed environment, not capacity guarantees. Update entries as evidence changes.
 
+## 2026-11-05 — Deterministic context contracts, separate performance work
+
+The Codex context matrix is a functional contract, not a benchmark. Remove
+elapsed-time verdicts, stopwatches, medians, arrival measurements, speed ratios,
+and benchmark warm-ups. A correct request must not fail because one machine's
+agent loop was a fraction of a millisecond slower than the reference.
+
+Keep every scenario and both tool modes, strict normalized request equality,
+ID contracts, real tool execution, cold resume, compaction, and goal assertions.
+Run each pair in both execution orders to cover fresh-thread isolation and
+reuse of Happen's shared MCP owner. Only documented run-specific timestamps,
+durations, scoped IDs, and client telemetry are normalized; original requests
+remain in raw captures. Safety deadlines and cancellation prevent hangs, not
+speed regressions. Performance comparisons belong in separate benchmarks.
+
 ## 2026-11-02 — Pending message actions
 
 Match the current OpenCode checkout's `session-ui/src/message/message-content.tsx`,
@@ -571,8 +586,10 @@ history and telemetry.
 Use Codex as the push-stream reference: wait for activation, route notifications
 by their subscription request ID, distinguish termination from transport loss,
 and cancel streams with their owner. The WebSocket client controls subscriptions
-and receives lifecycle notifications; event arrival alone does not authorize a
-new model turn or an external action. Keep server discovery, tools, and event
+and receives lifecycle notifications. As of 2026-11-05, binding a subscription
+to a saved thread explicitly delegates occurrence delivery to the running server:
+events reload and queue input there even with no desktop connected. Unbound
+subscriptions remain connection-owned and display-only. Keep server discovery, tools, and event
 subscriptions separate so polling and webhook delivery fit the same client
 boundary. Webhook callbacks require signature verification before delivery.
 
@@ -4731,20 +4748,23 @@ inspected the pinned source on macOS arm64:
   cancellation. Dart SDK 3.13.7 `runtime/bin/process_macos.cc` shows normal
   `Process.start` does not establish a separate process group.
 
-Keep the agent and SQLite owners short-lived. A server-owned tool mailbox retains
+Keep inference agents short-lived; loaded threads retain one SQLite writer until
+idle unloading. A server-owned tool mailbox retains
 one provider runtime and lifetime token per active task, independently of turns.
 Every native or nested call, including catalog refresh, requires an explicit caller token. Providers
 select process lifetime when starting work: OpenAI sessions and OpenCode
 background commands use the task token, while one-shot/foreground tools use the
 caller token. Cancelling a session's initial wait or `write_stdin` poll releases
 that invocation without terminating the session. Session IDs are JavaScript-safe
-random integers so an old ID is not deterministically reused after hibernation.
+random integers so an old ID is not deterministically reused after unloading.
 Per-call cwd overrides preserve later turns' working directories.
 
-`task.hibernate` stops any turn, drains its native calls, closes task-owned
+`thread/unsubscribe` removes only the caller's subscription. After a full idle
+delay with no subscribers, the server unloads the thread, closes task-owned
 sessions, and releases cached repository context without archiving history.
-Archive and server shutdown also close sessions. Turn completion, Stop, client
-disconnection, and steering do not hibernate the task. Live processes are neither
+It never cancels a running turn. Archive and server shutdown also close sessions.
+Turn completion and losing the final subscriber jointly start the countdown;
+resubscription cancels it. Stop and steering do not unload subscribed threads. Live processes are neither
 persisted nor copied by restart/fork/export/import. OpenCode background completion
 is retained until the next model step or turn; an idle task is not automatically
 sampled and an indefinitely running server cannot keep a turn open.

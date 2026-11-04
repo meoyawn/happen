@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 import '../support/openai_output.dart';
+import '../support/thread.dart';
 
 void main() {
   test('code-mode-only discovery stays nested across catalog edits and compaction', () async {
@@ -95,13 +96,9 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    Future<Json> turn(String method, Json params) async {
-      final terminal = client.events.stream.firstWhere((event) =>
-        ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']),
-      );
-      await client.request(method, params);
-      final result = await terminal.timeout(const Duration(seconds: 20));
-      expect(result['type'], 'turn.completed', reason: result.toString());
+    Future<Json> turn(String id, {String prompt = '', bool compact = false}) async {
+      final result = await runTurn(client, id, prompt: prompt, compact: compact);
+      expect(result['status'], 'completed', reason: result.toString());
       return result;
     }
     List<Json> definitions(Json request) => [
@@ -110,14 +107,14 @@ void main() {
           ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
     ];
 
-    final started = await turn('task.start', {
-      'cwd': root.path, 'prompt': 'seed',
-      'client_tools': [for (var i = 0; i < 120; i++) {
+    final id = await createThread(client, {
+      'cwd': root.path,
+      'dynamicTools': [for (var i = 0; i < 120; i++) {
         'name': 'client_unused_$i', 'description': 'Another unrelated operation',
         'inputSchema': {'type': 'object', 'properties': {'client_schema_$i': {'type': 'boolean'}}},
       }],
     });
-    final id = started['task_id'];
+    await turn(id, prompt: 'seed');
     final prefix = requests.single['input'] as List;
     expect(requests.single.containsKey('instructions'), false);
     final initialTools = requests.single['tools'] as List;
@@ -135,7 +132,7 @@ void main() {
     expect(jsonEncode(prefix), isNot(contains('Original guidance tail.')));
     expect(utf8.encode(jsonEncode(prefix.skip(1).toList())).length, lessThan(5000));
 
-    await turn('task.send', {'task_id': id, 'prompt': 'code'});
+    await turn(id, prompt: 'code');
     expect(definitions(requests.last), isEmpty, reason: 'Code-mode discovery must not load native schemas');
     expect((requests.last['input'] as List).take(prefix.length), prefix);
     final codeResult = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
@@ -150,20 +147,20 @@ void main() {
     expect(openAIMessageText((requests.last['input'] as List).lastWhere((item) => item['role'] == 'developer') as Map),
       contains('Deferred tool namespaces:'));
     expect(jsonDecode(printed[1])['description'], contains('declare const tools: { mcp__archive__probe('));
-    expect(jsonDecode(jsonDecode(printed[2])['content'][0]['text'])['pid'], isPositive);
-    expect(jsonDecode(printed[3]), {'tools': []},
+    expect(jsonDecode(jsonDecode(printed[2])['content'][0]['text'] as String)['pid'], isPositive);
+    expect(jsonDecode(printed[3]), {'tools': <Object?>[]},
       reason: 'Codex search indexes deferred tools; built-ins are advertised in functions.exec');
     expect(jsonDecode(printed.last), {'before': 'before\n', 'after': 'after\n'});
     expect(await File('${root.path}/note.txt').readAsString(), 'after\n');
 
     for (var i = 0; i < 2; i++) {
-      await turn('task.compact', {'task_id': id});
-      await turn('task.send', {'task_id': id, 'prompt': 'nested'});
+      await turn(id, compact: true);
+      await turn(id, prompt: 'nested');
       expect(definitions(requests.last), isEmpty);
       final result = (requests.last['input'] as List).lastWhere((item) => item['type'] == 'custom_tool_call_output');
       final output = printedOpenAIOutput(result['output']);
       expect(jsonDecode(output.first)['tools'].single['name'], 'mcp__archive__probe');
-      expect(jsonDecode(jsonDecode(output.last)['content'][0]['text'])['pid'], isPositive);
+      expect(jsonDecode(jsonDecode(output.last)['content'][0]['text'] as String)['pid'], isPositive);
     }
     expect(requests.every((request) => !request.containsKey('instructions')), isTrue);
     expect(requests.every((request) => jsonEncode(request['tools']) == jsonEncode(initialTools)), isTrue);

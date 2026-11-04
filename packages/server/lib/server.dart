@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:agent/agent.dart';
 import 'package:ai/ai.dart';
 import 'package:code_mode/code_mode.dart';
@@ -21,6 +21,10 @@ import 'src/attachments.dart';
 import 'src/questions.dart';
 
 part 'src/side_chats.dart';
+part 'src/thread_protocol.dart';
+part 'src/thread_lifecycle.dart';
+part 'src/mcp_events.dart';
+part 'src/goals.dart';
 
 class AgentServer {
   AgentServer._(
@@ -41,7 +45,7 @@ class AgentServer {
   final ReceivePort _networkEvents;
   final _lifetime = CancellationToken();
   final _clientTools = ClientToolBridge();
-  final _taskTools = TaskToolBridge();
+  late final _taskTools = TaskToolBridge(_broadcast);
   late final _questions = SessionQuestions(_broadcast);
   final _files = FileSearch();
   String? socketPath;
@@ -49,11 +53,19 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
+  final _sideForks = <String, Future<_Task>>{};
+  final _goals = <String, GoalRuntime>{};
+  final _goalRequests = ReceivePort();
+  final _goalOperations = <String, CancellationToken>{};
+  StreamSubscription<Object?>? _goalSubscription;
   final _activity = StreamController<int>.broadcast();
   final _requests = <Future<Object?>>{};
   final _imports = <String, Future<String>>{};
+  final _mcpDeliveries = <String, Future<void>>{};
+  final _mcpOperations = <String, CancellationToken>{};
   bool _closing = false;
   bool _networkExited = false;
+  int _threadUnloadDelaySecs = 60;
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
   Future<TraceStore>? _traces;
@@ -139,16 +151,13 @@ class AgentServer {
         events,
       );
       server.socketPath = socketPath;
+      server._threadUnloadDelaySecs = await callIsolate(network.port, 'thread.settings', {}) as int;
+      server._goalSubscription = server._goalRequests.listen(server._handleGoalRequest);
       if (socketPath != null) {
         server._socketStat = await File(socketPath).stat();
       }
       events.listen((raw) {
-        final message = jsonObject(raw);
-        for (final client in server._clients.where(
-          (client) => message['owner'] == null || client.id == message['owner'],
-        )) {
-          client.event(jsonObject(message['event']));
-        }
+        server._networkEvent(jsonObject(raw));
       });
       unawaited(
         network.done.then((_) {
@@ -158,7 +167,7 @@ class AgentServer {
               final agent = task.agent;
               if (agent != null) {
                 task.codeInterrupt?.interrupt();
-                agent.port.send({'method': 'cancel', 'params': {}});
+                agent.port.send({'method': 'cancel', 'params': <String, Object?>{}});
               }
             }
           }
@@ -244,6 +253,16 @@ class AgentServer {
         );
 
   Future<void> _accept(HttpRequest request) async {
+    if (request.headers.value('origin') != null) {
+      request.response.statusCode = 403;
+      await request.response.close();
+      return;
+    }
+    if (!_closing && request.method == 'GET' && {'/readyz', '/healthz'}.contains(request.uri.path)) {
+      request.response.statusCode = 200;
+      await request.response.close();
+      return;
+    }
     if (!_closing &&
         request.method == 'POST' &&
         RegExp(r'^/mcp-events/[a-f0-9]{32}$').hasMatch(request.uri.path)) {
@@ -262,7 +281,7 @@ class AgentServer {
         (token != null &&
             request.headers.value(HttpHeaders.authorizationHeader) !=
                 'Bearer $token')) {
-      request.response.statusCode = 403;
+      request.response.statusCode = 401;
       await request.response.close();
       return;
     }
@@ -275,19 +294,24 @@ class AgentServer {
       (raw) async {
         Object? id;
         try {
-          if (raw is! String || utf8.encode(raw).length > maxClientFrameBytes) {
+          if (raw is! String) return; // Plain Codex transport ignores binary frames.
+          if (utf8.encode(raw).length > maxClientFrameBytes) {
             throw const FormatException('Invalid or oversized frame');
           }
-          final request = jsonObject(jsonDecode(raw));
+          final Object? decoded;
+          try { decoded = jsonDecode(raw); }
+          on FormatException { throw const _RpcError(-32700, 'Parse error'); }
+          if (decoded is! Map) throw const _RpcError(-32600, 'Invalid request');
+          final request = jsonObject(decoded);
           id = request['id'];
+          if (id != null && id is! String && id is! int) throw const _RpcError(-32600, 'Invalid request ID');
           if (request['method'] == null &&
               request.containsKey('id') &&
               (request.containsKey('result') || request.containsKey('error'))) {
             _clientTools.complete(client.id, request);
             return;
           }
-          if (request['method'] == 'events.ack') {
-            client.acknowledge(((request['params']?['count'] as int?) ?? 1).clamp(0, 256));
+          if (request['method'] == 'initialized' && id == null) {
             return;
           }
           if (request['method'] == 'session.read.cancel' && id == null) {
@@ -312,9 +336,9 @@ class AgentServer {
             client.mcpLogins[request['params']?['request_id']]?.cancel();
             return;
           }
-          if (id == null) throw const FormatException('Request ID is required');
+          if (id == null) return; // Unknown notifications never produce replies.
           if (client.inFlight >= 32) {
-            throw StateError('Too many outstanding requests');
+            throw const _RpcError(-32000, 'Server overloaded; retry later');
           }
           client.inFlight++;
           Future<Object?>? operation;
@@ -329,14 +353,17 @@ class AgentServer {
             _requests.add(operation);
             final result = await operation;
             client.send({'id': id, 'result': result});
+            client.afterResponse.remove(id)?.call();
           } finally {
+            client.afterResponse.remove(id);
             _requests.remove(operation);
             client.inFlight--;
           }
         } catch (error) {
           client.send({
             'id': id,
-            'error': {'message': error.toString()},
+            'error': {'code': error is _RpcError ? error.code : error is FormatException ? -32602 : -32600,
+              'message': error is _RpcError ? error.message : error.toString()},
           });
         }
       },
@@ -347,10 +374,13 @@ class AgentServer {
 
   void _detach(_Client client) {
     if (!_clients.remove(client)) return;
+    for (final id in client.subscriptions) {
+      if (_tasks[id] case final task?) _scheduleUnload(task);
+    }
     for (final context in client.sessionTraces.values) {
       withTrace(context, () => traceInstant('websocket.disconnected', category: 'websocket', attributes: {
         'connection.id': client.id, 'close.code': client.socket?.closeCode,
-        'queued_events': client._events.length, 'queued_bytes': client._queuedBytes,
+        'queued_events': client._queuedFrames, 'queued_bytes': client._queuedBytes,
       }));
     }
     client.cancellation.cancel();
@@ -455,6 +485,16 @@ class AgentServer {
   Future<Object?> _dispatchUntraced(String method, Json params, _Client client, Object requestId) async {
     _lifetime.throwIfCancelled();
     if (_closing) throw StateError('Server is shutting down');
+    if (method == 'initialize') {
+      if (client.initialized) throw const _RpcError(-32600, 'Already initialized');
+      final info = jsonObject(params['clientInfo']);
+      requiredString(info, 'name'); requiredString(info, 'version');
+      client.initialized = true;
+      client.optOutNotifications.addAll((params['capabilities']?['optOutNotificationMethods'] as List? ?? []).cast<String>());
+      return {'userAgent': 'happen/0.1.0', 'serverInfo': {'name': 'happen', 'version': '0.1.0'}, 'platformFamily': Platform.operatingSystem};
+    }
+    if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
+    if (method.startsWith('thread/') || method.startsWith('turn/')) return _threadRequest(method, params, client, requestId);
     if (method == 'session.read.cancel') {
       await _cancelSessionRead(client, params['request_id']);
       return null;
@@ -464,15 +504,6 @@ class AgentServer {
     if (method.startsWith('session.') && params['sessionID'] is String) {
       params = {...params, 'task_id': params['sessionID']}..remove('sessionID');
     }
-    if (method.startsWith('session.')) client.sessionProtocol = true;
-    method = const {
-      'session.create': 'task.start', 'session.prompt': 'task.send',
-      'session.interrupt': 'task.cancel', 'session.compact': 'task.compact',
-      'session.retry': 'task.retry',
-      'session.archive': 'task.archive', 'session.unarchive': 'task.unarchive',
-      'session.fork': 'task.fork',
-      'session.hibernate': 'task.hibernate', 'session.subscribe': 'task.subscribe',
-    }[method] ?? method;
     if (method.startsWith('attachments.')) return client.attachments.handle(method, params);
     if (method == 'task.start' || method == 'task.send' || method == 'session.side.create') {
       if (params.containsKey('message_id')) validateTaskId(requiredString(params, 'message_id'));
@@ -498,7 +529,7 @@ class AgentServer {
         await client.attachments.release(claimed.ids, committed: committed);
       }
     }
-    if ({'session.list', 'session.message.list', 'session.context', 'session.event.list',
+    if ({'session.context',
       'session.trace.page', 'session.trace.status'}.contains(method)) {
       final operation = CancellationToken();
       client.sessionReads[requestId] = operation;
@@ -545,9 +576,19 @@ class AgentServer {
       }.contains(method)) {
         throw ArgumentError('Unknown MCP client operation');
       }
+      var owner = client.id;
+      if (method.startsWith('mcp.events.') && params['threadId'] != null) {
+        final id = requiredString(params, 'threadId'); validateTaskId(id);
+        if (method == 'mcp.events.subscribe') {
+          final page = await _readSession(_tasks[id] ?? _Task(id, null), 'thread/read', {'includeTurns': false}, cancellation);
+          if (page['archived'] == true) throw StateError('Restore the thread before subscribing to events');
+          if (page['thread']['ephemeral'] == true) throw StateError('MCP event subscriptions require a saved thread');
+        }
+        owner = 'thread:$id';
+      }
       return callIsolate(network.port, method, {
         ...params,
-        'owner': client.id,
+        'owner': owner,
       }, cancellation: client.cancellation);
     }
     switch (method) {
@@ -558,10 +599,6 @@ class AgentServer {
         }
         client.questions = questions;
         return null;
-      case 'session.list':
-        return listSessions(directory, params, cancellation: cancellation);
-      case 'session.active':
-        return {'data': {for (final task in _tasks.values) if (task.busy) task.id: {'type': 'running'}}};
       case 'ping':
         return {'version': '0.1.0'};
       case 'files.search':
@@ -655,8 +692,7 @@ class AgentServer {
           );
         }
         final task = _Task(id, config);
-        client.subscriptions.add(id);
-        if (client.sessionProtocol) client.sessionSubscriptions.add(id);
+        _subscribe(client, id);
         _begin(
           task,
           params['prompt'] as String,
@@ -679,14 +715,13 @@ class AgentServer {
           final id = await imported;
           return {'task_id': id};
         } finally {
-          _imports.remove(operationId);
+          unawaited(_imports.remove(operationId));
           _transfers--;
         }
       default:
         final id = requiredString(params, 'task_id');
         validateTaskId(id);
-        client.subscriptions.add(id);
-        if (client.sessionProtocol) client.sessionSubscriptions.add(id);
+        _subscribe(client, id);
         if (method == 'session.context') return _contextPage(id, params, client, cancellation);
         if (method == 'session.question.list') return {'data': _questions.list(id)};
         if (method == 'session.question.reply' || method == 'session.question.reject') {
@@ -708,7 +743,7 @@ class AgentServer {
         }
         // Reads and input admission share the writer's ownership transitions.
         // Recheck after each wait: completion may have started a queued turn.
-        if ({'history.list', 'history.part', 'history.page', 'session.message.list', 'session.event.list',
+        if ({'history.page',
           'session.side.create', 'session.inbox', 'session.inbox.update', 'session.inbox.cancel',
           'task.send', 'task.compact', 'task.retry'}.contains(method)) {
           while (task.maintenance || task.finishing || task.busy && task.writer == null) {
@@ -721,8 +756,7 @@ class AgentServer {
         if (method == 'session.side.list') {
           final sides = _tasks.values.where((side) => side.sideParentID == id && !side.disposing).toList();
           for (final side in sides) {
-            client.subscriptions.add(side.id);
-            client.sessionSubscriptions.add(side.id);
+            _subscribe(client, side.id);
           }
           return {'data': sides.map(_sideInfo).toList()};
         }
@@ -732,14 +766,13 @@ class AgentServer {
           return null;
         }
         if (task.sideParentID != null &&
-            {'task.archive', 'task.unarchive', 'task.hibernate', 'task.fork', 'history.export'}.contains(method)) {
+            {'task.archive', 'task.unarchive', 'task.fork', 'history.export'}.contains(method)) {
           throw StateError('Side chats are ephemeral; close the side chat to discard it');
         }
         if (task.disposing) throw StateError('Side chat is closing');
-        if ({'session.message.list', 'session.event.list', 'session.inbox'}.contains(method)) {
-          client.sessionSubscriptions.add(id);
+        if (method == 'session.inbox') {
           if (task.busy && task.writer == null) await task.ready?.future.asCancellable(cancellation);
-          var page = task.sideParentID != null || File('$directory/tasks/$id/history.sqlite').existsSync()
+          var page = task.memoryStore != null || File('$directory/tasks/$id/history.sqlite').existsSync()
             ? await _readSession(task, method, params, cancellation)
             : <String, dynamic>{'needsProjection': true};
           if (page['needsProjection'] == true) {
@@ -831,29 +864,6 @@ class AgentServer {
           if (agent != null) await callIsolate(agent.port, 'cancel', {});
           return null;
         }
-        if (method == 'task.hibernate') {
-          await _hibernate(task);
-          return {identityKey: id};
-        }
-        if (method == 'task.retry') {
-          if (task.busy) return {identityKey: id, 'running': true};
-          final page = jsonObject(await _withWriter(task, (writer) => callIsolate(
-            writer.port, 'history.list', {'limit': 1}, cancellation: cancellation)));
-          final turns = (page['summary'] as List).map(jsonObject).where((event) =>
-            {'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])).toList()
-              ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-          final last = turns.lastOrNull;
-          final failure = last == null ? null : sessionEvents(id, last, {}).lastOrNull;
-          final matches = identityKey == 'sessionID'
-            ? failure != null && sessionMessageID(failure['id'] as String) == params['failureID']
-            : last?['seq'] == params['failure_seq'];
-          if (page['archived'] == true || last?['type'] != 'turn.failed' || !matches) {
-            throw StateError('The failed turn is no longer available to retry');
-          }
-          task = _tasks[id] ?? task;
-          if (!task.busy) _begin(task, '', retry: true);
-          return {identityKey: id, 'running': true};
-        }
         if (method == 'task.send' || method == 'task.compact') {
           final mode = params['delivery'] as String? ?? 'queue';
           if (!{'steer', 'queue'}.contains(mode)) {
@@ -887,7 +897,7 @@ class AgentServer {
               throw StateError('Pending message limit reached');
             }
             if (params.keys.any(
-              (key) => !{'task_id', 'prompt', 'message_id', 'attachments', 'delivery', 'reasoning'}.contains(key),
+              (key) => !{'task_id', 'prompt', 'message_id', 'attachments', 'delivery', 'reasoning', 'turnId'}.contains(key),
             )) {
               throw ArgumentError('Change task settings between turns');
             }
@@ -930,24 +940,6 @@ class AgentServer {
             settings: {...params, 'sent_at': receivedAt},
           );
           return {identityKey: id};
-        }
-        if (method == 'history.part') {
-          return _withWriter(task, (writer) => callIsolate(writer.port, 'history.part', {
-            'id': requiredString(params, 'id'),
-          }, cancellation: client.cancellation));
-        }
-        if (method == 'history.list') {
-          final page = jsonObject(await _withWriter(
-            task,
-            (writer) => callIsolate(writer.port, 'history.list', {
-              'before': params['before'],
-              'limit': params['limit'] ?? 100,
-            }, cancellation: client.cancellation),
-          ));
-          final current = _tasks[id] ?? task;
-          return {...page, if (params['before'] == null) ...{
-            'running': current.busy, 'pending': current.pending,
-          }};
         }
         if (method == 'history.page') {
           return _withWriter(
@@ -1040,7 +1032,7 @@ class AgentServer {
 
   Json _agentConfig(String id, Json config) {
     if (config['provider'] != 'openai' || !_clients.any((client) =>
-        client.questions && client.sessionSubscriptions.contains(id))) return config;
+        client.questions && client.subscriptions.contains(id))) return config;
     return {...config, 'provider_settings': {
       ...jsonObject(config['provider_settings']), 'request_user_input': true,
     }};
@@ -1068,7 +1060,7 @@ class AgentServer {
         if (task.agent case final live?) {
           return callIsolate(live.port, 'context', {}, cancellation: cancellation);
         }
-        // A sleeping task uses the very same actor and restore operation as
+        // An idle thread uses the very same actor and restore operation as
         // inference, without admitting a turn or doing provider/tool I/O.
         final config = jsonObject(await callIsolate(writer.port, 'metadata', {'key': 'config'}, cancellation: cancellation));
         final restored = await startAgent(taskId: id, config: _agentConfig(id, config),
@@ -1083,8 +1075,10 @@ class AgentServer {
   }
 
   void _forgetIdle(_Task task) {
-    if (task.sideParentID == null && !task.busy && !task.maintenance &&
-        task.pending.isEmpty && identical(_tasks[task.id], task)) {
+    if (task.loaded) {
+      _scheduleUnload(task);
+    } else if (task.memoryStore == null && task.writer == null && !task.busy && !task.maintenance &&
+        task.pending.isEmpty && !_goals.containsKey(task.id) && identical(_tasks[task.id], task)) {
       _tasks.remove(task.id);
     }
     // Publish after any queued turn has been admitted, without a false idle gap.
@@ -1135,6 +1129,7 @@ class AgentServer {
 
   Future<void> _archive(_Task task, bool archived) async {
     if (task.maintenance) throw StateError('Task has a pending maintenance operation');
+    task.goalContinuation?.cancel();
     task.maintenance = true;
     final settled = task.maintenanceDone = Completer<void>();
     _tasks[task.id] = task;
@@ -1152,47 +1147,26 @@ class AgentServer {
           await _closeSide(side);
         }
       }
-      writer = await startStore(directory, task.id, create: false);
+      writer = task.writer ?? await startStore(directory, task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       if (archived) {
+        _goals.remove(task.id);
         await _taskTools.release(task.id);
         _clientTools.archive(task.id);
         await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
+        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}'}, cancellation: _lifetime);
       }
       _broadcast(task.id, event);
     } finally {
-      try { await writer?.close(); }
+      try { await writer?.close(); if (task.writer == writer) task.writer = null; }
       finally {
+        if (archived) { task.loaded = false; task.unloadTimer?.cancel(); task.unloadTimer = null; }
         task.maintenance = false;
         task.maintenanceDone = null;
         settled.complete();
         _forgetIdle(task);
       }
-    }
-  }
-
-  Future<void> _hibernate(_Task task) async {
-    if (task.maintenance) throw StateError('Task has a pending maintenance operation');
-    task.maintenance = true;
-    final settled = task.maintenanceDone = Completer<void>();
-    _tasks[task.id] = task;
-    IsolateOwner? writer;
-    try {
-      task.cancelled = true;
-      task.codeInterrupt?.interrupt();
-      if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
-      await task.running;
-      writer = await startStore(directory, task.id, create: false);
-      await _discardPending(task, 'hibernated', writer: writer);
-      await _taskTools.release(task.id);
-      await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
-    } finally {
-      await writer?.close();
-      task.maintenance = false;
-      task.maintenanceDone = null;
-      settled.complete();
-      _forgetIdle(task);
     }
   }
 
@@ -1310,14 +1284,14 @@ class AgentServer {
     }
     if (task.disposing) throw StateError('Side chat is closing');
     if (task.busy || task.maintenance) throw StateError('Task is busy');
-    if (!compact && !retry && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
+    if (!compact && !retry && settings['goalContinuation'] != true && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
       throw const FormatException('Prompt is required');
     }
     if (_tasks.values.where((task) => task.busy).length >= maxAgents) {
       throw StateError('Active agent limit reached');
     }
     final effective = {...settings};
-    if (!compact && !retry) effective['message_id'] ??= newId();
+    if (!compact && !retry && settings['goalContinuation'] != true) effective['message_id'] ??= newId();
     if (effective['cwd'] != null) {
       final cwd = Directory(effective['cwd'] as String).absolute;
       if (!cwd.existsSync()) {
@@ -1326,6 +1300,9 @@ class AgentServer {
       effective['cwd'] = p.normalize(cwd.path);
     }
     task.busy = true;
+    if (!task.loaded) { task.loaded = true; task.unloadDelaySecs = _threadUnloadDelaySecs; }
+    task.unloadTimer?.cancel(); task.unloadTimer = null;
+    task.systemError = false;
     task.retryStatus = null;
     task.finishing = false;
     task.ready = Completer<void>();
@@ -1354,11 +1331,13 @@ class AgentServer {
     // it commits its terminal event, regardless of the turn's total duration.
     final turnLifetime = CancellationToken();
     try {
-      task.writer = task.sideStore ?? await startStore(
+      task.writer ??= task.memoryStore ?? await startStore(
         directory,
         task.id,
         create: task.config != null,
+        inMemory: task.config?['ephemeral'] == true,
       );
+      if (task.config?['ephemeral'] == true) task.memoryStore = task.writer;
       if (task.config != null && await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}) == null) {
         // Commit admission before cancellation can stop the agent's first turn.
         // An immediately archived or stopped task must still be resumable.
@@ -1384,7 +1363,7 @@ class AgentServer {
         final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
         task.pending.addAll((inbox['data'] as List).map(jsonObject));
       }
-      if (!compact && !retry && !task.pending.any((message) => message['id'] == settings['message_id'])) {
+      if (!compact && !retry && settings['goalContinuation'] != true && !task.pending.any((message) => message['id'] == settings['message_id'])) {
         final message = <String, dynamic>{
           'id': settings['message_id'], 'prompt': prompt, 'delivery': 'steer',
           'created_at': settings['sent_at'] ?? DateTime.now().toUtc().toIso8601String(),
@@ -1409,6 +1388,7 @@ class AgentServer {
         writer: task.writer!.port,
         network: network.port,
         clientTools: _clientTools.port,
+        goals: _goalRequests.sendPort,
         taskTools: _taskTools.port,
         questions: _questions.port,
         codeInterrupt: task.codeInterrupt!.address,
@@ -1479,11 +1459,14 @@ class AgentServer {
       task.codeInterrupt?.close();
       task.codeInterrupt = null;
       if (!_closing && task.writer != null && (task.cancelled || terminal?['type'] != 'turn.completed')) {
-        await _discardPending(task, 'stopped', writer: task.writer);
+        try { await _discardPending(task, 'stopped', writer: task.writer); }
+        on CancelledException { if (!_closing) rethrow; /* Shutdown preserves the remaining inbox. */ }
       }
-      if (task.sideParentID == null) await task.writer?.close();
+      final retainWriter = task.loaded && !_closing;
+      if (!retainWriter) await _taskTools.release(task.id);
+      if (task.memoryStore == null && !retainWriter) await task.writer?.close();
       task.agent = null;
-      task.writer = null;
+      if (!retainWriter) task.writer = null;
       task.busy = false;
       task.finishing = false;
       task.offered.clear();
@@ -1514,22 +1497,27 @@ class AgentServer {
           await _discardPending(task, 'could_not_start');
         }
       }
+      if (!_closing && !task.cancelled && !task.disposing && !task.busy && !task.maintenance && terminal?['type'] == 'turn.completed') {
+        await _continueGoal(task.id);
+      }
       _forgetIdle(task);
     }
   }
 
   Future<Object?> _withWriter(
     _Task task,
-    Future<Object?> Function(IsolateOwner) operation,
-  ) async {
-    _lifetime.throwIfCancelled();
+    Future<Object?> Function(IsolateOwner) operation, {
+    bool allowShutdown = false,
+    bool allowMaintenance = false,
+  }) async {
+    if (!allowShutdown) _lifetime.throwIfCancelled();
     if (_tasks[task.id] case final current? when !identical(current, task)) {
       throw StateError('Task ownership changed; retry the operation');
     }
-    if (task.maintenance) {
+    if (task.maintenance && !allowMaintenance) {
       throw StateError('Task has a pending maintenance operation');
     }
-    if (task.busy) {
+    if (task.busy || task.writer != null) {
       if (task.finishing) throw StateError('Task is finishing; retry shortly');
       final writer = task.writer;
       if (writer == null) throw StateError('Task is starting; retry shortly');
@@ -1547,14 +1535,14 @@ class AgentServer {
     _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
-      writer = task.sideStore ?? await startStore(
+      writer = task.memoryStore ?? await startStore(
         directory,
         task.id,
         create: false,
       );
       return await operation(writer);
     } finally {
-      try { if (task.sideParentID == null) await writer?.close(); }
+      try { if (task.memoryStore == null) await writer?.close(); }
       finally {
         task.maintenance = false;
         task.maintenanceDone = null;
@@ -1568,6 +1556,8 @@ class AgentServer {
     if ({'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) _questions.endTurn(taskId);
     final task = _tasks[taskId];
     if (task != null) {
+      if (event['type'] == 'turn.failed') task.systemError = true;
+      if ({'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) _notifyThreadStatus(task);
       if (event['type'] == 'model.retrying') {
         task.retryStatus = {'type': 'retry', 'attempt': event['attempt'], 'message': event['message'],
           if (event['max_retries'] != null) 'max_retries': event['max_retries'],
@@ -1596,50 +1586,22 @@ class AgentServer {
       if (task?.streamPartType != null && task?.streamPartType != event['type']) task!.streamOrdinal++;
       task?.streamPartType = event['type'] as String;
     }
-    for (final client in _clients.toList()) {
-      if (!client.subscriptions.contains(taskId)) continue;
-      if (!client.sessionSubscriptions.contains(taskId)) {
-        client.event({...event, 'task_id': taskId});
-      } else if (event['session_events'] is List) {
-        for (final native in event['session_events']) { client.event(jsonObject(native)); }
-      } else {
-        final assistant = event['assistantMessageID'] ?? _tasks[taskId]?.assistantMessageID;
-        final payload = jsonObject(event['data'] ?? {});
-        final type = switch (event['type']) {
-          'text.delta' => 'session.text.delta',
-          'reasoning.delta' => 'session.reasoning.delta',
-          'compaction.delta' => 'session.compaction.delta',
-          'model.retrying' || 'model.connected' || 'turn.started' => 'session.status',
-          'input.pending' => 'session.inbox.enqueued',
-          'input.discarded' => 'session.inbox.cancelled',
-          'task.archived' => 'session.archived',
-          'task.unarchived' => 'session.unarchived',
-          'turn.failed' => 'session.execution.failed',
-          'turn.cancelled' => 'session.execution.interrupted',
-          'turn.completed' => 'session.execution.succeeded',
-          'question.asked' => 'session.question.asked',
-          'question.replied' => 'session.question.replied',
-          'question.rejected' => 'session.question.rejected',
-          'side.closed' => 'session.side.closed',
-          _ => null,
-        };
-        if (type == null) continue;
-        client.event({'id': 'evt_${newId()}', 'created': DateTime.now().millisecondsSinceEpoch,
-          'type': type, 'data': {'sessionID': taskId,
-            'assistantMessageID': ?assistant,
-            if (type.startsWith('session.question.')) ...payload,
-            if (type == 'session.side.closed') ...payload,
-            if (type == 'session.text.delta' || type == 'session.reasoning.delta') ...{'ordinal': task?.streamOrdinal ?? 0, 'delta': event['delta']},
-            if (type == 'session.compaction.delta') 'text': event['delta'],
-            if (type == 'session.status') 'status': event['type'] == 'model.retrying'
-              ? task?.retryStatus : {'type': 'busy'},
-            if (type == 'session.inbox.enqueued') ...{'inboxID': 'msg_${payload['id']}', 'item': {
-              'type': 'user', 'delivery': payload['delivery'], 'text': payload['prompt'], 'files': payload['attachments'] ?? []}},
-            if (type == 'session.inbox.cancelled') 'ids': [for (final id in payload['ids'] as List? ?? []) 'msg_$id'],
-            if (type == 'session.execution.failed') 'error': {'type': 'unknown', 'message': payload['error'].toString()},
-            if (type == 'session.execution.interrupted') 'reason': 'user',
-          }});
+    final notifications = threadNotifications(taskId, event, task?.protocolState ?? {});
+    if (task != null) {
+      if (event['type'] == 'turn.started') {
+        task.liveItems.removeWhere((_, item) => item['type'] != 'commandExecution' || item['live'] != true);
       }
+      for (final notification in notifications) {
+        notification['params']['happen']['notificationSeq'] = ++task.notificationSeq;
+        applyThreadNotification(task.liveItems, notification);
+        if (notification['method'] == 'turn/started' || notification['method'] == 'turn/completed') {
+          task.liveTurn = jsonObject(notification['params']['turn']);
+        }
+      }
+    }
+    for (final client in _clients.toList()) {
+      if (!client.subscriptions.contains(taskId) && !{'goal.updated', 'goal.cleared'}.contains(event['type'])) continue;
+      for (final notification in notifications) { client.event(notification); }
     }
     if (event['type'] == 'model.started') _tasks[taskId]?.assistantMessageID = event['data']['assistantMessageID'] as String?;
   }
@@ -1662,6 +1624,7 @@ class AgentServer {
     }
     await http?.close(force: true);
     for (final task in _tasks.values) {
+      task.unloadTimer?.cancel();
       task.cancelled = true;
       task.codeInterrupt?.interrupt();
       if (task.agent != null) {
@@ -1672,10 +1635,17 @@ class AgentServer {
       _tasks.values.map((task) => task.running ?? Future<void>.value()),
     );
     await Future.wait(_requests.toList().map((operation) => operation.catchError((Object _) => null)));
-    await Future.wait(_tasks.values.where((task) => task.sideParentID != null)
-      .map((task) => task.sideStore!.close()));
-    _tasks.clear();
+    // Native exit watchers may still need to append their canonical completion.
+    // Drain CLI ownership before closing the sole writers they report through.
     await _taskTools.close();
+    await Future.wait(_tasks.values.where((task) => task.memoryStore == null && task.writer != null)
+      .map((task) => task.writer!.close()));
+    await Future.wait(_tasks.values.where((task) => task.memoryStore != null)
+      .map((task) => task.memoryStore!.close()));
+    _tasks.clear();
+    _goals.clear();
+    await _goalSubscription?.cancel();
+    _goalRequests.close();
     unawaited(_activity.close());
     await network.close();
     _networkEvents.close();
@@ -1702,9 +1672,13 @@ class AgentServer {
 class _Task {
   _Task(this.id, this.config);
   final String id;
+  final protocolState = <String, dynamic>{};
+  final liveItems = <String, Json>{};
+  Json? liveTurn;
+  int notificationSeq = 0;
   Json? config;
   String? sideParentID;
-  IsolateOwner? sideStore;
+  IsolateOwner? memoryStore;
   Future<void>? closingSide;
   bool disposing = false;
   String? assistantMessageID;
@@ -1713,13 +1687,18 @@ class _Task {
   int streamOrdinal = 0, completedStreamOrdinal = 0;
   String? streamPartType;
   bool busy = false, maintenance = false, cancelled = false, finishing = false;
+  bool loaded = false, systemError = false;
+  int unloadDelaySecs = 60;
+  Timer? unloadTimer;
   IsolateOwner? writer, agent;
   CodeInterrupt? codeInterrupt;
   Future<void>? running;
   Completer<void>? backgroundMaintenance;
   Completer<void>? maintenanceDone, writerDrained;
   int writerRequests = 0;
+  int eventAdmissions = 0;
   Completer<void>? ready;
+  CancellationToken? goalContinuation;
   final pending = <Json>[];
   final pendingTraces = <String, TraceContext>{};
   final offered = <String>{};
@@ -1728,6 +1707,7 @@ class _Task {
 class _Client {
   _Client(this.socket, String directory) : local = null {
     attachments = AttachmentUploads(directory, id);
+    _startWriter();
   }
   _Client.local(String directory) : socket = null, local = StreamController<Json>() {
     attachments = AttachmentUploads(directory, id);
@@ -1735,6 +1715,7 @@ class _Client {
   final WebSocket? socket;
   final StreamController<Json>? local;
   final id = newId();
+  final afterResponse = <Object, void Function()>{};
   late final AttachmentUploads attachments;
   final cancellation = CancellationToken();
   CancellationToken? fileSearch;
@@ -1749,12 +1730,22 @@ class _Client {
   Object? fileSearchId;
   Object? skillSearchId;
   final subscriptions = <String>{};
-  final sessionSubscriptions = <String>{};
-  bool sessionProtocol = false;
+  bool initialized = false;
+  final optOutNotifications = <String>{};
   bool questions = false;
-  final _events = Queue<({Json event, int bytes, int queuedAt, TraceContext? trace})>();
+  final _outbound = StreamController<String>();
+  Future<void>? _writing, _closing;
   int _queuedBytes = 0;
-  int credits = 256, inFlight = 0;
+  int _queuedFrames = 0, inFlight = 0;
+  void _startWriter() {
+    _writing = socket!.addStream(_outbound.stream.map((encoded) {
+      _queuedFrames--; _queuedBytes -= utf8.encode(encoded).length;
+      return encoded;
+    }));
+    unawaited(_writing!.then<void>((_) {}, onError: (Object _, StackTrace _) {
+      cancellation.cancel(); unawaited(close());
+    }));
+  }
   void send(Json message) {
     final trace = message.containsKey('id') ? requestTraces.remove(message['id']) : currentTrace;
     withTrace(trace ?? currentTrace, () {
@@ -1766,54 +1757,34 @@ class _Client {
     message = {...message, '_trace': ?carrier};
     if (local case final messages?) {
       if (!messages.isClosed) messages.add(jsonObject(jsonDecode(jsonEncode(message))));
-    } else if (socket!.readyState == WebSocket.open) { socket!.add(jsonEncode(message)); }
+    } else if (socket!.readyState == WebSocket.open && !cancellation.isCancelled) {
+      final encoded = jsonEncode(message), bytes = utf8.encode(encoded).length;
+      if (_queuedFrames >= 32 * 1024 || _queuedBytes + bytes > maxClientFrameBytes) {
+        cancellation.cancel();
+        unawaited(close(code: 1008, reason: 'Outbound queue full; reconnect and read thread history'));
+        return;
+      }
+      _queuedFrames++; _queuedBytes += bytes; _outbound.add(encoded);
+    }
     });
   }
 
   void event(Json event) {
-    if (local != null) { send({'event': event}); return; }
-    if (socket!.readyState != WebSocket.open) return;
-    if (credits > 0) {
-      credits--;
-      send({'event': event});
-      return;
-    }
-    final bytes = utf8.encode(jsonEncode({'event': event})).length;
-    if (_events.length >= 1024 || _queuedBytes + bytes > maxClientFrameBytes) {
-      traceInstant('websocket.backlog.exceeded', category: 'websocket',
-        attributes: {'queued_events': _events.length, 'queued_bytes': _queuedBytes});
-      unawaited(
-        socket!.close(
-          1008,
-          'Event backlog exceeded; reconnect and page committed history',
-        ),
-      );
-      return;
-    }
-    traceInstant('websocket.queued', category: 'websocket',
-      attributes: {'queued_events': _events.length, 'queued_bytes': _queuedBytes});
-    _events.add((event: event, bytes: bytes, queuedAt: traceTime(), trace: currentTrace));
-    _queuedBytes += bytes;
+    if (!initialized) return;
+    final notification = event['method'] is String ? event : {'method': 'happen/event', 'params': event};
+    if (!optOutNotifications.contains(notification['method'])) send(notification);
   }
 
-  void acknowledge(int count) {
-    credits = (credits + count).clamp(0, 256);
-    while (credits > 0 && _events.isNotEmpty && socket!.readyState == WebSocket.open) {
-      final next = _events.removeFirst();
-      _queuedBytes -= next.bytes;
-      credits--;
-      withTrace(next.trace, () {
-        traceInstant('websocket.dequeued', category: 'websocket',
-          attributes: {'queue_us': traceTime() - next.queuedAt, 'queued_events': _events.length});
-        send({'event': next.event});
-      });
-    }
-  }
+  Future<void> close({int? code, String? reason}) => _closing ??= _close(code, reason);
 
-  Future<void> close() async {
+  Future<void> _close(int? code, String? reason) async {
     cancellation.cancel();
     if (local != null) { await local!.close(); }
-    else { await socket!.close(); }
+    else {
+      await _outbound.close();
+      try { await _writing; } catch (_) { /* The peer may already have disconnected. */ }
+      await socket!.close(code, reason);
+    }
   }
 }
 
@@ -1828,14 +1799,9 @@ class AgentClient {
         traceReceive(message['_trace'], 'websocket',
           attributes: {'bytes': utf8.encode(raw).length, 'rpc.id': message['id'],
             if (message['event'] is Map) 'event.type': message['event']['type']});
-        if (message.containsKey('event')) {
-          events.add({...jsonObject(message['event']), '_trace': ?trace?.carrier(local: false)});
-          connection.add(
-            jsonEncode({
-              'method': 'events.ack',
-              'params': {'count': 1},
-            }),
-          );
+        if (message.containsKey('method')) {
+          events.add({...message['method'] == 'happen/event' ? jsonObject(message['params']) : message,
+            '_trace': ?trace?.carrier(local: false)});
         } else {
           final completer = _pending.remove(message['id']);
           if (message.containsKey('error')) {
@@ -1854,13 +1820,15 @@ class AgentClient {
     if (server._closing) throw StateError('Server is shutting down');
     _localServer = server;
     final state = _localClient = _Client.local(server.directory);
+    state.initialized = true;
     server._clients.add(state);
     _subscription = state.local!.stream.listen((message) {
       final trace = _receiveTrace(message);
       withTrace(trace, () {
         traceReceive(message['_trace'], 'websocket');
-        if (message['event'] case final Map event) {
-          events.add({...jsonObject(event), '_trace': ?trace?.carrier(local: false)});
+        if (message['method'] is String) {
+          events.add({...message['method'] == 'happen/event' ? jsonObject(message['params']) : message,
+            '_trace': ?trace?.carrier(local: false)});
         }
       });
     }, onDone: _disconnected, onError: (Object _) => _disconnected());
@@ -1939,7 +1907,13 @@ class AgentClient {
         await socket.close();
         lifetime.throwIfCancelled();
       }
-      return AgentClient._(socket, sharedFilesystem: uri.scheme == 'unix');
+      final client = AgentClient._(socket, sharedFilesystem: uri.scheme == 'unix');
+      try {
+        await client._request('initialize', {'clientInfo': {'name': 'happen', 'version': '0.1.0'},
+          'capabilities': {'experimentalApi': true}}, cancellation: lifetime);
+        socket.add(jsonEncode({'method': 'initialized'}));
+        return client;
+      } catch (_) { await client.close(); rethrow; }
     } finally {
       hook.dispose();
       deadline.cancel();
@@ -1956,7 +1930,7 @@ class AgentClient {
     }, cancellation: cancellation));
 
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
-    if (!{'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
+    if (!{'session.context', 'thread/resume', 'thread/read', 'thread/items/list', 'thread/turns/list', 'thread/list'}.contains(method)) {
       throw ArgumentError('Unknown session read');
     }
     return jsonObject(await _request(method, params, cancellation: cancellation));
@@ -1971,13 +1945,6 @@ class AgentClient {
   }
 
 
-  Future<Object?> conversationPart(String reference, {required CancellationToken cancellation}) {
-    final split = reference.lastIndexOf('/');
-    if (split < 1) throw const FormatException('Invalid conversation content reference');
-    return _request('history.part', {
-      'task_id': reference.substring(0, split), 'id': reference.substring(split + 1),
-    }, cancellation: cancellation);
-  }
 
   Future<Json> uploadAttachment(String path, {required String name, required String type,
     required CancellationToken cancellation, void Function(int sent, int total)? onProgress}) async {
@@ -2114,15 +2081,16 @@ class AgentClient {
       }));
       try {
         final result = await operation.asCancellable(token.merge(state.cancellation));
+        if (state.afterResponse.remove(id) case final effect?) Timer.run(effect);
         return jsonDecode(jsonEncode(result));
-      } finally { hook.dispose(); deadline.cancel(); }
+      } finally { state.afterResponse.remove(id); hook.dispose(); deadline.cancel(); }
     }
     final id = ++_next;
     final deadline = TimeoutCancellationToken(timeout);
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
-      if ({'session.message.list', 'session.context', 'session.event.list', 'session.trace.page', 'session.trace.status',
+      if ({'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
         'session.side.create'}.contains(method) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }

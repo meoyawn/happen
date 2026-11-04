@@ -13,3 +13,5 @@ dependencies:
   storage: any
   code_mode: any
   telemetry: any
+dev_dependencies:
+  test: any

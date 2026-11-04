@@ -16,10 +16,12 @@ class HostTools {
   final String cwd;
   final CancellationToken cancellation;
   final _commands = <int, _Command>{};
+  final _completions = <Future<void>>{};
   final _random = Random.secure();
   late final CommandRunner _runner;
 
-  Future<Object?> call(String name, Object? raw, {required CancellationToken cancellation, String? cwd}) async {
+  Future<Object?> call(String name, Object? raw, {required CancellationToken cancellation, String? cwd,
+    String? callId, ToolItemEvent? onItem}) async {
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
     final directory = cwd ?? this.cwd;
@@ -74,16 +76,38 @@ class HostTools {
             input['sandbox_permissions'] != 'use_default') {
           throw UnsupportedError('Permission escalation is not implemented');
         }
-        final command = _Command(await _runner.start(
-          codexShell(input['shell'] as String?),
-          [if (input['login'] != false) '-l', '-c', requiredString(input, 'cmd')],
-          directory: input['workdir'] as String? ?? directory,
-          cancellation: this.cancellation,
-          tty: input['tty'] == true,
-        ));
+        final shell = codexShell(input['shell'] as String?), text = requiredString(input, 'cmd');
+        final args = [if (input['login'] != false) '-l', '-c', text];
+        final workdir = Directory(directory).absolute.uri.resolveUri(Uri.directory(input['workdir'] as String? ?? '.')).toFilePath();
+        // Core tools/events.rs owns the lifecycle, not the model's function
+        // output. Even an already-exited process retains its allocated ID.
+        final item = <String, dynamic>{'type': 'CommandExecution', 'id': callId,
+          'command': [shell, ...args], 'cwd': workdir, 'parsed_cmd': [{'type': 'unknown', 'cmd': text}],
+          'source': 'unified_exec_startup', 'status': 'in_progress', 'process_id': null,
+          'plugin_id': null, 'script_path': null, 'aggregated_output': null, 'exit_code': null, 'duration': null};
+        final _Command command;
+        try {
+          command = _Command(await _runner.start(shell, args, directory: workdir,
+            cancellation: this.cancellation, tty: input['tty'] == true));
+        } catch (error) {
+          cancellation.throwIfCancelled();
+          final message = 'Failed to create unified exec process: $error';
+          await onItem?.call('started', item);
+          await onItem?.call('completed', {...item, 'status': 'failed', 'aggregated_output': message,
+            'exit_code': -1, 'duration': {'secs': 0, 'nanos': 0}});
+          throw StateError(message);
+        }
         var id = 1000 + _random.nextInt(99000);
         while (_commands.containsKey(id)) { id = 1000 + _random.nextInt(99000); }
         _commands[id] = command;
+        item['process_id'] = '$id';
+        await onItem?.call('started', item);
+        if (onItem != null) {
+          final completion = command.completion = _completeCommand(command, item, onItem);
+          _completions.add(completion);
+          unawaited(completion.then<void>((_) => _completions.remove(completion),
+            onError: (Object _, StackTrace _) { _completions.remove(completion); }));
+        }
         return _poll(
           id,
           input,
@@ -140,6 +164,7 @@ class HostTools {
       final text = command.process.takeOutput();
       final tokens = (input['max_output_tokens'] as num? ?? 10000).toInt().clamp(0, maxToolOutputBytes ~/ 4);
       final code = command.process.exitCode;
+      if (code != null) await command.completion;
       if (code != null) _commands.remove(id);
       return {
         'chunk_id': _random.nextInt(0x1000000).toRadixString(16).padLeft(6, '0'),
@@ -157,12 +182,29 @@ class HostTools {
 
   Future<void> close() async {
     await _runner.close();
+    await Future.wait(_completions.toList());
     _commands.clear();
+  }
+
+  // Codex unified_exec/async_watcher.rs: finish the original command exactly
+  // once, independently of yield/poll boundaries and inference-isolate lifetime.
+  Future<void> _completeCommand(_Command command, Json item, ToolItemEvent emit) async {
+    final watch = Stopwatch()..start();
+    await command.process.done;
+    final cleanup = TimeoutCancellationToken(const Duration(seconds: 10));
+    try {
+      final output = await command.process.capture(maxBytes: maxToolOutputBytes, cancellation: cleanup);
+      final milliseconds = watch.elapsedMilliseconds;
+      await emit('completed', {...item, 'status': command.process.exitCode == 0 ? 'completed' : 'failed',
+        'aggregated_output': output.text, 'exit_code': command.process.exitCode,
+        'duration': {'secs': milliseconds ~/ 1000, 'nanos': milliseconds % 1000 * 1000000}});
+    } finally { cleanup.cancel(); }
   }
 }
 
 class _Command {
   _Command(this.process);
   final RunningCommand process;
+  Future<void> completion = Future<void>.value();
   bool polling = false;
 }

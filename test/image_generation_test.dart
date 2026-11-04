@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread.dart';
 
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
@@ -60,19 +61,18 @@ void main() {
       for (final response in held) { unawaited(response.close().catchError((Object _) {})); }
       await peer.close(force: true); await root.delete(recursive: true);
     });
-    Future<Json> terminal() => client.events.stream.firstWhere((event) =>
-      ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type'])).timeout(const Duration(seconds: 15));
-    Future<Json> run(String prompt) async {
-      final done = terminal();
-      await client.request('task.start', {'cwd': root.path, 'prompt': prompt,
-        if (prompt == 'edit-recent') 'attachments': [{'type': 'image', 'name': 'reference', 'path': reference.path}]});
-      final completed = await done;
-      expect(completed['type'], 'turn.completed', reason: completed.toString());
-      return completed;
+    Future<String> run(String prompt) async {
+      final id = await createThread(client, {'cwd': root.path});
+      final completed = await runTurn(client, id, prompt: prompt, settings: {'input': [
+        {'type': 'text', 'text': prompt},
+        if (prompt == 'edit-recent') {'type': 'image', 'name': 'reference', 'path': reference.path},
+      ]});
+      expect(completed['status'], 'completed', reason: completed.toString());
+      return id;
     }
     for (final prompt in ['generate', 'edit-file', 'edit-recent']) {
       final before = images.length;
-      final completed = await run(prompt);
+      final id = await run(prompt);
       expect(images, hasLength(before + 1));
       final request = images.last;
       expect(request['path'], prompt == 'generate' ? '/images/generations' : '/images/edits');
@@ -86,20 +86,22 @@ void main() {
       final content = result['output'] as List;
       expect(content.map((part) => part['type']), ['input_text', 'input_image', 'input_text']);
       expect(content[1]['image_url'], 'data:image/png;base64,$_png');
-      final folder = Directory('${root.path}/generated_images/${completed['task_id']}');
+      final folder = Directory('${root.path}/generated_images/$id');
       final file = (await folder.list().toList()).whereType<File>().single;
       expect(await file.readAsBytes(), base64Decode(_png));
       expect(content[2]['text'], contains(file.path));
-      final history = await client.request('history.page', {'task_id': completed['task_id'], 'limit': 100}) as List;
-      final record = history.lastWhere((event) => event['type'] == 'tool.completed')['data']['item'];
-      expect(record['content'][0]['images'], hasLength(1), reason: 'The UI receives a real inline image, not base64 prose');
+      final history = jsonObject(await client.request('thread/items/list', {'threadId': id}));
+      final record = (history['data'] as List).lastWhere((entry) => entry['item']['type'] == 'dynamicToolCall')['item'];
+      expect((record['contentItems'] as List).where((part) => part['type'] == 'inputImage'), hasLength(1),
+        reason: 'The UI receives a real inline image, not base64 prose');
     }
-    final done = terminal();
-    final admitted = jsonObject(await client.request('task.start', {'cwd': root.path, 'prompt': 'cancel'}));
+    final id = await createThread(client, {'cwd': root.path});
+    final done = runTurn(client, id, prompt: 'cancel');
     await imageStarted.future.timeout(const Duration(seconds: 10));
-    await client.request('task.cancel', {'task_id': admitted['task_id']});
-    expect((await done)['type'], 'turn.cancelled');
-    expect(Directory('${root.path}/generated_images/${admitted['task_id']}').existsSync(), isFalse);
+    final snapshot = jsonObject(await client.request('thread/read', {'threadId': id, 'includeTurns': true}));
+    await client.request('turn/interrupt', {'threadId': id, 'turnId': (snapshot['thread']['turns'] as List).last['id']});
+    expect((await done)['status'], 'interrupted');
+    expect(Directory('${root.path}/generated_images/$id').existsSync(), isFalse);
     expect((await Directory('${root.path}/generated_images').list(recursive: true).toList())
       .where((file) => file.path.contains('.partial-')), isEmpty);
   });

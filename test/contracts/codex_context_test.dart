@@ -14,6 +14,7 @@ import 'package:test/test.dart';
 
 import '../fixtures/context_contract/cases.dart';
 import '../fixtures/context_contract/environment.dart';
+import '../support/thread.dart' show unloadThread;
 
 final root = Directory.current.absolute;
 final fixtures = Directory('${root.path}/test/fixtures/context_contract');
@@ -25,11 +26,10 @@ Future<void> save(String path, Object? value) async {
   await file.writeAsString('${encoder.convert(value)}\n');
 }
 
-Future<({String stdout, int microseconds})> run(List<String> command, Map<String, String> environment,
+Future<String> run(List<String> command, Map<String, String> environment,
   String log, CancellationToken cancellation, {String? cwd, Duration timeout = const Duration(minutes: 2)}) async {
   cancellation.throwIfCancelled();
   await File(log).parent.create(recursive: true);
-  final watch = Stopwatch()..start();
   final deadline = TimeoutCancellationToken(timeout);
   final token = cancellation.merge(deadline);
   final process = await Process.start(command.first, command.skip(1).toList(),
@@ -40,11 +40,10 @@ Future<({String stdout, int microseconds})> run(List<String> command, Map<String
   final hook = CancellationHook(token, () => process.kill(ProcessSignal.sigterm));
   try {
     final code = await process.exitCode.asCancellable(token);
-    watch.stop();
     await streams.asCancellable(token);
     if (code != 0) throw StateError('${command.first} exited $code; see $log and $log.stderr');
     await out.flush();
-    return (stdout: await File(log).readAsString(), microseconds: watch.elapsedMicroseconds);
+    return await File(log).readAsString();
   } finally {
     hook.dispose();
     deadline.cancel();
@@ -58,78 +57,71 @@ Future<({String stdout, int microseconds})> run(List<String> command, Map<String
 }
 
 String text(Json item) => item['content'] is String ? item['content'] as String
-  : (item['content'] as List? ?? []).whereType<Map>().map((part) => part['text'] ?? '').join('\n');
+  : (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>().map((part) => part['text'] ?? '').join('\n');
 
-/// Every case excludes Codex's client telemetry, removes scoped IDs and extracts
+/// Every case excludes Codex's client telemetry, removes scoped IDs and normalizes
 /// known timings. All remaining fields, encodings and array positions are strict.
-({Json request, List<Json> timings}) prepareComparison(Json received) {
+Json prepareComparison(Json received) {
   final request = jsonObject(jsonDecode(jsonEncode(received)));
-  final timings = <Json>[];
-  void takeTime(Json object, String key, String path, String kind, String unit) {
+  void removeTime(Json object, String key) {
     final value = object[key];
     if (value is! num || !value.isFinite || value < 0) return;
     object.remove(key);
-    timings.add({'path': '$path.$key', 'kind': kind, 'unit': unit, 'value': value});
   }
   request.remove('prompt_cache_key');
   request.remove('client_metadata');
-  bool shellReceipt(Json printed, String path) {
+  bool shellReceipt(Json printed) {
     if (printed['chunk_id'] is! String || printed['wall_time_seconds'] is! num || printed['output'] is! String) return false;
     printed.remove('chunk_id');
     if (printed['session_id'] is int) printed.remove('session_id');
-    takeTime(printed, 'wall_time_seconds', path, 'shell', 'seconds');
+    removeTime(printed, 'wall_time_seconds');
     return true;
   }
-  String outputText(String text, String path) {
-    final shell = RegExp(r'^(?:Chunk ID: ([0-9a-f]{6})\n)?Wall time: ([0-9.]+) seconds\n'
+  String outputText(String text) {
+    final shell = RegExp(r'^(?:Chunk ID: ([0-9a-f]{6})\n)?Wall time: ([0-9]+(?:\.[0-9]+)?) seconds\n'
       r'(Process exited with code -?[0-9]+|Process running with session ID [0-9]+)\n'
       r'(?:Original token count: [0-9]+\n)?Output:\n').firstMatch(text);
     if (shell != null) {
-      timings.add({'path': path, 'kind': 'shell', 'unit': 'seconds', 'value': double.parse(shell[2]!)});
       var header = shell[0]!.replaceFirst('Wall time: ${shell[2]} seconds', 'Wall time: <ELAPSED> seconds');
       if (shell[1] != null) header = header.replaceFirst('Chunk ID: ${shell[1]}', 'Chunk ID: <CHUNK_ID>');
       header = header.replaceFirst(RegExp(r'Process running with session ID [0-9]+'), 'Process running with session ID <SESSION_ID>');
       return '$header${text.substring(shell.end)}';
     }
-    final patch = RegExp(r'^Exit code: -?[0-9]+\nWall time: ([0-9.]+) seconds\n(?:Total output lines: [0-9]+\n)?Output:\n').firstMatch(text);
+    final patch = RegExp(r'^Exit code: -?[0-9]+\nWall time: ([0-9]+(?:\.[0-9]+)?) seconds\n(?:Total output lines: [0-9]+\n)?Output:\n').firstMatch(text);
     if (patch != null) {
-      timings.add({'path': path, 'kind': 'patch', 'unit': 'seconds', 'value': double.parse(patch[1]!)});
       return text.replaceFirst('Wall time: ${patch[1]} seconds', 'Wall time: <ELAPSED> seconds');
     }
-    final mcp = RegExp(r'^Wall time: ([0-9.]+) seconds\nOutput:(?:\n|$)').firstMatch(text);
+    final mcp = RegExp(r'^Wall time: ([0-9]+(?:\.[0-9]+)?) seconds\nOutput:(?:\n|$)').firstMatch(text);
     if (mcp != null) {
-      timings.add({'path': path, 'kind': 'mcp', 'unit': 'seconds', 'value': double.parse(mcp[1]!)});
       return text.replaceFirst('Wall time: ${mcp[1]} seconds', 'Wall time: <ELAPSED> seconds');
     }
-    final status = RegExp(r'^Script (completed|failed|terminated|running with cell ID [1-9][0-9]*)\nWall time ([0-9.]+) seconds\nOutput:\n$').firstMatch(text);
+    final status = RegExp(r'^Script (completed|failed|terminated|running with cell ID [1-9][0-9]*)\nWall time ([0-9]+(?:\.[0-9]+)?) seconds\nOutput:\n$').firstMatch(text);
     if (status != null) {
-      timings.add({'path': path, 'kind': 'script', 'unit': 'seconds', 'value': double.parse(status[2]!)});
       return text.replaceFirst('Wall time ${status[2]} seconds', 'Wall time <ELAPSED> seconds');
     }
-    final sleep = RegExp(r'^Wall time: ([0-9.]+) seconds\nSleep (completed|interrupted by new input)\.$').firstMatch(text);
+    final sleep = RegExp(r'^Wall time: ([0-9]+(?:\.[0-9]+)?) seconds\nSleep (completed|interrupted by new input)\.$').firstMatch(text);
     if (sleep != null) {
-      timings.add({'path': path, 'kind': 'sleep', 'unit': 'seconds', 'value': double.parse(sleep[1]!)});
       return text.replaceFirst('Wall time: ${sleep[1]} seconds', 'Wall time: <ELAPSED> seconds');
     }
     try {
       final decoded = jsonDecode(text);
       if (decoded is Map) {
         final printed = jsonObject(decoded);
-        if (shellReceipt(printed, path)) return jsonEncode(printed);
+        if (shellReceipt(printed)) return jsonEncode(printed);
         // Promise.allSettled receipts retain their index, settlement and value;
-        // only the nested shell transport's scoped ID/time are extracted.
+        // only the nested shell transport's scoped ID/time are normalized.
         if (printed['i'] is int && printed['status'] == 'fulfilled' && printed['value'] is Map) {
           final value = jsonObject(printed['value']);
-          if (shellReceipt(value, '$path.value')) return jsonEncode({...printed, 'value': value});
+          if (shellReceipt(value)) return jsonEncode({...printed, 'value': value});
         }
       }
       if (decoded is Map && decoded.containsKey('completionBudgetReport') && decoded.containsKey('remainingTokens')) {
         final printed = jsonObject(decoded);
         if (printed['goal'] is Map) {
           final goal = jsonObject(printed['goal'])..remove('threadId');
-          takeTime(goal, 'createdAt', '$path.goal', 'timestamp', 'seconds');
-          takeTime(goal, 'updatedAt', '$path.goal', 'timestamp', 'seconds');
-          takeTime(goal, 'timeUsedSeconds', '$path.goal', 'goal', 'seconds');
+          removeTime(goal, 'createdAt');
+          removeTime(goal, 'updatedAt');
+          removeTime(goal, 'timeUsedSeconds');
           printed['goal'] = goal;
         }
         return jsonEncode(printed);
@@ -139,22 +131,24 @@ String text(Json item) => item['content'] is String ? item['content'] as String
   }
   final input = request['input'] as List;
   for (var index = 0; index < input.length; index++) {
-    final item = input[index] as Json, path = 'input[$index]';
+    final item = input[index] as Json;
     item.remove('id');
     if (item['internal_chat_message_metadata_passthrough'] is Map) {
       final metadata = item['internal_chat_message_metadata_passthrough'] as Json;
       metadata.remove('turn_id');
-      takeTime(metadata, 'create_time', '$path.internal_chat_message_metadata_passthrough', 'timestamp', 'seconds');
+      removeTime(metadata, 'create_time');
     }
     if (!{'custom_tool_call_output', 'function_call_output'}.contains(item['type'])) continue;
-    if (item['output'] case final String output) { item['output'] = outputText(output, '$path.output'); }
-    else if (item['output'] case final List output) {
+    if (item['output'] case final String output) { item['output'] = outputText(output); }
+    else if (item['output'] case final List<Object?> output) {
       for (var part = 0; part < output.length; part++) {
-        if (output[part]['type'] == 'input_text') output[part]['text'] = outputText(output[part]['text'] as String, '$path.output[$part].text');
+        final content = jsonObject(output[part]);
+        if (content['type'] == 'input_text') content['text'] = outputText(content['text'] as String);
+        output[part] = content;
       }
     }
   }
-  return (request: request, timings: timings);
+  return request;
 }
 
 /// Object-key sorting is for readable differences, never array reordering.
@@ -208,23 +202,23 @@ bool shellIdContract(List<Json> input) {
       final session = RegExp(r'\nProcess running with session ID ([0-9]+)\n').firstMatch(output);
       if (session != null && (int.parse(session[1]!) < 1000 || int.parse(session[1]!) >= 100000)) return false;
     }
-    for (final part in item['output'] is List ? (item['output'] as List).whereType<Map>() : const <Map>[]) {
+    for (final part in item['output'] is List ? (item['output'] as List).whereType<Map<Object?, Object?>>() : const <Map<Object?, Object?>>[]) {
       try {
         var value = jsonDecode(part['text'] as String? ?? '');
         if (value is Map && value['i'] is int && value['status'] == 'fulfilled' && value['value'] is Map) value = value['value'];
         if (value is! Map || !value.containsKey('chunk_id') || !value.containsKey('wall_time_seconds')) continue;
         if (value['chunk_id'] is! String || !RegExp(r'^[0-9a-f]{6}$').hasMatch(value['chunk_id'] as String)) return false;
-        if (value.containsKey('session_id') && (value['session_id'] is! int || value['session_id'] < 1000 || value['session_id'] >= 100000)) return false;
+        if (value.containsKey('session_id') && (value['session_id'] is! int || (value['session_id'] as int) < 1000 || (value['session_id'] as int) >= 100000)) return false;
       } on FormatException { /* Non-JSON prose. */ }
     }
   }
   return true;
 }
 
-Future<({bool equal, Json timings})> compare(Json reference, Json actual, String path) async {
+Future<bool> compare(Json reference, Json actual, String path) async {
   final left = prepareComparison(reference), right = prepareComparison(actual);
-  final equal = equals(left.request).matches(right.request, {});
-  final a = encoder.convert(sortedKeys(left.request)).split('\n'), b = encoder.convert(sortedKeys(right.request)).split('\n');
+  final equal = equals(left).matches(right, {});
+  final a = encoder.convert(sortedKeys(left)).split('\n'), b = encoder.convert(sortedKeys(right)).split('\n');
   var index = 0;
   while (index < a.length && index < b.length && a[index] == b[index]) { index++; }
   if (!equal) {
@@ -233,12 +227,11 @@ Future<({bool equal, Json timings})> compare(Json reference, Json actual, String
       'Codex: ${index < a.length ? a[index] : '<end>'}\n'
       'Happen: ${index < b.length ? b[index] : '<end>'}\n');
   }
-  return (equal: equal, timings: {'codex': left.timings, 'happen': right.timings});
+  return equal;
 }
 
 Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json>> requests,
-  Map<String, List<String>> files, List<String> errors, Map<String, List<int>> loops,
-  Map<String, List<List<int>>> arrivals, Map<String, Map<String, String>> modelIds})>
+  Map<String, List<String>> files, List<String> errors, Map<String, Map<String, String>> modelIds})>
     responsesPeer(Json scenario, String outputPath, CancellationToken cancellation) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   Future<void>? closing;
@@ -247,9 +240,6 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
   final requests = <String, List<Json>>{}, errors = <String>[];
   final files = <String, List<String>>{};
   for (final engine in ['codex', 'happen']) { await Directory('$outputPath/$engine-requests').create(recursive: true); }
-  final watches = <String, Stopwatch>{}, loops = <String, List<int>>{};
-  final arrivals = <String, List<List<int>>>{};
-  final currentArrivals = <String, List<int>>{};
   final modelIds = <String, Map<String, String>>{};
   final continuationIds = <String, Map<int, Set<String>>>{};
   server.listen((http) async {
@@ -258,13 +248,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       final bytes = chunks.takeBytes();
       final body = jsonObject(jsonDecode(utf8.decode(bytes)));
       final engine = http.uri.pathSegments.first;
-      final clock = '$engine:${body['prompt_cache_key']}';
-      final watch = watches.putIfAbsent(clock, () {
-        final samples = currentArrivals[clock] = <int>[];
-        arrivals.putIfAbsent(engine, () => []).add(samples);
-        return Stopwatch()..start();
-      });
-      currentArrivals[clock]!.add(watch.elapsedMicroseconds);
+      final threadKey = '$engine:${body['prompt_cache_key']}';
       if (engine == 'happen') {
         final key = scenario['endpoint_key'];
         if (http.headers.value(HttpHeaders.authorizationHeader) != (key == null ? null : 'Bearer $key') ||
@@ -288,7 +272,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       final scripted = resumed && scenario['resume_responses'] is List ? scenario['resume_responses'] : scenario['responses'];
       final steps = (prelude ? null : scripted as List?) ?? [[{
         'type': 'message', 'role': 'assistant',
-        'content': [{'type': 'output_text', 'text': 'READY', 'annotations': []}],
+        'content': [{'type': 'output_text', 'text': 'READY', 'annotations': <Object?>[]}],
       }]];
       final continuing = (scenario['continue_after'] as List? ?? []).cast<int>().toSet();
       final inputIds = {for (final item in (body['input'] as List).map(jsonObject)) item['id']};
@@ -297,7 +281,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         final expected = {for (final item in (steps[step] as List).map(jsonObject))
           if (['custom_tool_call', 'function_call', 'tool_search_call'].contains(item['type'])) item['call_id']};
         if (expected.isEmpty) {
-          final previous = continuationIds[clock]?[step];
+          final previous = continuationIds[threadKey]?[step];
           if (!continuing.contains(step) || previous == null || !inputIds.containsAll(previous)) break;
         } else if (!completed.containsAll(expected)) { break; }
         step++;
@@ -317,7 +301,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         if (item['id'] case final String id) (modelIds[engine] ??= {})[id] = item['type'] as String;
       }
       if (continuing.contains(step)) {
-        (continuationIds[clock] ??= {})[step] = output.map((item) => item['id'] as String).toSet();
+        (continuationIds[threadKey] ??= {})[step] = output.map((item) => item['id'] as String).toSet();
       }
       final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored ? 21000 : 100;
       final response = {'id': 'resp_fixture_${captured.length}', 'object': 'response', 'status': 'completed',
@@ -325,20 +309,14 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         'output': output, 'usage': {'input_tokens': inputTokens, 'output_tokens': 10, 'total_tokens': inputTokens + 10}};
       final stream = StringBuffer();
       void event(Json value) => stream.write('data: ${jsonEncode(value)}\n\n');
-      event({'type': 'response.created', 'response': {...response, 'status': 'in_progress', 'output': []}});
+      event({'type': 'response.created', 'response': {...response, 'status': 'in_progress', 'output': <Object?>[]}});
       for (var i = 0; i < output.length; i++) {
         event({'type': 'response.output_item.added', if (scenario['indexless_stream'] != true) 'output_index': i, 'item': output[i]});
         event({'type': 'response.output_item.done', if (scenario['indexless_stream'] != true) 'output_index': i, 'item': output[i]});
       }
-      event({'type': 'response.completed', 'response': {...response, 'output': []}});
+      event({'type': 'response.completed', 'response': {...response, 'output': <Object?>[]}});
       http.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
       http.response.add(utf8.encode(stream.toString()));
-      if (output.any((item) => item['type'] == 'message') &&
-          output.every((item) => !{'function_call', 'custom_tool_call', 'tool_search_call'}.contains(item['type'])) && !continuing.contains(step)) {
-        final watch = watches.remove(clock)!..stop();
-        currentArrivals.remove(clock);
-        loops.putIfAbsent(engine, () => []).add(watch.elapsedMicroseconds);
-      }
     } catch (error, stack) {
       errors.add('$error\n$stack');
       await File('$outputPath/peer-errors.log').writeAsString('$error\n$stack\n', mode: FileMode.append);
@@ -346,16 +324,10 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
     } finally { await http.response.close(); }
   });
   return (server: server, close: () async { hook.dispose(); await close(); },
-    requests: requests, files: files, errors: errors, loops: loops, arrivals: arrivals, modelIds: modelIds);
+    requests: requests, files: files, errors: errors, modelIds: modelIds);
 }
 
-double median(List<int> values) {
-  final sorted = values.toList()..sort();
-  final middle = sorted.length ~/ 2;
-  return sorted.length.isOdd ? sorted[middle].toDouble() : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
-Future<Json> scenario(Json scenario, String model, String codex, String output, int samples,
+Future<Json> scenario(Json scenario, String model, String codex, String output,
   CancellationToken cancellation, String catalog, {required bool codeModeOnly,
     required String reasoning, required String reasoningSummary}) async {
   final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
@@ -439,7 +411,7 @@ env_key = "CONTEXT_CONTRACT_KEY"
 [model_providers.context_contract.capabilities]
 remote_compaction = "v2"
 ''');
-  final happenConfig = <String, dynamic>{'code_mode_only': codeModeOnly, 'providers': {'openai': {'model': model,
+  final happenConfig = <String, dynamic>{'code_mode_only': codeModeOnly, 'idle_unload_seconds': 0, 'providers': {'openai': {'model': model,
     'settings': <String, dynamic>{'reasoning': reasoning, 'reasoning_summary': reasoningSummary, 'web_search': 'live',
       'request_user_input': scenario['request_user_input'] == true}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
@@ -457,7 +429,7 @@ remote_compaction = "v2"
     await run(['dart', 'pub', 'get', '--offline'], env, '$output/pub-get.log', cancellation, cwd: work);
     // This SDK delegates mcp-server to a remote package. Prepare its real
     // executable before either harness starts, avoiding simultaneous first-use
-    // installs in the shared isolated cache. Every measured process is fresh.
+    // installs in the shared isolated cache. Both harnesses use real processes.
     await run(['dart', 'mcp-server', '--help'], env, '$output/mcp-prepare.log', cancellation, cwd: work);
   }
   await File('$codexHome/config.toml').writeAsString(config.toString());
@@ -465,33 +437,35 @@ remote_compaction = "v2"
   final codexEnv = {...env, 'CONTEXT_CONTRACT_KEY': 'synthetic-context-contract'};
   final prompt = scenario['prompt'] as String;
   final command = [codex, '-C', cwd];
-  final times = {'codex': <int>[], 'happen': <int>[]};
-  final loopTimes = {'codex': <int>[], 'happen': <int>[]};
-  final requestTimings = <Json>[];
   final checks = <String, bool>{};
   final host = await AgentServer.startLocal(directory: data, configPath: '$data/config.yaml', skillsHome: home,
     endpoint: '$endpoint/happen/responses', apiKeyEnv: 'CONTEXT_CONTRACT_UNUSED_${newId()}', telemetry: false);
   final client = AgentClient.local(host);
   try {
-    final timedLoop = {'skill', 'search', 'compaction', 'shell', 'image', 'audio', 'web', 'continuation', 'tldw'}.contains(scenario['workflow']);
-    for (var iteration = -1; iteration < samples; iteration++) {
-      final runPath = '$output/run-${iteration < 0 ? 'warmup' : iteration}';
+    // Opposite execution orders cover fresh-thread isolation and reuse of the
+    // shared MCP owner. These are functional replays, not benchmark samples.
+    const orders = [['codex', 'happen'], ['happen', 'codex']];
+    for (final (iteration, order) in orders.indexed) {
+      final runPath = '$output/run-$iteration';
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
-      final loopStarts = {for (final engine in ['codex', 'happen']) engine: peer.loops[engine]?.length ?? 0};
       String? taskID;
       Future<void> turn(String prompt) async {
-        final terminal = client.events.stream.firstWhere((event) =>
-          ['session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'].contains(event['type'])).asCancellable(cancellation);
-        final admitted = jsonObject(await client.request(taskID == null ? 'session.create' : 'session.prompt', {
-          if (taskID == null) ...{'cwd': cwd, 'provider': 'openai', 'model': model} else 'sessionID': taskID,
-          'prompt': prompt,
-        }).asCancellable(cancellation));
-        taskID = admitted['sessionID'] as String;
-        final completed = await terminal;
-        if (completed['type'] != 'session.execution.succeeded') throw StateError('Agent turn failed: ${completed['data']}');
+        taskID ??= jsonObject(await client.request('thread/start', {'cwd': cwd, 'provider': 'openai', 'model': model})
+          .asCancellable(cancellation))['thread']['id'] as String;
+        final input = StreamIterator(client.events.stream);
+        try {
+          await client.request('turn/start', {'threadId': taskID, 'input': [{'type': 'text', 'text': prompt}]}).asCancellable(cancellation);
+          while (await input.moveNext().asCancellable(cancellation, onCancel: () => unawaited(input.cancel()))) {
+            final event = input.current;
+            if (event['method'] != 'turn/completed' || event['params']['threadId'] != taskID) continue;
+            final completed = jsonObject(event['params']['turn']);
+            if (completed['status'] != 'completed') throw StateError('Agent turn failed: ${completed['error']}');
+            return;
+          }
+          throw StateError('Connection closed before completion');
+        } finally { await input.cancel(); }
       }
-      for (final engine in iteration.isEven ? ['codex', 'happen'] : ['happen', 'codex']) {
-        final watch = Stopwatch()..start();
+      for (final engine in order) {
         final messages = (scenario['messages'] as List? ?? [prompt,
           if (scenario['workflow'] == 'resume') 'Continue and reply READY.']).cast<String>();
         for (var message = 0; message < messages.length; message++) {
@@ -500,35 +474,25 @@ remote_compaction = "v2"
               if (message == 0) '--skip-git-repo-check' else ...['resume', '--last'],
               '--json', messages[message]], codexEnv, '$runPath/$engine.message-$message.jsonl', cancellation);
           } else {
-            if (message > 0 && scenario['hibernate_between_turns'] == true) {
-              await client.request('session.hibernate', {'sessionID': taskID}).asCancellable(cancellation);
+            if (message > 0 && scenario['unload_between_turns'] == true) {
+              await unloadThread(client, taskID!, cancellation: cancellation);
             }
             await turn(messages[message]);
           }
         }
-        watch.stop();
-        if (iteration >= 0) times[engine]!.add(watch.elapsedMicroseconds);
       }
       final a = (peer.requests['codex'] ?? []).skip(starts['codex']!).toList();
       final b = (peer.requests['happen'] ?? []).skip(starts['happen']!).toList();
       await save('$runPath/received-request-files.json', {
         for (final engine in ['codex', 'happen']) engine: (peer.files[engine] ?? []).skip(starts[engine]!).toList(),
       });
-      if (iteration >= 0) {
-        for (final engine in ['codex', 'happen']) {
-          final observed = (peer.loops[engine] ?? []).skip(loopStarts[engine]!).toList();
-          if (observed.isNotEmpty) loopTimes[engine]!.add(observed.last);
-        }
-      }
       checks['same_model_calls:run-$iteration'] = a.length == b.length && a.isNotEmpty;
       checks['same_selected_model:run-$iteration'] = [...a, ...b].every((request) => request['model'] == model);
       checks['same_selected_reasoning:run-$iteration'] = [...a, ...b].every((request) =>
         request['reasoning']?['effort'] == reasoning && request['reasoning']?['summary'] == reasoningSummary);
       checks['happen:no_client_metadata:run-$iteration'] = b.isNotEmpty && b.every((request) => !request.containsKey('client_metadata'));
       if (a.isNotEmpty && b.isNotEmpty) {
-        final comparison = await compare(a.last, b.last, runPath);
-        checks['final_request_equal:run-$iteration'] = comparison.equal;
-        requestTimings.add({'run': iteration, ...comparison.timings});
+        checks['final_request_equal:run-$iteration'] = await compare(a.last, b.last, runPath);
       } else { checks['final_request_equal:run-$iteration'] = false; }
       for (final pair in [('codex', a), ('happen', b)]) {
         checks['${pair.$1}:thread_id_contract:run-$iteration'] = pair.$2.isNotEmpty &&
@@ -660,9 +624,9 @@ remote_compaction = "v2"
           checks['${pair.$1}:tldw_skill_bodies_delivered:run-$iteration'] = skillReads.length == skillFiles.length &&
             skillReads.indexed.every((entry) => entry.$2['i'] == entry.$1 && entry.$2['status'] == 'fulfilled' &&
               entry.$2['value']?['exit_code'] == 0 && entry.$2['value']?['output'] == skillFiles[entry.$1]);
-          final discovery = receipts['tldw_discover'] is List ? (receipts['tldw_discover'] as List).skip(1).take(2).toList() : [];
+          final discovery = receipts['tldw_discover'] is List ? (receipts['tldw_discover'] as List).skip(1).take(2).toList() : <Object?>[];
           checks['${pair.$1}:parallel_shell_receipts_delivered:run-$iteration'] = discovery.length == 2 &&
-            [for (var i = 0; i < discovery.length; i++) jsonObject(jsonDecode(discovery[i]['text'] as String))]
+            [for (var i = 0; i < discovery.length; i++) jsonObject(jsonDecode(jsonObject(discovery[i])['text'] as String))]
               .indexed.every((entry) => entry.$2['i'] == entry.$1 && entry.$2['status'] == 'fulfilled' && entry.$2['value']?['exit_code'] == 0);
           checks['${pair.$1}:transcript_read_truncated:run-$iteration'] = jsonEncode(receipts['tldw_read_transcript']).contains('tokens truncated');
           final recovered = jsonEncode(receipts['tldw_recover_transcript']);
@@ -695,7 +659,7 @@ remote_compaction = "v2"
           final restoredText = following.isEmpty ? '' : (following.last['input'] as List).map((item) => text(jsonObject(item))).join('\n');
           checks['$engine:instructions_restored_once:run-$iteration'] = RegExp('COMPACTION_REPOSITORY_RULE').allMatches(restoredText).length == 1;
           checks['$engine:skills_restored_once:run-$iteration'] = RegExp('- fixture-global:').allMatches(restoredText).length == 1;
-          if (scenario['messages'] case final List messages) {
+          if (scenario['messages'] case final List<Object?> messages) {
             final before = compactions.length == 1 ? (compactions.single['input'] as List).map(jsonObject).toList() : <Json>[];
             final after = following.isNotEmpty ? (following.last['input'] as List).map(jsonObject).toList() : <Json>[];
             final retained = [for (final item in after)
@@ -747,7 +711,7 @@ remote_compaction = "v2"
               tool['type'] == 'function' && tool['parameters'] is Map && tool['strict'] == false &&
               tool['defer_loading'] == true && !tool.containsKey('output_schema'));
           }
-          if (expected['names'] case final List names) {
+          if (expected['names'] case final List<Object?> names) {
             checks['${pair.$1}:${discovery.key}:selected_tools:run-$iteration'] = jsonEncode(found.map((tool) => tool['name']).toList()) == jsonEncode(names);
           }
         }
@@ -768,10 +732,6 @@ remote_compaction = "v2"
         }
       }
     }
-    if (timedLoop) {
-      checks['agent_loop_not_slower_than_codex'] = loopTimes.values.every((times) => times.isNotEmpty) &&
-        median(loopTimes['happen']!) <= median(loopTimes['codex']!);
-    }
     for (final engine in ['codex', 'happen']) {
       final ids = (peer.requests[engine] ?? []).map((request) => request['prompt_cache_key']).toSet().cast<String>().toList();
       checks['$engine:thread_ids_monotonic'] = ids.isNotEmpty &&
@@ -782,23 +742,28 @@ remote_compaction = "v2"
       // preparation or generator endpoint stands in for the production owner.
       final completed = <String>{}, done = Completer<void>();
       final subscription = client.events.stream.listen((event) {
-        if (event['type'] == 'session.execution.succeeded') {
-          completed.add(requiredString(jsonObject(event['data']), 'sessionID'));
+        if (event['method'] != 'turn/completed') return;
+        if (event['params']['turn']['status'] == 'completed') {
+          completed.add(requiredString(jsonObject(event['params']), 'threadId'));
           if (completed.length == 16 && !done.isCompleted) done.complete();
-        } else if ({'session.execution.failed', 'session.execution.interrupted'}.contains(event['type']) && !done.isCompleted) {
+        } else if (!done.isCompleted) {
           done.completeError(StateError('Concurrent turn failed: $event'));
         }
       });
       try {
-        final admitted = await Future.wait(List.generate(16, (_) => client.request('session.create', {
-          'cwd': cwd, 'provider': 'openai', 'model': model, 'prompt': prompt,
-        }).asCancellable(cancellation)));
+        final admitted = await Future.wait(List.generate(16, (_) async {
+          final page = jsonObject(await client.request('thread/start', {'cwd': cwd, 'provider': 'openai', 'model': model})
+            .asCancellable(cancellation));
+          final id = page['thread']['id'] as String;
+          await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': prompt}]}).asCancellable(cancellation);
+          return id;
+        }));
         await done.future.asCancellable(cancellation);
-        final ids = admitted.map((value) => jsonObject(value)['sessionID']).toList();
+        final ids = admitted;
         checks['happen:concurrent_thread_ids_uuid7'] = ids.every(uuid7);
         checks['happen:concurrent_thread_ids_unique'] = ids.toSet().length == ids.length;
         checks['happen:concurrent_thread_ids_monotonic'] = [for (var i = 1; i < ids.length; i++)
-          (ids[i - 1] as String).compareTo(ids[i] as String) < 0].every((value) => value);
+          ids[i - 1].compareTo(ids[i]) < 0].every((value) => value);
         checks['happen:concurrent_threads_reached_inference'] = ids.every((id) =>
           peer.requests['happen']!.any((request) => request['prompt_cache_key'] == id));
       } finally { await subscription.cancel(); }
@@ -809,24 +774,13 @@ remote_compaction = "v2"
     await host.close();
     await peer.close();
   }
-  final referenceTime = median(times['codex']!), actualTime = median(times['happen']!);
-  checks['not_slower_than_codex'] = actualTime <= referenceTime;
   return {'scenario': scenario['id'], 'passed': checks.values.every((value) => value), 'checks': checks,
-    'timing': {'unit': 'microseconds', 'codexMeasurement': 'CLI exec/resume session wall time',
-      'happenMeasurement': 'in-process real session wall time', 'codex': times['codex'], 'happen': times['happen'],
-      'codexMedian': referenceTime, 'happenMedian': actualTime, 'ratio': actualTime / referenceTime,
-      'fasterHarness': actualTime == referenceTime ? 'equal' : actualTime < referenceTime ? 'happen' : 'codex',
-      'differenceMicroseconds': (actualTime - referenceTime).abs(), 'requestTimings': requestTimings,
-      'agentLoopMeasurement': 'last turn: first model request through final synthetic SSE', 'agentLoop': loopTimes,
-      'allObservedAgentLoops': peer.loops,
-      'warmupAgentLoop': {for (final engine in peer.loops.keys) engine: peer.loops[engine]!.first},
-      'requestArrivals': peer.arrivals}, 'fixtureErrors': peer.errors};
+    'fixtureErrors': peer.errors};
 }
 
 void main() {
   const models = ['gpt-6.1-terra'];
   const reasoning = 'max', reasoningSummary = 'auto';
-  const samples = 3;
   const codex = 'codex';
   var output = '';
   const codeModeOnlyValues = [true, false];
@@ -847,7 +801,7 @@ void main() {
     final env = isolatedEnvironment('$output/home', '$output/codex-home');
     await Directory(env['HOME']!).create(recursive: true);
     await Directory(env['CODEX_HOME']!).create(recursive: true);
-    report['codexVersion'] = (await run([codex, '--version'], env, '$output/version.log', cancellation)).stdout.trim();
+    report['codexVersion'] = (await run([codex, '--version'], env, '$output/version.log', cancellation)).trim();
     final bundled = File('${root.path}/packages/openai/catalog/models.json');
     report['baseCatalogSHA256'] = sha256.convert(await bundled.readAsBytes()).toString();
     report['catalogs'] = <String, dynamic>{};
@@ -885,7 +839,7 @@ void main() {
             addTearDown(lifetime.cancel);
             Json result;
             try {
-              result = await scenario(value, model, codex, path, samples,
+              result = await scenario(value, model, codex, path,
                 cancellation.merge(deadline).merge(lifetime), catalogs[codeModeOnly]!.absolute.path,
                 codeModeOnly: codeModeOnly, reasoning: reasoning, reasoningSummary: reasoningSummary);
             } catch (error) {

@@ -105,7 +105,7 @@ void main() {
                 'end_turn': bodies.length != 1,
                 // The completion packet is a summary, not a second delivery of
                 // the completed items. ChatGPT can leave this array empty.
-                'output': [],
+                'output': <Object?>[],
                 'usage': {
                   'input_tokens': 128,
                   'output_tokens': 20,

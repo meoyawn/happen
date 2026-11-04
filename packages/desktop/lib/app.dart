@@ -31,7 +31,7 @@ import 'session_question.dart';
 import 'sidebar_frame.dart';
 import 'sidebar_resizer.dart';
 import 'settings_screen.dart';
-import 'opencode_navigation.dart';
+import 'workspace_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
 
@@ -80,7 +80,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   void _syncWindowChrome() {
     if (defaultTargetPlatform != TargetPlatform.macOS) return;
-    final layout = _hasSidebar ? 'side' : 'top';
+    const layout = 'side';
     if (layout == _nativeLayout) return;
     _nativeLayout = layout;
     unawaited(_run(() async {
@@ -169,7 +169,6 @@ class _DesktopViewState extends State<DesktopView> {
             if (_canOpenTerminal)
               (title: 'Open terminal', keywords: 'shell console', icon: Icons.terminal_outlined,
                 shortcut: mac ? '⌘ J' : 'Ctrl J', run: _openTerminal),
-            if (_hasSidebar)
               (title: 'Toggle sidebar', keywords: 'show hide navigation', icon: Icons.view_sidebar_outlined,
                 shortcut: mac ? '⌘ ⇧ B' : 'Ctrl Shift B',
                 run: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)))),
@@ -336,7 +335,7 @@ class _DesktopViewState extends State<DesktopView> {
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
-        keyboard.isShiftPressed && !keyboard.isAltPressed && _hasSidebar) {
+        keyboard.isShiftPressed && !keyboard.isAltPressed) {
       if (event is KeyDownEvent) unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)));
       return KeyEventResult.handled;
     }
@@ -363,26 +362,8 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _selectAdjacentTask(int offset) {
-    final inbox = session.openCodeLayout == OpenCodeLayout.inbox;
-    final sections = inbox ? inboxSections(session) : null;
-    final pinned = sections?.pinned.where((entry) =>
-      !session.collapsedSidebarSections.contains('pinned') || !_homeOpen && session.task == entry.$2).toList() ?? <(Project, DesktopTask)>[];
-    final working = sections?.working.where((entry) =>
-      session.inboxWorkingExpanded || !_homeOpen && session.task == entry.$2).toList() ?? <(Project, DesktopTask)>[];
-    final tasks = sections == null ? session.openTasks : [
-      ...pinned,
-      ...working,
-      ...sections.needs,
-      ...sections.recent,
-    ];
-    final ids = inbox ? [
-      ...pinned.map((entry) => entry.$2.id),
-      ...working.map((entry) => entry.$2.id),
-      for (final id in session.openTabIds)
-        if (session.sessionDrafts.any((draft) => draft.id == id)) id,
-      ...sections!.needs.map((entry) => entry.$2.id),
-      ...sections.recent.map((entry) => entry.$2.id),
-    ] : session.navigationTabIds;
+    final tasks = sidebarThreads(session);
+    final ids = tasks.map((entry) => entry.$2.id).toList();
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
     if (next < 0 || next >= ids.length) { return; }
@@ -402,8 +383,6 @@ class _DesktopViewState extends State<DesktopView> {
     session.newSession(owner);
     if (mounted) _focusComposer();
   }
-
-  bool get _hasSidebar => session.openCodeLayout != OpenCodeLayout.top;
 
   void _showHome() {
     session.showHome();
@@ -465,21 +444,11 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
-    final minSidebarWidth = 136.0;
+    final minSidebarWidth = 200.0;
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0).toDouble();
-    final savedWidth = session.openCodeSidebarWidth;
+    final savedWidth = session.sidebarWidth;
     final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth).toDouble();
     final pane = _conversationPane(context, tasks);
-    if (!_hasSidebar) {
-      return ColoredBox(color: const Color(0xfff9f9f9), child: Column(children: [
-        OpenCodeTopBar(session: session, home: _homeOpen, leadingInset: _trafficInset,
-          onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
-          onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
-          onSelect: _openTask, onDraft: _activateDraft,
-          onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived)))),
-        Expanded(child: pane),
-      ]));
-    }
     return ColoredBox(color: const Color(0xfff9f9f9), child: DesktopSidebarFrame(
       open: session.sidebarOpen, width: sidebarWidth,
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
@@ -489,7 +458,7 @@ class _DesktopViewState extends State<DesktopView> {
         session.projects.where((project) => !project.removing).expand((project) => project.tasks)
           .any((task) => !task.archived && task.questions.isNotEmpty) ||
         session.sideChats.values.any((task) => task.questions.isNotEmpty),
-      sidebar: OpenCodeSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
+      sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
             onSelect: _openTask, onDraft: _activateDraft,
@@ -515,7 +484,7 @@ class _DesktopViewState extends State<DesktopView> {
     final transcript = home ? null : session.task ?? session.currentDraft.submission;
     return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
       child: ConversationTypography(
-          child: Padding(padding: const EdgeInsets.all(8), child: SessionPanelWorkspace(
+          child: SessionPanelWorkspace(
             session: session, task: home ? null : session.task,
             sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.draftKey}'),
               session: session, target: side, active: active),
@@ -586,12 +555,12 @@ class _DesktopViewState extends State<DesktopView> {
                     _Composer(key: _composer, session: session),
                 ],
               ]),
-              if (home) OpenCodeHome(session: session, focusNode: _sessionSearchFocus,
+               if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
                 onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
-          )),
+           ),
         ),
     );
   }
@@ -610,7 +579,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _header(BuildContext context) => DesktopWindowDragRegion(child: AnimatedPadding(
     duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
-    padding: EdgeInsets.only(left: _hasSidebar && !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 24) : 24, right: 24),
+    padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 24) : 16, right: 12),
     child: SizedBox(height: 48, child: Row(
       children: [
         if (session.task != null && session.project != null) ...[

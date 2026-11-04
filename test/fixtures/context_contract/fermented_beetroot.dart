@@ -10,18 +10,18 @@ const fermentedBeetrootCase = <String, dynamic>{
     "польза квашеной свеклы? посмотри в интернете",
     "Сохрани предыдущий ответ с источниками и ответь READY."
   ],
-  "hibernate_between_turns": true,
+  "unload_between_turns": true,
   "request_user_input": true,
   "retain_model_items": true,
   "indexless_stream": true,
-  "files": {},
-  "contains": [],
-  "absent": [],
+  "files": <String, Object?>{},
+  "contains": <Object?>[],
+  "absent": <Object?>[],
   "responses": [
     [
       {
         "type": "reasoning",
-        "summary": [],
+        "summary": <Object?>[],
         "content": null,
         "encrypted_content": "fermented-beetroot-reasoning-1"
       },
@@ -33,8 +33,8 @@ const fermentedBeetrootCase = <String, dynamic>{
         "content": [
           {
             "type": "output_text",
-            "annotations": [],
-            "logprobs": [],
+            "annotations": <Object?>[],
+            "logprobs": <Object?>[],
             "text": "Посмотрю, что известно о пользе именно квашеной свёклы и насколько эти выводы подтверждены исследованиями."
           }
         ]
@@ -214,7 +214,7 @@ const fermentedBeetrootCase = <String, dynamic>{
                 "url": "https://www.who.int/news-room/fact-sheets/detail/sodium-reduction?linkId=100000202663036&utm_source=openai"
               }
             ],
-            "logprobs": [],
+            "logprobs": <Object?>[],
             "text": "Квашеная свёкла может быть полезной частью рациона: она даёт клетчатку и другие вещества из свёклы, а если не пастеризована — ещё и живые молочнокислые бактерии. Но исследований именно её влияния на здоровье людей пока мало, поэтому приписывать ей лечебные свойства рано. ([pmc.ncbi.nlm.nih.gov](https://pmc.ncbi.nlm.nih.gov/articles/PMC13664913/))\n\nЧто известно о возможной пользе:\n\n- **Клетчатка и питательные вещества.** В свёкле есть клетчатка, фолат и калий. Для ориентира: в 100 г сырой свёклы около 2,8 г клетчатки; после квашения состав может измениться. ([growables.org](https://www.growables.org/informationVeg/documents/BeetRaw.pdf))\n- **Живые бактерии.** Непастеризованная квашеная свёкла может их содержать. В небольшом исследовании рацион с разными ферментированными продуктами увеличивал разнообразие кишечной микробиоты, но этот результат нельзя автоматически перенести на конкретную банку свёклы. Живые бактерии также не обязательно являются пробиотиками с доказанным действием. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/34256014/))\n- **Влияние на давление.** Свекольный сок, богатый нитратами, в ряде исследований немного снижал верхнее давление у людей с гипертонией. Достоверность доказательств невысокая, а для квашеной свёклы такой эффект отдельно не установлен. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/39069465/))\n\n**На что обратить внимание:** в квашеной свёкле может быть много соли. Это особенно важно при гипертонии и ограничении соли: ВОЗ рекомендует взрослым менее 5 г соли в сутки из *всех* продуктов. Если у тебя были оксалатные камни в почках, количество свёклы стоит обсудить с врачом: она содержит оксалаты. ([who.int](https://www.who.int/news-room/fact-sheets/detail/sodium-reduction?linkId=100000202663036&utm_source=openai))\n\nМожно начать с пары столовых ложек вместе с едой и посмотреть, как переносится. Установленной «лечебной дозы» нет. Если покупаешь свёклу ради живых культур, ищи на упаковке указание, что она **непастеризованная** или содержит живые культуры."
           }
         ]
@@ -230,7 +230,7 @@ const fermentedBeetrootCase = <String, dynamic>{
           {
             "type": "output_text",
             "text": "READY",
-            "annotations": []
+            "annotations": <Object?>[]
           }
         ]
       }

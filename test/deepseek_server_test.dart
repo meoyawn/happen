@@ -6,6 +6,7 @@ import 'package:opencode/src/instructions.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread.dart';
 
 void main() {
   for (final providerId in ['deepseek', 'opencode']) {
@@ -141,31 +142,16 @@ void main() {
       skillsHome: root.path,
     );
     client = await AgentClient.connect(server.uri);
-    Future<Json> turn(String method, Json params) async {
-      final completion = client!.events.stream.firstWhere(
-        (e) => {
-          'turn.completed',
-          'turn.failed',
-          'turn.cancelled',
-        }.contains(e['type']),
-      );
-      await client.request(method, params);
-      return completion.timeout(const Duration(seconds: 15));
-    }
-
-    final first = await turn('task.start', {
-      'cwd': root.path,
-      'prompt': 'Write 42.',
-    });
-    expect(first['type'], 'turn.completed', reason: first.toString());
-    expect(first['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
+    final id = await createThread(client, {'cwd': root.path});
+    Future<Json> turn(String prompt) => runTurn(client!, id, prompt: prompt);
+    final first = await turn('Write 42.');
+    expect(first['status'], 'completed', reason: first.toString());
+    expect(id, matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
     expect(await File('${root.path}/verified.txt').readAsString(), '42\n');
     expect(requests.length, 2);
     final previous = requests.last;
-    final continued = await turn('task.send', {
-      'task_id': first['task_id'], 'prompt': 'Check the result.',
-    });
-    expect(continued['type'], 'turn.completed', reason: continued.toString());
+    final continued = await turn('Check the result.');
+    expect(continued['status'], 'completed', reason: continued.toString());
     expect(requests.length, 3);
     final messages = requests.last['messages'] as List;
     expect(messages.take((previous['messages'] as List).length).toList(), previous['messages']);
@@ -178,10 +164,10 @@ void main() {
     expect(messages.where((message) => message['role'] == 'tool'), hasLength(1));
     expect(messages.where((message) => message['tool_calls'] != null), hasLength(1));
     expect(requests.last['tools'], requests.first['tools']);
-    final fork = jsonObject(await client.request('task.fork', {'task_id': first['task_id']}));
-    expect(fork['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
+    final fork = jsonObject(await client.request('thread/fork', {'threadId': id}))['thread']['id'] as String;
+    expect(fork, matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
     final bundle = '${root.path}/opencode-task.jsonl';
-    await client.request('history.export', {'task_id': fork['task_id'], 'path': bundle});
+    await client.request('history.export', {'task_id': fork, 'path': bundle});
     final operationId = newId();
     final imports = await Future.wait(List.generate(3, (_) => client!.request('history.import', {
       'path': bundle, 'operation_id': operationId,
@@ -190,7 +176,7 @@ void main() {
     expect(imports, everyElement(imported));
     expect(imported['task_id'], matches(r'^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$'));
     expect(imported['task_id'], isNot(operationId));
-    expect((await client.request('history.page', {'task_id': imported['task_id']}) as List).last['type'], 'task.imported');
+    expect(threadMetadata(root.path, imported['task_id'] as String, 'import_operation'), operationId);
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({
       ...jsonObject(jsonDecode(await File('${root.path}/config.json').readAsString())),
       'mcp_servers': {'archive': {
@@ -201,8 +187,8 @@ void main() {
       }},
     }));
     final beforeDiscovery = requests.length;
-    final discovered = await turn('task.send', {'task_id': first['task_id'], 'prompt': 'discover'});
-    expect(discovered['type'], 'turn.completed', reason: discovered.toString());
+    final discovered = await turn('discover');
+    expect(discovered['status'], 'completed', reason: discovered.toString());
     expect(requests.length, beforeDiscovery + 3);
     expect(jsonEncode(requests[beforeDiscovery]['tools']), isNot(contains('unused_schema_')));
     expect(jsonEncode(requests[beforeDiscovery]['messages']), contains('The catalog is partial.'));
@@ -222,36 +208,30 @@ void main() {
     expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
     final beforeDenial = requests.length;
     denied = true;
-    final failure = turn('task.send', {
-      'task_id': first['task_id'],
-      'prompt': 'Continue.',
-    });
+    final failure = turn('Continue.');
     await denialStarted.future.timeout(const Duration(seconds: 15));
-    await expectLater(client.request('task.send', {
-      'task_id': first['task_id'], 'prompt': 'Change effort', 'reasoning': 'high', 'delivery': 'steer',
+    await expectLater(client.request('turn/start', {
+      'threadId': id, 'input': [{'type': 'text', 'text': 'Change effort'}], 'effort': 'high', 'delivery': 'steer',
     }), throwsA(isA<StateError>().having((error) => error.message, 'message', contains('Reasoning effort is fixed for this task'))));
-    expect(jsonObject(await client.request('task.subscribe', {'task_id': first['task_id']}))['pending'], isEmpty);
+    expect(jsonObject(await client.request('thread/read', {'threadId': id}))['pending'], isEmpty);
     releaseDenial.complete();
     final failed = await failure;
-    expect(failed['type'], 'turn.failed');
-    expect(failed['data']['error'], contains('free_usage_limit'));
-    expect(failed['data']['error'], contains(resetAt));
+    expect(failed['status'], 'failed');
+    expect(failed['error']['message'], contains('free_usage_limit'));
+    expect(failed['error']['message'], contains(resetAt));
     expect(requests.length, beforeDenial + 2, reason: 'One model call runs the tool; its follow-up reports quota without retries');
-    expect(sessions, everyElement(first['task_id']));
-    final history = await client.request('history.page', {
-      'task_id': first['task_id'],
-    }) as List;
+    expect(sessions, everyElement(id));
+    final history = await rolloutLines(client, id);
     final savedResult = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool');
     expect(savedResult['tool_call_id'], 'quota-call');
     expect(jsonDecode(savedResult['content'] as String)['pid'], isPositive);
-    final hostCalls = history.where((event) => event['type'] == 'host_tool.started').length;
+    final toolResults = (await contextItems(client, id)).where((item) => item['role'] == 'tool').length;
     denied = false;
-    final resumed = await turn('task.send', {'task_id': first['task_id'], 'prompt': 'Continue from the saved result.'});
-    expect(resumed['type'], 'turn.completed', reason: resumed.toString());
+    final resumed = await turn('Continue from the saved result.');
+    expect(resumed['status'], 'completed', reason: resumed.toString());
     expect(requests.length, beforeDenial + 3);
     expect((requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool'), savedResult);
-    final resumedHistory = await client.request('history.page', {'task_id': first['task_id']}) as List;
-    expect(resumedHistory.where((event) => event['type'] == 'host_tool.started'), hasLength(hostCalls),
+    expect((await contextItems(client, id)).where((item) => item['role'] == 'tool'), hasLength(toolResults),
       reason: 'Resuming a quota-interrupted turn must reuse the durable MCP result');
     expect(jsonEncode(history), isNot(contains('fixture-access')));
     expect(jsonEncode(history), isNot(contains('fixture-refresh')));

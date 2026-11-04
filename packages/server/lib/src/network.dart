@@ -40,7 +40,7 @@ Future<IsolateOwner> startNetwork(
     'events': events,
   });
 }
-void _networkMain(List<Object?> args) async {
+Future<void> _networkMain(List<Object?> args) async {
   final startup = jsonObject(args[1]);
   final directory = startup['directory'] as String;
   final configPath = startup['config_path'] as String;
@@ -138,6 +138,12 @@ void _networkMain(List<Object?> args) async {
       'event': {'type': 'mcp.auth.changed', 'server': server},
     }),
     publicUrl: global['public_url'] as String?,
+    acceptThreadEvent: (event, cancellation) async {
+      try {
+        await callIsolate(startup['events'] as SendPort, 'mcp.event.accept', {'event': event}, cancellation: cancellation);
+      } on CancelledException { rethrow; }
+      catch (_) { throw const McpFailure('Thread inbox is unavailable; retry this event', status: 503); }
+    },
     onEvent: (owner, event) => (startup['events'] as SendPort?)?.send({
       'owner': owner,
       'event': event,
@@ -508,10 +514,11 @@ void _networkMain(List<Object?> args) async {
             await mcp.detach(owner);
             result = null;
           case 'mcp.webhook':
-            result = mcp.webhook(
+            result = await mcp.webhook(
               requiredString(params, 'subscription_id'),
               jsonObject(params['headers']),
               (params['body'] as List).cast<int>(),
+              cancellation,
             );
           case 'mcp.reload':
             await reload(cancellation);
@@ -616,6 +623,10 @@ void _networkMain(List<Object?> args) async {
                 : (provider as OpenCodeProvider).catalogRevision,
           },
         });
+        return;
+      }
+      if (request['method'] == 'thread.settings') {
+        reply?.send({'result': global['idle_unload_seconds'] ?? 60});
         return;
       }
       if (request['method'] == 'task.new_id') {
@@ -723,4 +734,3 @@ void _networkMain(List<Object?> args) async {
     unawaited(operation.whenComplete(() => pending.remove(operation)));
   });
 }
-

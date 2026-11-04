@@ -331,8 +331,8 @@ class QuestionToolResult extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConversationData(value: tool.rawInput, builder: (context, input) {
     final decoded = _decodeQuestionResult(input);
-    final rawQuestions = decoded is Map && decoded['questions'] is List ? decoded['questions'] as List : const [];
-    final questions = [for (final question in rawQuestions.whereType<Map>())
+    final rawQuestions = decoded is Map && decoded['questions'] is List ? decoded['questions'] as List : const <Object?>[];
+    final questions = [for (final question in rawQuestions.whereType<Map<Object?, Object?>>())
       if (question['question'] is String || question['title'] is String) {
         'id': question['id'],
         'question': question['question'] is String ? question['question'] : question['title'],

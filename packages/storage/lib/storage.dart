@@ -1,905 +1,273 @@
 import 'dart:convert';
-import 'dart:developer' show log;
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:ai/ai.dart';
+import 'package:openai/openai.dart' show gptInput, gptItemFromRollout;
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
-import 'src/model_context.dart';
+import 'src/codex_native.dart';
+import 'src/session_reader.dart';
 
 export 'src/owner.dart' show startStore, importHistory;
 export 'src/session_reader.dart' show readSession;
-export 'src/session_list.dart' show listSessions;
+export 'src/thread_list.dart' show listThreads;
 
-part 'src/session.dart';
 part 'src/kv.dart';
-part 'src/tool_runtime.dart';
+part 'src/native_adapter.dart';
+part 'src/lifecycle.dart';
+part 'src/goals.dart';
 
-/// Access this object only from its dedicated SQLite owner isolate.
+/// One WAL database, exclusively owned by one writer isolate, per session.
+/// Codex RolloutLines are canonical; thread history is a rebuildable projection.
 class TaskStore {
-  TaskStore(
-    this.directory,
-    this.taskId, {
-    bool create = true,
-    bool inMemory = false,
-  }) {
+  TaskStore(this.directory, this.taskId, {bool create = true, bool inMemory = false}) {
     validateTaskId(taskId);
     final folder = Directory('$directory/tasks/$taskId');
     if (!inMemory && !create && !File('${folder.path}/history.sqlite').existsSync()) {
       throw StateError('Task does not exist: $taskId');
     }
-    if (!inMemory) folder.createSync(recursive: true);
-    db = openTracedDatabase(inMemory ? ':memory:' : '${folder.path}/history.sqlite');
-    db.execute('PRAGMA journal_mode = WAL');
-    db.execute('PRAGMA synchronous = NORMAL');
-    db.execute('PRAGMA foreign_keys = ON');
-    db.execute('PRAGMA cache_size = -512');
-    db.execute('PRAGMA busy_timeout = 0');
-    if (inMemory) db.execute('PRAGMA temp_store = MEMORY');
-    // Schema initialization must outlive failed event transactions.
-    db.execute('''
-      CREATE TABLE IF NOT EXISTS events (
-        seq INTEGER PRIMARY KEY, type TEXT NOT NULL,
-        created_at TEXT NOT NULL, data TEXT NOT NULL,
-        id TEXT NOT NULL UNIQUE, window_id TEXT NOT NULL
-      ) STRICT;
-      CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
-      CREATE INDEX IF NOT EXISTS events_window ON events(window_id, seq);
-      CREATE TABLE IF NOT EXISTS metadata (
-        key TEXT PRIMARY KEY, value TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS conversation_events (
-        seq INTEGER PRIMARY KEY REFERENCES events(seq) ON DELETE CASCADE,
-        data TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS conversation_parts (
-        id TEXT PRIMARY KEY, data TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS kv (
-        key TEXT PRIMARY KEY, value TEXT NOT NULL,
-        time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
-      ) STRICT;
-    ''');
-    _sessionSchema();
+    if (!inMemory) {
+      folder.createSync(recursive: true);
+      _lock = File('${folder.path}/writer.lock').openSync(mode: FileMode.append);
+      try { _lock!.lockSync(FileLock.exclusive); }
+      catch (_) { _lock!.closeSync(); rethrow; }
+    }
+    try {
+      db = openTracedDatabase(inMemory ? ':memory:' : '${folder.path}/history.sqlite');
+      db.execute('PRAGMA journal_mode=WAL');
+      db.execute('PRAGMA synchronous=NORMAL');
+      db.execute('PRAGMA foreign_keys=ON');
+      db.execute('PRAGMA cache_size=-512');
+      db.execute('PRAGMA busy_timeout=0');
+      db.execute('BEGIN');
+      db.execute('''CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
+        CREATE TABLE IF NOT EXISTS happen_runtime(singleton INTEGER PRIMARY KEY CHECK(singleton IS 1),data TEXT NOT NULL) STRICT;
+        CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL) STRICT;''');
+      final row = db.select('SELECT data FROM happen_runtime').firstOrNull;
+      state = row == null ? {'sourceSeq': 0, 'window': '$taskId:0', 'pendingInputs': <String, dynamic>{}} :
+        jsonObject(jsonDecode(row['data'] as String));
+      native = CodexSqlite(db, taskId);
+      db.execute('''
+        CREATE TABLE IF NOT EXISTS thread_goals (
+          thread_id TEXT PRIMARY KEY NOT NULL,goal_id TEXT NOT NULL,objective TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('active','paused','blocked','usage_limited','budget_limited','complete')),
+          token_budget INTEGER,tokens_used INTEGER NOT NULL DEFAULT 0,time_used_seconds INTEGER NOT NULL DEFAULT 0,
+          created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS thread_goal_continuation_deferrals (
+          thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE
+        );
+      ''');
+      db.execute('COMMIT');
+    } catch (_) {
+      _lock?.closeSync();
+      rethrow;
+    }
   }
+
   final String directory, taskId;
+  final _sessionId = newUuidV7();
+  final _pendingNativeItems = <Json>[];
+  Object? queueNativeCompletion(Json item) { _pendingNativeItems.add(item); return null; }
   late final TracedDatabase db;
-  Object? keyValue(String method, Json arguments) => _keyValue(this, method, arguments);
-  int get lastSequence =>
-      db.select('SELECT coalesce(max(seq), 0) AS seq FROM events').first['seq']
-          as int;
-
-  Json append(String type, Json data, {Json metadata = const {}}) =>
-      appendBatch([
-        {'type': type, 'data': data},
-      ], metadata: metadata).single;
-
-  List<Json> appendBatch(List<Json> events, {Json metadata = const {}}) {
-    if (events.isEmpty) {
-      throw const FormatException('Empty history transaction');
-    }
-    final committed = <Json>[];
-    db.execute('BEGIN');
-    try {
-      final now = DateTime.now().toUtc().toIso8601String();
-      var window = metadataValue('current_window') as String? ?? '$taskId:0';
-      for (final event in events) {
-        if (event['type'] == 'context.compacted') window = newId();
-        final id = newId();
-        db.execute(
-          'INSERT INTO events(id, window_id, type, created_at, data) VALUES (?, ?, ?, ?, ?)',
-          [
-            id,
-            window,
-            requiredString(event, 'type'),
-            now,
-            jsonEncode(jsonObject(event['data'])),
-          ],
-        );
-        final committedEvent = <String, dynamic>{
-          'seq': db.lastInsertRowId,
-          'id': id,
-          'window_id': window,
-          'type': event['type'],
-          'created_at': now,
-          'data': event['data'],
-        };
-        committed.add(committedEvent);
-      }
-      for (final entry in {...metadata, 'current_window': window}.entries) {
-        db.execute(
-          'INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-          [entry.key, jsonEncode(entry.value)],
-        );
-      }
-      // The OpenCode read model and its source facts become visible together.
-      // Existing histories catch up through prepareSession before being read.
-      final projected = db.select('SELECT through_seq FROM session_projection').single['through_seq'] as int;
-      if (projected == (committed.first['seq'] as int) - 1) _projectSession(committed);
-      _projectConversation(committed);
-      db.execute('COMMIT');
-    } catch (_) {
-      db.execute('ROLLBACK');
-      rethrow;
-    }
-    return committed;
-  }
-
-  Object? metadata(String key) {
-    return metadataValue(key);
-  }
-
-  Json archive(bool archived) {
-    final timestamp = archived ? DateTime.now().toUtc().toIso8601String() : null;
-    return append(
-      archived ? 'task.archived' : 'task.unarchived',
-      {'archived_at': timestamp}, metadata: {'archived_at': timestamp},
-    );
-  }
-
-  Json maintain() {
-    if (metadataValue('archived_at') == null) return {'archived': false};
-    // History remains recoverable. Reclaim the WAL only when SQLite can do so
-    // without waiting for another connection; canonical history is never deleted.
-    final checkpoint = db.select('PRAGMA wal_checkpoint(TRUNCATE)').single;
-    return {'archived': true, 'checkpointed': checkpoint.values.first == 0};
-  }
-
-  Object? metadataValue(String key) {
-    final result = db.select('SELECT value FROM metadata WHERE key IS ?', [
-      key,
-    ]);
-    return result.isEmpty ? null : jsonDecode(result.first['value'] as String);
-  }
-
-  List<Json> history({int after = 0, int limit = 100, int? through,
-    bool recentFirst = false, int maxBytes = maxClientFrameBytes, bool conversationView = false}) {
-    if (limit < 1 || limit > 500) {
-      throw const FormatException('History limit must be 1..500');
-    }
-    final query = db.prepare(conversationView ? '''
-      SELECT e.seq, e.id, e.window_id, e.type, e.created_at, p.seq AS projected,
-        coalesce(p.data, CASE
-          WHEN e.type IN ('tool.completed', 'tool.notified') THEN json_object('item', json_extract(e.data, '\$.item'))
-          WHEN e.type IS 'context.compacted' THEN json_object('summary', json_extract(e.data, '\$.summary'))
-          WHEN e.type IN ('agents.updated', 'skills.updated', 'mcp.updated', 'environment.updated', 'instructions.updated', 'tools.updated') THEN '{}'
-          ELSE e.data END) AS data
-      FROM events e LEFT JOIN conversation_events p ON p.seq IS e.seq
-      WHERE e.seq > ? AND e.seq <= ? ORDER BY e.seq ${recentFirst ? 'DESC' : 'ASC'} LIMIT ?
-    ''' : 'SELECT seq, id, window_id, type, created_at, data FROM events WHERE seq > ? AND seq <= ? ORDER BY seq ${recentFirst ? 'DESC' : 'ASC'} LIMIT ?');
-    final result = <Json>[];
-    final missing = <int>[];
-    try {
-      final rows = query.selectCursor([after, through ?? lastSequence, limit]);
-      var bytes = 0;
-      while (rows.moveNext()) {
-        final row = rows.current;
-        final encoded = row['data'] as String;
-        bytes += utf8.encode(encoded).length + 512;
-        // A compaction checkpoint may itself fill a page. Never split a record.
-        if (result.isNotEmpty && bytes > maxBytes) break;
-        final event = <String, dynamic>{
-            'seq': row['seq'],
-            'id': row['id'],
-            'window_id': row['window_id'],
-            'type': row['type'],
-            'created_at': row['created_at'],
-            'data': jsonDecode(encoded),
-        };
-        final stale = conversationView && (row['projected'] == null || (event['data'] as Json).remove(r'$view') != 1);
-        if (stale) missing.add(result.length);
-        result.add(conversationView && !stale ? _conversationEvent(event) : event);
-      }
-    } finally {
-      query.close();
-    }
-    if (missing.isNotEmpty) {
-      // Materialize only this page for older databases, never scan a transcript
-      // during startup. Failed cache writes are retried from saved events here.
-      final projected = _materializeConversation([
-        for (final index in missing) result[index],
-      ]);
-      for (var index = 0; index < missing.length; index++) {
-        result[missing[index]] = projected[index];
-      }
-    }
-    return result;
-  }
-
-  void _projectConversation(List<Json> events) {
-    try {
-      _materializeConversation(events);
-    } catch (error, stackTrace) {
-      log('Failed to update the conversation cache for $taskId; saved events are intact.',
-        name: 'happen.storage', level: 900, error: error, stackTrace: stackTrace);
-    }
-  }
-
-  List<Json> _materializeConversation(List<Json> events) {
-    // Savepoints work both within append's durable event transaction and during
-    // lazy read repair. A failed cache update rolls back only the derived view,
-    // never the canonical tool result; successful appends need just one commit.
-    db.execute('SAVEPOINT conversation_cache');
-    try {
-      final result = <Json>[];
-      final insert = db.prepare('INSERT OR REPLACE INTO conversation_events(seq, data) VALUES (?, ?)');
-      try {
-        for (final event in events) {
-          final display = _projectEvent(event);
-          insert.execute([event['seq'], jsonEncode({...jsonObject(display['data']), r'$view': 1})]);
-          result.add(display);
-        }
-      } finally { insert.close(); }
-      db.execute('RELEASE conversation_cache');
-      return result;
-    } catch (_) {
-      db.execute('ROLLBACK TO conversation_cache');
-      db.execute('RELEASE conversation_cache');
-      rethrow;
-    }
-  }
-
-  Json _projectEvent(Json event) {
-    final display = _conversationEvent(event);
-    Object? part(Object? value, {Json fields = const {}}) {
-      final encoded = jsonEncode(value);
-      if (encoded.length <= 1024) return value;
-      final id = sha256.convert(utf8.encode(encoded)).toString();
-      db.execute('INSERT OR IGNORE INTO conversation_parts(id, data) VALUES (?, ?)', [id, encoded]);
-      return {...fields, r'$part': '$taskId/$id'};
-    }
-    Json image(Json value) => jsonObject(part(value, fields: {
-      'type': value['type'], 'name': value['name'],
-    }));
-    final data = {...jsonObject(display['data'])};
-    if (event['type'] == 'host_tool.started' || event['type'] == 'tool.started') {
-      final key = event['type'] == 'tool.started' ? 'input' : 'arguments';
-      final input = data[key];
-      if (input is Map || input is String) {
-        Object? decoded = input;
-        if (input is String) {
-          try { decoded = jsonDecode(input); } on FormatException { /* Code is already text. */ }
-        }
-        if (decoded is Map) {
-          final preview = decoded['command'] ?? decoded['cmd'] ?? decoded['filePath'] ?? decoded['path'];
-          if (preview is String) {
-            final line = preview.split('\n').first;
-            data['preview'] = line.length > 240 ? '${line.substring(0, 240)}…' : line;
-          }
-        }
-        data[key] = part(input);
-      }
-    } else if (event['type'] == 'host_tool.completed') {
-      for (final key in ['output', 'error']) {
-        if (data.containsKey(key)) data[key] = part(data[key]);
-      }
-    } else if (event['type'] == 'input.committed' || event['type'] == 'tool.completed' || event['type'] == 'tool.notified') {
-      final item = jsonObject(data['item']);
-      data['item'] = {...item, 'content': [
-        for (final raw in item['content'] as List? ?? [])
-          if (raw['type'] == 'image') image(jsonObject(raw))
-          else if (event['type'] == 'tool.completed' || event['type'] == 'tool.notified') {
-            ...jsonObject(raw),
-            if (raw.containsKey('output')) 'output': part(raw['output']),
-            if (raw['images'] is List) 'images': [for (final value in raw['images']) image(jsonObject(value))],
-          } else raw,
-      ]};
-    }
-    return {...display, 'data': data};
-  }
-
-  Object? conversationPart(String id) {
-    final rows = db.select('SELECT data FROM conversation_parts WHERE id IS ?', [id]);
-    if (rows.isEmpty) throw StateError('Conversation content not found');
-    return jsonDecode(rows.single['data'] as String);
-  }
-
-  /// One newest-first page. Opening a transcript never requires replaying it.
-  Json historyPage({int? before, int limit = 100}) {
-    if (before != null && before < 1) throw const FormatException('Invalid history cursor');
-    final through = before == null ? lastSequence : before - 1;
-    Json? configuration;
-    final summary = <Json>[];
-    if (before == null) {
-      final rows = db.select("SELECT max(seq) AS seq FROM events WHERE type = 'task.created'");
-      final sequence = rows.single['seq'] as int?;
-      if (sequence != null) configuration = history(after: sequence - 1, limit: 1, conversationView: true).single;
-      // Codex's turn summaries include the first user item independently of
-      // the newest item page. A long tool run must not hide its opening prompt.
-      final turns = db.select("SELECT seq FROM events WHERE type IS 'turn.started' AND seq <= ? ORDER BY seq DESC LIMIT 5", [through]);
-      var end = through;
-      for (final turn in turns) {
-        final start = turn['seq'] as int;
-        summary.add(history(after: start - 1, limit: 1, conversationView: true).single);
-        final inputs = db.select("SELECT seq FROM events WHERE type IS 'input.committed' AND seq > ? AND seq <= ? ORDER BY seq LIMIT 1", [start, end]);
-        final firstInput = inputs.firstOrNull?['seq'] as int?;
-        if (firstInput != null) summary.add(history(after: firstInput - 1, limit: 1, conversationView: true).single);
-        final outputs = db.select("SELECT seq FROM events WHERE type IS 'model.completed' AND seq > ? AND seq <= ? ORDER BY seq DESC LIMIT 1", [start, end]);
-        final lastOutput = outputs.firstOrNull?['seq'] as int?;
-        if (lastOutput != null) summary.add(history(after: lastOutput - 1, limit: 1, conversationView: true).single);
-        final terminals = db.select("SELECT max(seq) AS seq FROM events WHERE type IN ('turn.completed', 'turn.failed', 'turn.cancelled') AND seq > ? AND seq <= ?", [start, end]);
-        final terminal = terminals.single['seq'] as int?;
-        if (terminal != null) summary.add(history(after: terminal - 1, limit: 1, conversationView: true).single);
-        end = start - 1;
-      }
-    }
-    final data = history(through: through, limit: limit, recentFirst: true,
-      maxBytes: maxClientFrameBytes - utf8.encode(jsonEncode([configuration, summary])).length - 1024, conversationView: true);
-    final oldest = data.lastOrNull?['seq'] as int?;
-    return {
-      'data': data,
-      'next_cursor': oldest != null && db.select('SELECT 1 FROM events WHERE seq < ? LIMIT 1', [oldest]).isNotEmpty ? oldest : null,
-      if (before == null) ...{
-        'through': through,
-        'configuration': configuration,
-        'summary': summary,
-        'reasoning': metadataValue('effective_reasoning'),
-        'archived': metadataValue('archived_at') != null,
-      },
-    };
-  }
-
-  List<Json> modelContext({int maxBytes = maxContextBytes}) => readModelContext(db, maxBytes: maxBytes);
-
-  /// Freeze committed model history and instruction baselines on the writer.
-  /// Pending inputs and live tool/process state belong only to the parent.
-  Json forkSnapshot() => {
-    'input': modelContext(),
-    'config': metadataValue('config'),
-    'archived': metadataValue('archived_at') != null,
-    'metadata': {
-      for (final key in ['current_cwd', 'agents_snapshot', 'skills_state',
-        'mcp_snapshot', 'client_tools_snapshot', 'request_tools', 'effective_reasoning'])
-        if (metadataValue(key) case final value?) key: value,
-    },
-  };
-
-  /// Inherited history is model context, separate from this fork's transcript.
-  void initializeFork(Json snapshot) {
-    final config = {...jsonObject(snapshot['config']), 'task_id': taskId};
-    append('task.created', config, metadata: {
-      ...jsonObject(snapshot['metadata'] ?? {}),
-      'config': config, 'title': snapshot['title'] ?? 'Side chat',
-      'fork_input': snapshot['input'],
-    });
-  }
-
-  /// Restore an agent's buffer and accounting together on its single writer.
-  Json modelSnapshot() {
-    final checkpoint = db.select("SELECT seq FROM events WHERE type = 'context.compacted' ORDER BY seq DESC LIMIT 1");
-    final after = checkpoint.isEmpty ? 0 : checkpoint.single['seq'] as int;
-    final usage = db.select("SELECT data FROM events WHERE type = 'model.completed' AND seq > ? ORDER BY seq DESC LIMIT 1", [after]);
-    final times = db.select('SELECT min(created_at) AS created, max(created_at) AS updated FROM events').single;
-    return {
-      'input': modelContext(),
-      'requestTools': metadataValue('request_tools'),
-      'through': db.select('SELECT coalesce(max(seq), 0) AS seq FROM session_event').single['seq'],
-      'sourceThrough': lastSequence,
-      'windowID': metadataValue('current_window'),
-      'effectiveReasoning': metadataValue('effective_reasoning'),
-      'tokens': usage.isEmpty ? null : sessionTokens(jsonObject(jsonObject(jsonDecode(usage.single['data'] as String))['usage'] ?? {})),
-      'created': DateTime.tryParse(times['created'] as String? ?? '')?.millisecondsSinceEpoch,
-      'updated': DateTime.tryParse(times['updated'] as String? ?? '')?.millisecondsSinceEpoch,
-      'archived': metadataValue('archived_at') != null,
-    };
-  }
-
-  void _validateHistoryAgent(Json params) {
-    final name = params['agent_name'];
-    if (name != null && name != '/root' && name != '.' && name != taskId) {
-      throw ArgumentError(
-        'This task has one agent; omit agent_name or use /root',
-      );
-    }
-  }
-
-  List<Json> listWindows(Json params) {
-    _validateHistoryAgent(params);
-    final limit = (params['limit'] as int? ?? 20).clamp(1, 100);
-    final order = params['recent_first'] == false ? 'ASC' : 'DESC';
-    return db
-        .select(
-          'SELECT window_id, count(*) AS item_count, min(seq) AS first_seq, max(seq) AS last_seq '
-          'FROM events GROUP BY window_id ORDER BY first_seq $order LIMIT ?',
-          [limit],
-        )
-        .map((row) => <String, dynamic>{...row})
-        .toList();
-  }
-
-  Future<List<Json>> listItems(
-    Json params, {
-    CancellationToken? cancellation,
-  }) => _historySelection(params, cancellation: cancellation);
-  Future<List<Json>> searchContents(
-    Json params, {
-    CancellationToken? cancellation,
-  }) {
-    requiredString(params, 'query');
-    return _historySelection(
-      params,
-      search: params['query'] as String,
-      cancellation: cancellation,
-    );
-  }
-
-  Future<List<Json>> _historySelection(
-    Json params, {
-    String? search,
-    CancellationToken? cancellation,
-  }) async {
-    _validateHistoryAgent(params);
-    final limit = (params['limit'] as int? ?? 20).clamp(1, 200);
-    final chars = (params['max_chars_per_item'] as int? ?? 1500).clamp(
-      1,
-      16000,
-    );
-    final recent = params['recent_first'] != false;
-    final order = recent ? 'DESC' : 'ASC';
-    var cursor = recent ? lastSequence + 1 : 0;
-    var remaining = 60000;
-    final result = <Json>[];
-    while (result.length < limit && remaining > 0) {
-      cancellation?.throwIfCancelled();
-      final page = db.select(
-        'SELECT seq, id, window_id, type, created_at, data FROM events '
-        'WHERE seq ${recent ? '<' : '>'} ? AND (? IS NULL OR window_id IS ?) ORDER BY seq $order LIMIT 100',
-        [cursor, params['window_id'], params['window_id']],
-      );
-      if (page.isEmpty) break;
-      for (final row in page) {
-        cursor = row['seq'] as int;
-        final item = _historyItem(row);
-        final content = item.remove('content') as String;
-        if (params['role'] != null && params['role'] != item['role']) continue;
-        if (params['tool_name'] != null &&
-            !(item['tool_names'] as List).contains(params['tool_name'])) {
-          continue;
-        }
-        if (params['tool_namespace'] != null &&
-            !(item['tool_namespaces'] as List).contains(
-              params['tool_namespace'],
-            )) {
-          continue;
-        }
-        final offset = search == null ? 0 : content.indexOf(search);
-        if (offset < 0) continue;
-        final start = search == null
-            ? 0
-            : (offset - 200).clamp(0, content.length);
-        final budget = chars.clamp(1, remaining);
-        final snippet = content.substring(
-          start,
-          (start + budget).clamp(start, content.length),
-        );
-        item['truncated_content'] = snippet;
-        item['offset_chars'] = start;
-        item['total_chars'] = content.length;
-        remaining -= utf8.encode(snippet).length + 300;
-        result.add(item);
-        if (result.length == limit || remaining <= 0) break;
-      }
-      await cancellableDelay(Duration.zero, cancellation);
-    }
-    return result;
-  }
-
-  Json readItem(Json params) {
-    _validateHistoryAgent(params);
-    final rows = db.select(
-      'SELECT seq, id, window_id, type, created_at, data FROM events WHERE id IS ? AND window_id IS ?',
-      [requiredString(params, 'item_id'), requiredString(params, 'window_id')],
-    );
-    if (rows.isEmpty) {
-      throw StateError('History item not found in the requested window');
-    }
-    final item = _historyItem(rows.single);
-    final text = item['content'] as String;
-    final offset = params['offset_chars'] as int? ?? 0;
-    if (offset < 0) throw ArgumentError('offset_chars must be nonnegative');
-    final limit = (params['limit_chars'] as int? ?? 8000).clamp(1, 16000);
-    final start = offset.clamp(0, text.length);
-    item['content'] = text.substring(
-      start,
-      (start + limit).clamp(start, text.length),
-    );
-    item['offset_chars'] = start;
-    item['total_chars'] = text.length;
-    return item;
-  }
-
-  Json _historyItem(Map<String, Object?> row) {
-    final data = jsonObject(jsonDecode(row['data'] as String));
-    final names = <String>{}, namespaces = <String>{};
-    String? role;
-    final content = <String>[];
-    void record(Json raw) {
-      final item = ConversationItem.fromJson(raw);
-      role ??= item.role ?? 'developer';
-      for (final part in item.content) {
-        switch (part['type']) {
-          case 'text':
-          case 'reasoning':
-            content.add(part['text'] as String);
-          case 'image':
-            content.add('[Image: ${part['name']} (${part['mime_type']})]');
-          case 'file':
-            content.add(attachedFileText(part));
-          case 'tool_call':
-            names.add(part['name'] as String);
-            namespaces.add(part['namespace'] as String? ?? '');
-            content.add(part['input'] as String);
-          case 'tool_result':
-            if (part['name'] is String) names.add(part['name'] as String);
-            namespaces.add(part['namespace'] as String? ?? 'functions');
-            content.add(part['output'] as String);
-        }
-      }
-      if (item.kind == 'configuration') content.add(jsonEncode(item.settings));
-      if (item.kind == 'tools') {
-        content.add(jsonEncode(item.tools.map((v) => v.toJson()).toList()));
-      }
-    }
-
-    if (data['item'] is Map) record(jsonObject(data['item']));
-    if (row['type'] == 'model.completed') {
-      for (final raw in data['output'] as List) {
-        record(jsonObject(raw));
-      }
-    }
-    if ((row['type'] as String).startsWith('host_tool.')) {
-      role = 'tool';
-      if (data['name'] is String) {
-        names.add(data['name'] as String);
-        namespaces.add('tools');
-      }
-      content.add(jsonEncode(data));
-    }
-    if (row['type'] == 'context.compacted') {
-      content.add(
-        data['summary'] as String? ??
-            'Context compacted. Original messages remain in earlier windows.',
-      );
-    }
-    return {
-      'item_id': row['id'],
-      'window_id': row['window_id'],
-      'seq': row['seq'],
-      'created_at': row['created_at'],
-      'role': role ?? 'system',
-      'type': row['type'],
-      'tool_names': names.toList(),
-      'tool_namespaces': namespaces.toList(),
-      'content': content.join('\n'),
-    };
-  }
-
-  Future<void> fork(
-    String childId, {
-    int? through,
-    CancellationToken? cancellation,
-  }) async {
-    cancellation?.throwIfCancelled();
-    validateTaskId(childId);
-    final cutoff = through ?? lastSequence;
-    final boundary = db.select('SELECT type FROM events WHERE seq IS ?', [
-      cutoff,
-    ]);
-    if (boundary.isEmpty ||
-        ![
-          'turn.completed',
-          'turn.failed',
-          'turn.cancelled',
-          'task.forked',
-          'task.imported',
-          'task.archived',
-          'task.unarchived',
-        ].contains(boundary.first['type'])) {
-      throw StateError('Forks require a terminal turn boundary');
-    }
-    if (Directory('$directory/tasks/$childId').existsSync()) {
-      throw StateError('Destination exists');
-    }
-    final stage = Directory('$directory/staging/${newId()}')
-      ..createSync(recursive: true);
-    final child = TaskStore(stage.path, childId);
-    try {
-      var after = 0;
-      while (after < cutoff) {
-        cancellation?.throwIfCancelled();
-        final page = history(after: after, through: cutoff);
-        child._copy(page);
-        after = page.last['seq'] as int;
-        await cancellableDelay(Duration.zero, cancellation);
-      }
-      child._rebuildMetadata();
-      child.append(
-        'task.forked',
-        {'parent_id': taskId, 'parent_seq': cutoff},
-        metadata: {'status': 'idle'},
-      );
-      child.close();
-      cancellation?.throwIfCancelled();
-      Directory('${stage.path}/tasks/$childId')
-          .renameSync('$directory/tasks/$childId');
-    } finally {
-      child.close();
-      stage.deleteSync(recursive: true);
-    }
-  }
-
-  void _copy(List<Json> events) {
-    db.execute('BEGIN');
-    try {
-      for (final event in events) {
-        db.execute(
-          'INSERT INTO events(seq, id, window_id, type, created_at, data) VALUES (?, ?, ?, ?, ?, ?)',
-          [
-            event['seq'],
-            event['id'],
-            event['window_id'],
-            event['type'],
-            event['created_at'],
-            jsonEncode(event['data']),
-          ],
-        );
-      }
-      db.execute('COMMIT');
-    } catch (_) {
-      db.execute('ROLLBACK');
-      rethrow;
-    }
-    _projectConversation(events);
-  }
-
-  void _rebuildMetadata() {
-    for (final pair in [
-      ('task.created', 'config', null),
-      ('tool.completed', 'values', 'values'),
-      ('configuration.updated', 'effective_reasoning', 'effort'),
-      ('environment.updated', 'current_cwd', 'cwd'),
-      ('agents.updated', 'agents_snapshot', 'snapshot'),
-      ('mcp.updated', 'mcp_snapshot', 'snapshot'),
-      ('client_tools.updated', 'client_tools_snapshot', 'snapshot'),
-    ]) {
-      final rows = db.select(
-        'SELECT data FROM events WHERE type IS ? AND (? IS NULL OR json_type(data, ?) IS NOT NULL) ORDER BY seq DESC LIMIT 1',
-        [pair.$1, pair.$3, '\$.${pair.$3}'],
-      );
-      if (rows.isEmpty) continue;
-      final data = jsonObject(jsonDecode(rows.first['data'] as String));
-      final value = pair.$3 == null ? data : data[pair.$3];
-      if (value != null) {
-        db.execute(
-          'INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
-          [pair.$2, jsonEncode(value)],
-        );
-      }
-    }
-    final skills = db.select(
-      "SELECT data FROM events WHERE type IN ('skills.updated', 'context.compacted') "
-      "AND json_type(data, '\$.skills_state') IS NOT NULL ORDER BY seq DESC LIMIT 1",
-    );
-    if (skills.isNotEmpty) {
-      final data = jsonObject(jsonDecode(skills.single['data'] as String));
-      db.execute('INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
-        ['skills_state', jsonEncode(data['skills_state'])]);
-    }
-    final latest = db.select(
-      'SELECT window_id FROM events ORDER BY seq DESC LIMIT 1',
-    );
-    if (latest.isNotEmpty) {
-      db.execute('INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)', [
-        'current_window',
-        jsonEncode(latest.single['window_id']),
-      ]);
-    }
-  }
-
-  Future<void> exportTo(
-    String destination, {
-    CancellationToken? cancellation,
-  }) async {
-    cancellation?.throwIfCancelled();
-    if (metadata('status') == 'running') {
-      throw StateError('Export requires an idle task');
-    }
-    if (File(destination).existsSync()) {
-      throw StateError('Export destination exists');
-    }
-    final temporary = File('$destination.partial-${newId()}');
-    temporary.parent.createSync(recursive: true);
-    final sink = temporary.openWrite();
-    final digest = _DigestSink();
-    final hasher = sha256.startChunkedConversion(digest);
-    var count = 0;
-    void write(Json event) {
-      final bytes = utf8.encode('${jsonEncode(event)}\n');
-      hasher.add(bytes);
-      sink.add(bytes);
-    }
-
-    try {
-      final cutoff = lastSequence;
-      write({
-        'format': 'agent.history',
-        'version': 2,
-        'source_task': taskId,
-        'through': cutoff,
-      });
-      var after = 0;
-      while (after < cutoff) {
-        cancellation?.throwIfCancelled();
-        final page = history(after: after, through: cutoff);
-        for (final event in page) {
-          write(event);
-          count++;
-        }
-        after = page.last['seq'] as int;
-        await sink.flush();
-        cancellation?.throwIfCancelled();
-      }
-      hasher.close();
-      sink.write(
-        '${jsonEncode({'sha256': digest.value.toString(), 'records': count})}\n',
-      );
-      await sink.flush();
-      await sink.close();
-      cancellation?.throwIfCancelled();
-      await temporary.rename(destination);
-    } catch (_) {
-      await sink.close();
-      if (temporary.existsSync()) temporary.deleteSync();
-      rethrow;
-    }
-  }
-
-  static Future<String> importFrom(
-    String directory,
-    String source, {
-    String? operationId,
-    required Future<String> Function(Json config) newTaskId,
-    CancellationToken? cancellation,
-  }) async {
-    cancellation?.throwIfCancelled();
-    // The server resolves duplicate operations through existing task owners.
-    // This owner writes only the new, unpublished database.
-    if (operationId != null) validateTaskId(operationId);
-    final stage = Directory('$directory/staging/${newId()}')
-      ..createSync(recursive: true);
-    const stagingId = 'import';
-    final store = TaskStore(stage.path, stagingId);
-    final digest = _DigestSink();
-    final hasher = sha256.startChunkedConversion(digest);
-    var count = 0;
-    Json? header, footer;
-    final batch = <Json>[];
-    try {
-      final input = ownStream(
-        File(source).openRead(),
-        cancellation ?? CancellationToken(),
-      );
-      try {
-        await for (final line in boundedLines(
-          input.stream,
-          maxBytes: maxContextBytes + maxFrameBytes,
-        )) {
-          cancellation?.throwIfCancelled();
-          final item = jsonObject(jsonDecode(line));
-          if (header == null) {
-            if (item['format'] != 'agent.history' ||
-                item['version'] != 2) {
-              throw const FormatException('Unsupported history format');
-            }
-            header = item;
-          } else if (item.containsKey('sha256')) {
-            if (footer != null) throw const FormatException('Duplicate footer');
-            footer = item;
-            continue;
-          } else {
-            if (footer != null ||
-                item['seq'] != count + 1 ||
-                item['type'] is! String ||
-                item['created_at'] is! String ||
-                item['data'] is! Map) {
-              throw const FormatException('Invalid history record');
-            }
-            count++;
-            requiredString(item, 'id');
-            requiredString(item, 'window_id');
-            batch.add(item);
-            if (batch.length == 100) {
-              store._copy(batch);
-              batch.clear();
-            }
-          }
-          hasher.add(utf8.encode('$line\n'));
-        }
-      } finally {
-        await input.close();
-      }
-      cancellation?.throwIfCancelled();
-      hasher.close();
-      if (footer == null ||
-          footer['records'] != count ||
-          footer['sha256'] != digest.value.toString() ||
-          header?['through'] != count) {
-        throw const FormatException('Incomplete history or checksum mismatch');
-      }
-      store._copy(batch);
-      store._rebuildMetadata();
-      final id = await newTaskId(jsonObject(store.metadata('config') ?? {}));
-      validateTaskId(id);
-      if (Directory('$directory/tasks/$id').existsSync()) throw StateError('Destination exists');
-      store.append(
-        'task.imported',
-        {'source_task': header!['source_task']},
-        metadata: {'status': 'idle', 'import_operation': ?operationId},
-      );
-      store.close();
-      Directory('$directory/tasks').createSync(recursive: true);
-      cancellation?.throwIfCancelled();
-      Directory('${stage.path}/tasks/$stagingId').renameSync('$directory/tasks/$id');
-      return id;
-    } finally {
-      store.close();
-      if (stage.existsSync()) stage.deleteSync(recursive: true);
-    }
-  }
-
+  late final CodexSqlite native;
+  late Json state;
+  RandomAccessFile? _lock;
   bool _closed = false;
   void close() {
-    if (!_closed) {
-      _closed = true;
-      db.close();
+    if (_closed) return;
+    _closed = true;
+    db.close();
+    _lock?.closeSync();
+  }
+
+  int get lastSequence => state['sourceSeq'] as int? ?? 0;
+  Object? metadata(String key) {
+    final row = db.select('SELECT value FROM metadata WHERE key IS ?', [key]).firstOrNull;
+    return row == null ? null : jsonDecode(row['value'] as String);
+  }
+  Object? metadataValue(String key) => metadata(key);
+  void _metadata(Json changes) {
+    for (final entry in changes.entries) {
+      db.execute('INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        [entry.key, jsonEncode(entry.value)]);
     }
   }
-}
+  void _runtime(Json next) => db.execute(
+    'INSERT INTO happen_runtime VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET data=excluded.data', [jsonEncode(next)]);
 
-/// Display history excludes execution checkpoints. Canonical history.page,
-/// recall, forks and exports retain every field in the original event.
-Json _conversationEvent(Json event) {
-  final data = jsonObject(event['data']);
-  final display = switch (event['type']) {
-    'model.completed' => <String, dynamic>{
-      'usage': data['usage'],
-      'output': [
-        for (final raw in data['output'] as List? ?? []) {
-          'content': [
-            for (final part in raw['content'] as List? ?? [])
-              if ((part['type'] == 'text' || part['type'] == 'reasoning') && part['text'] is String)
-                {'type': part['type'], 'text': part['text']},
-          ],
-        },
-      ],
-    },
-    'tool.completed' || 'tool.notified' => <String, dynamic>{'item': data['item']},
-    'context.compacted' => <String, dynamic>{'summary': data['summary']},
-    'task.created' => <String, dynamic>{
-      for (final key in ['provider', 'model', 'reasoning', 'reasoning_updates'])
-        if (data.containsKey(key)) key: data[key],
-      'provider_settings': {
-        for (final key in ['reasoning', 'context_limit'])
-          if ((data['provider_settings'] as Map?)?.containsKey(key) == true)
-            key: data['provider_settings'][key],
-      },
-    },
-    'agents.updated' || 'skills.updated' || 'mcp.updated' ||
-    'environment.updated' || 'instructions.updated' || 'tools.updated' => <String, dynamic>{},
-    _ => data,
-  };
-  return {...event, 'data': display};
-}
+  Json append(String type, Json data, {Json metadata = const {}}) =>
+    appendBatch([{'type': type, 'data': data}], metadata: metadata).single;
 
-class _DigestSink implements Sink<Digest> {
-  late Digest value;
-  @override
-  void add(Digest data) {
-    value = data;
+  List<Json> appendBatch(List<Json> values, {Json metadata = const {}}) => traceSync('storage.commit', () {
+    if (values.isEmpty) throw const FormatException('Empty history transaction');
+    for (final value in values) {
+      final type = requiredString(value, 'type');
+      jsonEncode(jsonObject(value['data']));
+      if (type == 'model.started' || type == 'model.completed') requiredString(jsonObject(value['data']), 'assistantMessageID');
+    }
+    final next = jsonObject(jsonDecode(jsonEncode(state))), records = <Json>[];
+    final now = DateTime.now().toUtc();
+    final nativeCount = _pendingNativeItems.length;
+    next['created'] ??= now.millisecondsSinceEpoch;
+    for (final value in values) {
+      final data = jsonObject(value['data']), type = value['type'];
+      if (records.isEmpty && nativeCount > 0) data['nativeCompletions'] = _pendingNativeItems.take(nativeCount).toList();
+      if (type == 'turn.started') next['turnTokenUsage'] = <String, Object?>{};
+      final spending = data['incompleteUsage']?['usage'] as Json?;
+      final usage = spending ?? (const {'model.completed', 'context.compacted'}.contains(type) ? <String, dynamic>{
+        'input_tokens': data['usage']?['input_tokens'] ?? 0, 'output_tokens': data['usage']?['output_tokens'] ?? 0,
+        'cached_input_tokens': data['usage']?['cached_input_tokens'] ?? 0,
+        'cache_write_input_tokens': data['usage']?['cache_write_tokens'] ?? 0,
+        'reasoning_output_tokens': data['usage']?['reasoning_tokens'] ?? 0,
+        'total_tokens': data['usage']?['total_tokens'] ??
+          (data['usage']?['input_tokens'] as int? ?? 0) + (data['usage']?['output_tokens'] as int? ?? 0),
+      } : null);
+      if (usage != null) {
+        Json total(Object? previous) => {for (final entry in usage.entries)
+          entry.key: (jsonObject(previous ?? {})[entry.key] as int? ?? 0) + (entry.value as int)};
+        next['turnTokenUsage'] = total(next['turnTokenUsage']);
+        next['totalTokenUsage'] = total(next['totalTokenUsage']);
+        if (spending != null && data['incompleteUsage']['response_id'] is String) {
+          data['tokenUsageRecord'] = {'thread_id': taskId, 'turn_id': next['turnID'], 'session_id': _sessionId,
+            'root_turn_id': next['turnID'], 'response_id': data['incompleteUsage']['response_id'], 'usage': spending,
+            'turn_token_usage': next['turnTokenUsage'], 'thread_token_usage': next['totalTokenUsage']};
+        }
+      }
+      next['sourceSeq'] = (next['sourceSeq'] as int? ?? 0) + 1;
+      if (!{'task.archived', 'task.unarchived'}.contains(type)) next['updated'] = now.millisecondsSinceEpoch;
+      if (type == 'context.compacted') { next['window'] = newId(); next.remove('tokens'); }
+      final record = <String, dynamic>{'seq': next['sourceSeq'], 'id': newId(),
+        'window_id': next['window'], 'type': type, 'created_at': now.toIso8601String(), 'data': data};
+      final pending = jsonObject(next['pendingInputs'] ?? {});
+      if (type == 'input.pending') pending[requiredString(data, 'id')] = data;
+      if (type == 'input.committed') pending.remove(data['message_id']);
+      if (type == 'input.discarded') for (final id in data['ids'] as List) { pending.remove(id); }
+      if (type == 'input.delivery' && pending[data['id']] is Map) pending[data['id']]['delivery'] = data['delivery'];
+      next['pendingInputs'] = pending;
+      if (type == 'model.completed') next['tokens'] = sessionTokens(jsonObject(data['usage'] ?? {}));
+      if (type == 'tool_runtime.started') {
+        next['runtimeID'] = data['id']; next['runtimeHasHandles'] = false;
+      }
+      if ({'tool.started', 'host_tool.started'}.contains(type) &&
+          {'exec_command', 'write_stdin', 'shell'}.contains(data['name'])) next['runtimeHasHandles'] = true;
+      if (type == 'task.forked') next['forkedFromId'] = data['parent_id'];
+      record['notifications'] = threadNotifications(taskId, record, next);
+      records.add(record);
+    }
+    _persistNative(records, metadata, next);
+    state = next;
+    _pendingNativeItems.removeRange(0, nativeCount);
+    return records;
+  }, category: 'storage', attributes: {'storage.architecture': 'codex', 'storage.events': values.length});
+
+  Object? keyValue(String method, Json arguments) => _keyValue(this, method, arguments);
+
+  List<Json> modelContext({int maxBytes = maxContextBytes}) {
+    var result = <Json>[];
+    final calls = <String, ToolCall>{};
+    withHistoryLineage(directory, taskId, db, (segments) {
+      final suffix = <({String id, List<Map<String, Object?>> rows})>[];
+      for (final segment in segments.reversed) {
+        final checkpoint = segment.db.select("SELECT ordinal FROM rollout_lines WHERE ordinal < ? AND json_extract(line,'\$.type') IS 'compacted' "
+          "AND (happen_context IS NOT NULL OR (json_type(line,'\$.payload.replacement_history') IS 'array' AND json_type(line,'\$.payload.window_number') IS 'integer')) ORDER BY ordinal DESC LIMIT 1",
+          [segment.end]).firstOrNull;
+        suffix.insert(0, (id: segment.id, rows: segment.db.select('SELECT ordinal,line,happen_context FROM rollout_lines WHERE ordinal >= ? AND ordinal < ? ORDER BY ordinal',
+          [checkpoint?['ordinal'] ?? 0, segment.end]).toList()));
+        if (checkpoint != null) break;
+      }
+      for (final segment in suffix) {
+        for (final row in segment.rows) {
+          final line = jsonObject(jsonDecode(row['line'] as String));
+          if (line['type'] == 'compacted') { result.clear(); calls.clear(); }
+          if (row['happen_context'] case final String context) {
+            final values = (jsonDecode(context) as List).map(jsonObject).toList();
+            result.addAll(values);
+            for (final item in values.map(ConversationItem.fromJson)) {
+              for (final call in item.calls) { calls[call.id] = call; }
+            }
+          } else {
+            if (!{'response_item', 'compacted'}.contains(line['type'])) continue;
+            final payload = jsonObject(line['payload']);
+            final responses = line['type'] == 'response_item' ? [payload] : line['type'] == 'compacted'
+              ? (payload['replacement_history'] as List? ?? <Json>[
+                {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': payload['message'] ?? ''}]},
+              ]).map(jsonObject).toList() : <Json>[];
+            for (final (index, response) in responses.indexed) {
+              result.add(gptItemFromRollout(response, id: response['id'] as String? ?? '${segment.id}:${row['ordinal']}:$index', calls: calls).toJson());
+            }
+          }
+        }
+      }
+    });
+    if (utf8.encode(jsonEncode(result)).length > maxBytes) throw const FormatException('Model context exceeds byte limit');
+    return result;
   }
 
-  @override
-  void close() {}
+  Json modelSnapshot() => {
+    'input': modelContext(), 'requestTools': metadata('request_tools'), 'through': native.nextOrdinal,
+    'sourceThrough': lastSequence, 'windowID': state['window'], 'effectiveReasoning': metadata('effective_reasoning'),
+    'tokens': state['tokens'], 'created': state['created'], 'updated': state['updated'], 'archived': metadata('archived_at') != null,
+  };
+  Future<void> prepareSession({required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
+    native.catchUp();
+  }
+  List<Json> startToolRuntime(String id) {
+    final input = modelContext().map(ConversationItem.fromJson).toList();
+    final completed = input.expand((item) => item.content).where((part) => part['type'] == 'tool_result').map((p) => p['call_id']).toSet();
+    final interrupted = input.expand((item) => item.calls).where((call) => !completed.contains(call.id)).toList();
+    final settlement = [for (final call in interrupted)
+      {'type': 'tool.completed', 'data': {'item': ConversationItem.toolResult(call,
+        'Interrupted before a durable result. Side effects may have occurred; inspect state before retrying.', isError: true).toJson()}}];
+    if (state['runtimeID'] == id) return settlement.isEmpty ? [] : appendBatch(settlement);
+    final restarted = interrupted.isNotEmpty || state['runtimeHasHandles'] == true;
+    return appendBatch([
+      ...settlement,
+      {'type': 'tool_runtime.started', 'data': {'id': id}},
+      if (restarted) {'type': 'context.injected', 'data': {'item': ConversationItem(role: 'user', content: [{
+        'type': 'text',
+        'text': 'The tool runtime was restarted. Command sessions, background commands, and running code cells '
+          'from the previous runtime are no longer available. Do not reuse earlier session or cell IDs. '
+          'Completed tool results and stored values remain available. Continue from the recorded results, '
+          'inspect the effects of interrupted commands, and start a new command only when needed.',
+      }], native: {'harness': {'context': 'tool_notification', 'reason': 'tool_runtime_restarted'}}).toJson()}},
+    ]);
+  }
+  Json inbox() => {'data': jsonObject(state['pendingInputs'] ?? {}).values.toList()};
+  Json? discardSessionInbox(String reason) {
+    final ids = jsonObject(state['pendingInputs'] ?? {}).keys.toList();
+    return ids.isEmpty ? null : append('input.discarded', {'ids': ids, 'reason': reason});
+  }
+  Json? changeSessionInbox(String id, {String? delivery}) {
+    if (delivery != null && !{'steer', 'queue'}.contains(delivery)) throw ArgumentError('Delivery must be steer or queue');
+    final source = id.replaceFirst(RegExp(r'^msg_'), '');
+    final input = jsonObject(state['pendingInputs'] ?? {})[source];
+    if (input == null) throw StateError('Message is no longer pending');
+    if (input['delivery'] == delivery) return null;
+    return delivery == null ? append('input.discarded', {'ids': [source], 'reason': 'deleted'}) :
+      append('input.delivery', {'id': source, 'delivery': delivery});
+  }
+  List<Json> commitSessionSteering(List<String> ids, {required String effort, required bool reasoningUpdates}) {
+    final events = <Json>[];
+    var selected = effort;
+    for (final entry in jsonObject(state['pendingInputs'] ?? {}).entries) {
+      final input = jsonObject(entry.value);
+      if (!ids.contains(entry.key) || input['delivery'] != 'steer') continue;
+      if (input['reasoning'] case final String value when value != selected) {
+        if (!reasoningUpdates) throw ArgumentError('Reasoning effort is fixed for this task');
+        selected = value;
+        events.add({'type': 'configuration.updated', 'data': {'effort': value,
+          'item': ConversationItem(kind: 'configuration', settings: {'reasoning': value}).toJson()}});
+      }
+      events.add({'type': 'input.committed', 'data': {'message_id': entry.key, 'delivery': 'steer', 'sent_at': input['created_at'],
+        'item': ConversationItem.user(input['prompt'] as String, attachments: input['attachments']).toJson()}});
+    }
+    return events.isEmpty ? [] : appendBatch(events, metadata: {'effective_reasoning': selected});
+  }
+
+  static Future<String> importFrom(String directory, String source, {String? operationId,
+    required Future<String> Function(Json config) newTaskId, CancellationToken? cancellation}) =>
+      _importRollout(directory, source, operationId: operationId, newTaskId: newTaskId, cancellation: cancellation);
 }

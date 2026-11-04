@@ -5,6 +5,38 @@ import 'package:protocol/protocol.dart';
 
 import 'response_ids.dart';
 
+/// Rollout response records are already canonical model input. Retain their
+/// complete wire payload (including hosted/extension items) while also exposing
+/// message and tool content to provider-neutral execution and interruption.
+ConversationItem gptItemFromRollout(Json wire, {required String id, required Map<String, ToolCall> calls}) {
+  final type = wire['type'];
+  final ConversationItem item;
+  if (type == 'function_call_output' || type == 'custom_tool_call_output' || type == 'tool_search_output') {
+    final callId = requiredString(wire, 'call_id'), call = calls[callId];
+    item = ConversationItem(id: id, role: 'tool', content: [{
+      'type': 'tool_result', 'call_id': callId, 'name': call?.name ?? 'tool',
+      if (call?.namespace != null) 'namespace': call!.namespace,
+      'format': type == 'custom_tool_call_output' ? 'text' : type == 'tool_search_output' ? 'search' : 'json',
+      'output': wire['output'] is String ? wire['output'] : jsonEncode(wire['output'] ?? wire['tools']),
+    }]);
+  } else if (type == 'message') {
+    final content = wire['content'];
+    item = ConversationItem(id: id, role: requiredString(wire, 'role'), content: content is String
+      ? [{'type': 'text', 'text': content}] : [for (final part in (content as List).map(jsonObject))
+        if (part['type'] == 'input_image') toolImage(part)
+        else {'type': 'text', 'text': part['text'] ?? part['refusal'] ?? ''}]);
+  } else if (type == 'configuration_update') {
+    item = ConversationItem(id: id, kind: 'configuration', settings: jsonObject(wire['reasoning'] ?? {}));
+  } else if ({'function_call', 'custom_tool_call', 'tool_search_call', 'reasoning', 'compaction'}.contains(type)) {
+    item = gptItemFromNative(wire);
+  } else {
+    item = ConversationItem(id: id, role: 'assistant');
+  }
+  for (final call in item.calls) { calls[call.id] = call; }
+  return ConversationItem(id: id, kind: item.kind, role: item.role, content: item.content, settings: item.settings,
+    native: {...item.native, 'gpt': {...jsonObject(item.native['gpt'] ?? {}), 'rollout': wire}});
+}
+
 /// Converts provider output into durable conversation items.
 ConversationItem gptItemFromNative(Json wire, {Map<String, Json> reasoningTimes = const {}}) {
   final type = wire['type'];
@@ -155,6 +187,7 @@ List<Json> gptInput(Iterable<ConversationItem> items) {
 
 List<Json> _gptItems(ConversationItem item) {
   final native = jsonObject(item.native['gpt'] ?? {})..remove('notification');
+  if (native['rollout'] case final Map<String, dynamic> wire) return [wire];
   switch (item.kind) {
     case 'configuration':
       return <Json>[

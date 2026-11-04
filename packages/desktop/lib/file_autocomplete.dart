@@ -341,9 +341,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   void openHistory() {
     final entries = <String>[];
     for (final message in _target?.messages.values ?? <Json>[]) {
-      if (message['type'] != 'user') continue;
-      final text = message['text'];
-      if (text is String && text.isNotEmpty) entries.add(text);
+      if (message['type'] != 'userMessage') continue;
+      final text = (message['content'] as List? ?? []).where((part) => part['type'] == 'text').map((part) => part['text']).join('\n');
+      if (text.isNotEmpty) entries.add(text);
     }
     dismiss();
     setState(() {
@@ -498,20 +498,17 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     final token = _contextAction = CancellationToken();
     _contextDraft = before;
     try {
-      final page = await widget.client.sessionRead('session.message.list', {'sessionID': item.path, 'limit': 20}, cancellation: token);
+      final page = await widget.client.sessionRead('thread/items/list', {'threadId': item.path, 'limit': 20, 'sortDirection': 'desc'}, cancellation: token);
       final transcript = StringBuffer('Context from session "${item.label}" (${item.path}):\n');
-      for (final raw in page['data'] as List? ?? []) {
-        final message = jsonObject(raw);
-        if (message['type'] != 'user' && message['type'] != 'assistant') continue;
+      for (final raw in (page['data'] as List? ?? []).reversed) {
+        final message = jsonObject(raw['item']);
+        if (message['type'] != 'userMessage' && message['type'] != 'agentMessage') continue;
         final text = StringBuffer();
-        final parts = message['type'] == 'user' ? [message['text']] : [
+        final parts = message['type'] == 'agentMessage' ? [message['text']] : [
           for (final part in message['content'] as List? ?? [])
             if (part['type'] == 'text') part['text'],
         ];
         for (var content in parts) {
-          if (content is Map && content[r'$part'] is String) {
-            content = await widget.client.conversationPart(content[r'$part'] as String, cancellation: token);
-          }
           if (content is String) text.writeln(content);
         }
         if (text.isNotEmpty) transcript..writeln('\n${message['type'] == 'user' ? 'User' : 'Assistant'}:')..write(text);

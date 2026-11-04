@@ -60,7 +60,7 @@ class DesktopTerminals extends ChangeNotifier {
     if (group.active == shell) group.active = group.sessions.lastOrNull;
     if (group.sessions.isEmpty) group.visible = false;
     group.focusRequest++;
-    _release([shell]);
+    unawaited(_release([shell]));
     notifyListeners();
   }
 

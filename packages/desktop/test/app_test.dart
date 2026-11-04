@@ -305,13 +305,13 @@ void main() {
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'session.active') return {'data': {}};
-    if (method == 'session.list') return {'data': [], 'cursor': {}};
+    if (method == 'session.active') return {'data': <String, Object?>{}};
+    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
     throw StateError('Unexpected request: $method');
   }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     jsonObject(await request(method, params));
-  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => {'servers': []};
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => {'servers': <Object?>[]};
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -12,15 +12,14 @@ import 'composer_attachments.dart';
 import 'appearance.dart';
 import 'conversation_activity.dart';
 import 'conversation_streaming.dart';
-import 'opencode_activity.dart';
-import 'opencode_execute.dart';
-import 'opencode_response.dart';
+import 'conversation_indicator.dart';
+import 'conversation_tools.dart';
+import 'conversation_response.dart';
 import 'session_question.dart';
 
 typedef _TranscriptRow = ({String id, ChatEntry? entry, List<ChatEntry> activity, ChatEntry? status});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
 
-bool _isJavaScriptCell(ToolActivity tool) => {'exec', 'functions.exec'}.contains(tool.name);
 
 List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries) {
   final rows = <_TranscriptRow>[];
@@ -237,7 +236,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final activeRow = workingIndex > 0 ? rows[workingIndex - 1] : null;
     final activeGroup = task.running && activeRow != null && activeRow.activity.isNotEmpty &&
       identical(activeRow.activity.last, latest);
-    final thinkingGroup = activeGroup && activeRow!.activity.every((entry) => entry.role == 'Reasoning');
+    final thinkingGroup = activeGroup && activeRow.activity.every((entry) => entry.role == 'Reasoning');
     final thinking = task.running && !compacting && !thinkingGroup;
     final count = rows.length;
     _visibleRows = count;
@@ -247,10 +246,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final historyOffset = task.historyBefore != null ? 1 : 0;
     final itemCount = count + historyOffset;
     final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: itemCount - 1 - (i + historyOffset)};
-    final activeMessages = task.messages.values.where((message) => message['type'] == 'assistant' || message['type'] == 'idle').toList()
-      ..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
-    final lastIdle = activeMessages.lastIndexWhere((message) => message['type'] == 'idle');
-    final started = activeMessages.skip(lastIdle + 1).firstOrNull?['time']?['created'] as int?;
+    final started = task.runStartedAt;
     final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
     return Stack(children: [
       LayoutBuilder(builder: (context, constraints) {
@@ -368,7 +364,7 @@ class _ActivityGroup extends StatelessWidget {
         : skills.isEmpty ? null : Text(skills.join(', ') + (skills.length == 1 ? ' skill' : ' skills'),
           maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: opencodeMuted)),
       summaryWhenCollapsed: true,
-      icon: active || running != null ? const OpenCodeActivityIndicator() : null,
+      icon: active || running != null ? const ConversationActivityIndicator() : null,
       labelContent: tools.isNotEmpty ? Text.rich(TextSpan(
         style: const TextStyle(fontSize: 13, height: 16 / 13, letterSpacing: -.04,
           color: opencodeInk, fontVariations: [FontVariation('wght', 440)]),
@@ -545,7 +541,7 @@ class _MessageState extends State<_Message> {
         if (!user && entry.attachments.isNotEmpty)
           ConversationImageParts(parts: entry.attachments, directory: widget.directory),
         if (!user) ...[
-          if (entry.response != null) OpenCodeResponseFooter(entry: entry, visible: _hovered || _focused),
+          if (entry.response != null) ConversationResponseFooter(entry: entry, visible: _hovered || _focused),
         ] else ...[
         SizedBox(height: 8),
         Opacity(opacity: _hovered || _focused || pending ? 1 : 0,
@@ -802,7 +798,7 @@ class _ToolRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final running = tool.status == 'running';
     final failed = tool.status == 'failed';
-    if (_isJavaScriptCell(tool)) return OpenCodeExecute(tool: tool, directory: directory, onExpand: onExpand);
+    if ({'exec', 'functions.exec'}.contains(tool.name)) return ConversationToolCall(tool: tool, directory: directory, onExpand: onExpand);
     if ({'question', 'request_user_input', 'request_user_input_async'}.contains(tool.name.split('.').last)) {
       return QuestionToolResult(tool: tool, onExpand: onExpand);
     }
@@ -817,7 +813,7 @@ class _ToolRow extends StatelessWidget {
       color: failed ? color : conversationInk,
       shimmer: running,
       onExpand: onExpand,
-      icon: running ? const OpenCodeActivityIndicator() : null,
+      icon: running ? const ConversationActivityIndicator() : null,
       summary: preview != null ? Text('${elapsed == null ? '' : '$elapsed  '}$preview', maxLines: 1, overflow: TextOverflow.ellipsis,
         style: TextStyle(fontFamily: 'monospace', fontSize: 12, height: 20 / 12, color: color))
         : elapsed == null ? null : Text(elapsed, style: TextStyle(fontSize: 12, color: color)),

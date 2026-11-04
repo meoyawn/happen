@@ -6,6 +6,7 @@ import 'images.dart';
 typedef ToolInvoker = Future<Object?> Function(String name, Object? arguments, {
   required CancellationToken cancellation,
 });
+typedef ToolItemEvent = Future<void> Function(String phase, Json item);
 
 /// Provider-owned model and code-mode contracts. The agent supplies execution
 /// services without interpreting a provider's tool names or argument encoding.
@@ -41,7 +42,7 @@ abstract class ToolRuntime {
   bool get hasRunningCells => false;
   Future<Json> execute(ToolCall call, ToolExecution context);
   Future<Object?> call(String name, Object? arguments, {
-    required CancellationToken cancellation, String? cwd,
+    required CancellationToken cancellation, String? cwd, String? callId, ToolItemEvent? onItem,
   });
   Future<void> close();
   Future<List<String>> notifications({bool wait = false, required CancellationToken cancellation}) async => [];

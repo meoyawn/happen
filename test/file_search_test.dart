@@ -87,7 +87,9 @@ void main() {
       final socket = await WebSocketTransformer.upgrade(request);
       peer.complete(socket);
       socket.listen((raw) {
-        if (!received.isClosed) received.add(jsonObject(jsonDecode(raw as String)));
+        final message = jsonObject(jsonDecode(raw as String));
+        if (message['method'] == 'initialize') { socket.add(jsonEncode({'id': message['id'], 'result': <String, Object?>{}})); }
+        else if (message['method'] != 'initialized' && !received.isClosed) { received.add(message); }
       });
     });
     final requests = StreamIterator(received.stream);
@@ -112,10 +114,10 @@ void main() {
       final nextId = requests.current['id'];
       expect({pingId, oldId, nextId}, hasLength(3));
       final event = client.events.stream.first;
-      socket.add(jsonEncode({'event': {'type': 'text.delta', 'task_id': 'running', 'delta': 'still streaming'}}));
+      socket.add(jsonEncode({'method': 'item/agentMessage/delta', 'params': {'threadId': 'running', 'delta': 'still streaming'}}));
       socket.add(jsonEncode({'id': nextId, 'result': {'paths': ['new.dart'], 'truncated': false}}));
       expect((await next)['paths'], ['new.dart']);
-      expect((await event)['delta'], 'still streaming');
+      expect((await event)['params']['delta'], 'still streaming');
       socket.add(jsonEncode({'id': oldId, 'result': {'paths': ['obsolete.dart']}}));
       socket.add(jsonEncode({'id': pingId, 'result': {'version': 'fixture'}}));
       expect(jsonObject(await ping)['version'], 'fixture');

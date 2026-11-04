@@ -54,7 +54,7 @@ void main() {
                 'result': {
                   'supportedVersions': ['2026-07-28'],
                   'serverInfo': {'name': 'fixture', 'version': '1'},
-                  'capabilities': {'tools': {}, 'events': {}, 'resources': {}},
+                  'capabilities': {'tools': <String, Object?>{}, 'events': <String, Object?>{}, 'resources': <String, Object?>{}},
                   if (Platform.environment['MCP_INSTRUCTIONS'] case final String instructions)
                     'instructions': instructions,
                 },

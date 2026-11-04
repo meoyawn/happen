@@ -24,7 +24,7 @@ void main() {
       final method = body['method'];
       final cursor = body['params']['cursor'];
       final result = switch (method) {
-        'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': {}, 'resources': {}}},
+        'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': <String, Object?>{}, 'resources': <String, Object?>{}}},
         'tools/list' => {'tools': [{'name': 'remote_echo', 'inputSchema': {'type': 'object'}}]},
         'resources/list' => {
           'resources': [{'name': cursor == null ? 'first' : 'second', 'uri': cursor == null ? 'resource://one' : 'resource://two', '_meta': {'private': 'private-resource-metadata'}}],

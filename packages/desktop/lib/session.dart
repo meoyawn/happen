@@ -48,8 +48,8 @@ class DesktopTask {
   String? sideAttachmentStatus;
   CancellationToken? sideSubmission;
   bool sideSubmitting = false;
-  final events = <int, Json>{};
   final messages = <String, Json>{};
+  final turns = <String, Json>{};
   final projectionState = <String, dynamic>{};
   final liveEvents = <Json>[];
   int through = 0;
@@ -72,7 +72,7 @@ class DesktopTask {
   int lastActivity = 0;
   int? runStartedAt;
   List<ChatEntry>? _conversation;
-  List<Json>? _conversationEvents, _conversationPending, _legacyRecords;
+  List<Json>? _conversationEvents, _conversationPending;
   Object? _conversationState;
 }
 
@@ -169,14 +169,11 @@ class DesktopSession extends ChangeNotifier {
   String projectAvatarStyle = 'letters';
   String notificationMode = 'off';
   bool inAppNotificationsEnabled = false;
-  OpenCodeLayout openCodeLayout = OpenCodeLayout.top;
-  bool sidebarOpen = true, inboxWorkingExpanded = true;
+  bool sidebarOpen = true;
   bool viewingConversation = true;
-  int? inboxSince;
   final openTabIds = <String>[];
   final viewedTasks = <String, int>{};
   double sidebarWidth = 248;
-  double openCodeSidebarWidth = 276;
   final collapsedSidebarSections = <String>{};
   final pinnedTaskIds = <String>[];
   final pinnedProjectKeys = <String>[];
@@ -253,43 +250,41 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Like OpenCode's client cache, sidebar references are refreshed from the
-  /// server's durable session list; they are never session registration.
+  /// Sidebar references are a presentation cache of native thread metadata.
   Future<void> refreshSessions({Project? owner}) async {
-    final active = jsonObject(jsonObject(await _request('session.active'))['data']);
     String key(String path) => Directory(path).absolute.uri.normalizePath().toString();
     final owners = {for (final project in owner == null ? projects : [owner]) key(project.path): project};
-    String? cursor;
-    do {
+    for (final archived in [false, true]) {
+      String? cursor;
+      do {
       _lifetime.throwIfCancelled();
-      final page = jsonObject(await _request('session.list', {
-        'limit': 200, if (owner != null) 'directory': owner.path, 'cursor': ?cursor,
-      }));
+      final page = await client.sessionRead('thread/list', {
+        'limit': 200, 'archived': archived, if (owner != null) 'cwd': owner.path, 'cursor': ?cursor,
+      }, cancellation: _lifetime);
       final entries = (page['data'] as List).map(jsonObject).toList();
       for (final info in entries) {
-        final folder = info['location']?['directory'] as String?;
+        final folder = info['cwd'] as String?;
         final project = folder == null ? null : owners[key(folder)];
         if (project == null || project.removing || !projects.contains(project)) continue;
         final id = requiredString(info, 'id');
         final existing = project.tasks.where((task) => task.id == id).firstOrNull;
-        final target = existing ?? DesktopTask(id, info['title'] as String? ?? 'New session');
+        final preview = info['name'] as String? ?? info['preview'] as String? ?? '';
+        final title = preview.trim().isEmpty ? 'New session' : preview.trim().split('\n').first;
+        final target = existing ?? DesktopTask(id, title.length > 72 ? '${title.substring(0, 72)}…' : title);
         if (existing == null) project.tasks.add(target);
-        await _restoreTracing(target, info['tracing'] == true);
-        if (!target.loaded) target.running = active.containsKey(id);
+        if (!target.loaded) target.running = info['status']?['type'] == 'active';
         target.projectionState['summary'] = info;
-        final busy = info['time']?['busy'] as int?;
-        final idle = info['time']?['idle'] as int?;
-        target.runStartedAt = busy != null && (idle == null || busy >= idle) ? busy : null;
-        if (!target.archiving) target.archived = info['time']?['archived'] != null;
-        final updated = info['time']?['updated'] as int? ?? info['time']?['created'] as int? ?? 0;
+        if (!target.archiving) target.archived = archived;
+        final updated = (info['updatedAt'] as int? ?? info['createdAt'] as int? ?? 0) * 1000;
         if (updated > target.lastActivity) target.lastActivity = updated;
         await callIsolate(database.port, 'task.add', {
           'id': id, 'checkout_key': project.checkoutKey, 'title': target.title,
           'archived': target.archived, 'last_activity': target.lastActivity,
         }, cancellation: _lifetime);
       }
-      cursor = entries.isEmpty ? null : page['cursor']?['next'] as String?;
-    } while (cursor != null);
+      cursor = page['nextCursor'] as String?;
+      } while (cursor != null);
+    }
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -362,9 +357,9 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> chooseSidebarWidth(double width) async {
     if (!width.isFinite || width <= 0) throw ArgumentError('Invalid sidebar width');
-    openCodeSidebarWidth = width;
+    sidebarWidth = width;
     notifyListeners();
-    await _setting('opencode_sidebar_width', width.toString());
+    await _setting('sidebar_width', width.toString());
   }
 
   Future<void> chooseSidebarOpen(bool open) async {
@@ -587,24 +582,10 @@ class DesktopSession extends ChangeNotifier {
     _savePanels(target);
   }
 
-  Future<void> chooseOpenCodeLayout(OpenCodeLayout layout) async {
-    if (layout == OpenCodeLayout.inbox && inboxSince == null) {
-      inboxSince = DateTime.now().millisecondsSinceEpoch;
-      _saveNavigation('inbox_since', inboxSince.toString());
-    }
-    openCodeLayout = layout;
-    notifyListeners();
-    await _setting('opencode_layout', layout.name);
-    await loadNavigationTasks();
-  }
-
   Future<void> loadNavigationTasks() async {
     if (task case final target?) _rememberTab(target);
-    final targets = openCodeLayout == OpenCodeLayout.inbox
-        ? projects.expand((project) => project.tasks).where((target) =>
-            target == task || target.running || !target.projectionState.containsKey('summary')).toList()
-        : {...openTasks.map((entry) => entry.$2),
-            ...projects.expand((project) => project.tasks).where((target) => target.running && !target.archived)}.toList();
+    final targets = {...openTasks.map((entry) => entry.$2),
+      ...projects.expand((project) => project.tasks).where((target) => target.running && !target.archived)}.toList();
     for (var index = 0; index < targets.length; index += 4) {
       _lifetime.throwIfCancelled();
       await Future.wait([
@@ -612,12 +593,6 @@ class DesktopSession extends ChangeNotifier {
           if (!target.loaded && !target.loading) loadHistory(target),
       ]);
     }
-  }
-
-  Future<void> chooseInboxWorkingExpanded(bool expanded) async {
-    inboxWorkingExpanded = expanded;
-    notifyListeners();
-    await _setting('inbox_working_expanded', expanded.toString());
   }
 
   List<String> get navigationTabIds => [
@@ -709,7 +684,9 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> chooseSidebarSection(String section, bool collapsed) async {
-    if (!{'pinned', 'projects', 'recents'}.contains(section)) throw ArgumentError('Invalid sidebar section');
+    if (section != 'pinned' && !projects.any((project) => section == 'project:${project.checkoutKey}')) {
+      throw ArgumentError('Invalid sidebar section');
+    }
     if (collapsed) {
       collapsedSidebarSections.add(section);
     } else {
@@ -958,20 +935,40 @@ class DesktopSession extends ChangeNotifier {
     else { newSession(); }
   }
 
-  Future<Object?> _request(String method, [Json params = const {}]) {
+  Future<Object?> _request(String method, [Json params = const {}]) async {
     _lifetime.throwIfCancelled();
-    method = const {
-      'task.start': 'session.create', 'task.send': 'session.prompt',
-      'task.cancel': 'session.interrupt', 'task.compact': 'session.compact',
-      'task.retry': 'session.retry',
-      'task.archive': 'session.archive', 'task.unarchive': 'session.unarchive',
-      'task.fork': 'session.fork',
-    }[method] ?? method;
+    if (method == 'task.start') {
+      final created = jsonObject(await client.request('thread/start', {
+        for (final entry in params.entries) if (!{'prompt', 'message_id', 'attachments'}.contains(entry.key)) entry.key: entry.value,
+        'historyMode': 'paginated',
+      }).asCancellable(_lifetime));
+      final id = created['thread']['id'] as String;
+      await _request('task.send', {...params, 'task_id': id});
+      return {'sessionID': id};
+    }
+    if (method == 'task.send') {
+      return await client.request('turn/start', {'threadId': params['task_id'],
+        'clientUserMessageId': params['message_id'], 'delivery': params['delivery'] ?? 'queue',
+        'effort': params['reasoning'], 'input': [
+          {'type': 'text', 'text': params['prompt'] ?? ''}, ...params['attachments'] as List? ?? [],
+        ]}).asCancellable(_lifetime);
+    }
+    if (method == 'task.cancel') {
+      final target = sideChats[params['task_id']] ?? projects.expand((p) => p.tasks).where((t) => t.id == params['task_id']).firstOrNull;
+      return await client.request('turn/interrupt', {'threadId': params['task_id'], 'turnId': target?.turns.values.lastOrNull?['id']}).asCancellable(_lifetime);
+    }
+    if ({'task.archive', 'task.unarchive', 'task.fork'}.contains(method)) {
+      return await client.request(method == 'task.archive' ? 'thread/archive' : method == 'task.unarchive' ? 'thread/unarchive' : 'thread/fork',
+        {'threadId': params['task_id']}).asCancellable(_lifetime);
+    }
+    if (method == 'task.compact') return await client.request('thread/compact/start', {'threadId': params['task_id']}).asCancellable(_lifetime);
+    if (method == 'task.retry') return await client.request('turn/start', {'threadId': params['task_id'],
+      'input': <Json>[], 'expectedTurnId': params['failureID']}).asCancellable(_lifetime);
     if (method.startsWith('session.') && params['task_id'] != null) {
       params = {...params, 'sessionID': params['task_id']}..remove('task_id');
     }
-    if ({'session.list', 'session.message.list', 'session.context', 'session.event.list'}.contains(method)) {
-      return client.sessionRead(method, params, cancellation: _lifetime);
+    if (method == 'session.context') {
+      return await client.sessionRead(method, params, cancellation: _lifetime);
     }
     return client.request(method, params).asCancellable(_lifetime);
   }
@@ -988,10 +985,7 @@ class DesktopSession extends ChangeNotifier {
     final savedNotificationMode = settings['notification_mode'] as String?;
     notificationMode = notificationModes.containsKey(savedNotificationMode) ? savedNotificationMode! : 'off';
     inAppNotificationsEnabled = settings['in_app_notifications'] == 'true';
-    openCodeLayout = OpenCodeLayout.values.where((layout) => layout.name == settings['opencode_layout']).firstOrNull ?? OpenCodeLayout.top;
     sidebarOpen = settings['sidebar_open'] != 'false';
-    inboxWorkingExpanded = settings['inbox_working_expanded'] != 'false';
-    inboxSince = int.tryParse(settings['inbox_since'] as String? ?? '');
     try {
       final viewed = jsonDecode(settings['viewed_tasks'] as String? ?? '{}');
       if (viewed is Map) {
@@ -1003,8 +997,6 @@ class DesktopSession extends ChangeNotifier {
     }
     final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
     sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
-    final savedOpenCodeWidth = double.tryParse(settings['opencode_sidebar_width'] as String? ?? '');
-    openCodeSidebarWidth = savedOpenCodeWidth != null && savedOpenCodeWidth.isFinite && savedOpenCodeWidth > 0 ? savedOpenCodeWidth : 276;
     List<String> savedIds(String key) {
       final value = settings[key];
       if (value is! String) return const [];
@@ -1091,10 +1083,6 @@ class DesktopSession extends ChangeNotifier {
     }
     await refreshProviders();
     if (task == null && viewingConversation) currentDraft;
-    if (openCodeLayout == OpenCodeLayout.inbox && inboxSince == null) {
-      inboxSince = DateTime.now().millisecondsSinceEpoch;
-      await _setting('inbox_since', inboxSince.toString());
-    }
     await loadNavigationTasks();
     notifyListeners();
   }
@@ -1234,7 +1222,7 @@ class DesktopSession extends ChangeNotifier {
     // History and checkout identity are independent reads.
     await Future.wait([
       if (nextTask != null && !nextTask.loading &&
-          (!nextTask.loaded || nextTask.events.isNotEmpty && nextTask.provider == null))
+          (!nextTask.loaded || nextTask.messages.isNotEmpty && nextTask.provider == null))
         loadHistory(nextTask),
       _refreshIdentity(nextProject),
     ]);
@@ -1249,8 +1237,11 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
     try {
       target.liveEvents.clear();
-      final page = await client.sessionRead('session.message.list', {'sessionID': target.id, 'limit': 100},
+      final page = await client.sessionRead(target.sideParentID != null || target.archived ? 'thread/read' : 'thread/resume',
+        {'threadId': target.id, 'includeTurns': false, 'excludeTurns': true},
         cancellation: read);
+      final history = await client.sessionRead('thread/items/list', {'threadId': target.id, 'limit': 100, 'sortDirection': 'desc'}, cancellation: read);
+      final recentTurns = await client.sessionRead('thread/turns/list', {'threadId': target.id, 'limit': 5, 'itemsView': 'summary'}, cancellation: read);
       read.throwIfCancelled();
       target.running = page['running'] == true;
       target.retryStatus = target.running && page['status']?['type'] == 'retry'
@@ -1279,20 +1270,37 @@ class DesktopSession extends ChangeNotifier {
       target.contextLimit = config['provider_settings']?['context_limit'] as num?;
       target.archived = page['archived'] == true;
       if (target.archived) await terminals.removeTask(target.id);
-      target.through = page['through'] as int;
+      target.through = page['notificationThrough'] as int? ?? 0;
       target.messages.clear();
-      target.events.clear();
+      target.turns.clear();
       target.projectionState
         ..clear()
         ..addAll(jsonObject(page['state'] ?? {}));
-      _mergeHistory(target, page);
+      for (final raw in (recentTurns['data'] as List).reversed) {
+        final turn = jsonObject(raw);
+        target.turns[turn['id'] as String] = turn;
+        for (final item in turn['items'] as List) {
+          target.messages[item['id'] as String] = {...jsonObject(item), 'turnId': turn['id'], 'order': target.messages.length};
+        }
+      }
+      _mergeHistory(target, history);
+      if (page['liveTurn'] case final Map<String, Object?> turn) target.turns[turn['id'] as String] = jsonObject(turn);
+      for (final raw in page['liveItems'] as List? ?? []) {
+        final item = jsonObject(raw), id = item['id'] as String;
+        if (target.messages[id]?['completedAtMs'] != null) continue;
+        target.messages[id] = {...item, 'order': target.messages[id]?['order'] ?? target.messages.length};
+      }
+      if (page['tokens'] != null && target.messages.isNotEmpty) {
+        final last = target.messages.keys.last;
+        target.messages[last] = {...target.messages[last]!, 'tokens': page['tokens']};
+      }
       target.pending.removeWhere((id, item) => item['sending'] == true && target.messages.containsKey(id));
       final live = target.liveEvents.toList();
       target.liveEvents.clear();
       target.streamingText = '';
       for (final event in live) {
-        if (event['durable'] == null || (event['durable']['seq'] as int) > target.through) {
-          _applySessionEvent(target, event);
+        if ((event['params']?['happen']?['notificationSeq'] as int? ?? target.through + 1) > target.through) {
+          _applyThreadEvent(target, event);
         }
       }
       target.questionDrafts.removeWhere((id, _) => !target.questions.containsKey(id));
@@ -1309,11 +1317,13 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _mergeHistory(DesktopTask target, Json page) {
-    for (final raw in page['data'] as List) {
-      final message = jsonObject(raw);
-      target.messages.putIfAbsent(message['id'] as String, () => message);
+    var order = target.messages.values.map((item) => item['order'] as int? ?? 0).fold<int>(0, (a, b) => a < b ? a : b) - (page['data'] as List).length;
+    for (final raw in (page['data'] as List).reversed) {
+      final entry = jsonObject(raw), item = jsonObject(entry['item']), id = item['id'] as String;
+      target.messages.putIfAbsent(id, () => {...item, 'turnId': entry['turnId'],
+        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'], 'order': order++});
     }
-    target.historyBefore = page['cursor']?['next'] as String?;
+    target.historyBefore = page['nextCursor'] as String?;
   }
 
   Future<void> loadEarlier(DesktopTask target, {CancellationToken? cancellation}) async {
@@ -1325,8 +1335,8 @@ class DesktopSession extends ChangeNotifier {
     target.loadError = null;
     notifyListeners();
     try {
-      final page = await client.sessionRead('session.message.list', {
-        'sessionID': target.id, 'cursor': before, 'limit': 100,
+      final page = await client.sessionRead('thread/items/list', {
+        'threadId': target.id, 'cursor': before, 'limit': 100, 'sortDirection': 'desc',
       }, cancellation: read);
       read.throwIfCancelled();
       _mergeHistory(target, page);
@@ -1490,7 +1500,7 @@ class DesktopSession extends ChangeNotifier {
           if (_activeDraftId == draft?.id) _activeDraftId = null;
           _saveNavigation('open_tabs', jsonEncode(openTabIds));
           for (final event in _earlyEvents) {
-            if ((event['data']?['sessionID'] ?? event['task_id']) == created.id) _applyEvent(created, event);
+            if (event['params']?['threadId'] == created.id) _applyEvent(created, event);
           }
           if (created.archived) {
             await terminals.removeTask(created.id);
@@ -1556,10 +1566,8 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> retry(DesktopTask target) async {
     if (target.running || target.archived || target.archiving || !connected) return;
-    final terminals = target.messages.values.where((message) => message['type'] == 'idle').toList()
-      ..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
-    final failure = terminals.lastOrNull;
-    if (failure?['outcome'] != 'failed') return;
+    final failure = target.turns.values.lastOrNull;
+    if (failure?['status'] != 'failed') return;
     target.running = true;
     target.retryStatus = {'type': 'retry', 'message': 'Reconnecting…'};
     error = null;
@@ -1663,8 +1671,8 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _applyIncomingEvent(Json event) {
-    if (event['type'] == 'session.side.closed') {
-      final id = event['data']?['sessionID'] as String?;
+    if (event['method'] == 'happen/side/closed') {
+      final id = event['params']?['threadId'] as String?;
       final side = sideChats.remove(id);
       if (side == null) return;
       unawaited(_releaseSideDraft(side).catchError((Object failure) {
@@ -1685,8 +1693,8 @@ class DesktopSession extends ChangeNotifier {
       }
       return;
     }
-    if (event['type'] == 'session.archived' || event['type'] == 'task.archived') {
-      final id = event['data']?['sessionID'] ?? event['task_id'];
+    if (event['method'] == 'thread/archived') {
+      final id = event['params']?['threadId'];
       if (id is String) unawaited(terminals.removeTask(id));
     }
     if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
@@ -1703,7 +1711,7 @@ class DesktopSession extends ChangeNotifier {
       }
       return;
     }
-    final sessionID = event['data']?['sessionID'] ?? event['task_id'];
+    final sessionID = event['params']?['threadId'];
     final target = sideChats[sessionID] ?? projects
         .expand((p) => p.tasks)
         .where((t) => t.id == sessionID)
@@ -1712,11 +1720,11 @@ class DesktopSession extends ChangeNotifier {
       if (submitting && _earlyEvents.length < 256) _earlyEvents.add(event);
       return;
     }
-    final appendingText = event['type'] == 'session.text.delta' && target.streamingText.isNotEmpty;
+    final appendingText = event['method'] == 'item/agentMessage/delta' && target.streamingText.isNotEmpty;
     _applyEvent(target, event);
     _observeActivity(target, [event]);
     if (task == target) _markViewed(target);
-    if ({'session.archived', 'session.unarchived', 'task.archived', 'task.unarchived'}.contains(event['type'])) {
+    if ({'thread/archived', 'thread/unarchived'}.contains(event['method'])) {
       if (target.archived) _removeArchivedTab(target);
       unawaited(_saveArchived(target).catchError((Object failure) {
         if (failure is! CancelledException) showError(failure);
@@ -1749,28 +1757,21 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _applyEvent(DesktopTask target, Json event) {
-    if (event['type'].toString().startsWith('session.')) {
-      if (target.loading) target.liveEvents.add(event);
-      if (_applySessionEvent(target, event)) _notifyEvent(target, event);
-      return;
-    }
-    final state = jsonObject(target.projectionState['execution'] ?? {});
-    for (final native in sessionEvents(target.id, event, state)) {
-      if (_applySessionEvent(target, native)) _notifyEvent(target, native);
-    }
-    target.projectionState['execution'] = state;
+    if (target.loading) target.liveEvents.add(event);
+    if (_applyThreadEvent(target, event)) _notifyEvent(target, event);
   }
 
   void _notifyEvent(DesktopTask target, Json event) {
-    final kind = switch (event['type']) {
-      'session.question.asked' => TaskNotificationKind.input,
-      'session.execution.succeeded' => TaskNotificationKind.completion,
-      'session.execution.failed' => TaskNotificationKind.failure,
+    final kind = switch (event['method']) {
+      'happen/question/asked' => TaskNotificationKind.input,
+      'turn/completed' => switch (event['params']?['turn']?['status']) {
+        'completed' => TaskNotificationKind.completion, 'failed' => TaskNotificationKind.failure, _ => null,
+      },
       _ => null,
     };
     if (kind == null) return;
     final key = kind == TaskNotificationKind.input
-      ? 'question:${event['data']['request']['id']}' : event['id'] as String;
+      ? 'question:${event['params']['request']['id']}' : event['params']['turn']['id'] as String;
     if (!target._notifiedEvents.add(key)) return;
     if (target._notifiedEvents.length > 64) target._notifiedEvents.remove(target._notifiedEvents.first);
     if (!target.archived && !target.archiving && !_lifetime.isCancelled &&
@@ -1779,91 +1780,50 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  bool _applySessionEvent(DesktopTask target, Json event) {
-    final data = jsonObject(event['data'] ?? {});
-    final sequence = event['durable']?['seq'] as int?;
-    if (sequence != null && sequence <= target.through) return false;
-    if (sequence != null) target.through = sequence;
-    applySessionEvent(target.messages, event, target.projectionState);
-    switch (event['type']) {
-      case 'session.created':
-        target.provider = data['model']?['providerID'] as String?;
-        target.model = data['model']?['id'] as String?;
-        target.contextLimit = data['metadata']?['providerSettings']?['context_limit'] as num?;
-        target.reasoning = data['metadata']?['providerSettings']?['reasoning'] as String?;
-        target.reasoningUpdates = data['metadata']?['reasoningUpdates'] == true;
-      case 'session.execution.started':
-      case 'session.step.started':
-        if (event['type'] == 'session.execution.started') {
-          target.runStartedAt = event['created'] as int?;
-          target._stopRequested = false;
-        }
-        target.running = true;
+  bool _applyThreadEvent(DesktopTask target, Json event) {
+    final data = jsonObject(event['params'] ?? {});
+    applyThreadNotification(target.messages, event);
+    switch (event['method']) {
+      case 'turn/started':
+        target.turns[data['turn']['id'] as String] = jsonObject(data['turn']);
+        target.running = true; target._stopRequested = false;
+        target.runStartedAt = data['happen']?['createdAt'] as int?;
+        target.streamingText = ''; target.retryStatus = null;
+      case 'item/agentMessage/delta':
+        target.streamingText = target.messages[data['itemId']]?['text'] as String? ?? '';
+        target.retryStatus = null;
+      case 'item/completed':
+        target.streamingText = ''; target.retryStatus = null;
+      case 'happen/turn/retrying':
         target.streamingText = '';
-        target.retryStatus = null;
-      case 'session.text.delta':
-        final message = target.messages[data['assistantMessageID']];
-        if (message?['time']?['streamed'] != null || message?['time']?['completed'] != null) break;
-        final parts = message?['content'] as List? ?? [];
-        final ordinal = data['ordinal'] as int;
-        target.streamingText = ordinal < parts.length ? parts[ordinal]['text'] as String? ?? '' : '';
-        target.retryStatus = null;
-      case 'session.reasoning.delta':
-        target.retryStatus = null;
-      case 'session.text.ended':
-      case 'session.step.streamed':
-        target.streamingText = '';
-        target.retryStatus = null;
-      case 'session.status':
-        target.running = data['status']['type'] != 'idle';
-        if (!target.running) target.runStartedAt = null;
-        target.retryStatus = data['status']['type'] == 'retry' ? jsonObject(data['status']) : null;
-        if (target.retryStatus != null) target.streamingText = '';
-      case 'session.question.asked':
-        final request = jsonObject(data['request']);
-        target.questions[request['id'] as String] = request;
-      case 'session.question.replied':
-      case 'session.question.rejected':
-        target.questions.remove(data['requestID']);
-        target.questionDrafts.remove(data['requestID']);
-      case 'session.model.selected':
-        target.reasoning = data['model']['variant'] as String?;
+        target.retryStatus = {'type': 'retry', ...data};
+      case 'happen/question/asked':
+        final request = jsonObject(data['request']); target.questions[request['id'] as String] = request;
+      case 'happen/question/replied':
+      case 'happen/question/rejected':
+        target.questions.remove(data['requestID']); target.questionDrafts.remove(data['requestID']);
+      case 'happen/thread/configuration':
+        target.reasoning = data['effort'] as String?;
         if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
-      case 'session.inbox.enqueued':
-        final item = jsonObject(data['item']);
-        target.pending[data['inboxID'] as String] = {
-          'prompt': item['text'] ?? '', 'delivery': item['delivery'], 'attachments': item['files'] ?? [],
-          'created_at': DateTime.fromMillisecondsSinceEpoch(event['created'] as int).toIso8601String(),
-        };
-      case 'session.inbox.delivered':
-        target.pending.remove(data['inboxID']);
-        target.streamingText = '';
-      case 'session.inbox.delivery.changed':
-        final id = data['inboxID'] as String;
-        if (target.pending[id] case final item?) target.pending[id] = {...item, 'delivery': data['delivery']};
-      case 'session.inbox.cancelled':
-        for (final id in data['ids'] as List? ?? [data['inboxID']]) { target.pending.remove(id); }
-      case 'session.archived':
-        target.archived = true;
-      case 'session.unarchived':
-        target.archived = false;
-      case 'session.execution.succeeded':
-      case 'session.execution.failed':
-      case 'session.execution.interrupted':
-        target.running = false;
-        target.runStartedAt = null;
-        target.streamingText = '';
-        target.retryStatus = null;
-        target.questions.clear();
-        target.questionDrafts.clear();
+      case 'happen/inbox/enqueued':
+        final input = jsonObject(data['input']); target.pending['msg_${input['id']}'] = input;
+      case 'happen/inbox/delivered': target.pending.remove('msg_${data['id']}');
+      case 'happen/inbox/updated':
+        final id = 'msg_${data['id']}';
+        if (target.pending[id] case final previous?) target.pending[id] = {...previous, 'delivery': data['delivery']};
+      case 'happen/inbox/cancelled':
+        for (final id in data['ids'] as List? ?? []) { target.pending.remove('msg_$id'); }
+      case 'thread/archived': target.archived = true;
+      case 'thread/unarchived': target.archived = false;
+      case 'thread/tokenUsage/updated':
+        final last = target.messages.entries.lastOrNull;
+        if (last != null) target.messages[last.key] = {...last.value, 'tokens': sessionTokens(jsonObject(data['tokenUsage']))};
+      case 'turn/completed':
+        target.turns[data['turn']['id'] as String] = jsonObject(data['turn']);
+        target.running = false; target.runStartedAt = null; target.streamingText = ''; target.retryStatus = null;
+        target.questions.clear(); target.questionDrafts.clear();
     }
     target.liveText.value = target.streamingText;
-    final activity = event['created'] as int?;
-    if (activity != null && activity > target.lastActivity &&
-        {'session.inbox.delivered', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'}.contains(event['type'])) {
-      target.lastActivity = activity;
-      unawaited(_saveActivity(target).catchError((Object failure) { if (failure is! CancelledException) showError(failure); }));
-    }
     return true;
   }
 
@@ -1956,140 +1916,72 @@ bool _sameRecords(Iterable<Json> records, List<Json>? previous) {
 }
 
 List<ChatEntry> conversation(DesktopTask task) {
-  if (task.events.isNotEmpty && !_sameRecords(task.events.values, task._legacyRecords)) {
-    task._legacyRecords = task.events.values.toList(growable: false);
-    task.messages.clear();
-    final state = <String, dynamic>{}, inbox = <String, dynamic>{};
-    final records = task.events.values.toList()..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
-    for (final record in records) {
-      for (final event in sessionEvents(task.id, record, state)) { applySessionEvent(task.messages, event, inbox); }
-    }
-  }
-  final state = (task.running, task.streamingText);
+  final state = (task.running, task.streamingText, task.turns.values.lastOrNull);
   if (task._conversation != null && task._conversationState == state &&
       _sameRecords(task.messages.values, task._conversationEvents) &&
       _sameRecords(task.pending.values, task._conversationPending)) return task._conversation!;
   final result = <ChatEntry>[];
   final messages = task.messages.values.toList()..sort((a, b) =>
-    (a['metadata']?['seq'] as int? ?? 0).compareTo(b['metadata']?['seq'] as int? ?? 0));
-  final activeMessage = messages.where((message) => {'user', 'assistant', 'idle'}.contains(message['type'])).lastOrNull;
+    (a['startedAtMs'] as int? ?? 0) != (b['startedAtMs'] as int? ?? 0)
+      ? (a['startedAtMs'] as int? ?? 0).compareTo(b['startedAtMs'] as int? ?? 0)
+      : (a['order'] as int? ?? 0).compareTo(b['order'] as int? ?? 0));
   DateTime? at(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value) : null;
   final tools = <String, ToolActivity>{};
-  DateTime? started;
-  String? activeAssistant;
-  var turnFirstRow = 0;
-  final responseImageRows = <ChatEntry>[];
-  void finishImages() {
-    if (responseImageRows.isEmpty) return;
-    final index = result.lastIndexWhere((entry) => entry.role == 'Happen' && entry.text.isNotEmpty);
-    if (index > result.indexOf(responseImageRows.last)) {
-      final entry = result[index], seen = <Object>{};
-      final images = [for (final image in [...entry.attachments, ...responseImageRows.expand((row) => row.attachments)])
-        if (seen.add(image[r'$part'] ?? image['data'] ?? image['path'] ?? image)) image];
-      result[index] = ChatEntry(entry.id, entry.role, entry.text, timestamp: entry.timestamp,
-        startedAt: entry.startedAt, streaming: entry.streaming, response: entry.response, attachments: images);
-      final sources = responseImageRows.toSet();
-      result.removeWhere(sources.contains);
-    }
-    responseImageRows.clear();
-  }
   for (final message in messages) {
-    final id = message['id'] as String, created = at(message['time']['created']);
+    final id = message['id'] as String, created = at(message['startedAtMs']);
     switch (message['type']) {
-      case 'user':
-        // An intervening user message keeps earlier media with its source reply.
-        responseImageRows.clear();
-        started ??= created;
-        result.add(ChatEntry(id, 'You', message['text'] as String? ?? '',
-          attachments: (message['files'] as List? ?? []).map(jsonObject).toList(), timestamp: created));
-      case 'assistant':
-        started ??= created;
-        activeAssistant = id;
-        final imageOwners = <String, String>{};
-        final imageRows = <String, List<Json>>{};
+      case 'userMessage':
         final content = (message['content'] as List? ?? []).map(jsonObject).toList();
-        var ordinal = 0;
-        for (final part in content) {
-          final partID = '$id:${ordinal++}';
-          if (part['type'] == 'tool') {
-            final status = jsonObject(part['state']);
-            final tool = ToolActivity(part['id'] as String, part['name'] as String,
-              status['input'], formatInput: true, startedAt: at(part['time']?['created']));
-            tool.status = switch (status['status']) {'completed' => 'done', 'error' => 'failed',
-              _ => task.running && identical(message, activeMessage) ? 'running' : 'interrupted'};
-            tool.endedAt = at(part['time']?['completed']);
-            final outputImages = <Json>[];
-            if (status['content'] is List) {
-              final content = status['content'] as List;
-              outputImages.addAll(content.where((part) => part['type'] == 'image').map(jsonObject));
-              final text = content.where((part) => part['type'] != 'image').toList();
-              if (text.isNotEmpty) tool.output = text.length == 1 && text.first['type'] == 'text' ? text.first['text'] : {'content': text};
-            } else if (status['error'] != null) { tool.output = status['error']; }
-            tools[tool.id] = tool;
-            final parent = tools[part['native']?['parentCallID']];
-            if (parent != null) { parent.children.add(tool); }
-            else { result.add(ChatEntry(partID, 'Tool', tool.name, tool: tool, timestamp: created)); }
-            final owner = imageOwners[tool.id] = imageOwners[parent?.id] ?? tool.id;
-            if (outputImages.isNotEmpty) {
-              // A nested call and its enclosing cell share one image row.
-              final images = imageRows.putIfAbsent(owner, () {
-                final images = <Json>[];
-                final row = ChatEntry('$id:$owner:images', 'Happen', '', timestamp: created, attachments: images);
-                result.add(row);
-                responseImageRows.add(row);
-                return images;
-              });
-              final seen = {for (final image in images) image[r'$part'] ?? image['data'] ?? image['path'] ?? image};
-              for (final image in outputImages) {
-                if (seen.add(image[r'$part'] ?? image['data'] ?? image['path'] ?? image)) images.add(image);
-              }
-            }
-          } else if (part['type'] == 'text' || part['type'] == 'reasoning') {
-            if ((part['text'] as String? ?? '').isEmpty) continue;
-            final reasoning = part['type'] == 'reasoning';
-            final streaming = task.running && identical(message, activeMessage) && ordinal == content.length &&
-              message['time']?['streamed'] == null && message['time']?['completed'] == null && part['time']?['completed'] == null;
-            result.add(ChatEntry(partID, part['type'] == 'text' ? 'Happen' : 'Reasoning', part['text'] as String,
-              timestamp: reasoning ? at(part['time']?['completed']) ?? created : created,
-              startedAt: reasoning ? at(part['time']?['created']) ?? created : null, streaming: streaming));
-          }
-        }
-      case 'compaction':
+        result.add(ChatEntry(id, 'You', content.where((part) => part['type'] == 'text').map((part) => part['text']).join('\n'),
+          attachments: content.where((part) => part['type'] != 'text').toList(), timestamp: created));
+      case 'agentMessage':
+      case 'reasoning':
+        final reasoning = message['type'] == 'reasoning';
+        final text = reasoning ? [...message['summary'] as List? ?? [], ...message['content'] as List? ?? []].join('\n') : message['text'] as String? ?? '';
+        if (text.isEmpty) continue;
+        final turn = task.turns[message['turnId']];
+        final duration = turn?['startedAt'] is int && turn?['completedAt'] is int
+          ? Duration(seconds: (turn!['completedAt'] as int) - (turn['startedAt'] as int)) : null;
+        result.add(ChatEntry(id, reasoning ? 'Reasoning' : 'Happen', text, timestamp: at(message['completedAtMs']) ?? created,
+          startedAt: created, streaming: task.running && message['live'] == true,
+          response: reasoning || message['live'] == true ? null : (provider: task.provider, model: task.model, reasoning: task.reasoning,
+            duration: duration, interrupted: turn?['status'] == 'interrupted')));
+      case 'mcpToolCall':
+      case 'dynamicToolCall':
+      case 'commandExecution':
+        final tool = ToolActivity(id, message['type'] == 'mcpToolCall' ? '${message['server']}.${message['tool']}' :
+          message['tool'] as String? ?? 'Shell', message['arguments'] ?? message['command'], startedAt: created, formatInput: true);
+        tool.status = switch (message['status']) {'completed' => 'done', 'failed' => 'failed',
+          'inProgress' => task.running ? 'running' : 'interrupted', _ => 'interrupted'};
+        tool.endedAt = at(message['completedAtMs']);
+        final output = message['contentItems'] ?? message['result']?['content'];
+        if (output is List) {
+          final text = output.where((part) => {'text', 'inputText'}.contains(part['type'])).map((part) => part['text']).join('\n');
+          if (text.isNotEmpty) tool.output = text;
+        } else if (message['error'] != null || message['aggregatedOutput'] != null) { tool.output = message['error'] ?? message['aggregatedOutput']; }
+        tools[id] = tool;
+        final parent = tools[message['parentCallId']];
+        if (parent != null) { parent.children.add(tool); }
+        else { result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: created)); }
+      case 'contextCompaction':
         final activity = CompactionActivity(startedAt: created)
           ..status = switch (message['status']) {'completed' => 'done',
-            'failed' => switch (message['outcome']) {'interrupted' => 'stopped', 'succeeded' => 'interrupted', _ => 'failed'},
+            'interrupted' => 'stopped', 'failed' => 'failed',
             _ => task.running ? 'running' : 'interrupted'}
-          ..endedAt = at(message['time']?['completed'])
+          ..endedAt = at(message['completedAtMs'])
           ..summary = message['summary'] as String? ?? '';
         result.add(ChatEntry(id, 'Compaction', '', compaction: activity));
-      case 'idle':
-        finishImages();
-        final interrupted = message['outcome'] == 'interrupted';
-        final index = result.lastIndexWhere((entry) => entry.role == 'Happen');
-        if (index >= turnFirstRow) {
-          final entry = result[index];
-          final model = messages.where((m) => m['type'] == 'assistant' && m['id'] == activeAssistant).firstOrNull?['model'];
-          result[index] = ChatEntry(entry.id, entry.role, entry.text, timestamp: entry.timestamp,
-            attachments: entry.attachments,
-            response: (provider: model?['providerID'] as String?, model: model?['id'] as String?,
-              reasoning: model?['variant'] as String?, duration: created != null && started != null ? created.difference(started) : null,
-              interrupted: interrupted));
-        }
-        // A resumed turn supersedes its failure notice; keep the stored event
-        // for history without presenting a recovered failure as a current error.
-        if (message['outcome'] != 'failed' || identical(message, activeMessage) && !task.running) {
-          result.add(ChatEntry(id, message['outcome'] == 'failed' ? 'Error' : 'Status',
-            message['outcome'] == 'failed' ? (message['error']?['message'] as String? ?? 'Task failed') : interrupted ? 'Stopped' : 'Completed',
-            timestamp: created, startedAt: started));
-        }
-        started = null;
-        turnFirstRow = result.length;
-        activeAssistant = null;
     }
   }
-  finishImages();
+  final terminal = task.turns.values.lastOrNull;
+  if (!task.running && terminal != null && terminal['status'] != 'inProgress') {
+    if (terminal['status'] == 'failed') result.add(ChatEntry(terminal['id'] as String, 'Error', terminal['error']?['message'] as String? ?? 'Task failed'));
+    else if (terminal['status'] == 'interrupted') result.add(ChatEntry(terminal['id'] as String, 'Status', 'Stopped'));
+  }
   for (final entry in task.pending.entries) {
     final item = entry.value;
+    final sourceID = entry.key.replaceFirst(RegExp(r'^msg_'), '');
+    if (messages.any((message) => message['clientId'] == sourceID)) continue;
     final queued = item['delivery'] == 'queue';
     result.add(ChatEntry(queued ? 'pending:${entry.key}' : entry.key, queued ? 'Queued' : 'You',
       item['prompt'] as String? ?? '',

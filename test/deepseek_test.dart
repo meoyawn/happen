@@ -74,7 +74,7 @@ void main() {
               'type': 'tool_use',
               'id': 'call-one',
               'name': 'functions__exec',
-              'input': {},
+              'input': <String, Object?>{},
             },
           },
           {
@@ -233,7 +233,7 @@ void main() {
           'type': 'tool_use',
           'id': 'client-call',
           'name': 'client__browser_title',
-          'input': {},
+          'input': <String, Object?>{},
         },
       },
       {
@@ -381,7 +381,7 @@ void main() {
             ],
           },
           {
-            'choices': [],
+            'choices': <Object?>[],
             'usage': {
               'prompt_tokens': 25,
               'completion_tokens': 7,

@@ -154,7 +154,7 @@ Future<void> main(List<String> args) async {
   }
 }
 
-void _slowWriter(List<Object?> args) async {
+Future<void> _slowWriter(List<Object?> args) async {
   final config = jsonObject(args[1]);
   final store = TaskStore(
     config['directory'] as String,
@@ -199,7 +199,7 @@ Json distribution(List<int> values) {
   };
 }
 
-void _benchmarkAgent(List<Object?> args) async {
+Future<void> _benchmarkAgent(List<Object?> args) async {
   final config = jsonObject(args[1]);
   final writer = await startStore(
     config['directory'] as String,

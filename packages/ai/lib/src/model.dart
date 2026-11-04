@@ -147,11 +147,11 @@ class ConversationItem {
 /// Model history carried by a committed event, not its transcript projection.
 Iterable<ConversationItem> modelContextItems(String type, Json data) {
   final committed = (data['committed_output_ids'] as List? ?? []).toSet();
-  final List items = switch (type) {
+  final List<Object?> items = switch (type) {
     'context.compacted' => data['input'] as List,
     'model.completed' => (data['output'] as List).where((item) => !committed.contains(item['id'])).toList(),
     'input.committed' || 'configuration.updated' || 'instructions.updated' ||
-    'environment.updated' || 'tools.updated' || 'agents.updated' ||
+    'environment.updated' || 'tools.updated' || 'agents.updated' || 'context.injected' ||
     'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'model.output' || 'tool.completed' || 'tool.notified' =>
       [if (data['item'] != null) data['item']],
     _ => const [],
@@ -238,20 +238,27 @@ class ModelUsage {
     this.outputTokens = 0,
     this.cachedInputTokens = 0,
     this.cacheWriteTokens = 0,
+    this.reasoningTokens,
+    this.totalTokens,
   });
   final int inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens;
+  final int? reasoningTokens, totalTokens;
   int get contextTokens => inputTokens + outputTokens;
   factory ModelUsage.fromJson(Json json) => ModelUsage(
     inputTokens: (json['input_tokens'] as num? ?? 0).toInt(),
     outputTokens: (json['output_tokens'] as num? ?? 0).toInt(),
     cachedInputTokens: (json['cached_input_tokens'] as num? ?? 0).toInt(),
     cacheWriteTokens: (json['cache_write_tokens'] as num? ?? 0).toInt(),
+    reasoningTokens: (json['reasoning_tokens'] as num?)?.toInt(),
+    totalTokens: (json['total_tokens'] as num?)?.toInt(),
   );
   Json toJson() => {
     'input_tokens': inputTokens,
     'output_tokens': outputTokens,
     'cached_input_tokens': cachedInputTokens,
     'cache_write_tokens': cacheWriteTokens,
+    'reasoning_tokens': ?reasoningTokens,
+    'total_tokens': ?totalTokens,
   };
 }
 

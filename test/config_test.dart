@@ -95,6 +95,8 @@ providers:
       'provider map': 'providers: [$secret]',
       'code mode only type': 'code_mode_only: $secret',
       'provider option': 'providers: {deepseek: {backend: $secret}}',
+      for (final provider in ['openai', 'gpt', 'deepseek', 'opencode'])
+        'goals cannot be disabled for $provider': 'providers: {$provider: {settings: {goals: false}}}',
       'non-finite number':
           'providers: {deepseek: {settings: {temperature: .nan}}}',
       'colliding names':

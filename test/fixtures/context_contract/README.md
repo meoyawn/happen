@@ -19,9 +19,9 @@ shell/MCP children from the caller's startup files and credentials. Direct
 unisolated invocation of this test file is rejected. Each pair's Dart MCP
 processes additionally receive the same explicit fixture environment.
 The real `dart mcp-server --help` command prepares the SDK's server package once
-before either harness starts, outside timing. Measured runs use real production
+before either harness starts. Functional replays use real production
 connections; no discovery response or tool result is substituted. Happen's
-in-process server retains its production shared MCP owner between sampled tasks;
+in-process server retains its production shared MCP owner between fresh threads;
 Codex starts its own processes for each CLI invocation.
 The launcher invokes package:test from source after normal native-hook setup;
 it does not run dependency resolution under the temporary home or rewrite the
@@ -83,9 +83,9 @@ all citation metadata, to reach the next actual inference request in order.
 No live web requests or personal instructions are used.
 
 The goal case also cold-resumes the completed goal: Codex launches a new CLI
-process, and Happen hibernates its session owners before the next prompt. Goal
-state uses generic namespaced KV in the same session SQLite; its rules live in
-the agent, with no goal-aware storage API.
+process, and Happen unsubscribes and waits for idle thread unloading before the
+next prompt. Goal state uses dedicated tables in the same session SQLite;
+host-owned goal accounting survives inference turns and restores on cold resume.
 The package-reading MCP case starts independent real `dart mcp-server`
 processes, registers the fixture package, and reads its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
@@ -125,7 +125,7 @@ wire encoding rather than omitting the field.
 Only actual requests received by the shared OpenAI endpoint are compared. At
 the end of each session, the final complete inference request uses deep JSON
 equality after excluding the top-level `client_metadata` telemetry field,
-removing explicitly scoped generated protocol/transport IDs and extracting known
+removing explicitly scoped generated protocol/transport IDs and normalizing known
 numeric timing fields:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
@@ -144,10 +144,10 @@ keep interactive questions disabled in both harnesses.
 Desktop connection capabilities, resuming sessions created without questions,
 and delivering user answers are exercised by
 `packages/desktop/test/session_question_test.dart`.
-Every extracted timing value is retained separately in the report, with its
-request path, kind and units.
+Raw request captures retain the original timing values; verdicts and reports do
+not contain elapsed-time comparisons or performance assertions.
 Shell IDs and timings inside indexed fulfilled `Promise.allSettled` receipts use
-the same validation/extraction as direct shell results; settlement, index, and
+the same validation/normalization as direct shell results; settlement, index, and
 all remaining nested fields stay strict.
 There is no similarity threshold, judge,
 golden copied from Happen, or expected-failure bypass. An unsupported Codex
@@ -190,7 +190,7 @@ notification's name, encoding, and position remain part of exact equality.
 Results are written to a new ignored `.local/context-contract/TIMESTAMP/`
 directory. It retains both configs, the catalog
 checksum, Codex version, the native request files and their paths, the first
-differing line, individual timing samples, and a JSON report. Failures exit
+differing line, and a JSON report of functional checks. Failures exit
 nonzero. These artifacts are the evidence when the strict parity contract is red.
 
 ### Current Code Mode boundary
@@ -210,27 +210,19 @@ actual request content, never play audio or generate a paid image. Keep any
 remaining failures visible: do not add dummy declarations or omit `tools` from
 equality to make the gate green.
 
-## Timing gates
+## Deterministic verdicts
 
-Actual sessions have one warm-up followed by three samples with alternating
-execution order. Happen's in-process session median must not exceed Codex's CLI
-`exec`/`resume` median. The report labels those different measurement boundaries
-explicitly; this is not a CLI-startup benchmark or a preparation-only call.
+Each case runs both harnesses in each execution order, using fresh threads while
+retaining Happen's shared MCP owner. This exercises first use, cache reuse,
+thread-ID ordering, and isolation without benchmark warm-ups or sampling.
 
-For real tool and compaction workflows, three runs alternate harness order. The
-peer separately measures both real loops from the first model request through
-the final synthetic SSE of the last turn. Prelude turns in the multi-user case
-do not replace this real tool/compaction measurement with stub-only timing.
-Happen's median must not exceed Codex's at that shared
-boundary either. A one-response/no-tool case cannot measure the agent through
-that boundary—it would time only the synthetic server—so those cases use the
-real turn wall-time gate, not a misleading stub-only stopwatch. Every sample is
-retained, and the threshold is exactly `<= 1.0`, with no hidden timing allowance.
-Each case also reports the faster harness and median wall-time difference.
-The compound evaluation-discovery case uses the same three-run timing gate as
-the package-reading MCP workflow. Durable-event/read-model costs are tracked
-separately in [issue #5](https://github.com/meoyawn/happen/issues/5); a passing
-discovery result does not override a failed timing or envelope check.
+There are no stopwatches, medians, speed ratios, request-arrival measurements, or
+elapsed-time pass/fail gates. Known run-specific timestamps and tool durations
+are normalized only for exact request equality. All remaining request fields,
+array positions, tool results, lifecycle outcomes, and explicit ID contracts stay
+strict. Cancellation and generous safety deadlines prevent hung child processes;
+they are not performance criteria. Performance investigations belong in separate
+benchmarks, not this functional E2E contract.
 
 The app retains its read-only model-buffer inspector. Neither that snapshot nor
 a reconstructed request is used by this contract. The obsolete CLI prepared-input,

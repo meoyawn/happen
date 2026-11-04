@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/thread.dart';
 
 void main() {
   late Directory root, data;
@@ -61,14 +62,11 @@ void main() {
     await root.delete(recursive: true);
   });
 
-  Future<String> turn(String method, Json params) async {
-    final terminal = client.events.stream.firstWhere((event) =>
-      ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']),
-    );
-    await client.request(method, {...params, 'prompt': 'continue'});
-    final result = await terminal.timeout(const Duration(seconds: 15));
-    expect(result['type'], 'turn.completed', reason: result.toString());
-    return result['task_id'] as String;
+  Future<String> turn({String? threadId, String? cwd}) async {
+    final id = threadId ?? await createThread(client, {'cwd': cwd});
+    final result = await runTurn(client, id, prompt: 'continue', settings: {if (threadId != null && cwd != null) 'cwd': cwd});
+    expect(result['status'], 'completed', reason: result.toString());
+    return id;
   }
 
   List<String> instructions() => (requests.last['input'] as List)
@@ -79,8 +77,7 @@ void main() {
       .toList();
 
   Future<List<Json>> updates(String id) async =>
-      (await client.request('history.page', {'task_id': id, 'limit': 500}) as List)
-          .map(jsonObject).where((event) => event['type'] == 'agents.updated').toList();
+      (await contextItems(client, id)).where((item) => item['native']?['harness']?['context'] == 'agents_md').toList();
 
   test('repository edits refresh on warm turns and stay deduplicated across cwd changes and cold resumes', () async {
     final work = await Directory('${root.path}/repo/sub/deeper').create(recursive: true);
@@ -96,7 +93,7 @@ void main() {
     await regular.writeAsString('nested regular');
     await File('${work.path}/AGENTS.md').writeAsString('unvisited descendant');
 
-    final id = await turn('task.start', {'cwd': cwd});
+    final id = await turn(cwd: cwd);
     final initial = instructions().single;
     expect(initial, contains('parent maple'));
     expect(initial, contains('nested override'));
@@ -108,7 +105,7 @@ void main() {
 
     await parent.writeAsString('parent cedar');
     await override.delete();
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions(), hasLength(2));
     expect(instructions().last, contains('parent cedar'));
     expect(instructions().last, contains('nested regular'));
@@ -117,7 +114,7 @@ void main() {
     expect((requests.last['input'] as List).take(prefix.length).toList(), prefix);
     var previousInput = requests.last['input'] as List;
     for (var i = 0; i < 4; i++) {
-      await turn('task.send', {'task_id': id});
+      await turn(threadId: id);
       expect(instructions(), hasLength(2));
       final input = requests.last['input'] as List;
       expect(input.take(previousInput.length).toList(), previousInput);
@@ -129,37 +126,37 @@ void main() {
     }
     expect((await updates(id)).length, 2);
 
-    await turn('task.start', {'cwd': cwd});
+    await turn(cwd: cwd);
     expect(instructions().single, contains('parent cedar'));
     expect(instructions().single, contains('nested regular'));
 
     final plain = await Directory('${root.path}/plain/sub').create(recursive: true);
     await File('${plain.parent.path}/AGENTS.md').writeAsString('plain parent excluded');
     await File('${plain.path}/AGENTS.md').writeAsString('plain directory');
-    await turn('task.send', {'task_id': id, 'cwd': plain.path});
+    await turn(threadId: id, cwd: plain.path);
     expect(instructions().last, contains('replace all previously provided AGENTS.md instructions.'));
     expect(instructions().last, contains('plain directory'));
     expect(instructions().last, isNot(contains('plain parent excluded')));
     expect(instructions().last, isNot(contains('parent cedar')));
     final changed = (await updates(id)).length;
     for (var i = 0; i < 3; i++) {
-      await turn('task.send', {'task_id': id});
+      await turn(threadId: id);
       expect((await updates(id)).length, changed);
     }
 
-    await turn('task.send', {'task_id': id, 'cwd': cwd});
+    await turn(threadId: id, cwd: cwd);
     expect(instructions().last, contains('parent cedar'));
     expect(instructions().last, contains('nested regular'));
     final beforeColdResume = instructions();
     await client.close();
     await server.close();
     await start();
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions(), beforeColdResume);
     await parent.delete();
     await regular.delete();
     final beforeRemoval = instructions();
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions().take(beforeRemoval.length).toList(), beforeRemoval);
     expect(instructions().last,
       contains('The previously provided AGENTS.md instructions no longer apply.'));
@@ -168,15 +165,15 @@ void main() {
     await client.close();
     await server.close();
     await start();
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions(), afterRemoval);
     final removals = (await updates(id)).length;
     for (var i = 0; i < 3; i++) {
-      await turn('task.send', {'task_id': id});
+      await turn(threadId: id);
       expect((await updates(id)).length, removals);
     }
 
-    await turn('task.start', {'cwd': cwd});
+    await turn(cwd: cwd);
     expect(instructions(), isEmpty);
   });
 
@@ -187,8 +184,8 @@ void main() {
     await File('${work.path}/AGENTS.md').writeAsString('ééSECRET_TAIL');
     await File('${data.path}/AGENTS.md').writeAsString('global independent budget');
 
-    final id = await turn('task.start', {'cwd': work.path});
-    final snapshot = (await updates(id)).single['data']['snapshot'];
+    final id = await turn(cwd: work.path);
+    final snapshot = jsonObject(threadMetadata(data.path, id, 'agents_snapshot'));
     final files = (snapshot['files'] as List).map(jsonObject).toList();
     expect(files.map((file) => file['text']), ['global independent budget', 'a' * 32765, 'é�']);
     expect(files.last['truncated'], isTrue);
@@ -206,26 +203,26 @@ void main() {
     await File(overridePath).writeAsString(' \n');
     await File('${work.path}/AGENTS.md').writeAsString('child instruction');
 
-    final id = await turn('task.start', {'cwd': work.path});
+    final id = await turn(cwd: work.path);
     expect(instructions().single, contains('child instruction'));
     expect(instructions().single, isNot(contains('suppressed regular instruction')));
     await File(overridePath).delete();
     await Directory(overridePath).create();
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions().last, contains('suppressed regular instruction'));
 
     await Directory(overridePath).delete();
     final target = File('${root.path}/linked.md');
     await target.writeAsString('linked instruction');
     await Link(overridePath).create(target.path);
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions().last, contains('linked instruction'));
     expect(instructions().last, isNot(contains('suppressed regular instruction')));
 
     final modified = await target.lastModified();
     await target.writeAsString('edited instruction');
     await target.setLastModified(modified);
-    await turn('task.send', {'task_id': id});
+    await turn(threadId: id);
     expect(instructions().last, contains('edited instruction'));
     expect(instructions().last, isNot(contains('linked instruction')));
   });

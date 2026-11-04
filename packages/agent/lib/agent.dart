@@ -11,9 +11,10 @@ import 'src/instructions.dart';
 import 'src/discovery.dart';
 import 'src/skills.dart';
 import 'src/providers.dart';
-import 'src/goals.dart';
+import 'src/goal_context.dart';
 
 export 'src/config.dart' show initialConfiguration;
+export 'src/goals.dart' show GoalRuntime;
 
 Future<IsolateOwner> startAgent({
   required String taskId,
@@ -21,6 +22,7 @@ Future<IsolateOwner> startAgent({
   required SendPort writer,
   required SendPort network,
   SendPort? clientTools,
+  SendPort? goals,
   required SendPort taskTools,
   required SendPort questions,
   required int codeInterrupt,
@@ -30,12 +32,13 @@ Future<IsolateOwner> startAgent({
   'writer': writer,
   'network': network,
   'client_tools': clientTools,
+  'goals': goals,
   'task_tools': taskTools,
   'questions': questions,
   'code_interrupt': codeInterrupt,
 }, service: 'agent');
 
-void _agentMain(List<Object?> args) {
+Future<void> _agentMain(List<Object?> args) async {
   final actor = _Agent(jsonObject(args[1]));
   final port = ReceivePort();
   (args[0] as SendPort).send(port.sendPort);
@@ -87,6 +90,9 @@ void _agentMain(List<Object?> args) {
         case 'steer':
           actor.steer(params);
           reply?.send({'result': null});
+        case 'inject':
+          await actor.inject(params);
+          reply?.send({'result': null});
         case 'close':
           actor.cancel();
           await running;
@@ -119,7 +125,7 @@ class _Agent {
     final saved = jsonObject(await callIsolate(writer, 'context', {}, cancellation: _lifetime));
     input = (saved['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))).toList();
     _contextState = {...saved}..remove('input');
-    if (saved['requestTools'] case final List tools) {
+    if (saved['requestTools'] case final List<Object?> tools) {
       _tools = tools.map((tool) => ToolDefinition.fromJson(jsonObject(tool))).toList();
     }
   }();
@@ -163,7 +169,7 @@ class _Agent {
       input = items.toList();
       _contextState['tokens'] = null;
     } else {
-      input.addAll(items);
+      input.addAll(type == 'context.injected' ? items.where((item) => !input.any((existing) => existing.id == item.id)) : items);
     }
     if (type == 'model.completed') _contextState['tokens'] = sessionTokens(jsonObject(data['usage'] ?? {}));
     if (type == 'tools.updated' && data['tools'] is List) {
@@ -173,7 +179,8 @@ class _Agent {
     final time = DateTime.parse(entry['created_at'] as String).millisecondsSinceEpoch;
     _contextState['created'] ??= time;
     _contextState['updated'] = time;
-    _contextState['sourceThrough'] = entry['seq'];
+    final previousSeq = _contextState['sourceThrough'] as int? ?? 0;
+    _contextState['sourceThrough'] = (entry['seq'] as int).clamp(previousSeq, 0x7fffffffffffffff);
     _contextState['windowID'] = entry['window_id'];
     for (final event in entry['session_events'] as List? ?? []) {
       _contextState['through'] = event['durable']['seq'];
@@ -186,6 +193,10 @@ class _Agent {
   Completer<void>? _toolPreemption;
   bool _accepting = false;
   final _steering = <Json>[];
+  Future<void> inject(Json record) async {
+    await _restore();
+    _record(record);
+  }
   void steer(Json message) {
     if (_accepting && _cancellation?.isCancelled == false) {
       _steering.add(message);
@@ -240,11 +251,15 @@ class _Agent {
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
-    GoalRuntime? goals;
+    var goalsEnabled = false;
     var uncachedTokensUsed = 0;
-    final turnId = interface.id == 'openai' ? newUuidV7() : newId();
+    Json? incompleteUsage;
+    final turnId = settings['turnId'] as String? ?? (interface.id == 'openai' ? newUuidV7() : newId());
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
+    Future<Json> goal(String method, [Json arguments = const {}, CancellationToken? token]) async =>
+      !goalsEnabled ? <String, dynamic>{} : jsonObject(await callIsolate(config['goals'] as SendPort, method,
+        {'task_id': taskId, 'arguments': {'turnId': turnId, ...arguments}}, cancellation: token ?? cancellation));
     try {
       await _restore().asCancellable(cancellation);
       if (settings['model'] != null && settings['model'] != config['model'] ||
@@ -254,16 +269,9 @@ class _Agent {
       }
       final baseline = jsonObject(config['provider_settings']);
       uncachedTokensUsed = await _metadata('uncached_tokens_used') as int? ?? 0;
-      if (interface.id == 'openai' && baseline['goals'] != false) {
-        final namespace = 'happen.goal'.codeUnits.map((unit) => unit.toRadixString(16).padLeft(4, '0')).join();
-        final key = 'plugin:$namespace:session:$taskId';
-        goals = GoalRuntime(taskId: taskId, tokens: () => uncachedTokensUsed,
-          load: (token) async => jsonObject(await callIsolate(writer, 'kv.get', {'key': key}, cancellation: token) ?? {}),
-          save: (state, token) async {
-            await callIsolate(writer, 'kv.set', {'key': key, 'value': state}, cancellation: token);
-          });
-        await goals.call('begin', {}, cancellation: cancellation);
-      }
+      goalsEnabled = config['goals'] != null && interface.id == 'openai' && baseline['goals'] != false;
+      await goal('begin', {'usage': {'input_tokens': uncachedTokensUsed}, 'plan': settings['mode'] == 'plan',
+        'automatic': settings['goalContinuation'] == true});
       final previousEffort = effort;
       final selectedEffort = settings['reasoning'] as String? ?? previousEffort;
       if (selectedEffort != previousEffort && config['reasoning_updates'] != true) {
@@ -290,7 +298,8 @@ class _Agent {
         final effective = {...config}
           ..remove('writer')
           ..remove('network')
-          ..remove('client_tools')
+            ..remove('client_tools')
+            ..remove('goals')
           ..remove('task_tools')
           ..remove('questions')
           ..remove('code_interrupt');
@@ -316,7 +325,7 @@ class _Agent {
         }, metadata: {'effective_reasoning': selectedEffort}));
       }
       var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
-      var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': []});
+      var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': <Object?>[]});
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
       final clientTools = config['client_tools'] as SendPort?;
       var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
@@ -328,7 +337,7 @@ class _Agent {
         return mcpCatalog;
       }
       Future<Json> readClientCatalog([CancellationToken? token]) async {
-        final current = clientTools == null ? const <String, dynamic>{'tools': []}
+        final current = clientTools == null ? const <String, dynamic>{'tools': <Object?>[]}
           : jsonObject(await callIsolate(clientTools, 'catalog', {
             'task_id': taskId, 'revision': clientCatalog['revision'],
           }, cancellation: token ?? work));
@@ -355,7 +364,7 @@ class _Agent {
         return runtimeCatalog ??= [...interface.hostCatalogFor(deferred), ...interface.externalCatalog(deferred)];
       }
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
-      var skillsCatalog = <String, dynamic>{'skills': []};
+      var skillsCatalog = <String, dynamic>{'skills': <Object?>[]};
       Future<Json> readSkills() async => jsonObject(await callIsolate(network, 'skills.catalog', {
           'task_id': taskId, 'cwd': cwd,
         }, cancellation: work));
@@ -403,7 +412,9 @@ class _Agent {
         );
       }
       Json? pendingInput;
-      if (!compact && !retry) {
+      if (settings['goalContinuation'] == true) {
+        event(await _append('context.injected', {'item': settings['goalItem']}));
+      } else if (!compact && !retry) {
         pendingInput = {
           'item': ConversationItem.user(prompt, attachments: settings['attachments']).toJson(),
           if (settings['message_id'] != null)
@@ -529,6 +540,14 @@ class _Agent {
       String? assistantMessageID;
       final committedOutputIDs = <String>{};
       var outputOrdinal = 0;
+      Future<void> countUsage(ModelUsage usage, {CancellationToken? token}) async {
+        uncachedTokensUsed += (usage.inputTokens - usage.cachedInputTokens).clamp(0, 0x7fffffffffffffff) + usage.outputTokens;
+        telemetry.add('input_tokens', usage.inputTokens);
+        telemetry.add('cached_input_tokens', usage.cachedInputTokens);
+        telemetry.add('cache_write_tokens', usage.cacheWriteTokens);
+        telemetry.add('output_tokens', usage.outputTokens);
+        await goal('usage', {'usage': {'input_tokens': uncachedTokensUsed}, 'lastUsage': usage.toJson()}, token);
+      }
       // Tool changes already have their own durable snapshot. The system
       // baseline is constant during this turn; record it on the first request.
       var instructionsRecorded = false;
@@ -563,11 +582,16 @@ class _Agent {
             method,
             {'provider': config['provider'], ...request().toJson()},
             onEvent: (value) {
-              if (active.isCancelled || method != 'respond' && value['type'] == 'model.output') return;
+              if (active.isCancelled && value['type'] != 'model.incomplete' || method != 'respond' && value['type'] == 'model.output') return;
               received = received.then((_) async {
                 if (receiveFailure != null) return;
                 try {
-                  if (value['type'] == 'model.output') {
+                  if (value['type'] == 'model.incomplete') {
+                    incompleteUsage = jsonObject(value['incompleteUsage']);
+                    // Accepted terminal usage drains before turn settlement, even
+                    // when an interrupt races the received provider failure.
+                    await countUsage(ModelUsage.fromJson(jsonObject(value['usage'])), token: _lifetime);
+                  } else if (value['type'] == 'model.output') {
                     final item = jsonObject(value['item']);
                     if (!committedOutputIDs.add(requiredString(item, 'id'))) return;
                     event(await _append('model.output', {
@@ -602,17 +626,10 @@ class _Agent {
             'commands': commands,
           }, timeout: null, cancellation: token) as String;
 
-      void countUsage(ModelUsage usage) {
-        uncachedTokensUsed += (usage.inputTokens - usage.cachedInputTokens).clamp(0, 0x7fffffffffffffff) + usage.outputTokens;
-        telemetry.add('input_tokens', usage.inputTokens);
-        telemetry.add('cached_input_tokens', usage.cachedInputTokens);
-        telemetry.add('cache_write_tokens', usage.cacheWriteTokens);
-        telemetry.add('output_tokens', usage.outputTokens);
-      }
-
       Future<void> compactContext(String reason) async {
         work.throwIfCancelled();
         event(await _append('compaction.started', {'reason': reason}));
+        final inputGoalIds = input.where(isUserGoalInstruction).map((item) => item.id).toSet();
         final CompactionResult result;
         try {
           result = CompactionResult.fromJson(await networkCall('compact'));
@@ -621,7 +638,7 @@ class _Agent {
           event(await _append('compaction.cancelled', {'reason': reason}));
           rethrow;
         }
-        countUsage(result.usage);
+        await countUsage(result.usage);
         final freshSkills = skillContext(skillsCatalog,
           contextWindow: baseline['context_limit'] as int?);
         final restored = restoreContext(
@@ -640,6 +657,9 @@ class _Agent {
           developerContextFirst: interface.developerContextFirst,
           skills: freshSkills.item,
         );
+        final replacementIds = restored.map((item) => item.id).toSet();
+        restored.addAll(input.where((item) => isUserGoalInstruction(item) &&
+          !inputGoalIds.contains(item.id) && !replacementIds.contains(item.id)));
         final size =
             estimateTokens(restored) +
             request().instructions.length ~/ 3;
@@ -667,6 +687,7 @@ class _Agent {
       }
 
       Future<void> finish(String text) async {
+        await goal('end');
         _accepting = false;
         telemetry.observe('turn', total.elapsed);
         event(
@@ -739,7 +760,15 @@ class _Agent {
           work.throwIfCancelled();
           telemetry.observe('model', modelTime.elapsed);
           telemetry.add('model_requests');
-          countUsage(reply.usage);
+          await countUsage(reply.usage);
+          for (final item in reply.output) {
+            for (final part in item.content) {
+              if (part['type'] == 'reasoning') await goal('item', {'item': {'type': 'reasoning', 'summary': [part['text'] ?? '']}});
+              if (part['type'] == 'text') await goal('item', {'item': {'type': 'agentMessage', 'text': part['text'] ?? '',
+                'phase': reply.calls.isEmpty ? 'final_answer' : 'commentary'}});
+            }
+          }
+          if (reply.output.isEmpty && reply.endTurn) await goal('item', {'item': {'type': 'agentMessage', 'text': '', 'phase': 'final_answer'}});
           final nextUsage = reply.usage.contextTokens;
           final nextItems = input.length + reply.output.where((item) => !committedOutputIDs.contains(item.id)).length;
           final calls = reply.calls;
@@ -799,14 +828,13 @@ class _Agent {
           usageTokens = nextUsage;
           usageItems = nextItems;
           if (nativeSearch) {
-            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+            await goal('account');
             continue;
           }
           if (calls.isEmpty) {
             if (_steering.isNotEmpty) continue;
             if (await takeNotifications()) continue;
             if (!reply.endTurn) continue;
-            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
             await finish(reply.text);
             return;
           }
@@ -819,6 +847,7 @@ class _Agent {
             final watch = Stopwatch()..start();
             Json result;
             var images = <Json>[];
+            var executionFailed = false;
             final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
             final preemption = _toolPreemption = Completer<void>();
             final link = CancellationHook(work, cellCancellation.cancel);
@@ -875,7 +904,7 @@ class _Agent {
                         'arguments': arguments, 'call_id': id, 'turn_id': turnId,
                       }, timeout: null, cancellation: cancellation);
                     } else if (service?.startsWith('goal.') == true) {
-                      output = await goals!.call(service!.substring(5), jsonObject(arguments), cancellation: cancellation);
+                      output = await goal(service!.substring(5), jsonObject(arguments), cancellation);
                     } else if (service?.startsWith('history.') == true) {
                       output = await callIsolate(
                         writer,
@@ -909,10 +938,10 @@ class _Agent {
                     } else {
                       output = await callIsolate(config['task_tools'] as SendPort, 'call', {
                         'task_id': taskId, 'provider': interface.id, 'cwd': cwd,
-                        'name': name, 'arguments': arguments,
+                        'name': name, 'arguments': arguments, 'call_id': id, 'turn_id': turnId,
                       }, timeout: null, cancellation: cancellation);
                     }
-                    if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+                    await goal('toolFinished', {'name': name, 'outcome': output is Map && output['isError'] == true ? 'unsuccessful' : 'success'}, cancellation);
                     if (nested) {
                       event(await _append('host_tool.completed', {
                         'id': id, 'parent_call_id': call.id, 'name': name, 'output': output,
@@ -959,6 +988,9 @@ class _Agent {
                 ? {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep interrupted by new input.'}
                 : {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
             } catch (error) {
+              // A returned script error is Completed { success: false } in
+              // Codex; an exception escaping the invoked handler is Failed.
+              executionFailed = true;
               result = {'error': error.toString()};
             } finally {
               if (!host!.hasRunningCells) cellCancellation.cancel();
@@ -966,7 +998,7 @@ class _Agent {
               link.dispose();
             }
             telemetry.observe('code', watch.elapsed);
-            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+            await goal('toolFinished', {'name': call.name, 'outcome': executionFailed ? 'executionFailed' : result['error'] == null ? 'success' : 'unsuccessful'});
             telemetry.add('code_cells');
             final item = interface.resultItem(call, result, images: images);
             event(
@@ -989,25 +1021,24 @@ class _Agent {
       }
     } catch (error) {
       telemetry.observe('turn', total.elapsed);
+      final code = switch (error) {RemoteFailure(:final code) => code, ModelFailure(:final code) => code, _ => null};
+      await goal('end', {'reason': cancellation.isCancelled ? 'cancelled'
+        : {'usage_limit', 'usage_limit_reached'}.contains(code) ? 'usageLimit' : 'error'}, _lifetime);
       event(
         await _append(
           cancellation.isCancelled ? 'turn.cancelled' : 'turn.failed',
-          {'error': error.toString(), 'telemetry': telemetry.snapshot()},
-          metadata: {'status': 'idle'},
+          {'error': error.toString(), 'telemetry': telemetry.snapshot(), 'incompleteUsage': ?incompleteUsage},
+          metadata: {'status': 'idle', if (incompleteUsage != null) 'uncached_tokens_used': uncachedTokensUsed},
         ),
       );
     } finally {
       _accepting = false;
       _steering.clear();
-      try {
-        if (goals?.active == true) await goals!.call('end', {}, cancellation: _lifetime);
-      } finally {
-        cancellation.cancel();
-        await host?.close();
-        workLink.dispose();
-        _workCancellation = null;
-        _cancellation = null;
-      }
+      cancellation.cancel();
+      await host?.close();
+      workLink.dispose();
+      _workCancellation = null;
+      _cancellation = null;
     }
   }
 }

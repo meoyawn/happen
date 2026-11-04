@@ -43,7 +43,7 @@ Future<void> main(List<String> arguments) async {
     await _run(flutter, ['pub', 'get'], work.path, cancellation, environment: environment);
     final configFile = File('${work.path}/.dart_tool/package_config.json');
     final config = jsonObject(jsonDecode(await configFile.readAsString()));
-    final framework = (config['packages'] as List).cast<Map>().singleWhere((package) => package['name'] == 'flutter');
+    final framework = (config['packages'] as List).map(jsonObject).singleWhere((package) => package['name'] == 'flutter');
     final resolvedFramework = Directory.fromUri(configFile.uri.resolve(framework['rootUri'] as String));
     if (await resolvedFramework.resolveSymbolicLinks() != await Directory('${sdk.path}/packages/flutter').resolveSymbolicLinks()) {
       throw StateError('Release dependencies resolved Flutter outside the stable SDK');

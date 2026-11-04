@@ -7,6 +7,7 @@ import 'package:server/server.dart';
 import 'package:test/test.dart';
 
 import '../support/openai_output.dart';
+import '../support/thread.dart';
 
 void main() {
   for (final providerId in ['openai', 'opencode']) {
@@ -101,12 +102,9 @@ void main() {
         );
         client = await AgentClient.connect(server!.uri);
       }
-      Future<Json> turn(String method, Json params) async {
-        final terminal = client!.events.stream.firstWhere((event) =>
-          ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']));
-        await client!.request(method, params);
-        final result = await terminal.timeout(const Duration(seconds: 20));
-        expect(result['type'], 'turn.completed', reason: result.toString());
+      Future<Json> turn(String id, {String prompt = '', bool compact = false}) async {
+        final result = await runTurn(client!, id, prompt: prompt, compact: compact);
+        expect(result['status'], 'completed', reason: result.toString());
         return result;
       }
       List<String> catalogText() => (requests.last[openCode ? 'messages' : 'input'] as List)
@@ -121,14 +119,13 @@ void main() {
       }
       int bodyCount() => 'PRIVATE_SKILL_BODY_START'.allMatches(jsonEncode(requests.last)).length;
       Future<void> send(String id, [String prompt = 'continue']) async {
-        await turn('task.send', {'task_id': id, 'prompt': prompt});
+        await turn(id, prompt: prompt);
         bounded();
       }
 
       await start();
-      final id = (await turn('task.start', {
-        'cwd': work.path, 'prompt': 'continue', 'settings': {'context_limit': 100000},
-      }))['task_id'] as String;
+      final id = await createThread(client!, {'cwd': work.path, 'settings': {'context_limit': 100000}});
+      await turn(id, prompt: 'continue');
       bounded();
       final initial = catalogText();
       expect(initial, hasLength(1));
@@ -169,7 +166,7 @@ void main() {
       // newer accounting. Neither may refund the already-emitted budget.
       for (final compacted in [false, true]) {
         if (compacted) {
-          await turn('task.compact', {'task_id': id});
+          await turn(id, compact: true);
           await send(id);
           expect(catalogText(), hasLength(1));
           expect(catalogText().single, isNot(initial.single));
@@ -179,7 +176,7 @@ void main() {
           expect(bodyCount(), 1);
         }
         final expected = catalogText();
-        final fork = jsonObject(await client!.request('task.fork', {'task_id': id}))['task_id'] as String;
+        final fork = jsonObject(await client!.request('thread/fork', {'threadId': id}))['thread']['id'] as String;
         await send(fork);
         expect(catalogText(), expected);
         expect(bodyCount(), 1);

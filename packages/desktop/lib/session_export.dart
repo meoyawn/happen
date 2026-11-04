@@ -78,7 +78,7 @@ Future<File> saveSessionTrace(AgentClient client, TraceStore desktop, {
         final events = page['events'] as List;
         if (events.isNotEmpty) {
           final encoded = await CancellableIsolate.run(
-            () => traceExportEvents(events.cast<Map>()).map(jsonEncode).join(','), cancellation);
+            () => traceExportEvents(events.map(jsonObject)).map(jsonEncode).join(','), cancellation);
           output.write(',$encoded');
           await output.flush();
         }

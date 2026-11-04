@@ -39,10 +39,18 @@ void main() {
       expect(pending['session_id'], inInclusiveRange(1000, 99999));
       expect(pending['chunk_id'], matches(r'^[0-9a-f]{6}$'));
       expect(pending['exit_code'], isNull);
-      final settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}, cancellation: cancellation));
-      expect(settled['output'], 'received:hello', reason: 'tty=$tty');
-      expect(settled['exit_code'], 0);
-      expect(settled['session_id'], isNull);
+      final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
+      final token = cancellation.merge(deadline), output = StringBuffer();
+      try {
+        var settled = jsonObject(await openai.call('write_stdin', {'session_id': pending['session_id'], 'chars': 'hello\n'}, cancellation: token));
+        output.write(settled['output']);
+        while (settled['session_id'] != null) {
+          settled = jsonObject(await openai.call('write_stdin', {'session_id': settled['session_id'], 'yield_time_ms': 1000}, cancellation: token));
+          output.write(settled['output']);
+        }
+        expect(output.toString(), 'received:hello', reason: 'tty=$tty');
+        expect(settled['exit_code'], 0); expect(settled['session_id'], isNull);
+      } finally { deadline.cancel(); }
     }
     final native = await opencode.execute(_call('shell', {'command': 'printf native'}), context);
     expect(native, containsPair('output', 'native'));

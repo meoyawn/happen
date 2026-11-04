@@ -57,7 +57,7 @@ void main() {
       '\n\n--- project-doc ---\n\nProject\n\n\nNested\n</INSTRUCTIONS>');
     expect(codex.renderInstructions({'cwd': '/repo', 'files': [{'text': 'New'}]}, initial).text,
       '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nThese AGENTS.md instructions replace all previously provided AGENTS.md instructions.\n\nNew\n</INSTRUCTIONS>');
-    expect(codex.renderInstructions({'cwd': '/repo', 'files': []}, initial).text,
+    expect(codex.renderInstructions({'cwd': '/repo', 'files': <Object?>[]}, initial).text,
       '# AGENTS.md instructions\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions no longer apply.\n</INSTRUCTIONS>');
   });
 
@@ -70,7 +70,7 @@ void main() {
     ]};
     for (final interface in [const OpenAIToolInterface(), const OpenCodeToolInterface()]) {
       expect(instructionUpdate(interface, current, previous), isNull);
-      expect(instructionUpdate(interface, {'cwd': '/repo', 'files': []}, null), isNull);
+      expect(instructionUpdate(interface, {'cwd': '/repo', 'files': <Object?>[]}, null), isNull);
       expect(instructionUpdate(interface, {'cwd': '/repo', 'files': [
         {'path': '/repo/AGENTS.md', 'text': 'Changed rules'},
       ]}, current)?.text, contains('Changed rules'));
@@ -82,14 +82,14 @@ void main() {
     final entry = jsonObject(raw);
     test('OpenCode upstream instruction rendering and updates $index', () {
       if (entry['kind'] == 'mcp') {
-        List<Json> catalog(List values) => [for (final value in values) {
+        List<Json> catalog(List<Object?> values) => [for (final value in values.map(jsonObject)) {
           'namespace': 'mcp__${mcpNamespace(value['server'] as String)}',
           'server_name': value['server'], 'namespace_description': value['instructions'],
         }];
         expect(renderMcpInstructions(catalog(entry['current'] as List),
           entry.containsKey('previous') ? catalog(entry['previous'] as List) : null), entry['expected']);
       } else {
-        Json snapshot(List files) => {'cwd': '/repo', 'files': [for (final file in files) {
+        Json snapshot(List<Object?> files) => {'cwd': '/repo', 'files': [for (final file in files.map(jsonObject)) {
           'path': file['path'], 'text': file['content'],
         }]};
         final rendered = opencode.renderInstructions(snapshot(entry['current'] as List),

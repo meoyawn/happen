@@ -299,8 +299,8 @@ class _Client implements AgentClient {
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'client.capabilities') return null;
-    if (method == 'session.list') return {'data': [], 'cursor': {}};
-    if (method == 'session.active') return {'data': {}};
+    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
+    if (method == 'session.active') return {'data': <String, Object?>{}};
     if (method == 'providers.list') {
       return {'providers': providers};
     }

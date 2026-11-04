@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 import 'support/openai_output.dart';
+import 'support/thread.dart';
 
 void main() {
   test('yielded exec resumes through wait and cold resume durably resets native sessions', () async {
@@ -57,15 +58,11 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
       server = await AgentServer.startEmbedded(directory: root.path, endpoint: 'http://127.0.0.1:${provider.port}/responses');
       client = await AgentClient.connect(server!.uri);
     }
-    Future<String> turn(String? id) async {
-      final terminal = client!.events.stream.firstWhere((event) =>
-        ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']));
-      await client!.request(id == null ? 'task.start' : 'task.send', {
-        if (id == null) 'cwd': root.path else 'task_id': id, 'prompt': id == null ? 'Start' : 'Continue',
-      });
-      final result = await terminal.timeout(const Duration(seconds: 10));
-      expect(result['type'], 'turn.completed', reason: result.toString());
-      return result['task_id'] as String;
+    Future<String> turn(String? previous) async {
+      final id = previous ?? await createThread(client!, {'cwd': root.path});
+      final result = await runTurn(client!, id, prompt: previous == null ? 'Start' : 'Continue');
+      expect(result['status'], 'completed', reason: result.toString());
+      return id;
     }
     await start();
     final id = await turn(null);
@@ -84,14 +81,12 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
     expect(jsonEncode(requests[3]['input']), contains('The tool runtime was restarted.'));
     expect(jsonEncode(requests[3]['input']), contains('Do not reuse earlier session or cell IDs.'));
     expect(printedOpenAIOutput((requests.last['input'] as List).last['output']), ['true']);
-    final history = (await client!.request('history.page', {'task_id': id}) as List).map(jsonObject).toList();
-    final resets = history.where((event) => event['type'] == 'input.committed' &&
-      event['data']['item']?['native']?['harness']?['reason'] == 'tool_runtime_restarted');
+    final history = await contextItems(client!, id);
+    final resets = history.where((item) => item['native']?['harness']?['reason'] == 'tool_runtime_restarted');
     expect(resets, hasLength(1), reason: 'The reset must be committed before the resumed model request');
     await turn(id);
-    final warmHistory = (await client!.request('history.page', {'task_id': id}) as List).map(jsonObject);
-    expect(warmHistory.where((event) => event['type'] == 'input.committed' &&
-      event['data']['item']?['native']?['harness']?['reason'] == 'tool_runtime_restarted'), hasLength(1),
+    final warmHistory = await contextItems(client!, id);
+    expect(warmHistory.where((item) => item['native']?['harness']?['reason'] == 'tool_runtime_restarted'), hasLength(1),
       reason: 'A live runtime must survive turn completion without another reset');
   });
 
@@ -175,34 +170,27 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    Future<List<Json>> turn(String prompt) async {
-      final terminal = client.events.stream.firstWhere((event) =>
-        ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']),
-      );
-      await client.request('task.start', {'cwd': root.path, 'prompt': prompt});
-      final result = await terminal.timeout(const Duration(seconds: 30));
-      expect(result['type'], 'turn.completed', reason: result.toString());
-      final history = await client.request('history.page', {'task_id': result['task_id'], 'limit': 100}) as List;
-      return history.map(jsonObject).toList();
+    Future<String> turn(String prompt) async {
+      final id = await createThread(client, {'cwd': root.path});
+      final result = await runTurn(client, id, prompt: prompt);
+      expect(result['status'], 'completed', reason: result.toString());
+      return id;
     }
-    Json completed(List<Json> history) => jsonObject(history.singleWhere(
-      (event) => event['type'] == 'tool.completed',
-    )['data']);
     List<String> modelOutput() => printedOpenAIOutput((requests.last['input'] as List).lastWhere((item) =>
       item['type'] == 'function_call_output' || item['type'] == 'custom_tool_call_output',
     )['output']);
 
-    final filtered = completed(await turn('filter'));
+    final filtered = await turn('filter');
     final selected = [{'uri': 'package:desktop/app.dart', 'id': 'app'}];
-    expect(filtered['values'], {'libraries': selected, 'complete': true});
+    expect(threadMetadata(root.path, filtered, 'values'), {'libraries': selected, 'complete': true});
     final filteredOutput = modelOutput();
     expect(jsonDecode(filteredOutput.single), {
       'libraries': selected,
       'structuredContent': {'bytes': 3 * 1024 * 1024},
     });
 
-    final printed = completed(await turn('print'));
-    expect(printed['values'], {'printed': true});
+    final printed = await turn('print');
+    expect(threadMetadata(root.path, printed, 'values'), {'printed': true});
     final preview = modelOutput().single;
     expect(preview, startsWith('Warning: truncated output'));
     expect(preview, contains('BEGIN'));

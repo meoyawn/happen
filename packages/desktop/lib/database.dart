@@ -8,7 +8,7 @@ import 'package:telemetry/telemetry.dart';
 Future<IsolateOwner> openDesktopDatabase(String directory) =>
     IsolateOwner.start(_databaseMain, {'directory': directory}, service: 'desktop.storage');
 
-void _databaseMain(List<Object?> args) async {
+Future<void> _databaseMain(List<Object?> args) async {
   final directory = jsonObject(args[1])['directory'] as String;
   Directory(directory).createSync(recursive: true);
   final db = openTracedDatabase('$directory/desktop.sqlite');

@@ -30,10 +30,14 @@ void main() {
     session = DesktopSession(client, await openDesktopDatabase(root.path),
       attachmentDirectory: '${root.path}/attachments');
     task = DesktopTask(client.id, 'Inspect context');
-    final page = await client.sessionRead('session.message.list', {'sessionID': client.id},
+    final page = await client.sessionRead('thread/items/list', {'threadId': client.id},
       cancellation: CancellationToken());
-    task.messages.addAll({for (final raw in page['data']) raw['id'] as String: jsonObject(raw)});
-    task.through = page['through'] as int;
+    for (final entry in (page['data'] as List).map(jsonObject)) {
+      final item = jsonObject(entry['item']);
+      task.messages[item['id'] as String] = {...item, 'turnId': entry['turnId'], 'order': task.messages.length};
+    }
+    if (task.messages.isNotEmpty) task.messages.values.last['tokens'] = client.store.modelSnapshot()['tokens'];
+    task.through = client.store.lastSequence;
     session.projects.add(Project('checkout', 'project', root.path, [task]));
   });
   tearDown(() async {
@@ -254,7 +258,7 @@ void main() {
       }
     }
     expect(RegExp('You are the saved system prompt.').allMatches(contents).length, 1);
-    expect(client.methods.where((method) => method == 'session.message.list'), hasLength(1));
+    expect(client.methods.where((method) => method == 'thread/items/list'), hasLength(1));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -306,7 +310,7 @@ void main() {
     final compacted = client.store.append('context.compacted', {'summary': 'Replacement', 'input': [
       ConversationItem.text('developer', 'New snapshot', id: 'item_replacement').toJson(),
     ]});
-    for (final event in compacted['session_events']) { client.events.add(jsonObject(event)); }
+    for (final event in compacted['notifications'] as List) { client.events.add(jsonObject(event)); }
     await tester.pump();
     await tester.runAsync(() async { gate.release.complete(); });
     await settleRead(tester);
@@ -317,7 +321,7 @@ void main() {
   });
 
   testWidgets('empty context renders envelope instructions without stale token usage', (tester) async {
-    client.store.append('context.compacted', {'summary': 'Checkpoint', 'input': []});
+    client.store.append('context.compacted', {'summary': 'Checkpoint', 'input': <Object?>[]});
     final config = {...client.config, 'provider': 'opencode', 'tool_interface': 'opencode',
       'instructions': 'Prompt from the request envelope'};
     client.store.append('task.created', config, metadata: {'config': config});
@@ -339,13 +343,13 @@ void main() {
   testWidgets('usage and raw input refresh together from agent snapshots during execution', (tester) async {
     Future<void> emit(String type, Json data) async {
       final record = client.store.append(type, data);
-      for (final event in record['session_events']) { client.events.add(jsonObject(event)); }
+      for (final event in record['notifications'] as List) { client.events.add(jsonObject(event)); }
       await tester.pump();
       await settleRead(tester);
     }
     // Open while this step is already running; its creation precedes the
     // snapshot fence, but its eventual usage must still update the pane.
-    await emit('model.started', {'assistantMessageID': 'msg_live', 'instructions': '', 'tools': []});
+    await emit('model.started', {'assistantMessageID': 'msg_live', 'instructions': '', 'tools': <Object?>[]});
     await showContext(tester);
     final reads = client.methods.where((method) => method == 'session.context').length;
     await emit('model.completed', {'assistantMessageID': 'msg_live', 'output': [
@@ -353,10 +357,10 @@ void main() {
     ], 'usage': {'input_tokens': 30, 'output_tokens': 3}});
     expect(find.text('33'), findsOneWidget);
     expect(find.text('120'), findsNothing);
-    await emit('context.compacted', {'summary': 'Checkpoint', 'input': []});
+    await emit('context.compacted', {'summary': 'Checkpoint', 'input': <Object?>[]});
     expect(find.text('33'), findsNothing);
     expect(find.text('120'), findsNothing);
-    await emit('model.started', {'assistantMessageID': 'msg_after', 'instructions': '', 'tools': []});
+    await emit('model.started', {'assistantMessageID': 'msg_after', 'instructions': '', 'tools': <Object?>[]});
     await emit('model.completed', {'assistantMessageID': 'msg_after', 'output': [
       ConversationItem.text('assistant', 'New window response', id: 'item_after').toJson(),
     ], 'usage': {'input_tokens': 10, 'output_tokens': 2}});
@@ -364,7 +368,7 @@ void main() {
     expect(client.methods.where((method) => method == 'session.context').length, greaterThan(reads));
     // Idle triggers the canonical snapshot refresh through the session listener.
     final completed = client.store.append('turn.completed', {});
-    for (final event in completed['session_events']) { client.events.add(jsonObject(event)); }
+    for (final event in completed['notifications'] as List) { client.events.add(jsonObject(event)); }
     await tester.pump();
     await settleRead(tester);
     expect(client.methods.where((method) => method == 'session.context').length, greaterThan(reads + 1));
@@ -380,7 +384,7 @@ class _Client implements AgentClient {
     store.append('task.created', config, metadata: {'config': config});
     store.append('input.committed', {'message_id': 'user',
       'item': ConversationItem.text('user', 'Raw request', id: 'item_user').toJson()});
-    store.append('model.started', {'assistantMessageID': 'msg_answer', 'instructions': config['instructions'], 'tools': []});
+    store.append('model.started', {'assistantMessageID': 'msg_answer', 'instructions': config['instructions'], 'tools': <Object?>[]});
     store.append('model.completed', {'assistantMessageID': 'msg_answer', 'output': [
       ConversationItem.text('assistant', 'Answer', id: 'item_answer').toJson(),
     ], 'usage': {'input_tokens': 95, 'cached_input_tokens': 25, 'output_tokens': 25, 'reasoning_tokens': 5}});

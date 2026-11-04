@@ -6,6 +6,7 @@ environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
   config: any
+  crypto: ^3.0.7
   path: ^1.9.1
   yaml: ^3.1.4
   protocol: any
@@ -17,3 +18,5 @@ dependencies:
   code_mode: any
   storage: any
   telemetry: any
+dev_dependencies:
+  test: ^1.26.3

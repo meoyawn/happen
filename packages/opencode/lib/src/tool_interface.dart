@@ -84,7 +84,8 @@ class _OpenCodeTools extends ToolRuntime {
   _OpenCodeTools(String cwd, CancellationToken cancellation) : native = NativeTools(cwd, cancellation);
   final NativeTools native;
   @override
-  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
+  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd,
+    String? callId, ToolItemEvent? onItem}) =>
       native.execute(name, jsonObject(arguments), cancellation: cancellation, cwd: cwd);
   @override
   Future<void> close() => native.close();
@@ -108,8 +109,8 @@ class _OpenCodeTools extends ToolRuntime {
               context.call('__resource_list', arguments, cancellation: cancellation),
               context.call('__resource_templates', arguments, cancellation: cancellation),
             ]);
-            return {'resources': jsonObject(pages[0])['resources'] ?? [],
-              'templates': jsonObject(pages[1])['resourceTemplates'] ?? []};
+            return {'resources': jsonObject(pages[0])['resources'] ?? <Object?>[],
+              'templates': jsonObject(pages[1])['resourceTemplates'] ?? <Object?>[]};
           }
           return context.call(name, name == '__fetch' ? {'fetch': arguments} : arguments, cancellation: cancellation);
         },

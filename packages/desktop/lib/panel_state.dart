@@ -28,8 +28,8 @@ SessionPanelState readSessionPanels(Json value) {
   final width = value['sessionWidth'];
   if (width is num && width.isFinite) state.sessionWidth = width.toDouble().clamp(400, double.infinity);
   final tabs = value['tabs'], closed = value['closed'];
-  state.tabs.addAll((tabs is List ? tabs : const []).whereType<String>().where(_knownPanel).toSet());
-  state.closed.addAll((closed is List ? closed : const []).whereType<String>()
+  state.tabs.addAll((tabs is List ? tabs : const <Object?>[]).whereType<String>().where(_knownPanel).toSet());
+  state.closed.addAll((closed is List ? closed : const <Object?>[]).whereType<String>()
     .where((tab) => _knownPanel(tab) && !state.tabs.contains(tab)).toSet());
   final pages = value['browserPages'];
   if (pages is Map) {

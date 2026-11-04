@@ -1,6 +1,6 @@
 part of '../storage.dart';
 
-/// OpenCode's generic JSON KV contract, in the existing session database.
+/// Generic JSON values share the owning session's SQLite database.
 /// Namespaces and domain behavior belong to callers, not the storage package.
 Object? _keyValue(TaskStore store, String method, Json arguments) {
   String string(String name, [String? fallback]) {

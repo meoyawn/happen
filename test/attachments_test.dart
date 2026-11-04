@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread.dart';
 
 void main() {
   late Directory root, sources;
@@ -44,18 +45,25 @@ void main() {
     await sources.delete(recursive: true);
   });
 
-  Future<Json> send(List<Json> attachments) async {
-    final finished = client.events.stream.firstWhere((event) =>
-      {'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type']));
-    await client.request('task.start', {'cwd': root.path, 'attachments': attachments});
-    final result = await finished.timeout(const Duration(seconds: 30));
-    expect(result['type'], 'turn.completed', reason: result.toString());
-    return result;
+  Future<String> send(List<Json> attachments) async {
+    final id = await createThread(client, {'cwd': root.path});
+    final result = await runTurn(client, id, settings: {'input': attachments});
+    expect(result['status'], 'completed', reason: result.toString());
+    return id;
   }
 
-  Future<List<FileSystemEntity>> staged() async => Directory('${root.path}/staging').existsSync()
-      ? (await Directory('${root.path}/staging').list(recursive: true).toList()).whereType<File>().toList()
-      : [];
+  Future<List<FileSystemEntity>> staged() async {
+    final directories = [Directory('${root.path}/staging')], files = <File>[];
+    while (directories.isNotEmpty) {
+      try {
+        await for (final entry in directories.removeLast().list(followLinks: false)) {
+          if (entry is Directory) directories.add(entry);
+          if (entry is File) files.add(entry);
+        }
+      } on PathNotFoundException { /* Disconnect cleanup may remove a queued directory. */ }
+    }
+    return files;
+  }
 
   test('remote originals larger than a WebSocket frame upload in large blocks and retain file contents', () async {
     // A real uncompressed 4096-square BMP is 64 MiB + 54 bytes. The server has
@@ -73,7 +81,7 @@ void main() {
     // Remove the client sources before task admission to prove portability.
     await sources.delete(recursive: true);
     await sources.create();
-    final terminal = await send([uploaded, file]);
+    final id = await send([uploaded, file]);
     final content = (requests.single['input'] as List).lastWhere((item) => item['role'] == 'user')['content'] as List;
     final imagePart = content.firstWhere((part) => part['type'] == 'input_image');
     expect(imagePart['detail'], 'high');
@@ -87,8 +95,8 @@ void main() {
     expect(path, isNot(startsWith(sources.path)));
     expect(await File(path).readAsString(), 'Remote file contents ✓\n');
     expect(await staged(), isEmpty);
-    final history = await client.request('history.page', {'task_id': terminal['task_id']}) as List;
-    expect(history.firstWhere((event) => event['type'] == 'input.committed')['data']['item']['content'], hasLength(2));
+    final history = jsonObject(await client.request('thread/items/list', {'threadId': id}));
+    expect((history['data'] as List).singleWhere((entry) => entry['item']['type'] == 'userMessage')['item']['content'], hasLength(2));
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('upload limits, offsets, connection ownership and cancellation release original data', () async {
@@ -106,7 +114,8 @@ void main() {
     final part = jsonObject(await client.request('attachments.finish', {'upload_id': id}));
     final other = await AgentClient.connect(server.uri);
     try {
-      await expectLater(other.request('task.start', {'cwd': root.path, 'attachments': [part]}), throwsStateError);
+      final id = await createThread(other, {'cwd': root.path});
+      await expectLater(other.request('turn/start', {'threadId': id, 'input': [part]}), throwsStateError);
     } finally { await other.close(); }
     await send([part]);
     expect(await staged(), isEmpty);
@@ -137,7 +146,8 @@ void main() {
     final data = ByteData.sublistView(Uint8List.fromList(Uri.parse(part['image_url'] as String).data!.contentAsBytes()));
     expect((data.getUint32(16), data.getUint32(20)), (3200, 3200));
     final corrupt = await File('${sources.path}/corrupt.png').writeAsString('not an image');
-    await expectLater(client.request('task.start', {'cwd': root.path, 'attachments': [
+    final id = await createThread(client, {'cwd': root.path});
+    await expectLater(client.request('turn/start', {'threadId': id, 'input': [
       {'type': 'image', 'name': 'corrupt.png', 'path': corrupt.path},
     ]}), throwsStateError);
     expect(requests, hasLength(1));

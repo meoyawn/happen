@@ -92,7 +92,11 @@ void main() {
     http.listen((request) async {
       final socket = await WebSocketTransformer.upgrade(request);
       peer.complete(socket);
-      socket.listen((raw) { if (!received.isClosed) received.add(jsonObject(jsonDecode(raw as String))); });
+      socket.listen((raw) {
+        final message = jsonObject(jsonDecode(raw as String));
+        if (message['method'] == 'initialize') { socket.add(jsonEncode({'id': message['id'], 'result': <String, Object?>{}})); }
+        else if (message['method'] != 'initialized' && !received.isClosed) { received.add(message); }
+      });
     });
     final requests = StreamIterator(received.stream);
     final client = await AgentClient.connect(Uri(scheme: 'unix', path: '${root.path}/s'));
@@ -114,7 +118,7 @@ void main() {
       final next = client.searchSkills('/server/project', 'new', cancellation: other);
       await requests.moveNext();
       final nextId = requests.current['id'];
-      socket.add(jsonEncode({'id': nextId, 'result': {'skills': [], 'truncated': false}}));
+      socket.add(jsonEncode({'id': nextId, 'result': {'skills': <Object?>[], 'truncated': false}}));
       expect((await next)['skills'], isEmpty);
       socket.add(jsonEncode({'id': oldId, 'result': {'skills': [{'name': 'obsolete'}]}}));
       socket.add(jsonEncode({'id': fileId, 'result': {'paths': ['main.dart'], 'truncated': false}}));

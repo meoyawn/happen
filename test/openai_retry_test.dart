@@ -632,7 +632,7 @@ Future<String> _search(ResponsesClient client, [CancellationToken? cancellation]
   T? value;
   Object? error;
   var settled = false;
-  future.then((result) { value = result; settled = true; }, onError: (Object failure) { error = failure; settled = true; });
+  unawaited(future.then((result) { value = result; settled = true; }, onError: (Object failure) { error = failure; settled = true; }));
   time.flushMicrotasks();
   time.elapse(within);
   expect(settled, isTrue, reason: 'Retry operation did not settle');

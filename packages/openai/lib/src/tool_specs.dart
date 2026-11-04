@@ -176,7 +176,7 @@ const hostCatalog = <Json>[
     'name': 'curr_time', 'tool_name': 'curr_time', 'namespace': 'clock',
     'namespace_description': 'Tools for reading and waiting on time.',
     'description': 'Return the current time in UTC.',
-    'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': false},
+    'parameters': {'type': 'object', 'properties': <String, Object?>{}, 'additionalProperties': false},
     'output_schema': {'type': 'object', 'properties': {
       'current_time': {'type': 'string', 'description': 'Current UTC time formatted as YYYY-MM-DD HH:MM:SS UTC.'},
     }, 'required': ['current_time'], 'additionalProperties': false},

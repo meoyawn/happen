@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-enum OpenCodeLayout { top, side, inbox }
-
 // OpenCode: ui/src/styles/tailwind/index.css and theme/themes/oc-2.json.
 const opencodeSessionWidth = 744.0;
 const opencodeInk = Color(0xff161616);

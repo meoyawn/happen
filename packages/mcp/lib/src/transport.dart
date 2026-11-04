@@ -154,7 +154,7 @@ class McpConnection {
     version = '2025-11-25';
     final result = await request('initialize', {
       'protocolVersion': version,
-      'capabilities': {},
+      'capabilities': <String, Object?>{},
       'clientInfo': {'name': 'happen', 'version': '0.1.0'},
     }, cancellation: cancellation);
     final selected = result['protocolVersion'];
@@ -201,7 +201,7 @@ class McpConnection {
               'name': 'happen',
               'version': '0.1.0',
             },
-            'io.modelcontextprotocol/clientCapabilities': {},
+            'io.modelcontextprotocol/clientCapabilities': <String, Object?>{},
           },
       },
     };

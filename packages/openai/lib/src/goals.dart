@@ -4,7 +4,7 @@ const goalCatalog = <Json>[
   {
     'name': 'get_goal',
     'description': 'Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.',
-    'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': false},
+    'parameters': {'type': 'object', 'properties': <String, Object?>{}, 'required': <Object?>[], 'additionalProperties': false},
   },
   {
     'name': 'create_goal',

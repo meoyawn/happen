@@ -154,18 +154,18 @@ void main() {
             if (firstCalls.length == 2) twoCalls.complete();
           }
         });
-        final done = owner.terminal();
         final started = jsonObject(
-          await owner.request('task.start', {
+          await owner.request('thread/start', {
             'cwd': root.path,
-            'prompt': 'parallel',
-            'client_tools': [browserTool],
+            'dynamicTools': [browserTool],
           }),
         );
-        final task = started['task_id'];
+        final task = started['thread']['id'] as String;
+        final done = owner.terminal(task);
+        await owner.request('turn/start', {'threadId': task, 'input': [{'type': 'text', 'text': 'parallel'}]});
         await twoCalls.future.timeout(const Duration(seconds: 10));
         await subscription.cancel();
-        await observer.request('task.subscribe', {'task_id': task});
+        await observer.request('thread/read', {'threadId': task});
         final wrongOwner = observer.incoming.stream.firstWhere(
           (message) => message['id'] == firstCalls.first['id'],
         );
@@ -183,11 +183,11 @@ void main() {
         owner.respond(firstCalls.first, 'first title');
         final completed = await done;
         expect(
-          completed['type'],
-          'turn.completed',
+          completed['status'],
+          'completed',
           reason: completed.toString(),
         );
-        final answer = completed['data']['text'] as String;
+        final answer = await owner.answer(task);
         expect(answer, contains('first title'));
         expect(answer, contains('second title'));
         expect(answer, isNot(contains('forged')));
@@ -201,8 +201,8 @@ void main() {
         final direct = owner.incoming.stream.firstWhere(
           (v) => v['method'] == 'tools.call',
         );
-        final disconnected = observer.terminal(after: completed['seq'] as int);
-        await owner.request('task.send', {'task_id': task, 'prompt': 'direct'});
+        final disconnected = observer.terminal(task);
+        await owner.request('turn/start', {'threadId': task, 'input': [{'type': 'text', 'text': 'direct'}]});
         final pending = await direct.timeout(const Duration(seconds: 10));
         expect(pending['params']['arguments'], {'tab': 3});
         expect(
@@ -214,8 +214,8 @@ void main() {
         );
         await owner.close();
         final terminal = await disconnected;
-        expect(terminal['type'], 'turn.completed', reason: terminal.toString());
-        expect(terminal['data']['text'], contains('outcome is unknown'));
+        expect(terminal['status'], 'completed', reason: terminal.toString());
+        expect(await observer.answer(task), contains('outcome is unknown'));
         final removal = (requests.last['input'] as List).lastWhere(
           (v) => v['role'] == 'developer',
         );
@@ -224,7 +224,7 @@ void main() {
           contains('Removed deferred tool namespaces:'),
         );
         expect(openAIMessageText(removal as Map), contains('- client: Tools in the client namespace.'));
-        expect(openAIMessageText(removal as Map), contains('No deferred tool namespaces remain.'));
+        expect(openAIMessageText(removal), contains('No deferred tool namespaces remain.'));
 
         // Reattachment starts a new ownership lifetime with the same stable names.
         await observer.request('tools.register', {
@@ -234,19 +234,19 @@ void main() {
         final afterReconnect = observer.incoming.stream.firstWhere(
           (v) => v['method'] == 'tools.call',
         );
-        final cancelled = observer.terminal(after: terminal['seq'] as int);
-        await observer.request('task.send', {
-          'task_id': task,
-          'prompt': 'direct',
-        });
+        final cancelled = observer.terminal(task);
+        final activeTurn = jsonObject(await observer.request('turn/start', {
+          'threadId': task,
+          'input': [{'type': 'text', 'text': 'direct'}],
+        }));
         final active = await afterReconnect.timeout(
           const Duration(seconds: 10),
         );
         final cancelNotification = observer.incoming.stream.firstWhere(
           (v) => v['method'] == 'tools.cancel',
         );
-        await observer.request('task.cancel', {'task_id': task});
-        expect((await cancelled)['type'], 'turn.cancelled');
+        await observer.request('turn/interrupt', {'threadId': task, 'turnId': activeTurn['turn']['id']});
+        expect((await cancelled)['status'], 'interrupted');
         expect((await cancelNotification)['params']['call_id'], active['id']);
         expect((await observer.request('ping') as Map)['version'], '0.1.0');
       },
@@ -260,16 +260,6 @@ class _Peer {
     socket.listen(
       (raw) {
         final message = jsonObject(jsonDecode(raw as String));
-        if (message.containsKey('event') &&
-            !_closing &&
-            socket.readyState == WebSocket.open) {
-          socket.add(
-            jsonEncode({
-              'method': 'events.ack',
-              'params': {'count': 1},
-            }),
-          );
-        }
         final reply = message['method'] == null
             ? _pending.remove(message['id'])
             : null;
@@ -303,12 +293,14 @@ class _Peer {
       );
     }
     try {
-      return _Peer(
+      final peer = _Peer(
         await WebSocket.connect(
           uri.scheme == 'unix' ? 'ws://localhost/ws' : uri.toString(),
           customClient: http,
         ),
       );
+      await peer.request('initialize', {'clientInfo': {'name': 'client-tools-test', 'version': '1'}});
+      return peer;
     } finally {
       http.close();
     }
@@ -321,19 +313,14 @@ class _Peer {
     return reply.future.timeout(const Duration(seconds: 10));
   }
 
-  Future<Json> terminal({int after = 0}) => incoming.stream
-      .where((v) => v['event'] != null)
-      .map((v) => jsonObject(v['event']))
-      .firstWhere(
-        (v) =>
-            [
-              'turn.completed',
-              'turn.cancelled',
-              'turn.failed',
-            ].contains(v['type']) &&
-            (v['seq'] as int? ?? 0) > after,
-      )
-      .timeout(const Duration(seconds: 10));
+  Future<Json> terminal(String id) async => jsonObject((await incoming.stream.firstWhere((event) =>
+    event['method'] == 'turn/completed' && event['params']['threadId'] == id)
+      .timeout(const Duration(seconds: 10)))['params']['turn']);
+  Future<String> answer(String id) async {
+    final page = jsonObject(await request('thread/items/list', {'threadId': id}));
+    return (page['data'] as List).where((entry) => entry['item']['type'] == 'agentMessage')
+      .map((entry) => entry['item']['text']).join('\n');
+  }
   void respond(Json request, String text) => socket.add(
     jsonEncode({
       'id': request['id'],

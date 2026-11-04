@@ -3,6 +3,34 @@ language: dart
 toolchains:
   default: system
 tasks:
+  analyze:
+    description: Check Dart types and configured lint rules across the workspace
+    command: dart analyze
+    preset: utility
+    inputs:
+      - analysis_options.yaml
+      - pubspec.yaml
+      - pubspec.lock
+      - packages/**/*
+      - test/**/*
+      - tool/**/*
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  check:
+    description: Run all static, unit, and end-to-end checks
+    command: noop
+    deps:
+      - '~:test-unit'
+      - '~:test-e2e'
+      - '~:analyze'
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+
   build-cli:
     description: Build the single-file macOS arm64 Happen AOT CLI with embedded native libraries
     command: dart tool/build_cli.dart
@@ -41,7 +69,7 @@ tasks:
 
   test-unit:
     description: Run source-level Dart tests without building the CLI
-    command: dart test --exclude-tags e2e
+    command: dart run tool/test_unit.dart
     preset: utility
     inputs:
       - pubspec.yaml
@@ -54,7 +82,7 @@ tasks:
       outputStyle: stream
 
   test-e2e:
-    description: Compare real outbound OpenAI requests and timings against Codex
+    description: Compare real outbound OpenAI requests and behavior against Codex
     command: dart run tool/test_e2e.dart
     preset: utility
     inputs:

@@ -1,7 +1,7 @@
 /// Chrome flow arrows bind to synchronous slices on their source and target
 /// threads. Async spans alone cannot anchor them. Zero-duration slices keep
 /// these transport endpoints visible without inventing execution time.
-Iterable<Map<String, dynamic>> traceExportEvents(Iterable<Map> events) sync* {
+Iterable<Map<String, dynamic>> traceExportEvents(Iterable<Map<Object?, Object?>> events) sync* {
   for (final event in events) {
     final phase = event['ph'];
     if (phase == 's' || phase == 'f') {

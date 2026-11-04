@@ -27,6 +27,11 @@ class CommandRunner {
   }) {
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
+    // execve and PTY argv cannot represent NUL. Do not let native CString
+    // conversion silently run a truncated command instead of failing launch.
+    if ([executable, directory, ...arguments].any((value) => value.contains('\u0000'))) {
+      throw const FormatException('Process arguments and working directory must not contain NUL');
+    }
     if (_closing != null) throw StateError('Command runner is closed');
     final operation = _start(executable, arguments, directory, cancellation, timeout, tty);
     _starting.add(operation);

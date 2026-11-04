@@ -328,7 +328,7 @@ void main() {
   });
 }
 
-void _cpuBoundCell(List<Object?> arguments) async {
+Future<void> _cpuBoundCell(List<Object?> arguments) async {
   final parent = arguments[0] as SendPort;
   final token = CodeCancellationToken.shared(arguments[1] as int);
   try {

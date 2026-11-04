@@ -8,6 +8,7 @@ import 'package:telemetry/telemetry.dart';
 export 'package:cancellation_token/cancellation_token.dart';
 export 'src/attachments.dart';
 export 'src/session.dart';
+export 'src/thread.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -273,7 +274,7 @@ class IsolateOwner {
   Future<void>? _closing;
 
   static Future<IsolateOwner> start(
-    void Function(List<Object?>) entry,
+    Future<void> Function(List<Object?>) entry,
     Json config, {
     String service = 'network',
   }
@@ -329,7 +330,7 @@ class IsolateOwner {
       );
       await done.timeout(const Duration(seconds: 2));
     } finally {
-      _ownerExits.remove(port);
+      unawaited(_ownerExits.remove(port));
       _exit.close();
       _errors.close();
       isolate.kill();
@@ -337,9 +338,9 @@ class IsolateOwner {
   }
 }
 
-void _tracedOwnerMain(List<Object?> arguments) {
-  final entry = arguments[0] as void Function(List<Object?>);
+Future<void> _tracedOwnerMain(List<Object?> arguments) async {
+  final entry = arguments[0] as Future<void> Function(List<Object?>);
   final config = jsonObject(arguments[2]);
   final context = traceContextFrom(config['_trace'], service: config['_trace_service'] as String);
-  withTrace(context, () => entry([arguments[1], config]));
+  await withTrace(context, () => entry([arguments[1], config]));
 }

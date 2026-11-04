@@ -7,10 +7,11 @@ import 'package:server/server.dart';
 import 'package:test/test.dart';
 
 import 'support/openai_output.dart';
+import 'support/thread.dart';
 
 void main() {
   for (final lab in ['openai', 'opencode']) {
-    test('$lab cancels foreground tools and preserves task sessions until hibernation, archive, or shutdown', () async {
+    test('$lab cancels foreground tools and preserves task sessions until idle unloading, archive, or shutdown', () async {
       final root = await Directory.systemTemp.createTemp('tool-cancellation-');
       final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       AgentServer? server;
@@ -43,6 +44,7 @@ wait
       }));
       await File('${root.path}/config.yaml').writeAsString(jsonEncode({
         'default_provider': lab,
+        'idle_unload_seconds': 0,
         'providers': {'opencode': {'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1'}},
         'mcp_servers': {'local': {'command': Platform.resolvedExecutable,
           'args': [File('test/fixtures/mcp_stdio.dart').absolute.path], 'legacy_fallback': false}},
@@ -113,29 +115,41 @@ wait
       server = await AgentServer.startEmbedded(directory: root.path,
         configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${provider.port}/responses');
       client = await AgentClient.connect(server.uri);
-      Future<Json> turn(String method, Json params) async {
-        final terminal = client!.events.stream.firstWhere((event) =>
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request(method, params);
-        final event = await terminal.timeout(const Duration(seconds: 10));
-        expect(event['type'], 'turn.completed', reason: event.toString());
-        return event;
+      final id = await createThread(client, {'cwd': '${root.path}/a'});
+      Future<Json> terminal() async => jsonObject((await client!.events.stream.firstWhere((event) =>
+        event['method'] == 'turn/completed' && event['params']['threadId'] == id)
+          .timeout(const Duration(seconds: 10)))['params']['turn']);
+      Future<Object?> send(String prompt, {bool steer = false}) => client!.request('turn/start', {
+        'threadId': id, 'input': [{'type': 'text', 'text': prompt}], if (steer) 'delivery': 'steer',
+      });
+      Future<void> interrupt() async {
+        final snapshot = jsonObject(await client!.request('thread/read', {'threadId': id, 'includeTurns': true}));
+        await client!.request('turn/interrupt', {'threadId': id, 'turnId': (snapshot['thread']['turns'] as List).last['id']});
       }
-      final first = await turn('task.start', {'cwd': '${root.path}/a', 'prompt': 'start'});
-      final id = first['task_id'] as String;
+      Future<Json> turn(String prompt) async {
+        final result = await runTurn(client!, id, prompt: prompt);
+        expect(result['status'], 'completed', reason: result.toString());
+        return result;
+      }
+      Future<List<Json>> hostResults(String name) async {
+        final page = jsonObject(await client!.request('thread/items/list', {'threadId': id, 'limit': 500}));
+        return [for (final entry in page['data'] as List)
+          if (entry['item']['type'] == 'dynamicToolCall' && entry['item']['tool'] == name)
+            jsonObject(jsonDecode(entry['item']['contentItems'][0]['text'] as String))];
+      }
+      await turn('start');
       final a = File('${root.path}/a/session.pid'), b = File('${root.path}/b/session.pid');
       await _until(() => a.exists());
       expect(await _alive(a), isTrue, reason: 'A task-owned process must survive turn completion');
       if (lab == 'openai') {
-        final history = await client.request('history.page', {'task_id': id}) as List;
-        session = history.singleWhere((event) => event['type'] == 'host_tool.completed')['data']['output']['session_id'] as int;
+        session = (await hostResults('exec_command')).single['session_id'] as int;
       }
-      await turn('task.send', {'task_id': id, 'prompt': 'session'});
+      await turn('session');
       if (lab == 'openai') {
-        final history = await client.request('history.page', {'task_id': id}) as List;
-        expect(history.where((event) => event['type'] == 'host_tool.completed').last['data']['output']['output'], 'received:hello\n');
+        expect((await hostResults('write_stdin')).last['output'], 'received:hello\n');
       }
-      final second = await turn('task.start', {'cwd': '${root.path}/b', 'prompt': 'start'});
+      final second = await createThread(client, {'cwd': '${root.path}/b'});
+      expect((await runTurn(client, second, prompt: 'start'))['status'], 'completed');
       await _until(() => b.exists());
       final probeToken = CancellationToken(), siblingToken = CancellationToken();
       addTearDown(probeToken.cancel); addTearDown(siblingToken.cancel);
@@ -146,20 +160,19 @@ wait
       }
       final process = (await probe())['pid'];
       final sibling = expectLater(callIsolate(server.network.port, 'mcp.call', {
-        'task_id': second['task_id'], 'name': 'mcp__local__probe', 'arguments': {'action': 'wait'},
+        'task_id': second, 'name': 'mcp__local__probe', 'arguments': {'action': 'wait'},
       }, cancellation: siblingToken), throwsA(isA<CancelledException>()));
       await _until(() async => (await probe())['waiting'] == 1);
       for (final steer in [true, false]) {
-        final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request('task.send', {'task_id': id, 'prompt': 'mcp'});
+        final done = terminal();
+        await send('mcp');
         await _until(() async => (await probe())['waiting'] == 3);
         if (steer) {
-          await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+          await send('continued', steer: true);
         } else {
-          await client.request('task.cancel', {'task_id': id});
+          await interrupt();
         }
-        expect((await terminal.timeout(const Duration(seconds: 5)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
+        expect((await done)['status'], steer ? 'completed' : 'interrupted');
         await _until(() async => (await probe())['waiting'] == 1);
         expect((await probe())['pid'], process, reason: 'Cancellation must preserve the shared MCP server and sibling call');
       }
@@ -167,18 +180,17 @@ wait
       await _until(() async => (await probe())['waiting'] == 0);
       if (lab == 'openai') {
         for (final steer in [true, false]) {
-          final started = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-            event['type'] == 'tool.started' && event['data']['name'] == 'sleep');
-          final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-            ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-          await client.request('task.send', {'task_id': id, 'prompt': 'sleep'});
+          final started = client.events.stream.firstWhere((event) => event['params']?['threadId'] == id &&
+            event['method'] == 'item/started' && event['params']['item']['tool'] == 'sleep');
+          final done = terminal();
+          await send('sleep');
           await started.timeout(const Duration(seconds: 3));
           if (steer) {
-            await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+            await send('continued', steer: true);
           } else {
-            await client.request('task.cancel', {'task_id': id});
+            await interrupt();
           }
-          expect((await terminal.timeout(const Duration(seconds: 3)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
+          expect((await done)['status'], steer ? 'completed' : 'interrupted');
           if (steer) {
             expect((modelRequests.last['input'] as List).where((item) => item['type'] == 'function_call_output')
               .any((item) => item['output'] is String && (item['output'] as String).endsWith('Sleep interrupted by new input.')), isTrue);
@@ -186,73 +198,73 @@ wait
         }
       }
       for (final steer in [true, false]) {
-        final started = client.events.stream.firstWhere((event) => event['task_id'] == id && event['type'] == 'tool.started');
-        final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request('task.send', {'task_id': id, 'prompt': 'spin'});
-        await started;
+        final started = client.events.stream.firstWhere((event) => event['params']?['threadId'] == id &&
+          event['method'] == 'item/started' && event['params']['item']['type'] == 'dynamicToolCall');
+        final done = terminal();
+        await send('spin');
+        await Future.any([started, done.then((turn) => throw StateError('Spin ended before tool admission: $turn'))])
+          .timeout(const Duration(seconds: 5));
         await Future<void>.delayed(const Duration(milliseconds: 50));
         if (steer) {
-          await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+          await send('continued', steer: true);
         } else {
-          await client.request('task.cancel', {'task_id': id});
+          await interrupt();
         }
-        expect((await terminal.timeout(const Duration(seconds: 5)))['type'], steer ? 'turn.completed' : 'turn.cancelled');
+        expect((await done)['status'], steer ? 'completed' : 'interrupted');
       }
       for (final steer in [true, false]) {
         final foreground = File('${root.path}/a/foreground.pid'), child = File('${root.path}/a/child.pid');
         if (await foreground.exists()) await foreground.delete();
         if (await child.exists()) await child.delete();
-        final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request('task.send', {'task_id': id, 'prompt': 'short'});
+        final done = terminal();
+        await send('short');
         await _until(() => child.exists());
         expect(await _alive(foreground), isTrue);
         if (steer) {
-          await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
+          await send('continued', steer: true);
         } else {
-          await client.request('task.cancel', {'task_id': id});
+          await interrupt();
         }
-        final event = await terminal.timeout(const Duration(seconds: 5));
-        expect(event['type'], steer ? 'turn.completed' : 'turn.cancelled', reason: event.toString());
+        final event = await done;
+        expect(event['status'], steer ? 'completed' : 'interrupted', reason: event.toString());
         await _until(() async => !await _alive(foreground) && !await _alive(child));
         expect(await _alive(a), isTrue);
         expect(await _alive(b), isTrue);
       }
       final waitingSession = File('${root.path}/a/wait-session.pid');
       if (lab == 'openai') {
-        final terminal = client.events.stream.firstWhere((event) => event['task_id'] == id &&
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request('task.send', {'task_id': id, 'prompt': 'start-wait'});
+        final done = terminal();
+        await send('start-wait');
         await _until(() => _alive(waitingSession));
-        await client.request('task.send', {'task_id': id, 'prompt': 'continued', 'delivery': 'steer'});
-        expect((await terminal.timeout(const Duration(seconds: 5)))['type'], 'turn.completed');
+        await send('continued', steer: true);
+        expect((await done)['status'], 'completed');
         expect(await _alive(waitingSession), isTrue, reason: 'Cancelling the initial exec wait must preserve its task-owned process');
       }
       Future<void> stopWith(String method) async {
         final child = File('${root.path}/a/child.pid');
         if (await child.exists()) await child.delete();
-        final terminal = client!.events.stream.firstWhere((event) => event['task_id'] == id &&
-          ['turn.completed', 'turn.cancelled', 'turn.failed'].contains(event['type']));
-        await client.request('task.send', {'task_id': id, 'prompt': 'short'});
+        final done = terminal();
+        await send('short');
         await _until(() => _alive(child));
-        await client!.request(method, {'task_id': id});
-        expect((await terminal)['type'], 'turn.cancelled');
+        if (method == 'turn/interrupt') { await interrupt(); }
+        else { await client!.request(method, {'threadId': id}); }
+        expect((await done)['status'], 'interrupted');
         expect(await _alive(child), isFalse);
       }
-      await stopWith('task.hibernate');
+      await stopWith('turn/interrupt');
+      await unloadThread(client, id);
       expect(await _alive(a), isFalse);
       if (lab == 'openai') expect(await _alive(waitingSession), isFalse);
       expect(await _alive(b), isTrue);
       await a.delete();
-      await turn('task.send', {'task_id': id, 'prompt': 'start'});
+      await turn('start');
       await _until(() => a.exists());
       expect(await _alive(a), isTrue);
-      await stopWith('task.archive');
+      await stopWith('thread/archive');
       expect(await _alive(a), isFalse);
       expect(await _alive(b), isTrue);
-      await client.request('task.cancel', {'task_id': second['task_id']});
-      expect(await _alive(b), isTrue, reason: 'Stop does not hibernate a task');
+      await client.request('task.cancel', {'task_id': second});
+      expect(await _alive(b), isTrue, reason: 'Stop does not unload a subscribed thread');
       await client.close(); client = null;
       await server.close(); server = null;
       expect(await _alive(b), isFalse);

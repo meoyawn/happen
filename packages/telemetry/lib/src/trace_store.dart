@@ -101,7 +101,7 @@ void _traceMain(List<Object?> arguments) {
   ''');
   final insert = db.prepare('INSERT INTO trace_event(trace_id, session_id, ts_us, data) VALUES (?, ?, ?, ?)');
   final bind = db.prepare('INSERT OR IGNORE INTO session_trace(trace_id, session_id) VALUES (?, ?)');
-  final pending = <Map>[];
+  final pending = <Map<Object?, Object?>>[];
   final port = ReceivePort();
   Timer? timer;
   String? failure;

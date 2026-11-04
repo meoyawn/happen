@@ -150,7 +150,7 @@ void main() {
       ]), isTrue, reason: session.error);
       await _until(session, () => session.task?.running == false);
       final attachments = sent.single['params']['attachments'] as List;
-      final transmittedImages = attachments.where((part) => part['type'] == 'image').toList();
+      final transmittedImages = attachments.map(jsonObject).where((part) => part['type'] == 'image').toList();
       expect(transmittedImages, hasLength(2));
       expect(transmittedImages.any((part) => part.containsKey('path') || part.containsKey('upload_id')), isFalse);
       expect(transmittedImages.fold<int>(0, (size, part) => size + attachmentDataUrl(jsonObject(part)).length), lessThanOrEqualTo(32 * 1024 * 1024));

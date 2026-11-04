@@ -106,7 +106,7 @@ class McpOAuth {
       final current = _credentials;
       if (current == null) { _needsLogin = true; return null; }
       if (current['refresh_token'] != saved['refresh_token'] &&
-          (current['expires_at'] == null || current['expires_at'] > DateTime.now().millisecondsSinceEpoch + 60000)) {
+          (current['expires_at'] == null || (current['expires_at'] as int) > DateTime.now().millisecondsSinceEpoch + 60000)) {
         _rejected = false;
         return current['access_token'] as String;
       }
@@ -299,7 +299,7 @@ class McpOAuth {
     // Discovery is deliberately unauthenticated. Resource-only headers never
     // travel to a separate authorization server or metadata origin.
     final probe = await _request('POST', resourceUri, token, resourceHeaders: true, body: {
-      'jsonrpc': '2.0', 'id': newId(), 'method': 'server/discover', 'params': {},
+      'jsonrpc': '2.0', 'id': newId(), 'method': 'server/discover', 'params': <String, Object?>{},
     });
     if (probe.status == 401 || probe.status == 403) {
       final next = _bearerChallenge(probe.headers['www-authenticate'] ?? []);
@@ -393,7 +393,7 @@ class McpOAuth {
     if (access is! String || access.trim().isEmpty || RegExp(r'[\r\n]').hasMatch(access) ||
         (response['token_type'] as String? ?? 'Bearer').toLowerCase() != 'bearer' ||
         response['refresh_token'] != null && response['refresh_token'] is! String ||
-        response['expires_in'] != null && (response['expires_in'] is! num || response['expires_in'] < 0)) {
+        response['expires_in'] != null && (response['expires_in'] is! num || (response['expires_in'] as num) < 0)) {
       throw const McpFailure('MCP authorization server returned invalid credentials');
     }
     return {
@@ -423,7 +423,7 @@ class McpOAuth {
       request.followRedirects = false;
       request.headers.set('Accept', 'application/json, text/event-stream');
       if (resourceHeaders && uri.origin == _webUri(_url).origin) {
-        for (final entry in jsonObject(config['headers'] ?? {}).entries) { request.headers.set(entry.key, entry.value); }
+        for (final entry in jsonObject(config['headers'] ?? {}).entries) { request.headers.set(entry.key, entry.value as Object); }
         for (final entry in jsonObject(config['header_env'] ?? {}).entries) {
           final value = Platform.environment[entry.value];
           if (value == null) throw const McpFailure('MCP credential environment variable is missing');

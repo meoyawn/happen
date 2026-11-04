@@ -179,7 +179,14 @@ class OpenAIProvider implements ModelProvider {
       verbosity: request.settings['verbosity'] as String? ?? 'low',
       reasoningSummary:
           request.settings['reasoning_summary'] as String? ?? 'auto',
-      onEvent: onEvent,
+      onEvent: (event) {
+        if (event['type'] != 'model.incomplete') { onEvent?.call(event); return; }
+        final usage = jsonObject(event['usage']);
+        onEvent?.call({'type': 'model.incomplete',
+          'usage': ModelUsage.fromJson({...usage, 'cache_write_tokens': usage['cache_write_input_tokens'],
+            'reasoning_tokens': usage['reasoning_output_tokens']}).toJson(),
+          'incompleteUsage': {'response_id': event['response_id'], 'usage': usage}});
+      },
     );
   }
 
@@ -190,7 +197,7 @@ class OpenAIProvider implements ModelProvider {
     void Function(Json)? onEvent,
   }) async {
     final completed = <Object, ConversationItem>{};
-    Object key(Json item) => item['id'] ?? item;
+    Object key(Json item) => item['id'] as String? ?? item;
     var deferred = false;
     final reply = await _respond(
       request,
@@ -277,6 +284,9 @@ class OpenAIProvider implements ModelProvider {
     outputTokens: (usage['output_tokens'] as num? ?? 0).toInt(),
     cachedInputTokens:
         (usage['input_tokens_details']?['cached_tokens'] as num? ?? 0).toInt(),
+    cacheWriteTokens: (usage['input_tokens_details']?['cache_write_tokens'] as num? ?? 0).toInt(),
+    reasoningTokens: (usage['output_tokens_details']?['reasoning_tokens'] as num?)?.toInt(),
+    totalTokens: (usage['total_tokens'] as num?)?.toInt(),
   );
 }
 

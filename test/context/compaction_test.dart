@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 import '../support/openai_output.dart';
+import '../support/thread.dart';
 
 void main() {
   test('compaction restores instructions and effort while durable recall survives restart and transfer', () async {
@@ -151,104 +152,79 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    Future<Json> turn(String method, Json params) async {
-      final done = client.events.stream.firstWhere(
-        (v) => [
-          'turn.completed',
-          'turn.failed',
-          'turn.cancelled',
-        ].contains(v['type']),
-      );
-      await client.request(method, params);
-      return done.timeout(const Duration(seconds: 10));
-    }
-
-    final first = await turn('task.start', {
-      'cwd': work.path,
-      'prompt': 'seed',
-      'reasoning': 'low',
-    });
-    expect(first['type'], 'turn.completed', reason: first.toString());
-    final id = first['task_id'];
-    await turn('task.send', {
-      'task_id': id,
-      'prompt': 'next',
-      'reasoning': 'high',
-    });
-    expect(live.any((event) => event['type'] == 'text.delta' && event['delta'] == 'Visible reply'), isTrue);
+    final id = await createThread(client, {'cwd': work.path});
+    Future<Json> turn({String? thread, String prompt = '', bool compact = false, Json settings = const {}}) =>
+      runTurn(client, thread ?? id, prompt: prompt, compact: compact, settings: settings);
+    Future<String> activeTurn() async => (jsonObject(await client.request('thread/read',
+      {'threadId': id, 'includeTurns': true}))['thread']['turns'] as List).last['id'] as String;
+    final first = await turn(prompt: 'seed', settings: {'effort': 'low'});
+    expect(first['status'], 'completed', reason: first.toString());
+    await turn(prompt: 'next', settings: {'effort': 'high'});
+    expect(live.any((event) => event['method'] == 'item/agentMessage/delta' && event['params']['delta'] == 'Visible reply'), isTrue);
     compactMode = 'fail';
     live.clear();
     expect(
-      (await turn('task.compact', {'task_id': id}))['type'],
-      'turn.failed',
+      (await turn(compact: true))['status'],
+      'failed',
     );
-    expect(live.where((event) => event['type'] == 'compaction.started').single['data']['reason'], 'manual');
-    expect(live.any((event) => event['type'] == 'context.compacted'), isFalse);
-    expect(live.any((event) => event['type'] == 'text.delta'), isFalse);
-    expect(live.any((event) => event['type'] == 'reasoning.delta'), isFalse);
-    expect(live.where((event) => event['type'] == 'model.retrying'), isNotEmpty);
-    await turn('task.send', {'task_id': id, 'prompt': 'next'});
+    expect(live.where((event) => event['method'] == 'item/started' && event['params']['item']['type'] == 'contextCompaction'), hasLength(1));
+    expect((await rolloutLines(client, id)).where((line) => line['type'] == 'compacted'), isEmpty);
+    expect(live.any((event) => event['method'] == 'item/agentMessage/delta'), isFalse);
+    expect(live.any((event) => event['method'] == 'item/reasoning/summaryTextDelta'), isFalse);
+    expect(live.where((event) => event['method'] == 'happen/turn/retrying'), isNotEmpty);
+    await turn(prompt: 'next');
     expect(jsonEncode(requests.last['input']), contains('receipt-867'));
     compactMode = 'wait';
     compactStarted = Completer<void>();
-    final cancelled = turn('task.compact', {'task_id': id});
+    final cancelled = turn(compact: true);
     await compactStarted.future.timeout(const Duration(seconds: 5));
-    // A second client discovers the in-flight compaction through durable history.
+    // Codex starts stay live; another client discovers them in the snapshot overlay.
     final observer = await AgentClient.connect(server.uri);
     try {
-      expect(jsonObject(await observer.request('task.subscribe', {'task_id': id}))['running'], isTrue);
-      final history = await observer.request('history.page', {'task_id': id, 'limit': 500}) as List;
-      expect(history.last['type'], 'compaction.started');
-      final stopped = observer.events.stream.firstWhere((event) => event['type'] == 'turn.cancelled');
-      await client.request('task.cancel', {'task_id': id});
-      expect((await stopped.timeout(const Duration(seconds: 5)))['task_id'], id);
+      final snapshot = jsonObject(await observer.request('thread/resume', {'threadId': id}));
+      expect(snapshot['running'], isTrue);
+      expect((snapshot['liveItems'] as List).where((item) => item['type'] == 'contextCompaction' && item['live'] == true), hasLength(1));
+      final stopped = observer.events.stream.firstWhere((event) => event['method'] == 'turn/completed');
+      await client.request('turn/interrupt', {'threadId': id, 'turnId': await activeTurn()});
+      expect((await stopped.timeout(const Duration(seconds: 5)))['params']['threadId'], id);
     } finally {
       await observer.close();
     }
-    expect((await cancelled)['type'], 'turn.cancelled');
-    expect(
-      (await client.request('history.page', {
-        'task_id': id,
-        'limit': 500,
-      }) as List).any((v) => v['type'] == 'context.compacted'),
-      isFalse,
-    );
+    expect((await cancelled)['status'], 'interrupted');
+    expect((await rolloutLines(client, id)).where((line) => line['type'] == 'compacted'), isEmpty);
     compactStarted = Completer<void>();
-    final steered = turn('task.compact', {'task_id': id});
+    final steered = turn(compact: true);
     await compactStarted.future.timeout(const Duration(seconds: 5));
-    await client.request('task.send', {
-      'task_id': id, 'prompt': 'steer during compaction', 'delivery': 'steer',
+    await client.request('turn/steer', {
+      'threadId': id, 'expectedTurnId': await activeTurn(), 'input': [{'type': 'text', 'text': 'steer during compaction'}],
     });
-    expect((await steered.timeout(const Duration(seconds: 5)))['type'], 'turn.completed',
+    expect((await steered.timeout(const Duration(seconds: 5)))['status'], 'completed',
       reason: 'Steering must cancel the blocked compaction and continue in the active turn');
-    expect(openAIMessageText((requests.last['input'] as List).lastWhere((item) => item['role'] == 'user')),
+    expect(openAIMessageText(jsonObject((requests.last['input'] as List).lastWhere((item) => item['role'] == 'user'))),
       'steer during compaction');
     final projectionClient = await AgentClient.connect(server.uri);
-    final projectionRead = CancellationToken();
     try {
-      final projection = await projectionClient.sessionRead('session.message.list', {'sessionID': id},
-        cancellation: projectionRead);
-      expect((projection['data'] as List).where((message) => message['type'] == 'compaction' && message['status'] == 'running'), isEmpty);
+      final projection = jsonObject(await projectionClient.request('thread/read', {'threadId': id, 'includeTurns': true}));
+      expect((projection['liveItems'] as List).where((item) => item['type'] == 'contextCompaction' && item['live'] == true), isEmpty);
     } finally {
-      projectionRead.cancel();
       await projectionClient.close();
     }
     compactMode = 'success';
     await File('${root.path}/repo/AGENTS.md')
         .writeAsString('Repository instruction: use cedar.');
     live.clear();
-    final compacted = await turn('task.compact', {'task_id': id});
-    expect(compacted['type'], 'turn.completed', reason: compacted.toString());
-    final checkpoint = (await client.request('history.page', {
-      'task_id': id, 'limit': 500,
-    }) as List).singleWhere((event) => event['type'] == 'context.compacted');
-    final lifecycle = live.where((event) => {'compaction.started', 'context.compacted', 'turn.completed'}.contains(event['type'])).toList();
-    expect(lifecycle.map((event) => event['type']), ['compaction.started', 'context.compacted', 'turn.completed']);
-    expect(lifecycle[1]['id'], checkpoint['id']);
-    expect(lifecycle[1]['created_at'], checkpoint['created_at']);
-    expect(live.any((event) => event['type'] == 'text.delta'), isFalse);
-    expect(live.any((event) => event['type'] == 'reasoning.delta'), isFalse);
-    final restored = (checkpoint['data']['input'] as List).where((item) =>
+    final compacted = await turn(compact: true);
+    expect(compacted['status'], 'completed', reason: compacted.toString());
+    final checkpoint = (await rolloutLines(client, id)).singleWhere((line) => line['type'] == 'compacted');
+    final lifecycle = live.where((event) => event['method'] == 'turn/completed' ||
+      {'item/started', 'item/completed'}.contains(event['method']) && event['params']['item']['type'] == 'contextCompaction').toList();
+    expect(lifecycle.map((event) => event['method']), ['item/started', 'item/completed', 'turn/completed']);
+    final durable = jsonObject(await client.request('thread/items/list', {'threadId': id, 'turnId': compacted['id']}));
+    expect(durable['data'][0]['item']['id'], lifecycle[1]['params']['item']['id']);
+    expect(checkpoint['payload']['replacement_history'], isNotEmpty);
+    expect(live.any((event) => event['method'] == 'item/agentMessage/delta'), isFalse);
+    expect(live.any((event) => event['method'] == 'item/reasoning/summaryTextDelta'), isFalse);
+    final restored = (await contextItems(client, id)).where((item) =>
       item['native']?['harness']?['context'] == 'agents_md',
     ).toList();
     expect(restored, hasLength(1));
@@ -265,11 +241,8 @@ void main() {
     client = await AgentClient.connect(server.uri);
     subscription = client.events.stream.listen(live.add);
     final requestIndex = requests.length;
-    final recalled = await turn('task.send', {
-      'task_id': id,
-      'prompt': 'recall',
-    });
-    expect(recalled['type'], 'turn.completed', reason: recalled.toString());
+    final recalled = await turn(prompt: 'recall');
+    expect(recalled['status'], 'completed', reason: recalled.toString());
     final continuation = requests[requestIndex];
     expect(jsonEncode(continuation['input']), isNot(contains('receipt-867')));
     expect(jsonEncode(continuation['input']), contains('opaque-checkpoint'));
@@ -288,18 +261,15 @@ void main() {
           .single['reasoning']['effort'],
       'high',
     );
-    Json recalledItem(Json event) => jsonObject(
-      jsonDecode(
-        printedOpenAIOutput(jsonDecode(event['data']['text'] as String)).first,
-      ),
-    );
-    final record = recalledItem(recalled);
+    Future<Json> recalledItem(String thread, Json turn) async {
+      final page = jsonObject(await client.request('thread/items/list', {'threadId': thread, 'turnId': turn['id']}));
+      final answer = (page['data'] as List).lastWhere((entry) => entry['item']['type'] == 'agentMessage')['item']['text'] as String;
+      return jsonObject(jsonDecode(printedOpenAIOutput(jsonDecode(answer)).first));
+    }
+    final record = await recalledItem(id, recalled);
     expect(record['content'], contains('receipt-867'));
-    await turn('task.compact', {'task_id': id});
-    final latestCheckpoint = (await client.request('history.page', {
-      'task_id': id, 'limit': 500,
-    }) as List).lastWhere((event) => event['type'] == 'context.compacted');
-    final latestInstructions = (latestCheckpoint['data']['input'] as List).where((item) =>
+    await turn(compact: true);
+    final latestInstructions = (await contextItems(client, id)).where((item) =>
       item['native']?['harness']?['context'] == 'agents_md',
     ).toList();
     expect(latestInstructions, hasLength(1));
@@ -307,41 +277,36 @@ void main() {
     expect(jsonEncode(latestInstructions.single), isNot(contains('use maple')));
     expect(jsonEncode(latestInstructions.single), isNot(contains('replace all previously')));
     final fork = jsonObject(
-      await client.request('task.fork', {
-        'task_id': id,
-        'through': compacted['seq'],
+      await client.request('thread/fork', {
+        'threadId': id,
+        'lastTurnId': compacted['id'],
       }),
     );
     final bundle = '${root.path}/saved.jsonl';
     await client.request('history.export', {
-      'task_id': fork['task_id'],
+      'task_id': fork['thread']['id'],
       'path': bundle,
     });
     final imported = jsonObject(
       await client.request('history.import', {'path': bundle}),
     );
-    for (final task in [fork['task_id'], imported['task_id']]) {
-      final result = await turn('task.send', {
-        'task_id': task,
-        'prompt': 'recall',
-      });
-      expect(result['type'], 'turn.completed', reason: result.toString());
-      expect(recalledItem(result), record);
+    for (final task in [fork['thread']['id'] as String, imported['task_id'] as String]) {
+      final result = await turn(thread: task, prompt: 'recall');
+      expect(result['status'], 'completed', reason: result.toString());
+      expect(await recalledItem(task, result), record);
     }
     overflows = 1;
-    final recovered = await turn('task.send', {
-      'task_id': id,
-      'prompt': 'next',
-    });
-    expect(recovered['type'], 'turn.completed', reason: recovered.toString());
-    expect(live.where((event) => event['type'] == 'compaction.started').last['data']['reason'], 'overflow');
+    live.clear();
+    final recovered = await turn(prompt: 'next');
+    expect(recovered['status'], 'completed', reason: recovered.toString());
+    expect(live.where((event) => event['method'] == 'item/started' && event['params']['item']['type'] == 'contextCompaction'), hasLength(1));
     final before = requests
         .where((v) => v['input'].last['type'] == 'compaction_trigger')
         .length;
     overflows = 2;
     expect(
-      (await turn('task.send', {'task_id': id, 'prompt': 'next'}))['type'],
-      'turn.failed',
+      (await turn(prompt: 'next'))['status'],
+      'failed',
     );
     expect(
       requests

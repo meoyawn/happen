@@ -153,8 +153,9 @@ class _OpenAITools extends ToolRuntime {
   bool get hasRunningCells => cells.hasRunningCells;
   final bool webSearch, sleepTool, codeModeOnly, requestUserInput;
   @override
-  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd}) =>
-      host.call(name, arguments, cancellation: cancellation, cwd: cwd);
+  Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd,
+    String? callId, ToolItemEvent? onItem}) =>
+      host.call(name, arguments, cancellation: cancellation, cwd: cwd, callId: callId, onItem: onItem);
   @override
   Future<void> close() async { await cells.close(); await host.close(); }
   @override

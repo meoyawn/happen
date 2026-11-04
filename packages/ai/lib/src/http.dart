@@ -120,7 +120,7 @@ class HttpConnections {
       final opening = _origins.putIfAbsent(origin, () {
         final future = _connect(uri);
         unawaited(future.catchError((Object error) {
-          if (identical(_origins[origin], future)) _origins.remove(origin);
+          if (identical(_origins[origin], future)) unawaited(_origins.remove(origin));
           return null;
         }));
         return future;
@@ -129,7 +129,7 @@ class HttpConnections {
       token.throwIfCancelled();
       if (connection == null) return null;
       if (connection.closed.isCompleted || connection.draining) {
-        if (identical(_origins[origin], opening)) _origins.remove(origin);
+        if (identical(_origins[origin], opening)) unawaited(_origins.remove(origin));
         connection.retire();
         continue;
       }
@@ -139,7 +139,7 @@ class HttpConnections {
         continue;
       }
       if (!connection.transport.isOpen) {
-        if (identical(_origins[origin], opening)) _origins.remove(origin);
+        if (identical(_origins[origin], opening)) unawaited(_origins.remove(origin));
         connection.retire();
         continue;
       }

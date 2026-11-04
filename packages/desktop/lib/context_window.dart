@@ -239,7 +239,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
                 child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))]),
           ],
           SizedBox(height: gap),
-          _raw('Tools', request['tools'] ?? []),
+          _raw('Tools', request['tools'] as List? ?? <Object?>[]),
           _raw('Model settings', settings),
         ]))),
       SliverPadding(padding: EdgeInsets.fromLTRB(inset, 0, inset, 8), sliver: SliverToBoxAdapter(

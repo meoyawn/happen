@@ -355,7 +355,7 @@ ${local('stable')}
           final result = switch (body['method']) {
             'server/discover' => {
               'supportedVersions': ['2026-07-28'],
-              'capabilities': {'events': {}},
+              'capabilities': {'events': <String, Object?>{}},
             },
             'events/list' => {
               'events': [

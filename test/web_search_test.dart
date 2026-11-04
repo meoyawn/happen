@@ -10,6 +10,7 @@ import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread.dart';
 
 import 'support/openai_output.dart';
 
@@ -162,20 +163,14 @@ void main() {
         await remote.close(force: true);
         await root.delete(recursive: true);
       });
-      Future<Json> turn(String method, Json params) async {
-        final terminal = client.events.stream.firstWhere((event) =>
-          ['turn.completed', 'turn.failed', 'turn.cancelled'].contains(event['type']));
-        await client.request(method, params);
-        final result = await terminal.timeout(const Duration(seconds: 15));
-        expect(result['type'], 'turn.completed', reason: result.toString());
-        return result;
-      }
-      final first = await turn('task.start', {'provider': lab, 'cwd': root.path, 'prompt': 'Research'});
+      final id = await createThread(client, {'provider': lab, 'cwd': root.path});
+      final first = await runTurn(client, id, prompt: 'Research');
+      expect(first['status'], 'completed', reason: first.toString());
       expect(modelRequests, hasLength(3));
       expect(searches, everyElement(lab == 'openai' ? '/codex/alpha/search' : '/hosted/search'));
       if (lab == 'openai') {
         expect(searchRequests, hasLength(2));
-        expect(searchRequests.first['id'], first['task_id']);
+        expect(searchRequests.first['id'], id);
         expect(searchRequests.first['settings']['external_web_access'], isTrue);
         expect(searchRequests.first['commands']['search_query'][0]['domains'], ['dart.dev']);
       } else {
@@ -190,9 +185,9 @@ void main() {
       await server.close();
       server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path);
       client = await AgentClient.connect(server.uri);
-      await turn('task.send', {'task_id': first['task_id'], 'prompt': 'Continue'});
+      expect((await runTurn(client, id, prompt: 'Continue'))['status'], 'completed');
       expect(modelRequests, hasLength(4));
-      final history = jsonEncode(await client.request('history.page', {'task_id': first['task_id'], 'limit': 100}));
+      final history = jsonEncode(await rolloutLines(client, id));
       expect(history, contains(sourceUrl));
       expect(history, isNot(contains('fixture-access')));
       expect(history, isNot(contains('not-model-content')));
@@ -245,7 +240,7 @@ void main() {
           } else {
             request.response.write(jsonEncode(lab == 'openai' ? {'output': 'usable pool'} : {
               'providerID': 'opencode', 'results': [{
-                'url': 'https://dart.dev', 'title': 'usable pool', 'content': 'usable pool', 'time': {},
+                'url': 'https://dart.dev', 'title': 'usable pool', 'content': 'usable pool', 'time': <String, Object?>{},
               }],
             }));
           }

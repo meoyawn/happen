@@ -15,8 +15,8 @@ import 'package:server/server.dart';
 class _Client extends Fake implements AgentClient {
   List<String> paths = ['lib/main.dart', 'src/index.ts', 'tools/build.py'];
   List<Json> skills = [];
-  Json inventory = {'servers': []};
-  Json messages = {'data': []};
+  Json inventory = {'servers': <Object?>[]};
+  Json messages = {'data': <Object?>[]};
   Future<Json> Function(String, CancellationToken)? readFiles;
   final searches = <({String query, CancellationToken token})>[];
 

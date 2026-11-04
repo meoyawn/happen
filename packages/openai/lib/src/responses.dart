@@ -22,7 +22,7 @@ class ResponsesReply {
   final Map<String, Json> reasoningTimes;
   String get text => output
       .where((item) => item['type'] == 'message')
-      .expand((item) => (item['content'] as List? ?? []).whereType<Map>())
+      .expand((item) => (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>())
       .where((part) => part['type'] == 'output_text')
       .map((part) => part['text'] as String? ?? '')
       .join('\n');
@@ -381,6 +381,18 @@ class ResponsesClient {
         }
       }
     }
+    ResponsesReply completed(Json response, {bool interrupted = false}) {
+      final indexes = items.keys.toList()..sort();
+      // Streamed completions are authoritative even when the terminal packet
+      // contains only usage/end-turn metadata and an empty output summary.
+      final output = items.isNotEmpty ? indexes.map((index) => items[index]!).toList()
+        : (response['output'] as List? ?? []).map(jsonObject).toList();
+      for (final item in output) {
+        if (item['type'] == 'reasoning') finishReasoning(item);
+      }
+      return ResponsesReply(output, jsonObject(response['usage'] ?? {}),
+        endTurn: !interrupted && response['end_turn'] != false, reasoningTimes: reasoningTimes);
+    }
     // Transport activity resets the idle deadline, including SSE heartbeats
     // during long reasoning. A healthy response has no wall-clock limit.
     final iterator = StreamIterator(events);
@@ -431,10 +443,22 @@ class ResponsesClient {
           case 'error':
             throw _failure(event, status: (event['status'] ?? event['status_code']) as int?);
           case 'response.incomplete':
-            throw const ModelFailure(
-              'incomplete_response',
-              'GPT response was incomplete',
-            );
+            // Codex codex-api/src/sse/responses.rs: an output-limit failure is
+            // terminal but can still report real spending. It is not a completed
+            // response and must not replace the loop's context-usage baseline.
+            final response = jsonObject(event['response'] ?? {});
+            final details = response['incomplete_details'];
+            final value = details is Map ? details['reason'] : null;
+            final reason = value is String ? value : 'unknown';
+            if (reason == 'interrupted') return completed(response, interrupted: true);
+            if (reason != 'content_filter') {
+              final usage = _reportedUsage(response['usage']);
+              if (usage != null) {
+                onEvent?.call({'type': 'model.incomplete', 'response_id': response['id'], 'usage': usage});
+              }
+            }
+            throw ModelFailure('incomplete_response', '${reason == 'content_filter' ? 'stream disconnected before completion: ' : ''}'
+              'Incomplete response returned, reason: $reason');
           case 'response.completed':
           case 'response.done':
             final response = jsonObject(event['response']);
@@ -442,17 +466,7 @@ class ResponsesClient {
                 response['status'] != 'completed') {
               throw _failure(response);
             }
-            final indexes = items.keys.toList()..sort();
-            // Completed stream items are authoritative. The terminal packet can
-            // contain only usage/end-turn metadata and an empty output summary.
-            final output = items.isNotEmpty
-                ? indexes.map((index) => items[index]!).toList()
-                : (response['output'] as List? ?? []).map(jsonObject).toList();
-            for (final item in output) {
-              if (item['type'] == 'reasoning') finishReasoning(item);
-            }
-            return ResponsesReply(output, jsonObject(response['usage'] ?? {}),
-              endTurn: response['end_turn'] != false, reasoningTimes: reasoningTimes);
+            return completed(response);
         }
       }
       throw const ModelFailure(
@@ -530,6 +544,20 @@ class ResponsesClient {
       message ?? 'GPT request failed${status == null ? '' : ' (HTTP $status)'}',
       status: status, retryAfter: advice, retryable: retryable,
     );
+  }
+
+  // ResponseCompletedUsage's required i64 counters and optional typed details.
+  // Missing/malformed usage is absent, never an estimate or a zero receipt.
+  static Json? _reportedUsage(Object? value) {
+    if (value is! Map || ['input_tokens', 'output_tokens', 'total_tokens'].any((key) => value[key] is! int)) return null;
+    final input = value['input_tokens_details'], output = value['output_tokens_details'];
+    if (input != null && (input is! Map || input['cached_tokens'] is! int ||
+        input['cache_write_tokens'] != null && input['cache_write_tokens'] is! int)) return null;
+    if (output != null && (output is! Map || output['reasoning_tokens'] is! int)) return null;
+    return {'input_tokens': value['input_tokens'], 'output_tokens': value['output_tokens'], 'total_tokens': value['total_tokens'],
+      'cached_input_tokens': input == null ? 0 : input['cached_tokens'],
+      'cache_write_input_tokens': input == null ? 0 : input['cache_write_tokens'] ?? 0,
+      'reasoning_output_tokens': output == null ? 0 : output['reasoning_tokens']};
   }
 
   static Future<Json> _errorBody(

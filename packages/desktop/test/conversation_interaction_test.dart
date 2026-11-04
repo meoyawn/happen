@@ -5,11 +5,13 @@ import 'package:desktop/composer_attachments.dart';
 import 'package:desktop/conversation.dart';
 import 'package:desktop/conversation_markdown.dart';
 import 'package:desktop/image_preview.dart';
-import 'package:desktop/opencode_execute.dart';
+import 'package:desktop/conversation_tools.dart';
+import 'package:desktop/conversation_data.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:protocol/protocol.dart';
 
 void main() {
   late String first, second;
@@ -27,6 +29,21 @@ void main() {
     second = await png(80, 120, Colors.green);
   });
 
+  Future<void> settleFormatting(WidgetTester tester) async {
+    // Real formatter isolates cannot make progress on the widget fake clock.
+    await tester.runAsync(() async {
+      final timeout = TimeoutCancellationToken(const Duration(seconds: 5));
+      try {
+        await tester.pump();
+        while (find.descendant(of: find.byType(ConversationData), matching: find.byType(CircularProgressIndicator)).evaluate().isNotEmpty) {
+          await cancellableDelay(const Duration(milliseconds: 5), timeout);
+          await tester.pump();
+        }
+      } finally { timeout.cancel(); }
+    });
+    await tester.pumpAndSettle();
+  }
+
   Future<void> open(WidgetTester tester, Widget child) async {
     tester.view.physicalSize = const Size(1000, 1000);
     tester.view.devicePixelRatio = 1;
@@ -39,7 +56,7 @@ void main() {
         await precacheImage(image.image, tester.element(find.byType(Scaffold)));
       }
     });
-    await tester.pumpAndSettle();
+    await settleFormatting(tester);
   }
 
   for (final surface in ['user', 'composer', 'assistant', 'tool']) {
@@ -56,8 +73,8 @@ void main() {
       };
       final task = DesktopTask('images', 'Images')..loaded = true;
       for (var index = 0; index < 2; index++) {
-        task.messages['user$index'] = {'id': 'user$index', 'type': 'user', 'metadata': {'seq': index},
-          'time': {'created': index}, 'text': 'Message $index', 'files': index == 0 ? parts : [parts.first]};
+        task.messages['user$index'] = {'id': 'user$index', 'type': 'userMessage', 'order': index, 'startedAtMs': index,
+          'content': [{'type': 'text', 'text': 'Message $index'}, ...index == 0 ? parts : [parts.first]]};
       }
       await open(tester, surface == 'user'
         ? ConversationTranscript(task: task, directory: '', onRetry: () {})
@@ -99,14 +116,12 @@ void main() {
   testWidgets('live activity stays collapsed and respects a closed JavaScript cell', (tester) async {
     final task = DesktopTask('activity', 'Activity')..loaded = true..running = true;
     void update(int calls) {
-      task.messages['assistant'] = {'id': 'assistant', 'type': 'assistant', 'metadata': {'seq': 1},
-        'time': {'created': 1}, 'content': [
-          {'type': 'tool', 'id': 'cell', 'name': 'functions.exec', 'time': {'created': 1},
-            'state': {'status': 'running', 'input': {'code': 'await tools.read()'}}},
-          for (var index = 0; index < calls; index++)
-            {'type': 'tool', 'id': 'read$index', 'name': 'read_file', 'time': {'created': 1},
-              'native': {'parentCallID': 'cell'}, 'state': {'status': 'completed', 'input': {'path': '/file$index'}}},
-        ]};
+      task.messages['cell'] = {'id': 'cell', 'type': 'dynamicToolCall', 'tool': 'functions.exec', 'startedAtMs': 1,
+        'order': 0, 'status': 'inProgress', 'arguments': 'await tools.read()'};
+      for (var index = 0; index < calls; index++) {
+        task.messages['read$index'] = {'id': 'read$index', 'type': 'dynamicToolCall', 'tool': 'read_file',
+          'startedAtMs': 1, 'order': index + 1, 'parentCallId': 'cell', 'status': 'completed', 'arguments': {'path': '/file$index'}};
+      }
     }
     Widget transcript() => ConversationTranscript(task: task, directory: '', onRetry: () {});
     update(1);
@@ -114,6 +129,9 @@ void main() {
     expect(find.byTooltip('View code'), findsNothing, reason: 'Running activity must not force its group open');
     await tester.tap(find.textContaining('Used 1', findRichText: true));
     await tester.pump();
+    expect(find.text('read_file'), findsNothing, reason: 'The work log does not force an individual call open');
+    await tester.tap(find.text('JavaScript').first);
+    await tester.pumpAndSettle();
     expect(find.text('read_file'), findsOneWidget);
     await tester.tap(find.text('JavaScript').first);
     await tester.pump();
@@ -139,22 +157,24 @@ void main() {
         ToolActivity('first', 'read_file', {'path': '/first'})..status = 'done'..output = 'First result',
         if (append) ToolActivity('second', 'read_file', {'path': '/second'})..status = 'done'..output = 'Second result',
       ]);
-    await open(tester, OpenCodeExecute(tool: cell(false), onExpand: () {}));
+    await open(tester, ConversationToolCall(tool: cell(false), onExpand: () {}));
+    await tester.tap(find.text('JavaScript'));
+    await settleFormatting(tester);
     await tester.tap(find.text('read_file'));
-    await tester.pumpAndSettle();
-    expect(find.text('First result'), findsOneWidget);
-    await open(tester, OpenCodeExecute(tool: cell(true), onExpand: () {}));
-    expect(find.text('First result'), findsOneWidget);
-    expect(find.text('Second result'), findsNothing, reason: 'A newly mounted call must start collapsed');
+    await settleFormatting(tester);
+    expect(find.textContaining('First result', findRichText: true), findsOneWidget);
+    await open(tester, ConversationToolCall(tool: cell(true), onExpand: () {}));
+    expect(find.textContaining('First result', findRichText: true), findsOneWidget);
+    expect(find.textContaining('Second result', findRichText: true), findsNothing, reason: 'A newly mounted call must start collapsed');
     await tester.tap(find.text('read_file').first);
-    await tester.pumpAndSettle();
-    expect(find.text('First result'), findsNothing);
+    await settleFormatting(tester);
+    expect(find.textContaining('First result', findRichText: true), findsNothing);
     await tester.tap(find.text('JavaScript'));
-    await tester.pumpAndSettle();
+    await settleFormatting(tester);
     await tester.tap(find.text('JavaScript'));
-    await tester.pumpAndSettle();
-    expect(find.text('First result'), findsNothing);
-    expect(find.text('Second result'), findsNothing);
+    await settleFormatting(tester);
+    expect(find.textContaining('First result', findRichText: true), findsNothing);
+    expect(find.textContaining('Second result', findRichText: true), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
