@@ -40,7 +40,10 @@ void main() {
     });
     final opened = <DesktopTask>[];
     final notifications = DesktopNotifications(session);
-    addTearDown(notifications.close);
+    var closed = false;
+    addTearDown(() async {
+      if (!closed) await notifications.close();
+    });
     Widget window() => MaterialApp(home: DesktopNotificationWindow(notifications: notifications,
       onOpen: opened.add, child: const Scaffold(body: Text('Workspace'))));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
@@ -140,7 +143,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(shown(), hasLength(5));
     expect(calls.lastWhere((call) => call.method == 'updateBadge').arguments['count'], 1);
-    await notifications.close();
+    unawaited(notifications.close().then((_) { closed = true; }));
+    // Subscription cancellation crosses out of the widget test's fake async zone.
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    expect(closed, isTrue);
     expect(calls.where((call) => call.method == 'cancel').last.arguments, shown().last.arguments['id']);
     expect(calls.lastWhere((call) => call.method == 'updateBadge').arguments['count'], 0);
     ask(current, 'after-process-shutdown');
