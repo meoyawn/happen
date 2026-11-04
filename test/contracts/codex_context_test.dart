@@ -582,7 +582,7 @@ remote_compaction = "v2"
         for (final engine in ['codex', 'happen']) {
           final requests = engine == 'codex' ? a : b;
           checks['$engine:tool_result_delivered:run-$iteration'] = requests.length > 1 && (requests.last['input'] as List).map(jsonObject)
-            .where((item) => ['custom_tool_call_output', 'function_call_output'].contains(item['type']))
+            .where((item) => ['custom_tool_call_output', 'function_call_output', 'tool_search_output'].contains(item['type']))
             .any((item) => jsonEncode(item).contains(marker));
         }
       }
@@ -713,21 +713,40 @@ remote_compaction = "v2"
         final expected = jsonObject(discovery.value);
         for (final pair in [('codex', a), ('happen', b)]) {
           final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
-            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == discovery.key).toList();
+            .where((item) => item['type'] == (codeModeOnly ? 'custom_tool_call_output' : 'tool_search_output') &&
+              item['call_id'] == discovery.key).toList();
           final found = <Json>[];
           for (final output in outputs) {
-            for (final part in output['output'] is List ? (output['output'] as List).map(jsonObject) : <Json>[]) {
-              try {
-                final value = jsonDecode(part['text'] as String? ?? '');
-                if (value is Map && value['tools'] is List) found.addAll((value['tools'] as List).map(jsonObject));
-              } on FormatException { /* The separate script status is ordinary prose. */ }
+            if (codeModeOnly) {
+              for (final part in output['output'] is List ? (output['output'] as List).map(jsonObject) : <Json>[]) {
+                try {
+                  final value = jsonDecode(part['text'] as String? ?? '');
+                  if (value is Map && value['tools'] is List) found.addAll((value['tools'] as List).map(jsonObject));
+                } on FormatException { /* The separate script status is ordinary prose. */ }
+              }
+            } else {
+              for (final namespace in (output['tools'] as List).map(jsonObject)) {
+                for (final tool in (namespace['tools'] as List).map(jsonObject)) {
+                  found.add({...tool, 'name': '${namespace['name']}__${tool['name']}'});
+                }
+              }
             }
           }
           checks['${pair.$1}:${discovery.key}:nonempty:run-$iteration'] = found.isNotEmpty && found.length <= (expected['limit'] as int);
           checks['${pair.$1}:${discovery.key}:dart_names:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
             (tool['name'] as String).startsWith('mcp__dart__'));
-          checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
-            (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
+          if (codeModeOnly) {
+            checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
+              (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
+          } else {
+            checks['${pair.$1}:${discovery.key}:native_result_shape:run-$iteration'] = outputs.length == 1 &&
+              outputs.single['status'] == 'completed' && outputs.single['execution'] == 'client' &&
+              (outputs.single['tools'] as List).isNotEmpty && (outputs.single['tools'] as List).every((namespace) =>
+                namespace['type'] == 'namespace' && namespace['name'] == 'mcp__dart');
+            checks['${pair.$1}:${discovery.key}:native_callable_schemas:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
+              tool['type'] == 'function' && tool['parameters'] is Map && tool['strict'] == false &&
+              tool['defer_loading'] == true && !tool.containsKey('output_schema'));
+          }
           if (expected['names'] case final List names) {
             checks['${pair.$1}:${discovery.key}:selected_tools:run-$iteration'] = jsonEncode(found.map((tool) => tool['name']).toList()) == jsonEncode(names);
           }

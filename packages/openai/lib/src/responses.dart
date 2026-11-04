@@ -45,10 +45,10 @@ class ResponsesClient {
   Future<Directory?>? _requestDump;
   bool _httpFallback = false;
 
-  Future<void> _dump(String encoded, CancellationToken cancellation) async {
+  Future<void> _dump(String Function() encoded, CancellationToken cancellation) async {
     if (Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty != true) return;
     final directory = await (_requestDump ??= startRequestDump(cancellation));
-    if (directory != null) await dumpRequest(directory, encoded, cancellation);
+    if (directory != null) await dumpRequest(directory, encoded(), cancellation);
   }
 
   Future<Json> image(Json body, {required bool edit, required String turnId, required CancellationToken cancellation}) async {
@@ -200,11 +200,11 @@ class ResponsesClient {
         'session-id': sessionId,
         'x-client-request-id': newId(),
       };
-      if (transport == 'websocket') {
-        return _websocket(body, headers, cancellation, onEvent);
-      }
       Future<void> Function()? closeBody;
       try {
+        if (transport == 'websocket') {
+          return await _websocket(body, headers, cancellation, onEvent);
+        }
         final response = await retryRequest(() => _post(endpoint, body,
           {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
           headersTimeout: const Duration(seconds: 60)), cancellation, onEvent: onEvent);
@@ -233,13 +233,13 @@ class ResponsesClient {
 
   Future<HttpReply> _post(Uri uri, Json body, Map<String, String> headers,
     CancellationToken cancellation, {Duration? headersTimeout}) async {
-    final encoded = jsonEncode(body);
-    if (uri == endpoint) await _dump(encoded, cancellation);
+    final encoded = JsonUtf8Encoder().convert(body);
+    if (uri == endpoint) await _dump(() => utf8.decode(encoded), cancellation);
     cancellation.throwIfCancelled();
     final response = await httpRequest(_http, 'POST', uri,
       connections: connections, cancellation: cancellation,
       headers: {...headers, HttpHeaders.contentTypeHeader: 'application/json'},
-      body: utf8.encode(encoded), headersTimeout: headersTimeout);
+      body: encoded, headersTimeout: headersTimeout);
     if (response.statusCode == 200) return response;
     // Capture advice when headers arrive; reading the body must not reset it.
     final advice = retryAdvice(response.headers[HttpHeaders.retryAfterHeader]);
@@ -311,7 +311,7 @@ class ResponsesClient {
               attributes: {'server.address': uri.host, 'url.path': uri.path});
       cancellation.throwIfCancelled();
       final encoded = jsonEncode(body);
-      await _dump(encoded, cancellation);
+      await _dump(() => encoded, cancellation);
       cancellation.throwIfCancelled();
       traceSync('openai.websocket.send', () => socket!.add(encoded), category: 'websocket',
         attributes: {'bytes': utf8.encode(encoded).length});
@@ -426,6 +426,7 @@ class ResponsesClient {
             final item = jsonObject(event['item']);
             if (item['type'] == 'reasoning') finishReasoning(item);
             items[(event['output_index'] as num?)?.toInt() ?? items.length] = item;
+            onEvent?.call({'type': 'model.output', 'item': item, 'reasoning_times': reasoningTimes});
           case 'response.failed':
           case 'error':
             throw _failure(event, status: (event['status'] ?? event['status_code']) as int?);
@@ -494,7 +495,8 @@ class ResponsesClient {
       if (advice != null || headers is! Map) continue;
       for (final entry in headers.entries) {
         if (entry.key.toString().toLowerCase() == HttpHeaders.retryAfterHeader) {
-          advice = retryAdvice(entry.value);
+          final value = entry.value;
+          advice = retryAdvice(value is num || value is bool ? value.toString() : value);
         }
       }
     }
@@ -506,7 +508,7 @@ class ResponsesClient {
       'audio_too_large', 'audio_too_short', 'invalid_audio', 'invalid_audio_data',
       'invalid_audio_format', 'missing_audio_sample_rate',
     }.contains(code);
-    if (advice == null && {'rate_limit_exceeded', 'slow_down'}.contains(code) && error is Map) {
+    if (status == null && advice == null && {'rate_limit_exceeded', 'slow_down'}.contains(code) && error is Map) {
       final match = RegExp(r'try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)', caseSensitive: false)
           .firstMatch(error['message'] is String ? error['message'] as String : '');
       if (match != null) {
@@ -519,7 +521,8 @@ class ResponsesClient {
     }
     final needsAdvice = status == 429 || {'server_is_overloaded', 'policy_capacity_unavailable'}.contains(code);
     final retryable = !terminal && (needsAdvice ? advice != null :
-      code == 'websocket_connection_limit_reached' || status == null || status == 408 || status >= 500 && status <= 599);
+      {'websocket_connection_limit_reached', 'previous_response_not_found'}.contains(code) ||
+        status == null || status == 408 || status >= 500 && status <= 599);
     // Retain structured diagnostics without falling back to raw response bodies.
     return ResponseFailure(
       code is String && code.isNotEmpty ? clippedText(code, 256)

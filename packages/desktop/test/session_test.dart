@@ -242,26 +242,32 @@ void main() {
             request.response.write(
               'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
             );
+            request.response.write('data: ${jsonEncode({
+              'type': 'response.output_item.done', 'output_index': 0,
+              'item': {'id': 'commentary', 'type': 'message', 'role': 'assistant', 'phase': 'commentary',
+                'content': [{'type': 'output_text', 'text': 'Hello'}]},
+            })}\n\n');
             await request.response.flush();
           }
           await firstReply.future;
+        }
+        final output = called ? [
+          {'type': 'message', 'role': 'assistant',
+            'content': [{'type': 'output_text', 'text': 'Hello from the server.'}]},
+        ] : [
+          {'type': 'custom_tool_call', 'namespace': 'functions', 'call_id': 'cell-1', 'name': 'exec', 'input': 'await Promise.all([1, 2].map(async () => text(await tools.exec_command({cmd: "cat input.txt", login: false}))));'},
+        ];
+        for (final (index, item) in output.indexed) {
+          request.response.write('data: ${jsonEncode({
+            'type': 'response.output_item.done', 'output_index': index, 'item': item,
+          })}\n\n');
         }
         request.response.write(
           'data: ${jsonEncode({
             'type': 'response.completed',
             'response': {
               'status': 'completed',
-              'output': called ? [
-                      {
-                        'type': 'message',
-                        'role': 'assistant',
-                        'content': [
-                          {'type': 'output_text', 'text': 'Hello from the server.'},
-                        ],
-                      },
-                    ] : [
-                      {'type': 'custom_tool_call', 'namespace': 'functions', 'call_id': 'cell-1', 'name': 'exec', 'input': 'await Promise.all([1, 2].map(async () => text(await tools.exec_command({cmd: "cat input.txt", login: false}))));'},
-                    ],
+              'output': output,
               'usage': {'input_tokens': 10, 'output_tokens': 5},
             },
           })}\n\n',
@@ -340,6 +346,7 @@ void main() {
       desktop.chooseReasoning('high');
       expect(desktop.reasoning, 'high');
       final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.enqueued' && event['data']['item']['text'] == 'steer this turn');
+      final resumed = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.step.started');
       final submission = desktop.send('steer this turn');
       final immediate = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
       expect(immediate.role, 'You', reason: 'A normal user message must render synchronously, before any WebSocket reply');
@@ -349,7 +356,11 @@ void main() {
       final delivered = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
       expect(delivered.id, immediate.id, reason: 'Receipt and delivery must preserve the local message identity');
       expect(delivered.role, 'You');
-      expect(desktop.task!.streamingText, isEmpty, reason: 'Interrupted inference must not leave abandoned partial text visible');
+      await resumed;
+      final interrupted = conversation(desktop.task!).singleWhere((entry) => entry.text == 'Hello');
+      expect(interrupted.role, 'Happen');
+      expect(interrupted.streaming, isFalse, reason: 'Steering keeps the text already shown and ends its live stream');
+      expect(desktop.task!.streamingText, isEmpty);
       expect(desktop.task!.retryStatus, isNull, reason: 'Steering is an input change, not stream recovery');
       await expectLater(desktop.client.request('task.send', {
         'task_id': desktop.task!.id, 'prompt': 'invalid effort', 'reasoning': 'ultra',
@@ -369,7 +380,7 @@ void main() {
         conversation(desktop.task!)
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        List.filled(2, 'Hello from the server.'),
+        ['Hello', ...List.filled(2, 'Hello from the server.')],
       );
       final timeline = desktop.task!.messages.values.toList()..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
       final finishes = timeline.where((e) => e['type'] == 'idle').toList();
@@ -384,6 +395,9 @@ void main() {
       expect(inputs[1]['metadata']['seq'], lessThan(finishes[0]['metadata']['seq'] as int));
       expect(inputs[2]['metadata']['seq'], greaterThan(finishes[0]['metadata']['seq'] as int));
       final steeredUsers = (requests[2]['input'] as List).where((item) => item['role'] == 'user');
+      expect((requests[2]['input'] as List).where((item) => item['role'] == 'assistant')
+        .expand((item) => item['content'] as List).where((part) => part['text'] == 'Hello'), hasLength(1),
+        reason: 'Completed commentary reaches the steered request exactly once');
       expect(steeredUsers.last['content'], [{'type': 'input_text', 'text': 'steer this turn'}]);
       expect(steeredUsers.map((item) => item['content']),
         isNot(contains([{'type': 'input_text', 'text': 'queued follow-up'}])));
@@ -505,7 +519,7 @@ void main() {
         restored
             .where((entry) => entry.role == 'Happen')
             .map((entry) => entry.text),
-        List.filled(2, 'Hello from the server.'),
+        ['Hello', ...List.filled(2, 'Hello from the server.')],
       );
       expect(
         restored
@@ -518,6 +532,9 @@ void main() {
       expect(restored.last.text, 'Stopped');
       expect(await desktop.send('hold'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Waiting');
+      expect((requests.last['input'] as List).where((item) => item['role'] == 'assistant')
+        .expand((item) => item['content'] as List).where((part) => part['text'] == 'Hello'), hasLength(1),
+        reason: 'Restored model history keeps completed commentary exactly once');
       final historyBefore = await desktop.client.request('history.page', {'task_id': taskId, 'limit': 100}) as List;
       final stopped = desktop.client.events.stream.firstWhere((event) => event['data']?['sessionID'] == taskId && event['type'] == 'session.execution.interrupted');
       await desktop.removeProject(desktop.project!);

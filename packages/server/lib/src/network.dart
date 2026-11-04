@@ -443,12 +443,14 @@ void _networkMain(List<Object?> args) async {
           case 'mcp.catalog':
             // A model step can follow a config edit before the watcher fires.
             // Read and serialize reconciliation here as well as on file events.
-            try {
-              await reload(cancellation);
-            } on CancelledException {
-              rethrow;
-            } catch (_) {
-              // reload already sent a sanitized diagnostic; use the live catalog.
+            if (params['revalidate'] != false) {
+              try {
+                await reload(cancellation);
+              } on CancelledException {
+                rethrow;
+              } catch (_) {
+                // reload already sent a sanitized diagnostic; use the live catalog.
+              }
             }
             result = await mcp.catalog(cancellation, knownRevision: params['revision'] as String?);
           case 'mcp.call':

@@ -37,25 +37,66 @@ void main() {
     });
   }
 
-  test('cancelling a connection backoff stops retries and leaves the shared pool usable', () {
+  for (final layer in ['http', 'connection']) {
+    test('cancelling a $layer backoff stops retries and leaves the shared pool usable', () {
+      fakeAsync((time) {
+        var offline = true;
+        final transport = _Transport((_, _) {
+          if (offline) throw const SocketException('Connection reset by peer');
+          return _events([_completed]);
+        });
+        final client = _client(transport);
+        final token = CancellationToken();
+        final events = <Json>[];
+        final pending = _respond(client, cancellation: token, onEvent: events.add);
+        time.flushMicrotasks();
+        if (layer == 'connection') time.elapse(const Duration(seconds: 4));
+        expect(events.last['layer'], layer);
+        expect(events.last['attempt'], 1);
+        token.cancel();
+        expect(_settle(time, pending).error, isA<CancelledException>());
+        expect(transport.bodies, hasLength(layer == 'http' ? 1 : 5));
+        expect(token.hasCancellables, isFalse);
+        offline = false;
+        expect(_settle(time, _respond(client)).value!.text, 'Recovered');
+        expect(transport.bodies, hasLength(layer == 'http' ? 2 : 6));
+      });
+    });
+  }
+
+  // Codex's network retry counter does not consume the sampling retry budget.
+  test('connection recovery keeps five stream retries and caps network waits at 60 seconds', () {
     fakeAsync((time) {
       var offline = true;
+      var streamFailures = 5;
       final transport = _Transport((_, _) {
-        if (offline) throw const SocketException('Connection reset by peer');
-        return _events([_completed]);
+        if (offline) throw const SocketException('Connection refused');
+        return _events(streamFailures-- > 0 ? [] : [_completed]);
       });
-      final client = _client(transport);
-      final token = CancellationToken();
       final events = <Json>[];
-      final pending = _respond(client, cancellation: token, onEvent: events.add);
-      time.flushMicrotasks();
-      expect(events.single['attempt'], 1);
-      token.cancel();
-      expect(_settle(time, pending).error, isA<CancelledException>());
-      expect(transport.bodies, hasLength(1));
+      final pending = _respond(_client(transport), onEvent: events.add);
+      time.elapse(const Duration(seconds: 180));
+      final network = events.where((event) => event['layer'] == 'connection');
+      expect(network.map((event) => event['attempt']), [1, 2, 3, 4, 5, 6]);
+      expect(network.map((event) => event['delay_ms']), [5000, 10000, 20000, 40000, 60000, 60000]);
+      expect(network.every((event) => !event.containsKey('max_retries')), isTrue);
       offline = false;
-      expect(_settle(time, _respond(client)).value!.text, 'Recovered');
-      expect(transport.bodies, hasLength(2));
+      expect(_settle(time, pending, within: const Duration(seconds: 45)).value!.text, 'Recovered');
+      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
+      expect(transport.bodies, hasLength(36));
+    });
+  });
+
+  test('compaction connection failures exhaust both retry budgets', () {
+    fakeAsync((time) {
+      final transport = _Transport((_, _) => throw const SocketException('Connection refused'));
+      final events = <Json>[];
+      final result = _settle(time, _respond(_client(transport),
+        input: [{'type': 'compaction_trigger'}], onEvent: events.add), within: const Duration(seconds: 30));
+      expect(result.error, isA<SocketException>());
+      expect(transport.bodies, hasLength(30));
+      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
+      expect(events.any((event) => event['layer'] == 'connection'), isFalse);
     });
   });
 
@@ -325,6 +366,69 @@ void main() {
     }
   });
 
+  // Ported from Codex's streamed Retry-After validation and precedence cases.
+  for (final (name, headers, milliseconds) in [
+    ('seconds', {'Retry-After': '2'}, 2000),
+    ('tab padding', {'retry-after': '\t2\t'}, 2000),
+    ('numeric JSON', {'retry-after': 2}, 2000),
+    ('invalid newlines', {'retry-after': '\n2\n'}, 310000),
+    ('negative interval', {'retry-after': '-1'}, 310000),
+    ('duplicate header casing', {'Retry-After': '1', 'retry-after': '2'}, 2000),
+  ]) {
+    test('stream retry advice validates $name and takes precedence over plaintext', () {
+      fakeAsync((time) {
+        final error = {'code': 'rate_limit_exceeded', 'message': 'Try again in 310 seconds', 'headers': headers};
+        final transport = _Transport((attempt, _) => _events(attempt == 1
+          ? [{'type': 'response.failed', 'response': {'error': error}}] : [_completed]));
+        final events = <Json>[];
+        final pending = _respond(_client(transport), onEvent: events.add);
+        time.flushMicrotasks();
+        expect(events.single['delay_ms'], inInclusiveRange(milliseconds - 100, milliseconds));
+        time.elapse(Duration(milliseconds: milliseconds - 100));
+        expect(transport.bodies, hasLength(1));
+        expect(_settle(time, pending).value!.text, 'Recovered');
+        expect(transport.bodies, hasLength(2));
+      });
+    });
+  }
+
+  test('stream failures use local backoff rather than the enclosing HTTP response header', () {
+    fakeAsync((time) {
+      final transport = _Transport((attempt, _) => attempt == 1
+        ? _events([{'type': 'response.failed', 'response': {'error': {
+          'code': 'rate_limit_exceeded', 'message': 'Rate limit exceeded.',
+        }}}], headers: {'retry-after': '310'}) : _events([_completed]));
+      final events = <Json>[];
+      expect(_settle(time, _respond(_client(transport), onEvent: events.add)).value!.text, 'Recovered');
+      expect(events.single['delay_ms'], inInclusiveRange(180, 220));
+      expect(events.single.containsKey('provider_delay'), isFalse);
+      expect(transport.bodies, hasLength(2));
+    });
+  });
+
+  for (final status in [429, 503]) {
+    test('HTTP $status does not turn plaintext advice into a Retry-After header', () {
+      fakeAsync((time) {
+        final transport = _Transport((attempt, _) => attempt == 1 ? _json(status, {'error': {
+          'code': status == 429 ? 'rate_limit_exceeded' : 'slow_down',
+          'message': 'Try again in 310 seconds',
+        }}) : _events([_completed]));
+        final events = <Json>[];
+        final result = _settle(time, _respond(_client(transport), onEvent: events.add));
+        if (status == 429) {
+          expect(result.error, isA<ResponseFailure>().having((error) => error.status, 'status', 429));
+          expect(transport.bodies, hasLength(1));
+          expect(events, isEmpty);
+        } else {
+          expect(result.value!.text, 'Recovered');
+          expect(transport.bodies, hasLength(2));
+          expect(events.single['delay_ms'], inInclusiveRange(180, 220));
+          expect(events.single.containsKey('provider_delay'), isFalse);
+        }
+      });
+    });
+  }
+
   for (final error in [
     {'code': 'server_error'},
     {'code': 'unknown_transient_error'},
@@ -351,8 +455,11 @@ void main() {
   ]) {
     test('terminal stream errors do not retry ${error['code']}', () {
       fakeAsync((time) {
+        final needsAdvice = {'server_is_overloaded', 'policy_capacity_unavailable'}.contains(error['code']);
         final transport = _Transport((_, _) => _events([
-          {'type': 'response.failed', 'response': {'error': error}},
+          {'type': 'response.failed', 'response': {'error': {
+            ...error, if (!needsAdvice) 'headers': {'Retry-After': '0'},
+          }}},
         ]));
         expect(_settle(time, _respond(_client(transport))).error, isA<ModelFailure>());
         expect(transport.bodies, hasLength(1));
@@ -380,6 +487,79 @@ void main() {
       expect(transport.bodies, hasLength(3));
   });
 
+  // These use scripted loopback WebSockets because the upgrade, frame parsing,
+  // and fallback to an HTTP body are separate transport contracts.
+  for (final code in ['websocket_connection_limit_reached', 'previous_response_not_found']) {
+    test('WebSocket $code reconnects instead of failing the request', () async {
+      final fixture = await _websocketFixture((attempt, _) => attempt == 1 ? [
+        {'type': 'error', 'status': 400, 'error': {
+          'code': code, 'message': 'Reconnect this WebSocket.', 'headers': {'Retry-After': '0'},
+        }},
+      ] : [_completed]);
+      final events = <Json>[];
+      expect((await _respond(fixture.client, transport: 'websocket', onEvent: events.add)).text, 'Recovered');
+      expect(fixture.requests.map((request) => request.transport), ['websocket', 'websocket']);
+      expect(events.single['layer'], 'stream');
+      expect(events.single['attempt'], 1);
+      expect(events.single['error'], {'code': code, 'message': 'Reconnect this WebSocket.', 'http_status': 400});
+    });
+  }
+
+  test('WebSocket authentication refresh does not consume a retry budget', () async {
+    final refreshes = <bool>[];
+    final fixture = await _websocketFixture((attempt, _) => attempt == 1 ? [
+      {'type': 'error', 'status': 401, 'error': {'code': 'unauthorized', 'message': 'Refresh authentication.'}},
+    ] : [_completed], refreshes: refreshes);
+    final events = <Json>[];
+    expect((await _respond(fixture.client, transport: 'websocket', onEvent: events.add)).text, 'Recovered');
+    expect(refreshes, [false, true]);
+    expect(events, isEmpty);
+    expect(fixture.requests, hasLength(2));
+  });
+
+  test('WebSocket fallback preserves the last provider deadline and stays on HTTP', () async {
+    final fixture = await _websocketFixture((attempt, transport) => transport == 'websocket' ? [
+      {'type': 'response.failed', 'response': {'error': {
+        'code': 'server_error', 'message': 'Temporary stream failure.',
+        'headers': {'Retry-After': attempt == 6 ? '1' : '0'},
+      }}},
+    ] : [_completed]);
+    final events = <Json>[];
+    expect((await _respond(fixture.client, transport: 'websocket', onEvent: events.add)).text, 'Recovered');
+    expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
+    expect(events.where((event) => event['layer'] == 'fallback'), hasLength(1));
+    expect(fixture.requests.map((request) => request.transport), [
+      for (var i = 0; i < 6; i++) 'websocket', 'http',
+    ]);
+    expect(fixture.requests[6].elapsed - fixture.requests[5].elapsed, greaterThanOrEqualTo(const Duration(seconds: 1)));
+    expect(fixture.requests[5].body['type'], 'response.create');
+    expect(fixture.requests[6].body.containsKey('type'), isFalse);
+    expect(fixture.requests[6].body['stream'], isTrue);
+    expect(fixture.requests[6].body['input'], fixture.requests[5].body['input']);
+    expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');
+    expect(fixture.requests, hasLength(8));
+    expect(fixture.requests.last.transport, 'http');
+  });
+
+  for (final code in ['server_is_overloaded', 'policy_capacity_unavailable']) {
+    test('WebSocket $code stops when advice is withdrawn without bypassing it through fallback', () async {
+      final fixture = await _websocketFixture((attempt, _) => [
+        {'type': 'error', 'status': 503, 'error': {
+          'code': attempt == 6 ? code : 'server_is_overloaded',
+          'message': attempt == 6 ? 'Final provider failure.' : 'Temporary overload.',
+          if (attempt != 6) 'headers': {'Retry-After': '0'},
+        }},
+      ]);
+      final events = <Json>[];
+      await expectLater(_respond(fixture.client, transport: 'websocket', onEvent: events.add),
+        throwsA(isA<ResponseFailure>().having((error) => error.code, 'code', code)
+          .having((error) => error.message, 'message', 'Final provider failure.')));
+      expect(events.map((event) => event['attempt']), [1, 2, 3, 4, 5]);
+      expect(fixture.requests, hasLength(6));
+      expect(fixture.requests.every((request) => request.transport == 'websocket'), isTrue);
+    });
+  }
+
   test('retry advice accepts seconds and HTTP dates and rejects malformed values', () {
     expect(retryAdvice(' 12 ')!.delay, const Duration(seconds: 12));
     expect(retryAdvice('0')!.delay, Duration.zero);
@@ -398,8 +578,8 @@ const _completed = <String, dynamic>{'type': 'response.completed', 'response': {
 HttpReply _json(int status, Json body, {Map<String, String> headers = const {}}) =>
   HttpReply(_bytes(jsonEncode(body)), status, headers, '2');
 
-HttpReply _events(List<Json> events) => HttpReply(_bytes(
-  events.map((event) => 'data: ${jsonEncode(event)}\n\n').join()), 200, {}, '2');
+HttpReply _events(List<Json> events, {Map<String, String> headers = const {}}) => HttpReply(_bytes(
+  events.map((event) => 'data: ${jsonEncode(event)}\n\n').join()), 200, headers, '2');
 
 Stream<List<int>> _bytes(String body) {
   // A zone-local cancellation future lets FakeAsync drive stream cleanup too.
@@ -439,9 +619,9 @@ ResponsesClient _client(_Transport transport, {List<bool>? refreshes}) {
 }
 
 Future<ResponsesReply> _respond(ResponsesClient client, {
-  CancellationToken? cancellation, List<Json> input = const [], void Function(Json)? onEvent,
+  CancellationToken? cancellation, List<Json> input = const [], void Function(Json)? onEvent, String transport = 'http',
 }) => client.respond(model: 'gpt-6.1-sol', instructions: '', input: input, tools: [],
-  sessionId: 'fixture', cancellation: cancellation ?? CancellationToken(), onEvent: onEvent);
+  sessionId: 'fixture', cancellation: cancellation ?? CancellationToken(), onEvent: onEvent, transport: transport);
 
 Future<String> _search(ResponsesClient client, [CancellationToken? cancellation]) => client.search(
   model: 'gpt-6.1-sol', sessionId: 'fixture', commands: {}, input: [], cancellation: cancellation ?? CancellationToken());
@@ -465,3 +645,42 @@ Future<T> _fast<T>(Future<T> Function() run, {void Function(Duration)? onWait}) 
     if (backoff) onWait?.call(duration);
     return parent.createTimer(zone, backoff ? Duration.zero : duration, callback);
   }));
+
+Future<({ResponsesClient client, List<({String transport, Json body, Duration elapsed})> requests})>
+  _websocketFixture(List<Json> Function(int attempt, String transport) script, {List<bool>? refreshes}) async {
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  final requests = <({String transport, Json body, Duration elapsed})>[];
+  final sockets = <WebSocket>[];
+  final elapsed = Stopwatch()..start();
+  List<Json> receive(String transport, String encoded) {
+    requests.add((transport: transport, body: jsonObject(jsonDecode(encoded)), elapsed: elapsed.elapsed));
+    return script(requests.length, transport);
+  }
+  server.listen((request) async {
+    if (WebSocketTransformer.isUpgradeRequest(request)) {
+      final socket = await WebSocketTransformer.upgrade(request);
+      sockets.add(socket);
+      socket.listen((raw) {
+        final events = receive('websocket', raw as String);
+        for (final event in events) { socket.add(jsonEncode(event)); }
+        if (events.isEmpty) unawaited(socket.close());
+      });
+    } else {
+      final events = receive('http', await utf8.decoder.bind(request).join());
+      request.response.headers.contentType = ContentType('text', 'event-stream');
+      for (final event in events) { request.response.write('data: ${jsonEncode(event)}\n\n'); }
+      await request.response.close();
+    }
+  });
+  final client = ResponsesClient(endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
+    credentials: ({bool refresh = false}) async {
+      refreshes?.add(refresh);
+      return {'access_token': 'fixture', 'account_id': 'fixture'};
+    });
+  addTearDown(() async {
+    client.close();
+    for (final socket in sockets) { await socket.close(); }
+    await server.close(force: true);
+  });
+  return (client: client, requests: requests);
+}

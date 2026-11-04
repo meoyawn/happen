@@ -169,8 +169,15 @@ const contextCases = <Map<String, dynamic>>[
         'input': 'text(await tools.tool_search({query:"dart vm_service evaluate expression",limit:1}));'}],
       [_ready],
     ],
+    'mixed_responses': [
+      [{'type': 'tool_search_call', 'execution': 'client', 'call_id': 'search_dart_evaluation',
+        'arguments': {'query': '+mcp__dart evaluate expression flutter driver runtime errors', 'limit': 8}}],
+      [{'type': 'tool_search_call', 'execution': 'client', 'call_id': 'search_vm_service',
+        'arguments': {'query': 'dart vm_service evaluate expression', 'limit': 1}}],
+      [_ready],
+    ],
     'files': _dartProject,
-    'contains': [], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'mcp__dart__vm_service',
+    'contains': [], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'vm_service',
   },
   {
     'id': 'compaction', 'workflow': 'compaction',

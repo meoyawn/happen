@@ -34,7 +34,33 @@ extension _SessionSchema on TaskStore {
   /// resulting native events are exactly what the WebSocket publishes.
   void _projectSession(List<Json> records) {
     final state = jsonObject(jsonDecode(db.select('SELECT data FROM session_projection').single['data'] as String));
+    // Instructions already have a durable native event. Resolve its text only
+    // when another baseline needs comparison, rather than rewriting it on every
+    // model/tool packet.
+    if (state['systemEventID'] case final String id when records.any((record) =>
+        record['type'] == 'model.started' && record['data']['instructions'] is String)) {
+      state['system'] = db.select(r"SELECT json_extract(data, '$.data.text') AS text FROM session_event WHERE id IS ?", [id]).single['text'];
+    }
     final inbox = jsonObject(state['inbox'] ?? {});
+    // Fold the transaction's events in order, then write each changed message
+    // once. Inference and its pure discovery results can share one transaction.
+    final messages = <String, Json>{}, loaded = <String>{};
+    final updates = <String, ({Json message, int created, int sequence, int updated})>{};
+    void load(Iterable<Map<String, Object?>> rows) {
+      for (final row in rows) {
+        final id = row['id'] as String;
+        loaded.add(id);
+        messages[id] = {
+          'id': id, 'type': row['type'], 'time': {'created': row['time_created']},
+          ...jsonObject(jsonDecode(row['data'] as String)),
+          if (row['type'] == 'assistant') 'content': [
+            for (final part in db.select('SELECT data FROM session_part WHERE message_id IS ? ORDER BY ordinal', [id]))
+              jsonObject(jsonDecode(part['data'] as String)),
+          ],
+        };
+      }
+    }
+    load(db.select("SELECT * FROM session_message WHERE type IS 'compaction' AND json_extract(data, '\$.status') IS 'running'"));
     for (final record in records) {
       final native = sessionEvents(taskId, record, state);
       record['session_events'] = native;
@@ -42,6 +68,7 @@ extension _SessionSchema on TaskStore {
         final seq = event['durable']['seq'] as int;
         db.execute('INSERT INTO session_event(seq, id, source_seq, data) VALUES (?, ?, ?, ?)',
           [seq, event['id'], record['seq'], jsonEncode(event)]);
+        if (event['type'] == 'session.instructions.updated') state['systemEventID'] = event['id'];
         final payload = jsonObject(event['data']);
         if (event['type'] == 'session.inbox.enqueued') {
           final item = jsonObject(payload['item']);
@@ -53,37 +80,46 @@ extension _SessionSchema on TaskStore {
           db.execute(r"UPDATE session_inbox SET delivery = ?, payload = json_set(payload, '$.delivery', ?) WHERE id IS ?",
             [payload['delivery'], payload['delivery'], payload['inboxID']]);
         }
-        final messages = <String, Json>{};
         final owner = event['data']['assistantMessageID'] as String?;
         final compaction = inbox['compactionID'] as String?;
-        for (final row in db.select("SELECT * FROM session_message WHERE id IN (?, ?) OR (type = 'compaction' AND json_extract(data, '\$.status') = 'running')", [owner, compaction])) {
-          messages[row['id'] as String] = {
-            'id': row['id'], 'type': row['type'], 'time': {'created': row['time_created']},
-            ...jsonObject(jsonDecode(row['data'] as String)),
-            if (row['type'] == 'assistant') 'content': [
-              for (final part in db.select('SELECT data FROM session_part WHERE message_id = ? ORDER BY ordinal', [row['id']]))
-                jsonObject(jsonDecode(part['data'] as String)),
-            ],
-          };
+        final missing = {?owner, ?compaction}..removeAll(loaded);
+        if (missing.isNotEmpty) {
+          load(db.select('SELECT * FROM session_message WHERE id IN (?, ?)',
+            [missing.first, missing.length > 1 ? missing.last : null]));
+          loaded.addAll(missing);
         }
-        for (final message in applySessionEvent(messages, event, inbox)) {
-          final data = {...message}..remove('id')..remove('type')..remove('content');
-          final created = message['time']['created'];
-          db.execute('''INSERT INTO session_message(id, type, seq, time_created, time_updated, data)
-            VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
-            time_updated = excluded.time_updated, data = excluded.data''',
-            [message['id'], message['type'], message['metadata']['seq'], created, event['created'], jsonEncode(data)]);
-          if (message['type'] != 'assistant') continue;
-          db.execute('DELETE FROM session_part WHERE message_id = ?', [message['id']]);
-          var ordinal = 0;
-          for (final part in message['content'] as List) {
-            db.execute('INSERT INTO session_part(message_id, ordinal, type, call_id, data) VALUES (?, ?, ?, ?, ?)',
-              [message['id'], ordinal++, part['type'], part['type'] == 'tool' ? part['id'] : null, jsonEncode(part)]);
-          }
+        final current = {for (final entry in messages.entries)
+          if (entry.key == owner || entry.key == compaction ||
+              entry.value['type'] == 'compaction' && entry.value['status'] == 'running')
+            entry.key: entry.value};
+        for (final message in applySessionEvent(current, event, inbox)) {
+          final id = message['id'] as String, previous = updates[id];
+          messages[id] = message;
+          loaded.add(id);
+          updates[id] = (message: message,
+            created: previous?.created ?? message['time']['created'] as int,
+            sequence: previous?.sequence ?? message['metadata']['seq'] as int,
+            updated: event['created'] as int);
         }
       }
     }
+    for (final update in updates.values) {
+      final message = update.message;
+      final data = {...message}..remove('id')..remove('type')..remove('content');
+      db.execute('''INSERT INTO session_message(id, type, seq, time_created, time_updated, data)
+            VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+            time_updated = excluded.time_updated, data = excluded.data''',
+            [message['id'], message['type'], update.sequence, update.created, update.updated, jsonEncode(data)]);
+      if (message['type'] != 'assistant') continue;
+      db.execute('DELETE FROM session_part WHERE message_id IS ?', [message['id']]);
+      var ordinal = 0;
+      for (final part in message['content'] as List) {
+        db.execute('INSERT INTO session_part(message_id, ordinal, type, call_id, data) VALUES (?, ?, ?, ?, ?)',
+          [message['id'], ordinal++, part['type'], part['type'] == 'tool' ? part['id'] : null, jsonEncode(part)]);
+      }
+    }
     state['inbox'] = inbox;
+    state.remove('system');
     db.execute('UPDATE session_projection SET through_seq = ?, data = ?',
       [records.last['seq'], jsonEncode(state)]);
   }

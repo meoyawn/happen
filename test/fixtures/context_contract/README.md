@@ -90,11 +90,15 @@ The package-reading MCP case starts independent real `dart mcp-server`
 processes, registers the fixture package, and reads its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
 `+mcp__dart evaluate expression flutter driver runtime errors` and compares the
-ordered results and full TypeScript declarations. It does not execute the
-discovered tools, connect to an app, or interact with the human's desktop. The
+ordered results. Code Mode only compares full TypeScript declarations; mixed
+mode emits native `tool_search_call` items and compares the returned
+`tool_search_output` namespaces and function schemas. Native results must retain
+input schemas and deferred loading while omitting output schemas, matching Codex.
+It does not execute the discovered tools, connect to an app, or interact with the
+human's desktop. The
 broad query does not select `vm_service` among the default eight in either
 harness. A second targeted `dart vm_service evaluate expression` query must
-return that exact tool and its declaration.
+return that exact tool in the corresponding result format.
 
 The `tldw-youtube` case is derived from the supplied
 `tldw-https-www-youtube-com-watch-v-ebilgcon4uu-b4b0ca13.json` export. It combines

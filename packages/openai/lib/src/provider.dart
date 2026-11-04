@@ -189,14 +189,37 @@ class OpenAIProvider implements ModelProvider {
     required CancellationToken cancellation,
     void Function(Json)? onEvent,
   }) async {
+    final completed = <Object, ConversationItem>{};
+    Object key(Json item) => item['id'] ?? item;
+    var deferred = false;
     final reply = await _respond(
       request,
       gptInput(request.input),
       cancellation,
-      onEvent,
+      (event) {
+        if (event['type'] == 'model.retrying') deferred = false;
+        if (event['type'] != 'model.output') {
+          onEvent?.call(event);
+          return;
+        }
+        if (deferred) return;
+        final wire = event['item'] as Json;
+        final item = gptItemFromNative(wire,
+          reasoningTimes: Map<String, Json>.from(event['reasoning_times'] as Map));
+        // Client calls are admitted with their executable response below.
+        if (item.kind != 'message' || item.calls.isNotEmpty) {
+          deferred = true;
+          return;
+        }
+        final id = key(wire);
+        if (completed.containsKey(id)) return;
+        completed[id] = item;
+        onEvent?.call({'type': 'model.output', 'item': item.toJson()});
+      },
     );
     return ModelReply(
-      reply.output.map((item) => gptItemFromNative(item, reasoningTimes: reply.reasoningTimes)).toList(),
+      reply.output.map((item) => completed[key(item)] ??
+        gptItemFromNative(item, reasoningTimes: reply.reasoningTimes)).toList(),
       _usage(reply.usage),
       endTurn: reply.endTurn,
     );

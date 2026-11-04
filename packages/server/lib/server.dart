@@ -1579,8 +1579,17 @@ class AgentServer {
         task.retryStatus = null;
       }
     }
-    if (event['type'] == 'model.started' || event['type'] == 'model.retrying') {
+    if (event['type'] == 'model.started') {
+      task?.completedStreamOrdinal = 0;
       task?.streamOrdinal = 0;
+      task?.streamPartType = null;
+    } else if (event['type'] == 'model.retrying') {
+      task?.streamOrdinal = task.completedStreamOrdinal;
+      task?.streamPartType = null;
+    } else if (event['type'] == 'model.output') {
+      final data = jsonObject(event['data']);
+      task?.completedStreamOrdinal = (data['ordinal'] as int) + (data['item']['content'] as List? ?? []).length;
+      task?.streamOrdinal = task.completedStreamOrdinal;
       task?.streamPartType = null;
     }
     if (event['type'] == 'text.delta' || event['type'] == 'reasoning.delta') {
@@ -1701,7 +1710,7 @@ class _Task {
   String? assistantMessageID;
   Json? retryStatus;
   String? startingInputID;
-  int streamOrdinal = 0;
+  int streamOrdinal = 0, completedStreamOrdinal = 0;
   String? streamPartType;
   bool busy = false, maintenance = false, cancelled = false, finishing = false;
   IsolateOwner? writer, agent;

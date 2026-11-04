@@ -14,7 +14,9 @@ typedef RetryAdvice = ({Duration delay, Stopwatch elapsed});
 
 RetryAdvice? retryAdvice(Object? value) {
   if (value is! String) return null;
+  if (value.codeUnits.any((unit) => unit < 32 && unit != 9 || unit == 127)) return null;
   value = value.trim();
+  final now = DateTime.now();
   final received = Stopwatch()..start();
   final seconds = RegExp(r'^\d+$').hasMatch(value) ? int.tryParse(value) : null;
   if (seconds != null) {
@@ -23,7 +25,7 @@ RetryAdvice? retryAdvice(Object? value) {
     return (delay: Duration(seconds: seconds), elapsed: received);
   }
   try {
-    final delay = HttpDate.parse(value).difference(DateTime.now());
+    final delay = HttpDate.parse(value).difference(now);
     return (delay: delay.isNegative ? Duration.zero : delay, elapsed: received);
   } on HttpException {
     return null;

@@ -34,7 +34,10 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
-  List<ToolDefinition> definitionsFor(List<Json> deferred) => [
+  List<ToolDefinition> definitionsFor(List<Json> deferred) {
+    // Codex prepares its cached search handler while building the tool router.
+    prepareToolSearch(deferred);
+    return [
     specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
@@ -50,7 +53,8 @@ class OpenAIToolInterface extends ToolInterface {
       if (deferred.isNotEmpty) specs.directSearchDefinition,
     ],
     if (webSearch) standaloneWebSearch ? webSearchDefinition : hostedWebSearchDefinition,
-  ];
+    ];
+  }
   @override
   ToolDefinition get nestedDiscovery => specs.toolSearchDefinition;
   @override
@@ -87,10 +91,10 @@ class OpenAIToolInterface extends ToolInterface {
     _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool, codeModeOnly, requestUserInput);
   @override
   String formatResult(ToolCall call, Json result) {
-    if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) return jsonEncode([
-      {'type': 'input_text', 'text': jsonEncode(result)},
-    ]);
-    if (call.format == 'search') return jsonEncode(result['tools'] ?? []);
+    if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) {
+      return jsonEncode([{'type': 'input_text', 'text': jsonEncode(result)}]);
+    }
+    if (call.format == 'search') { return jsonEncode(result['tools'] ?? []); }
     return jsonEncode([
     if (result['notification'] case final String notice) {'type': 'input_text', 'text': notice}
     else if (call.namespace == 'clock' && call.name == 'sleep')

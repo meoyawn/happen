@@ -20,15 +20,23 @@ void main() {
     readSession(root.path, id, method, params, cancellation: lifetime);
 
   test('system baseline is recorded once and genuine changes still produce updates', () async {
-    final store = TaskStore(root.path, id);
-    addTearDown(store.close);
+    var store = TaskStore(root.path, id);
+    addTearDown(() => store.close());
     store.append('task.created', {'instructions': 'Baseline'});
     store.append('model.started', {'assistantMessageID': 'msg_1', 'instructions': 'Baseline'});
     store.append('model.started', {'assistantMessageID': 'msg_2', 'instructions': 'Baseline'});
+    store.close();
+    store = TaskStore(root.path, id, create: false);
+    store.append('model.started', {'assistantMessageID': 'msg_resumed', 'instructions': 'Baseline'});
     expect((await read())['data'].where((message) => message['type'] == 'system').map((message) => message['text']), ['Baseline']);
     store.append('model.started', {'assistantMessageID': 'msg_3', 'instructions': 'Changed'});
     store.append('model.started', {'assistantMessageID': 'msg_4', 'instructions': 'Changed'});
     expect((await read())['data'].where((message) => message['type'] == 'system').map((message) => message['text']), ['Baseline', 'Changed']);
+    store.append('model.started', {'assistantMessageID': 'msg_5', 'instructions': ''});
+    store.append('model.started', {'assistantMessageID': 'msg_6', 'instructions': ''});
+    final updates = ((await read('session.event.list'))['data'] as List)
+      .where((event) => event['type'] == 'session.instructions.updated');
+    expect(updates.map((event) => event['data']['text']), ['Baseline', 'Changed', '']);
   });
 
   test('incremental base is one classified developer item and notices are not real user input', () async {
@@ -55,9 +63,13 @@ void main() {
   test('live events and reopened SQLite snapshots produce identical messages and parts', () async {
     final store = TaskStore(root.path, id);
     final live = <String, Json>{}, inbox = <String, dynamic>{};
+    void appendBatch(List<Json> events, {Json metadata = const {}}) {
+      for (final record in store.appendBatch(events, metadata: metadata)) {
+        for (final event in record['session_events'] as List) { applySessionEvent(live, jsonObject(event), inbox); }
+      }
+    }
     void append(String type, Json data, {Json metadata = const {}}) {
-      final record = store.append(type, data, metadata: metadata);
-      for (final event in record['session_events'] as List) { applySessionEvent(live, jsonObject(event), inbox); }
+      appendBatch([{'type': type, 'data': data}], metadata: metadata);
     }
     const config = {'provider': 'opencode', 'model': 'fixture', 'instructions': 'Baseline prompt',
       'provider_settings': {'context_limit': 10000, 'reasoning': 'high'}};
@@ -67,17 +79,19 @@ void main() {
     append('model.started', {'assistantMessageID': 'msg_a', 'instructions': 'Actual system prompt', 'tools': [
       {'namespace': 'functions', 'name': 'read'},
     ]});
-    append('model.completed', {'assistantMessageID': 'msg_a', 'output': [
+    appendBatch([
+      {'type': 'model.completed', 'data': {'assistantMessageID': 'msg_a', 'output': [
       ConversationItem(role: 'assistant', content: [
         {'type': 'reasoning', 'text': 'Inspect first'},
         {'type': 'tool_call', 'id': 'call_read', 'namespace': 'functions', 'name': 'read', 'input': '{"path":"a.txt"}'},
         {'type': 'text', 'text': 'Reading…'},
       ]).toJson(),
     ], 'usage': {'input_tokens': 100, 'cached_input_tokens': 30, 'cache_write_tokens': 10,
-      'output_tokens': 20, 'reasoning_tokens': 5}});
-    append('tool.completed', {'item': ConversationItem(role: 'tool', content: [
+      'output_tokens': 20, 'reasoning_tokens': 5}}},
+      {'type': 'tool.completed', 'data': {'item': ConversationItem(role: 'tool', content: [
       {'type': 'tool_result', 'call_id': 'call_read', 'output': 'file content'},
-    ]).toJson()});
+    ]).toJson()}},
+    ]);
     append('turn.completed', {});
     final context = store.modelSnapshot();
     store.close();

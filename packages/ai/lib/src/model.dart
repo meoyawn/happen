@@ -146,12 +146,13 @@ class ConversationItem {
 
 /// Model history carried by a committed event, not its transcript projection.
 Iterable<ConversationItem> modelContextItems(String type, Json data) {
+  final committed = (data['committed_output_ids'] as List? ?? []).toSet();
   final List items = switch (type) {
     'context.compacted' => data['input'] as List,
-    'model.completed' => data['output'] as List,
+    'model.completed' => (data['output'] as List).where((item) => !committed.contains(item['id'])).toList(),
     'input.committed' || 'configuration.updated' || 'instructions.updated' ||
     'environment.updated' || 'tools.updated' || 'agents.updated' ||
-    'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'tool.completed' || 'tool.notified' =>
+    'mcp.updated' || 'client_tools.updated' || 'skills.updated' || 'model.output' || 'tool.completed' || 'tool.notified' =>
       [if (data['item'] != null) data['item']],
     _ => const [],
   };

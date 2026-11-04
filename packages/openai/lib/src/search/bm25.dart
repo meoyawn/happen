@@ -56,8 +56,7 @@ class BM25Index {
   BM25Index(List<String> documents) {
     // Tool metadata repeats many words. Stem each distinct term once per build,
     // without reusing the dependency's mutable stemmer state between words.
-    final stems = <String, String>{};
-    final corpus = documents.map((document) => searchTokens(document, stems: stems)).toList();
+    final corpus = documents.map((document) => searchTokens(document, stems: _stems)).toList();
     final average = _f32(corpus.isEmpty ? 256 : corpus.fold<int>(0, (sum, doc) => sum + doc.length) / corpus.length);
     final avgdl = average <= 0 ? 256.0 : average, k1 = _f32(1.2), b = _f32(0.75);
     for (final tokens in corpus) {
@@ -76,18 +75,22 @@ class BM25Index {
   }
   final _documents = <Map<int, double>>[];
   final _frequencies = <int, int>{};
+  final _stems = <String, String>{};
   final _float = Float32List(1);
   double _f32(double value) { _float[0] = value; return _float[0]; }
 
   List<({int index, double score})> search(String query, int limit) {
-    final tokens = searchTokens(query).map(_hash).toList();
+    final tokens = searchTokens(query, stems: _stems).map((value) {
+      final token = _hash(value);
+      final frequency = _frequencies[token] ?? 0;
+      final idf = _f32(log(_f32(1 + _f32(_f32(_documents.length - frequency + 0.5) / _f32(frequency + 0.5)))));
+      return (token: token, idf: idf);
+    }).toList();
     final scores = <({int index, double score})>[];
     for (var index = 0; index < _documents.length; index++) {
       var score = 0.0;
       for (final token in tokens) {
-        final frequency = _frequencies[token] ?? 0;
-        final idf = _f32(log(_f32(1 + _f32(_f32(_documents.length - frequency + 0.5) / _f32(frequency + 0.5)))));
-        score = _f32(score + _f32(idf * (_documents[index][token] ?? 0)));
+        score = _f32(score + _f32(token.idf * (_documents[index][token.token] ?? 0)));
       }
       if (score > 0) scores.add((index: index, score: score));
     }

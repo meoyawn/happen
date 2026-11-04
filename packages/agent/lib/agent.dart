@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:ai/ai.dart';
@@ -319,9 +320,9 @@ class _Agent {
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
       final clientTools = config['client_tools'] as SendPort?;
       var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
-      Future<Json> readMcpCatalog([CancellationToken? token]) async {
+      Future<Json> readMcpCatalog([CancellationToken? token, bool revalidate = true]) async {
         final current = jsonObject(await callIsolate(network, 'mcp.catalog', {
-          'task_id': taskId, 'revision': mcpCatalog['revision'],
+          'task_id': taskId, 'revision': mcpCatalog['revision'], 'revalidate': revalidate,
         }, cancellation: token ?? work));
         if (current['unchanged'] != true) mcpCatalog = current;
         return mcpCatalog;
@@ -340,8 +341,8 @@ class _Agent {
       Json? describedMcp, describedClient;
       var deferredTools = <Json>[];
       List<Json>? runtimeCatalog;
-      Future<List<Json>> currentDeferredCatalog(CancellationToken token) async {
-        await Future.wait([readMcpCatalog(token), readClientCatalog(token)]);
+      Future<List<Json>> currentDeferredCatalog(CancellationToken token, {bool revalidate = true}) async {
+        await Future.wait([readMcpCatalog(token, revalidate), readClientCatalog(token)]);
         if (!identical(describedMcp, mcpCatalog) || !identical(describedClient, clientCatalog)) {
           deferredTools = deferredCatalog(mcpCatalog, clientCatalog);
           describedMcp = mcpCatalog; describedClient = clientCatalog;
@@ -359,6 +360,7 @@ class _Agent {
           'task_id': taskId, 'cwd': cwd,
         }, cancellation: work));
       Future<void> refreshSkills([Json? current]) async {
+        if (identical(current, skillsCatalog)) return;
         skillsCatalog = current ?? await readSkills();
         final next = skillContext(skillsCatalog, previous: skillsSnapshot,
           contextWindow: baseline['context_limit'] as int?);
@@ -419,7 +421,7 @@ class _Agent {
 
       Future<void> refreshInstructions([Json? loaded]) async {
         final current = loaded ?? await readInstructions();
-        if (contextFingerprint(current) == contextFingerprint(snapshot)) return;
+        if (identical(current, snapshot) || contextFingerprint(current) == contextFingerprint(snapshot)) return;
         final item = instructionUpdate(interface, current, snapshot);
         work.throwIfCancelled();
         if (item != null) {
@@ -485,10 +487,16 @@ class _Agent {
       }
 
       var initialContext = true;
-      Future<void> refreshContext() async {
+      Future<List<Object>> readContext({bool pureContinuation = false}) =>
+          Future.wait<Object>([
+            pureContinuation ? Future.value(snapshot!) : readInstructions(),
+            pureContinuation ? Future.value(skillsCatalog) : readSkills(),
+            currentDeferredCatalog(work, revalidate: !pureContinuation),
+          ]);
+      Future<void> refreshContext([List<Object>? loaded]) async {
         // Independent live reads overlap; commits retain their protocol order.
         // No debounce/TTL: edits made by the preceding tool are visible now.
-        final current = await Future.wait<Object>([readInstructions(), readSkills(), currentDeferredCatalog(work)]);
+        final current = loaded ?? await readContext();
         work.throwIfCancelled();
         if (initialContext) {
           if (interface.developerContextFirst) {
@@ -519,32 +527,72 @@ class _Agent {
         }
       }
       String? assistantMessageID;
+      final committedOutputIDs = <String>{};
+      var outputOrdinal = 0;
+      // Tool changes already have their own durable snapshot. The system
+      // baseline is constant during this turn; record it on the first request.
+      var instructionsRecorded = false;
       Future<Json> networkCall(String method, [CancellationToken? token]) async {
         final active = token ?? work;
         active.throwIfCancelled();
-        if (method == 'respond') {
-          assistantMessageID = 'msg_${interface.id == 'openai' ? newUuidV7() : newId()}';
-          event(await _append('model.started', {
-            'assistantMessageID': assistantMessageID,
-            'instructions': request().instructions,
-            'tools': request().tools.map((tool) => tool.toJson()).toList(),
-          }));
+        Object? receiveFailure;
+        StackTrace? receiveStack;
+        void fail(Object error, StackTrace stack) {
+          receiveFailure = error;
+          receiveStack = stack;
+          active.cancel();
         }
-        return jsonObject(
-          await callIsolate(
+        var received = Future<void>.value();
+        if (method == 'respond') {
+          committedOutputIDs.clear();
+          outputOrdinal = 0;
+          assistantMessageID = 'msg_${interface.id == 'openai' ? newUuidV7() : newId()}';
+          // Persist the baseline before the first request. Later starts can
+          // commit while the request travels; stream events and executable
+          // calls still wait for their durable admission.
+          received = _append('model.started', {
+            'assistantMessageID': assistantMessageID,
+            if (!instructionsRecorded) 'instructions': request().instructions,
+          }).then<void>(event).catchError(fail);
+          if (!instructionsRecorded) await received;
+          instructionsRecorded = true;
+        }
+        try {
+          return jsonObject(await callIsolate(
             network,
             method,
             {'provider': config['provider'], ...request().toJson()},
             onEvent: (value) {
-              if (!active.isCancelled) { event({...value,
-                if (method == 'respond') 'assistantMessageID': assistantMessageID,
-                if (method == 'compact' && value['type'] == 'text.delta') 'type': 'compaction.delta',
-              }); }
+              if (active.isCancelled || method != 'respond' && value['type'] == 'model.output') return;
+              received = received.then((_) async {
+                if (receiveFailure != null) return;
+                try {
+                  if (value['type'] == 'model.output') {
+                    final item = jsonObject(value['item']);
+                    if (!committedOutputIDs.add(requiredString(item, 'id'))) return;
+                    event(await _append('model.output', {
+                      'assistantMessageID': assistantMessageID, 'ordinal': outputOrdinal, 'item': item,
+                    }));
+                    outputOrdinal += (item['content'] as List? ?? []).length;
+                  } else {
+                    event({...value,
+                      if (method == 'respond') 'assistantMessageID': assistantMessageID,
+                      if (method == 'compact' && value['type'] == 'text.delta') 'type': 'compaction.delta',
+                    });
+                  }
+                } catch (error, stack) {
+                  fail(error, stack);
+                }
+              });
             },
             timeout: null,
             cancellation: active,
-          ),
-        );
+          ));
+        } finally {
+          // Finish accepted item commits before admitting steering or ending the turn.
+          await received;
+          if (receiveFailure != null) Error.throwWithStackTrace(receiveFailure!, receiveStack!);
+        }
       }
 
       Future<String> searchWeb(Object? commands, CancellationToken token) async =>
@@ -650,12 +698,15 @@ class _Agent {
 
       var manualCompaction = compact;
       var overflowRecovered = false;
+      List<Object>? prefetchedContext;
       while (true) {
         try {
           cancellation.throwIfCancelled();
           work.throwIfCancelled();
           await takeSteering();
-          await refreshContext();
+          final loaded = prefetchedContext;
+          prefetchedContext = null;
+          await refreshContext(loaded);
           work.throwIfCancelled();
           await takeNotifications();
           if (manualCompaction) {
@@ -672,6 +723,7 @@ class _Agent {
                   (baseline['compaction_headroom'] as int)) {
             await compactContext('threshold');
           }
+          final inferenceTools = deferredTools;
           final modelTime = Stopwatch()..start();
           final ModelReply reply;
           try {
@@ -689,7 +741,7 @@ class _Agent {
           telemetry.add('model_requests');
           countUsage(reply.usage);
           final nextUsage = reply.usage.contextTokens;
-          final nextItems = input.length + reply.output.length;
+          final nextItems = input.length + reply.output.where((item) => !committedOutputIDs.contains(item.id)).length;
           final calls = reply.calls;
           Json toolStarted(ToolCall call) => {
             'type': 'tool.started', 'data': {
@@ -698,14 +750,58 @@ class _Agent {
               'input': call.input,
             },
           };
+          final nativeSearch = calls.isNotEmpty && nestedDiscovery != null &&
+            calls.every((call) => call.format == 'search' && call.name == nestedDiscovery.name);
+          final searchEvents = <Json>[];
+          if (nativeSearch) {
+            // Searching the prepared router is pure. Commit its result with
+            // the model response instead of crossing the writer twice.
+            for (final call in calls) {
+              work.throwIfCancelled();
+              final watch = Stopwatch()..start();
+              Json result;
+              try {
+                result = interface.search(inferenceTools, jsonObject(jsonDecode(call.input)), native: true);
+              } catch (error) {
+                result = {'error': error.toString()};
+              }
+              telemetry.observe('code', watch.elapsed);
+              telemetry.add('code_cells');
+              searchEvents.addAll([
+                toolStarted(call),
+                {'type': 'tool.completed', 'data': {'item': interface.resultItem(call, result).toJson(), 'values': values}},
+              ]);
+            }
+          }
           // Admit the first call atomically with the model output. Host side
           // effects still start only after this transaction is durable.
-          for (final entry in await _appendBatch([
-            {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID}},
-            if (calls.isNotEmpty) toolStarted(calls.first),
-          ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed})) { event(entry); }
+          final committed = _appendBatch([
+            {'type': 'model.completed', 'data': {...reply.toJson(), 'assistantMessageID': assistantMessageID,
+              if (committedOutputIDs.isNotEmpty) ...{
+                'committed_output_ids': committedOutputIDs.toList(), 'ordinal': outputOrdinal,
+              }}},
+            if (nativeSearch) ...searchEvents
+            else if (calls.isNotEmpty) toolStarted(calls.first),
+          ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed,
+            if (nativeSearch) 'values': values}).then((entries) {
+              for (final entry in entries) { event(entry); }
+              return entries;
+            });
+          if (nativeSearch) {
+            // Pure discovery keeps the instruction/skill snapshot. MCP watches
+            // and server notifications still update the live router; host calls
+            // force filesystem revalidation at the next model boundary.
+            final ready = await Future.wait<Object>([committed, readContext(pureContinuation: true)]);
+            prefetchedContext = ready[1] as List<Object>;
+          } else {
+            await committed;
+          }
           usageTokens = nextUsage;
           usageItems = nextItems;
+          if (nativeSearch) {
+            if (goals?.active == true) await goals!.call('account', {}, cancellation: cancellation);
+            continue;
+          }
           if (calls.isEmpty) {
             if (_steering.isNotEmpty) continue;
             if (await takeNotifications()) continue;
@@ -752,7 +848,11 @@ class _Agent {
                     final service = interface.services[name];
                     if (nestedDiscovery != null && name == nestedDiscovery.name) {
                       output = interface.search(
-                        await currentDeferredCatalog(cancellation), jsonObject(arguments),
+                        // Native search uses the router snapshot prepared for
+                        // this inference, as in Codex. Nested discovery can run
+                        // after another host call and must refresh live tools.
+                        call.format == 'search' ? inferenceTools : await currentDeferredCatalog(cancellation),
+                        jsonObject(arguments),
                         native: call.format == 'search',
                       );
                     } else if (service == 'question.ask' || service == 'question.ask_async') {
@@ -881,6 +981,7 @@ class _Agent {
           cancellation.throwIfCancelled();
           if (_steering.isEmpty) rethrow;
           await host?.close();
+          prefetchedContext = null;
           work = _workCancellation = CancellationToken();
           host = interface.createRuntime(cwd, work);
           manualCompaction = false;

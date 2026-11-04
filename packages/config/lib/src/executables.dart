@@ -29,10 +29,14 @@ Future<Map<String, McpExecutable>> readMcpExecutables(
           ];
     final paths = <String>[];
     var revision = 'missing';
-    for (final candidate in candidates) {
+    // Stat independent PATH entries together, then retain shell precedence.
+    // Every read still sees replacements before the filesystem watcher fires.
+    final stats = await Future.wait(candidates.map((candidate) => File(candidate).stat()))
+      .asCancellable(cancellation);
+    for (var index = 0; index < candidates.length; index++) {
       cancellation.throwIfCancelled();
+      final candidate = candidates[index], stat = stats[index];
       paths.add(candidate);
-      final stat = await File(candidate).stat();
       if (stat.type != FileSystemEntityType.file ||
           !Platform.isWindows && stat.mode & 0x49 == 0) {
         continue;
