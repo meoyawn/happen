@@ -1,96 +1,84 @@
-// Kernel writer ownership, independent of the initiating isolate's registry.
-// All probes use real SQLite files; none replaces the writer/lock implementation.
+// One production writer isolate per saved session. Independent sessions use
+// different SQLite files; tests never open competing writers on one file.
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:protocol/protocol.dart';
 import 'package:storage/storage.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
-
-bool competingWriter(String directory) {
-  TaskStore? admitted;
-  try { admitted = TaskStore(directory, 'thread', create: false); return true; }
-  on FileSystemException catch (error) { if (![11, 13, 35].contains(error.osError?.errorCode)) rethrow; return false; }
-  on StateError catch (error) { if (!error.message.contains('active writer')) rethrow; return false; }
-  finally { admitted?.close(); }
-}
-Future<bool> isolatedWriterProbe(String directory) => Isolate.run(() => competingWriter(directory));
 
 void main() {
   late Directory root;
-  TaskStore? owner;
-  setUp(() async {
-    root = await Directory.systemTemp.createTemp('single-writer-');
-    owner = TaskStore(root.path, 'thread');
-    owner!.append('task.created', {'cwd': root.path}, metadata: {'config': {'cwd': root.path, 'provider': 'openai', 'model': 'owner-proof'}});
-  });
-  tearDown(() async { owner?.close(); owner = null; await root.delete(recursive: true); });
-  Future<Json> remote(String mode) async {
-    final process = await Process.start(Platform.resolvedExecutable, ['run', 'test/fixtures/storage_writer.dart', root.path, mode]);
-    final token = TimeoutCancellationToken(const Duration(seconds: 30));
-    final cancellation = CancellationHook(token, () => process.kill(ProcessSignal.sigkill));
-    try {
-      final out = utf8.decoder.bind(process.stdout).join(), err = utf8.decoder.bind(process.stderr).join();
-      expect(await process.exitCode.asCancellable(token), 0, reason: await err);
-      final lines = const LineSplitter().convert(await out).where((line) => line.startsWith('{'));
-      return jsonObject(jsonDecode(lines.single));
-    } finally { cancellation.dispose(); token.cancel(); process.kill(ProcessSignal.sigkill); await process.exitCode; }
+  final owners = <IsolateOwner>[];
+  setUp(() async { root = await Directory.systemTemp.createTemp('storage-writers-'); });
+  tearDown(() async { await Future.wait(owners.map((owner) => owner.close())); owners.clear(); await root.delete(recursive: true); });
+  Future<IsolateOwner> open(String id, {String? directory, bool create = true}) async {
+    final owner = await startStore(directory ?? root.path, id, create: create); owners.add(owner); return owner;
+  }
+  Future<void> seed(IsolateOwner owner, String id) async {
+    await callIsolate(owner.port, 'append', {'type': 'task.created', 'data': {'cwd': root.path},
+      'metadata': {'config': {'cwd': root.path, 'provider': 'openai', 'model': id}}});
   }
 
-  for (final mode in ['same isolate', 'another isolate', 'symlink alias']) {
-    test('one saved session rejects a second writer from $mode', () async {
-      var directory = root.path;
-      if (mode == 'symlink alias') {
-        final alias = '${root.path}/alias'; await Link(alias).create(root.path); directory = alias;
-      }
-      final admitted = mode == 'another isolate' ? await isolatedWriterProbe(directory) : competingWriter(directory);
-      expect(admitted, false);
-      expect(jsonObject(owner!.metadata('config'))['model'], 'owner-proof');
-    });
-  }
-
-  test('a rejected local acquisition never releases the live writer against another process', () async {
-    final before = await remote('probe'), local = competingWriter(root.path), after = await remote('probe');
-    expect({'before': before['admitted'], 'local': local, 'after': after['admitted']}, {'before': false, 'local': false, 'after': false});
-  }, timeout: const Timeout(Duration(seconds: 60)));
-
-  test('one writer permits concurrent read-only snapshots while its ordinary WAL transaction is active', () async {
-    owner!.db.execute('BEGIN IMMEDIATE');
-    owner!.db.execute("INSERT INTO kv VALUES ('uncommitted','1',1,1)");
-    final token = TimeoutCancellationToken(const Duration(seconds: 5));
-    try {
-      final page = await readSession(root.path, 'thread', 'thread/read', {}, cancellation: token);
-      final list = await listThreads(root.path, {}, cancellation: token);
-      expect(page['thread']['id'], 'thread'); expect(list['data'].single['id'], 'thread');
-      expect(competingWriter(root.path), false);
-    } finally { token.cancel(); owner!.db.execute('ROLLBACK'); }
-  });
-
-  test('failed writer initialization closes its SQLite connection before releasing ownership', () async {
-    final result = await remote('failed-init');
-    expect(result, {'initializationRejected': true, 'connectionReleased': true});
-  }, timeout: const Timeout(Duration(seconds: 45)));
-
-  test('process death releases the writer lease and the next owner opens the same durable file', () async {
-    owner!.close(); owner = null;
-    final process = await Process.start(Platform.resolvedExecutable, ['run', 'test/fixtures/storage_writer.dart', root.path, 'hold']);
-    final ready = Completer<Json>();
-    final output = utf8.decoder.bind(process.stdout).transform(const LineSplitter()).listen((line) {
-      if (line.startsWith('{') && !ready.isCompleted) ready.complete(jsonObject(jsonDecode(line)));
-    });
-    final errors = process.stderr.drain<void>();
-    int? child;
-    try {
-      final report = await ready.future.timeout(const Duration(seconds: 25)); child = report['pid'] as int;
-      expect(child, greaterThan(1)); expect(child, isNot(pid)); expect(report['admitted'], true);
-      expect(competingWriter(root.path), false);
-      Process.killPid(child, ProcessSignal.sigkill); await process.exitCode;
-      owner = TaskStore(root.path, 'thread', create: false); expect(jsonObject(owner!.metadata('config'))['model'], 'owner-proof');
-    } finally {
-      if (child != null && child > 1 && child != pid) Process.killPid(child, ProcessSignal.sigkill);
-      process.kill(ProcessSignal.sigkill); await process.exitCode; await output.cancel(); await errors;
+  test('different saved sessions retain independent SQLite state', () async {
+    final first = await open('first'), second = await open('second'); await seed(first, 'first'); await seed(second, 'second');
+    expect(first.port, isNot(second.port));
+    await Future.wait([callIsolate(first.port, 'kv.set', {'key': 'value', 'value': 'first'}), callIsolate(second.port, 'kv.set', {'key': 'value', 'value': 'second'})]);
+    expect(await callIsolate(first.port, 'kv.get', {'key': 'value'}), 'first');
+    expect(await callIsolate(second.port, 'kv.get', {'key': 'value'}), 'second');
+    for (final id in ['first', 'second']) {
+      expect(File('${root.path}/tasks/$id/history.sqlite').existsSync(), true);
+      expect(File('${root.path}/tasks/$id/writer.lock').existsSync(), false);
     }
-  }, timeout: const Timeout(Duration(seconds: 45)));
+  });
+
+  test('duplicate session ownership is rejected before opening another writer', () async {
+    final first = await open('thread'); await seed(first, 'thread');
+    await expectLater(startStore(root.path, 'thread', create: false), throwsStateError);
+    expect(jsonObject(await callIsolate(first.port, 'metadata', {'key': 'config'}))['model'], 'thread');
+  });
+
+  test('canonical directory aliases cannot create a second writer', () async {
+    final alias = '${root.path}/alias'; await Link(alias).create(root.path);
+    final first = await open('thread'); await seed(first, 'thread');
+    await expectLater(startStore(alias, 'thread', create: false), throwsStateError);
+    expect(jsonObject(await callIsolate(first.port, 'metadata', {'key': 'config'}))['model'], 'thread');
+  }, skip: Platform.isWindows ? 'Symlink creation requires separate Windows privileges.' : false);
+
+  test('closing and reopening one session preserves its data and leaves another session alone', () async {
+    final first = await open('first'), second = await open('second'); await seed(first, 'first'); await seed(second, 'second');
+    await first.close();
+    await callIsolate(second.port, 'kv.set', {'key': 'live', 'value': true});
+    final reopened = await open('first', create: false);
+    expect(jsonObject(await callIsolate(reopened.port, 'metadata', {'key': 'config'}))['model'], 'first');
+    expect(await callIsolate(second.port, 'kv.get', {'key': 'live'}), true);
+  });
+
+  test('concurrent read-only connections do not open or replace a writer', () async {
+    final writer = await open('thread'); await seed(writer, 'thread');
+    final token = CancellationToken();
+    try {
+      final reads = await Future.wait([for (var index = 0; index < 8; index++) readSession(root.path, 'thread', 'thread/read', {}, cancellation: token)]);
+      expect(reads.map((read) => read['thread']['id']), everyElement('thread'));
+      await callIsolate(writer.port, 'kv.set', {'key': 'after_reads', 'value': true});
+      expect(await callIsolate(writer.port, 'kv.get', {'key': 'after_reads'}), true);
+      await expectLater(startStore(root.path, 'thread', create: false), throwsStateError);
+    } finally { token.cancel(); }
+  });
+
+  test('failed initialization closes its connection and leaves a different session alone', () async {
+    final healthy = await open('healthy'); await seed(healthy, 'healthy');
+    await Directory('${root.path}/tasks/broken').create();
+    final path = '${root.path}/tasks/broken/history.sqlite', broken = sqlite3.open('${root.path}/tasks/broken/history.sqlite');
+    broken.execute('PRAGMA journal_mode=WAL'); broken.execute('CREATE TABLE happen_runtime(wrong_column TEXT)'); broken.close();
+    await expectLater(startStore(root.path, 'broken', create: false), throwsStateError);
+    // Only after failed initialization returns: no concurrent writer on this
+    // separate database, and no open failed transaction left in the worker.
+    final independent = sqlite3.open(path);
+    try { independent.execute('CREATE TABLE after_failed_initialization(value TEXT)'); }
+    finally { independent.close(); }
+    await callIsolate(healthy.port, 'kv.set', {'key': 'still_live', 'value': true});
+    expect(await callIsolate(healthy.port, 'kv.get', {'key': 'still_live'}), true);
+  });
 }

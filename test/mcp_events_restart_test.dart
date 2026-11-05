@@ -54,6 +54,11 @@ void main() {
         expect(jsonEncode(peer.responses.last), isNot(contains('whsec_')));
         final history = await server.request('thread/read', {'threadId': id, 'includeTurns': true});
         expect(history['thread']['turns'], hasLength(3));
+        if (mode == 'webhook') {
+          final privateSecret = (savedRegistration!['delivery']['secret'] as String).substring(6);
+          expect(jsonEncode(peer.responses.last), isNot(contains(privateSecret)));
+          expect(jsonEncode(history), isNot(contains(privateSecret)));
+        }
         expect((await server.request('mcp.events.subscriptions', {'threadId': id}) as List).single['cursor'], 'cursor-2');
       }, timeout: const Timeout(Duration(seconds: 75)));
     }
@@ -61,22 +66,33 @@ void main() {
 
   for (final fault in ['inbox', 'checkpoint']) {
     test('event $fault fault rolls back inbox, receipt and cursor; accepted/duplicate admission uses one/zero WAL commits', () async {
-      final server = await peer.launch(), id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
+      var server = await peer.launch();
+      final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
       await peer.deliver(server, subscription, 'webhook', peer.event(1));
       await peer.until(() => peer.responses.length == 2);
       await peer.until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false);
+      // Install the fault offline. Never open a competing writable SQLite
+      // connection while the production storage isolate owns this file.
+      await server.stop();
+      var database = sqlite3.open(peer.database(id));
+      final condition = fault == 'inbox' ? "instr(NEW.data,'evt-2')>0" : "NEW.key='mcp_event_subscriptions' AND instr(NEW.value,'cursor-2')>0";
+      database.execute('CREATE TRIGGER event_fault BEFORE UPDATE ON ${fault == 'inbox' ? 'happen_runtime' : 'metadata'} WHEN $condition BEGIN SELECT RAISE(ABORT,\'injected event transaction fault\'); END');
+      database.close();
+      server = await peer.launch();
       peer.holdNext = true;
       await server.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Hold this ordinary turn while the inbox admits an event.'}]});
       await peer.held.future;
-      final database = sqlite3.open(peer.database(id));
-      try {
-        final condition = fault == 'inbox' ? "instr(NEW.data,'evt-2')>0" : "NEW.key='mcp_event_subscriptions' AND instr(NEW.value,'cursor-2')>0";
-        database.execute('CREATE TRIGGER event_fault BEFORE UPDATE ON ${fault == 'inbox' ? 'happen_runtime' : 'metadata'} WHEN $condition BEGIN SELECT RAISE(ABORT,\'injected event transaction fault\'); END');
         final before = peer.snapshot(id), commits = peer.commits(id);
         expect(await peer.webhook(server, subscription, peer.event(2)), 503);
         expect(peer.snapshot(id), before, reason: 'Neither half of admission may become durable when the other half fails.');
         expect(peer.commits(id), commits);
+        await server.stop(crash: true);
+        database = sqlite3.open(peer.database(id));
         database.execute('DROP TRIGGER event_fault');
+        database.close();
+        server = await peer.launch(); peer.holdNext = true; peer.held = Completer<void>();
+        await server.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Hold the next ordinary turn for the accepted admission.'}]});
+        await peer.held.future;
         final accepted = peer.commits(id);
         expect(await peer.webhook(server, subscription, peer.event(2)), 200);
         expect(peer.commits(id) - accepted, 1, reason: 'Cursor and receipt must join the input.pending commit, not follow in another transaction.');
@@ -89,8 +105,7 @@ void main() {
         expect(durable, contains('mcp_event_subscriptions'), reason: 'The cursor checkpoint must exist in the same real database as its admitted inbox/receipt.');
         final state = jsonObject(jsonDecode(durable['mcp_event_subscriptions'] as String));
         expect(state[subscription['subscription_id']]['cursor'], 'cursor-2');
-      } finally { database.close(); }
-    }, timeout: const Timeout(Duration(seconds: 60)));
+    }, timeout: const Timeout(Duration(seconds: 90)));
   }
 
   test('a webhook acknowledged into a busy inbox wakes after process death without a new occurrence', () async {
@@ -179,7 +194,7 @@ class _Events {
   final http = HttpClient()..findProxy = (_) => 'DIRECT';
   final lifetime = TimeoutCancellationToken(const Duration(minutes: 2));
   final servers = <_Server>[], processes = <Process>[], calls = <Json>[], responses = <Json>[], occurrences = <Json>[];
-  final held = Completer<void>();
+  var held = Completer<void>();
   ({HttpResponse response, String id})? stream;
   Json? registration, pollReplay;
   String remoteId = 'remote-subscription';

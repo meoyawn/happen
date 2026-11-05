@@ -604,7 +604,7 @@ or `interrupted` status. Happen extensions use `happen/…` notifications.
 | `turn/start` | `threadId`, `input`, optional `effort`, `delivery`. Starts or queues input and subscribes this connection. |
 | `turn/steer` / `turn/interrupt` | `threadId`, `expectedTurnId` and `input` for steering, or `turnId` for interruption. |
 | `thread/fork` | `threadId`, optional `lastTurnId` or `beforeTurnId`. Structurally shares the immutable committed prefix. |
-| `thread/archive` / `thread/unarchive` | `threadId`. Archives/restores metadata in place without moving history. |
+| `thread/archive` / `thread/unarchive` | `threadId`. Archives/restores metadata in place without moving history. Archive drains active work, detaches every client subscription, and releases thread-owned resources. |
 | `thread/goal/get` / `thread/goal/set` / `thread/goal/clear` | `threadId`; set accepts partial objective/status/budget changes. |
 
 Happen's global `idle_unload_seconds` defaults to 60. A full delay must elapse
@@ -828,6 +828,12 @@ frames and 64 MiB. There is no application-level acknowledgement protocol.
 Clients exceeding either backlog bound disconnect; reconnect, resume, and page
 native history to reconcile. Thread notification subscriptions belong to the
 connection; server-hosted MCP event subscriptions have a separate lifetime.
+
+The desktop opens saved history through read-only calls, without loading or
+subscribing to execution. Threads have no tab-close lifecycle: archive releases
+their transcript, pending reads, panels, terminals, and temporary side chats.
+Archived previews release their cached history when dismissed; restore keeps
+history read-only until execution is explicitly started again.
 
 Requests are dispatched concurrently and replies are correlated by `id`; replies
 may arrive out of request order. The 32-request admission bound counts pending

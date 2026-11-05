@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:desktop/composer_attachments.dart';
@@ -12,6 +13,66 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  test('restored empty duplicates are removed while active and invested drafts survive', () async {
+    final root = await Directory.systemTemp.createTemp('restored-drafts-');
+    final attachment = await File('${root.path}/keep.txt').writeAsString('Keep this attachment');
+    final database = await openDesktopDatabase(root.path);
+    final session = DesktopSession(_Client(), database);
+    var closed = false;
+    addTearDown(() async {
+      if (!closed) await session.close();
+      await root.delete(recursive: true);
+    });
+    await callIsolate(database.port, 'project.add', {
+      'checkout_key': 'checkout', 'identity': 'project', 'path': root.path,
+    });
+    final savedDrafts = <Json>[
+      {'id': 'old-empty', 'project': 'checkout'},
+      {'id': 'active-empty', 'project': 'checkout', 'tracing': true},
+      {'id': 'new-empty', 'project': 'checkout'},
+      {'id': 'text', 'project': 'checkout', 'text': 'Keep this draft'},
+      {'id': 'attachment', 'project': 'checkout', 'attachments': [
+        {'type': 'file', 'name': 'keep.txt', 'path': attachment.path},
+      ]},
+      {'id': 'other-project', 'project': 'other-checkout'},
+      {'id': 'old-unscoped', 'project': null},
+      {'id': 'new-unscoped', 'project': null},
+      {'id': 'new-unscoped', 'project': null},
+    ];
+    await callIsolate(database.port, 'settings.set', {
+      'key': 'session_drafts',
+      'value': jsonEncode({
+        'active': 'active-empty',
+        'tabs': [for (final draft in savedDrafts) draft['id']],
+        'drafts': savedDrafts,
+      }),
+    });
+    await session.load();
+    const remaining = ['active-empty', 'text', 'attachment', 'other-project', 'new-unscoped'];
+    expect(session.sessionDrafts.map((draft) => draft.id), remaining);
+    expect(session.openTabIds, remaining);
+    expect(session.currentDraft.id, 'active-empty');
+    expect(session.currentDraft.tracing, isTrue);
+    expect(session.drafts['text'], 'Keep this draft');
+    expect(session.attachmentDrafts['attachment']!.single.path, attachment.path);
+    expect(await attachment.readAsString(), 'Keep this attachment');
+    for (var index = 0; index < 10; index++) { session.newSession(); }
+    expect(session.currentDraft.id, 'active-empty');
+    expect(session.sessionDrafts.map((draft) => draft.id), remaining);
+    await session.close();
+    closed = true;
+
+    final reopened = await openDesktopDatabase(root.path);
+    try {
+      final saved = jsonObject(await callIsolate(reopened.port, 'load', {}));
+      final restored = jsonObject(jsonDecode(saved['settings']['session_drafts'] as String));
+      expect((restored['drafts'] as List).map((draft) => draft['id']), remaining);
+      expect(restored['tabs'], remaining);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   for (final projectCount in [1, 12]) {
     testWidgets('project dropdown opens, filters, and selects with $projectCount projects', (tester) async {
       final root = (await tester.runAsync(() => Directory.systemTemp.createTemp('new-session-')))!;
@@ -118,6 +179,14 @@ void main() {
 
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
+  @override Future<Object?> request(String method, [Json params = const {}]) async => switch (method) {
+    'client.capabilities' => <String, Object?>{},
+    'providers.list' => {'providers': <Object?>[]},
+    'thread/list' => {'data': <Object?>[], 'nextCursor': null},
+    _ => throw StateError('Unexpected client request: $method'),
+  };
+  @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
+    jsonObject(await request(method, params));
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');
 }

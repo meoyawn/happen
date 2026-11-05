@@ -26,18 +26,21 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
   @override
   void dispose() {
     _read.cancel();
+    if (_preview case final preview?) widget.session.releaseHistory(preview.$2);
     _scroll.dispose();
     super.dispose();
   }
 
   void _back() {
     _read.cancel();
+    if (_preview case final preview?) widget.session.releaseHistory(preview.$2);
     _read = CancellationToken();
     setState(() => _preview = null);
   }
 
   void _open(Project project, DesktopTask task) {
     _read.cancel();
+    if (_preview case final preview? when preview.$2 != task) widget.session.releaseHistory(preview.$2);
     _read = CancellationToken();
     setState(() => _preview = (project, task));
     if (!task.loaded) _load(task);

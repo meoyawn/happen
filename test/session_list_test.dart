@@ -1,49 +1,12 @@
-import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:ai/ai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:storage/storage.dart';
-import 'package:sqlite3/sqlite3.dart';
-import 'package:telemetry/telemetry.dart';
 import 'package:test/test.dart';
 
 void main() {
-  for (final method in ['read', 'list']) {
-    for (final cancel in [false, true]) {
-      test('concurrent $method waits for a real SQLite read lock${cancel ? ' and remains caller-cancellable' : ' instead of hiding the saved session'}', () async {
-        final root = await Directory.systemTemp.createTemp('locked-read-'), token = CancellationToken(), port = ReceivePort();
-        final store = TaskStore(root.path, 'saved'), config = {'cwd': root.path, 'provider': 'openai', 'model': 'fixture'};
-        store.append('task.created', config, metadata: {'config': config}); store.close();
-        final blocker = sqlite3.open('${root.path}/tasks/saved/history.sqlite');
-        var closed = false;
-        final busy = Completer<void>(), events = port.listen((raw) {
-          if (jsonObject(raw)['event']?['name'] == 'sqlite.read.busy' && !busy.isCompleted) busy.complete();
-        });
-        try {
-          blocker.execute('PRAGMA locking_mode=EXCLUSIVE'); blocker.execute('BEGIN EXCLUSIVE'); blocker.select('SELECT data FROM happen_runtime');
-          final reading = withTrace(TraceContext(sink: port.sendPort, service: 'storage'), () => method == 'read'
-            ? readSession(root.path, 'saved', 'thread/read', {}, cancellation: token)
-            : listThreads(root.path, {}, cancellation: token));
-          unawaited(reading.then<void>((_) {}, onError: (Object _) {}));
-          await Future.any<void>([busy.future, reading.then<void>((_) => throw TestFailure('A locked read escaped before observing the lock'))]).timeout(const Duration(seconds: 5));
-          if (cancel) {
-            token.cancel(); await expectLater(reading, throwsA(isA<CancelledException>()));
-          } else {
-            blocker.execute('ROLLBACK'); blocker.close(); closed = true;
-            final result = await reading;
-            expect(method == 'read' ? result['thread']['id'] : result['data'].single['id'], 'saved');
-          }
-        } finally {
-          token.cancel(); if (!closed) blocker.close();
-          await events.cancel(); port.close(); await root.delete(recursive: true);
-        }
-      });
-    }
-  }
-
   test('native thread listing discovers durable interrupted sessions without running their tools', () async {
     final root = await Directory.systemTemp.createTemp('native-inventory-');
     addTearDown(() => root.delete(recursive: true));

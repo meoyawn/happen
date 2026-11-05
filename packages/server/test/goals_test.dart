@@ -191,6 +191,18 @@ void main() {
     final next = await startStore(root.path, id, create: false);
     try { expect(jsonObject(await callIsolate(next.port, 'goal.get', {}))['objective'], 'Persist without extra checkpoints'); }
     finally { await next.close(); }
+    final observer = await AgentClient.connect(server.uri);
+    try {
+      await observer.request('thread/unarchive', {'threadId': id});
+      await observer.request('thread/resume', {'threadId': id, 'excludeTurns': true,
+        'config': {'thread_unload_delay_secs': 0}});
+      final closed = observer.events.stream.firstWhere((event) =>
+        event['method'] == 'thread/closed' && event['params']['threadId'] == id);
+      await observer.request('thread/unsubscribe', {'threadId': id});
+      await closed.timeout(const Duration(seconds: 5));
+      expect(jsonObject(await client.request('thread/loaded/list'))['data'], isNot(contains(id)),
+        reason: 'Archive must remove the original connection subscription as well as its writer');
+    } finally { await observer.close(); }
   });
 
   test('unsubscribing immediately on a local terminal notification cannot deadlock goal continuation', () async {

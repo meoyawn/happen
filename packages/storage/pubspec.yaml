@@ -11,6 +11,5 @@ dependencies:
   protocol: any
   telemetry: any
   openai: any
-  ffi: ^2.1.4
 dev_dependencies:
   test: ^1.26.3

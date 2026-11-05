@@ -74,6 +74,7 @@ class DesktopTask {
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending;
   Object? _conversationState;
+  CancellationToken? _historyRead;
 }
 
 class QuestionDraft {
@@ -160,6 +161,7 @@ class DesktopSession extends ChangeNotifier {
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
+  final _releasingThreads = <String, Future<void>>{};
   late final _notifications = StreamController<TaskNotification>.broadcast();
   Stream<TaskNotification> get notifications => _notifications.stream;
   List<Json> providers = [];
@@ -190,11 +192,8 @@ class DesktopSession extends ChangeNotifier {
   SessionDraft get currentDraft {
     final existing = sessionDrafts.where((draft) => draft.id == _activeDraftId).firstOrNull;
     if (existing != null) return existing;
-    final draft = SessionDraft('draft:${newId()}', project?.checkoutKey,
-      provider: _provider, model: _model, reasoning: _reasoning);
-    sessionDrafts.add(draft);
+    final draft = _draftForProject(project?.checkoutKey);
     _activeDraftId = draft.id;
-    openTabIds.add(draft.id);
     saveDrafts();
     return draft;
   }
@@ -662,25 +661,21 @@ class DesktopSession extends ChangeNotifier {
     _saveNavigation('viewed_tasks', jsonEncode(viewedTasks));
   }
 
-  Future<void> reorderTabs(List<String> ids) async {
-    if (ids.length != openTabIds.length || ids.toSet().length != ids.length ||
-        !ids.every(openTabIds.contains)) { return; }
-    openTabIds..clear()..addAll(ids);
-    notifyListeners();
-    saveDrafts();
-    await _setting('open_tabs', jsonEncode(openTabIds));
-  }
-
-  Future<void> closeTab(DesktopTask target) async {
-    final index = navigationTabIds.indexOf(target.id);
-    if (index == -1) return;
-    openTabIds.remove(target.id);
-    if (task == target) {
-      await _selectTabNear(index);
-    }
-    notifyListeners();
-    saveDrafts();
-    await _setting('open_tabs', jsonEncode(openTabIds));
+  /// Releases a transcript when archiving or leaving an archived preview.
+  void releaseHistory(DesktopTask target) {
+    target._historyRead?.cancel();
+    target.messages.clear();
+    target.turns.clear();
+    target.liveEvents.clear();
+    target.projectionState.removeWhere((key, _) => key != 'summary');
+    target._conversation = null;
+    target._conversationEvents = null;
+    target._conversationPending = null;
+    target._conversationState = null;
+    target.historyBefore = null;
+    target.streamingText = '';
+    target.liveText.value = '';
+    target.loaded = false;
   }
 
   Future<void> chooseSidebarSection(String section, bool collapsed) async {
@@ -896,54 +891,55 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  void newSession([Project? owner]) {
-    final checkoutKey = (owner ?? project)?.checkoutKey;
-    final existing = sessionDrafts.reversed.where((draft) =>
-      draft.checkoutKey == checkoutKey && draft.submission == null &&
-      (drafts[draft.id] ?? '').trim().isEmpty &&
-      (fileDrafts[draft.id]?.isEmpty ?? true) &&
-      (attachmentDrafts[draft.id]?.isEmpty ?? true)).firstOrNull;
-    if (existing != null) {
-      openDraft(existing);
-      return;
+  bool _emptyDraft(SessionDraft draft) => draft.submission == null &&
+    (drafts[draft.id] ?? '').trim().isEmpty &&
+    (fileDrafts[draft.id]?.isEmpty ?? true) &&
+    (attachmentDrafts[draft.id]?.isEmpty ?? true);
+
+  int _pruneEmptyDrafts() {
+    bool unused(SessionDraft draft) => _emptyDraft(draft) &&
+      !terminals.groups.entries.any((entry) => entry.key.$2 == draft.id && entry.value.sessions.isNotEmpty) &&
+      !panelLayouts.containsKey(draft.id);
+    final keepers = <String?, SessionDraft>{};
+    for (final draft in sessionDrafts.where(unused)) {
+      final previous = keepers[draft.checkoutKey];
+      if (previous == null || previous.id != _activeDraftId) keepers[draft.checkoutKey] = draft;
     }
+    final seen = <String>{}, removed = <String>{};
+    final before = sessionDrafts.length;
+    sessionDrafts.removeWhere((draft) {
+      if (!unused(draft) || identical(keepers[draft.checkoutKey], draft) && seen.add(draft.id)) return false;
+      removed.add(draft.id);
+      return true;
+    });
+    if (before == sessionDrafts.length) return 0;
+    removed.removeWhere((id) => sessionDrafts.any((draft) => draft.id == id));
+    final tabs = openTabIds.where((id) => !removed.contains(id)).toSet().toList();
+    openTabIds..clear()..addAll(tabs);
+    for (final id in removed) {
+      drafts.remove(id);
+      draftSelections.remove(id);
+      fileDrafts.remove(id);
+      attachmentDrafts.remove(id);
+    }
+    _saveNavigation('open_tabs', jsonEncode(openTabIds));
+    saveDrafts();
+    return before - sessionDrafts.length;
+  }
+
+  SessionDraft _draftForProject(String? checkoutKey) {
+    _pruneEmptyDrafts();
+    final candidates = sessionDrafts.where((draft) => draft.checkoutKey == checkoutKey && _emptyDraft(draft));
+    final existing = candidates.where((draft) => draft.id == _activeDraftId).firstOrNull ?? candidates.lastOrNull;
+    if (existing != null) return existing;
     final draft = SessionDraft('draft:${newId()}', checkoutKey,
       provider: _provider, model: _model, reasoning: _reasoning);
     sessionDrafts.add(draft);
     openTabIds.add(draft.id);
-    openDraft(draft);
+    return draft;
   }
 
-  Future<void> closeDraft(SessionDraft draft) async {
-    if (submitting || !sessionDrafts.remove(draft)) return;
-    final index = navigationTabIds.indexOf(draft.id);
-    openTabIds.remove(draft.id);
-    drafts.remove(draft.id);
-    fileDrafts.remove(draft.id);
-    draftSelections.remove(draft.id);
-    final attachments = attachmentDrafts.remove(draft.id) ?? const <ComposerAttachment>[];
-    if (_activeDraftId == draft.id) {
-      _activeDraftId = null;
-      if (task == null) {
-        await _selectTabNear(index);
-      }
-    }
-    _saveNavigation('open_tabs', jsonEncode(openTabIds));
-    saveDrafts();
-    notifyListeners();
-    await terminals.removeTask(draft.id);
-    for (final attachment in attachments) { await attachment.discard(); }
-  }
-
-  Future<void> _selectTabNear(int index) async {
-    final ids = navigationTabIds;
-    final next = ids.isEmpty ? null : ids[index.clamp(0, ids.length - 1)];
-    final draft = sessionDrafts.where((draft) => draft.id == next).firstOrNull;
-    final existing = openTasks.where((entry) => entry.$2.id == next).firstOrNull;
-    if (draft != null) { openDraft(draft); }
-    else if (existing != null) { await select(existing.$1, existing.$2); }
-    else { newSession(); }
-  }
+  void newSession([Project? owner]) => openDraft(_draftForProject((owner ?? project)?.checkoutKey));
 
   Future<Object?> _request(String method, [Json params = const {}]) async {
     _lifetime.throwIfCancelled();
@@ -1091,6 +1087,7 @@ class DesktopSession extends ChangeNotifier {
       task = target;
       break;
     }
+    _pruneEmptyDrafts();
     await refreshProviders();
     if (task == null && viewingConversation) currentDraft;
     await loadNavigationTasks();
@@ -1123,6 +1120,7 @@ class DesktopSession extends ChangeNotifier {
     await refreshSessions(owner: project);
     task = null;
     currentDraft.checkoutKey = project!.checkoutKey;
+    _pruneEmptyDrafts();
     _saveNavigation('open_tabs', jsonEncode(openTabIds));
     notifyListeners();
   }
@@ -1198,6 +1196,7 @@ class DesktopSession extends ChangeNotifier {
       for (final draft in sessionDrafts.where((draft) => draft.checkoutKey == target.checkoutKey)) {
         draft.checkoutKey = project?.checkoutKey;
       }
+      _pruneEmptyDrafts();
       saveDrafts();
       final attachments = <ComposerAttachment>[];
       for (final key in [target.checkoutKey, ...target.tasks.map((task) => task.id)]) {
@@ -1218,7 +1217,10 @@ class DesktopSession extends ChangeNotifier {
     viewingConversation = true;
     project = nextProject;
     task = nextTask;
-    if (nextTask == null) currentDraft.checkoutKey = nextProject.checkoutKey;
+    if (nextTask == null) {
+      currentDraft.checkoutKey = nextProject.checkoutKey;
+      _pruneEmptyDrafts();
+    }
     error = null;
     if (nextTask != null) {
       _rememberTab(nextTask);
@@ -1239,16 +1241,19 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> loadHistory(DesktopTask target, {CancellationToken? cancellation}) async {
-    if (target.loading) return;
-    final read = cancellation?.merge(_lifetime) ?? _lifetime;
+    if (target.loading || target.loadingEarlier) return;
+    final work = target._historyRead = CancellationToken();
+    final read = work.merge(cancellation?.merge(_lifetime) ?? _lifetime);
     read.throwIfCancelled();
     target.loading = true;
     target.loadError = null;
     notifyListeners();
     try {
       target.liveEvents.clear();
-      final page = await client.sessionRead(target.sideParentID != null || target.archived ? 'thread/read' : 'thread/resume',
-        {'threadId': target.id, 'includeTurns': false, 'excludeTurns': true},
+      // Opening history must not attach an execution subscriber or retain a
+      // server runtime. Start/resume operations own those subscriptions.
+      final page = await client.sessionRead('thread/read',
+        {'threadId': target.id, 'includeTurns': false},
         cancellation: read);
       final history = await client.sessionRead('thread/items/list', {'threadId': target.id, 'limit': 100, 'sortDirection': 'desc'}, cancellation: read);
       final recentTurns = await client.sessionRead('thread/turns/list', {'threadId': target.id, 'limit': 5, 'itemsView': 'summary'}, cancellation: read);
@@ -1273,6 +1278,7 @@ class DesktopSession extends ChangeNotifier {
         }));
       final config = jsonObject(page['configuration'] ?? {});
       await _restoreTracing(target, config['tracing'] == true);
+      read.throwIfCancelled();
       target.provider = config['provider'] as String?;
       target.model = config['model'] as String?;
       target.reasoning = page['reasoning'] as String? ?? config['provider_settings']?['reasoning'] as String?;
@@ -1280,6 +1286,7 @@ class DesktopSession extends ChangeNotifier {
       target.contextLimit = config['provider_settings']?['context_limit'] as num?;
       target.archived = page['archived'] == true;
       if (target.archived) await terminals.removeTask(target.id);
+      read.throwIfCancelled();
       target.through = page['notificationThrough'] as int? ?? 0;
       target.messages.clear();
       target.turns.clear();
@@ -1322,6 +1329,8 @@ class DesktopSession extends ChangeNotifier {
       target.loadError = failure.toString();
     } finally {
       target.loading = false;
+      if (identical(target._historyRead, work)) target._historyRead = null;
+      work.cancel();
       if (!_lifetime.isCancelled) notifyListeners();
     }
   }
@@ -1339,7 +1348,8 @@ class DesktopSession extends ChangeNotifier {
   Future<void> loadEarlier(DesktopTask target, {CancellationToken? cancellation}) async {
     final before = target.historyBefore;
     if (before == null || target.loadingEarlier || target.loading) return;
-    final read = cancellation?.merge(_lifetime) ?? _lifetime;
+    final work = target._historyRead = CancellationToken();
+    final read = work.merge(cancellation?.merge(_lifetime) ?? _lifetime);
     read.throwIfCancelled();
     target.loadingEarlier = true;
     target.loadError = null;
@@ -1356,6 +1366,8 @@ class DesktopSession extends ChangeNotifier {
       target.loadError = failure.toString();
     } finally {
       target.loadingEarlier = false;
+      if (identical(target._historyRead, work)) target._historyRead = null;
+      work.cancel();
       if (!_lifetime.isCancelled) notifyListeners();
     }
   }
@@ -1635,7 +1647,10 @@ class DesktopSession extends ChangeNotifier {
       await closingTerminals;
       await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
       target.archived = archived;
-      if (archived) _removeArchivedTab(target);
+      if (archived) {
+        _removeArchivedTab(target);
+        await _releaseArchivedThread(target);
+      }
       await _saveArchived(target);
     } finally {
       target.archiving = false;
@@ -1647,6 +1662,33 @@ class DesktopSession extends ChangeNotifier {
     await callIsolate(database.port, 'task.archive', {
       'task_id': target.id, 'archived': target.archived,
     }, cancellation: _lifetime);
+  }
+
+  Future<void> _releaseArchivedThread(DesktopTask target) =>
+    _releasingThreads.putIfAbsent(target.id, () => _releaseArchivedResources(target)
+      .whenComplete(() { _releasingThreads.removeWhere((id, _) => id == target.id); }));
+
+  Future<void> _releaseArchivedResources(DesktopTask target) async {
+    releaseHistory(target);
+    target.running = false;
+    target.runStartedAt = null;
+    target.retryStatus = null;
+    target.pending.clear();
+    target.questions.clear();
+    target.questionDrafts.clear();
+    target.loadError = null;
+    drafts.remove(target.id);
+    draftSelections.remove(target.id);
+    fileDrafts.remove(target.id);
+    final attachments = attachmentDrafts.remove(target.id) ?? const <ComposerAttachment>[];
+    panelLayouts.remove(target.id);
+    _savePanels(target);
+    await terminals.removeTask(target.id);
+    for (final side in sideChats.values.where((side) => side.sideParentID == target.id).toList()) {
+      await _discardSideChat(target, side.id);
+    }
+    if (task == target) await _dictation?.cancel();
+    for (final attachment in attachments) { await attachment.discard(); }
   }
 
   void showError(Object failure, {DesktopTask? target}) {
@@ -1703,10 +1745,6 @@ class DesktopSession extends ChangeNotifier {
       }
       return;
     }
-    if (event['method'] == 'thread/archived') {
-      final id = event['params']?['threadId'];
-      if (id is String) unawaited(terminals.removeTask(id));
-    }
     if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
       unawaited(_dictation?.cancel());
       return;
@@ -1730,12 +1768,30 @@ class DesktopSession extends ChangeNotifier {
       if (submitting && _earlyEvents.length < 256) _earlyEvents.add(event);
       return;
     }
+    final wasRunning = target.running;
     final appendingText = event['method'] == 'item/agentMessage/delta' && target.streamingText.isNotEmpty;
     _applyEvent(target, event);
     _observeActivity(target, [event]);
+    if (event['method'] == 'thread/status/changed' && wasRunning && !target.running &&
+        target.loaded && !target.loading && target.sideParentID == null) {
+      // A read-only view can observe a turn whose subscriber was detached.
+      // Refresh its final history from storage when global status becomes idle.
+      if (task == target && viewingConversation) {
+        unawaited(loadHistory(target).catchError((Object failure) {
+          if (failure is! CancelledException) showError(failure);
+        }));
+      } else {
+        releaseHistory(target);
+      }
+    }
     if (task == target) _markViewed(target);
     if ({'thread/archived', 'thread/unarchived'}.contains(event['method'])) {
-      if (target.archived) _removeArchivedTab(target);
+      if (target.archived) {
+        _removeArchivedTab(target);
+        unawaited(_releaseArchivedThread(target).catchError((Object failure) {
+          if (failure is! CancelledException) showError(failure);
+        }));
+      }
       unawaited(_saveArchived(target).catchError((Object failure) {
         if (failure is! CancelledException) showError(failure);
       }));
@@ -1825,6 +1881,11 @@ class DesktopSession extends ChangeNotifier {
         for (final id in data['ids'] as List? ?? []) { target.pending.remove('msg_$id'); }
       case 'thread/archived': target.archived = true;
       case 'thread/unarchived': target.archived = false;
+      case 'thread/status/changed':
+        target.running = data['status']?['type'] == 'active';
+        if (!target.running) {
+          target.runStartedAt = null; target.streamingText = ''; target.retryStatus = null;
+        }
       case 'thread/tokenUsage/updated':
         final last = target.messages.entries.lastOrNull;
         if (last != null) target.messages[last.key] = {...last.value, 'tokens': sessionTokens(jsonObject(data['tokenUsage']))};
@@ -1840,6 +1901,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> close() async {
     _draftSave?.cancel();
     if (_draftSave != null || sessionDrafts.isNotEmpty) await _persistDrafts();
+    await Future.wait(_releasingThreads.values.toList());
     await terminals.close();
     terminals.dispose();
     _submission?.cancel();

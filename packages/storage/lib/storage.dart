@@ -1,9 +1,7 @@
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
-import 'package:ffi/ffi.dart';
 import 'package:openai/openai.dart' show gptInput, gptItemFromRollout;
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
@@ -20,7 +18,6 @@ part 'src/native_adapter.dart';
 part 'src/lifecycle.dart';
 part 'src/goals.dart';
 part 'src/mcp_events.dart';
-part 'src/writer_lock.dart';
 
 /// One WAL database, exclusively owned by one writer isolate, per session.
 /// Codex RolloutLines are canonical; thread history is a rebuildable projection.
@@ -33,7 +30,6 @@ class TaskStore {
     }
     if (!inMemory) {
       folder.createSync(recursive: true);
-      _releaseWriter = _acquireWriter('${folder.path}/writer.lock', taskId);
     }
     TracedDatabase? opened;
     try {
@@ -64,10 +60,9 @@ class TaskStore {
       ''');
       db.execute('COMMIT');
     } catch (_) {
-      // Do not offer the lease again while a failed initializer still owns a
-      // writable connection or uncommitted schema transaction.
-      try { opened?.close(); }
-      finally { _releaseWriter?.call(); _releaseWriter = null; }
+      // A failed initializer must not leave a writable connection/transaction
+      // behind after its writer isolate fails to start.
+      opened?.close();
       rethrow;
     }
   }
@@ -79,13 +74,11 @@ class TaskStore {
   late final TracedDatabase db;
   late final CodexSqlite native;
   late Json state;
-  void Function()? _releaseWriter;
   bool _closed = false;
   void close() {
     if (_closed) return;
     db.close();
     _closed = true;
-    _releaseWriter?.call(); _releaseWriter = null;
   }
 
   int get lastSequence => state['sourceSeq'] as int? ?? 0;

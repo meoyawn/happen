@@ -1157,7 +1157,7 @@ class AgentServer {
           await _closeSide(side);
         }
       }
-      writer = task.writer ?? await startStore(directory, task.id, create: false);
+      writer = task.memoryStore ?? task.writer ?? await startStore(directory, task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       if (archived) {
@@ -1170,10 +1170,21 @@ class AgentServer {
         await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}', 'persist': false}, cancellation: _lifetime);
       }
       _broadcast(task.id, event);
+      if (archived) {
+        for (final client in _clients) {
+          client.subscriptions.remove(task.id);
+          client.contextSnapshots.removeWhere((_, snapshot) => snapshot['sessionID'] == task.id);
+          client.sessionTraces.remove(task.id);
+        }
+      }
     } finally {
       try { await writer?.close(); if (task.writer == writer) task.writer = null; }
       finally {
-        if (archived) { task.loaded = false; task.unloadTimer?.cancel(); task.unloadTimer = null; }
+        if (archived) {
+          task.loaded = false;
+          if (identical(task.memoryStore, writer)) task.memoryStore = null;
+          task.unloadTimer?.cancel(); task.unloadTimer = null;
+        }
         task.maintenance = false;
         task.maintenanceDone = null;
         settled.complete();
@@ -1612,7 +1623,8 @@ class AgentServer {
       }
     }
     for (final client in _clients.toList()) {
-      if (!client.subscriptions.contains(taskId) && !{'goal.updated', 'goal.cleared'}.contains(event['type'])) continue;
+      if (!client.subscriptions.contains(taskId) &&
+          !{'goal.updated', 'goal.cleared', 'task.archived', 'task.unarchived'}.contains(event['type'])) continue;
       for (final notification in notifications) { client.event(notification); }
     }
     if (event['type'] == 'model.started') _tasks[taskId]?.assistantMessageID = event['data']['assistantMessageID'] as String?;
