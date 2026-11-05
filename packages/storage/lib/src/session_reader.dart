@@ -52,7 +52,9 @@ T withHistoryLineage<T>(String directory, String id, TracedDatabase own, T Funct
       segments.add((db: db, id: current, end: end ?? (latest ?? -1) + 1));
       if (localOnly) break;
       final meta = db.select("SELECT line FROM rollout_lines WHERE json_extract(line,'\$.type') IS 'session_meta' ORDER BY ordinal LIMIT 1").firstOrNull;
-      final base = meta == null ? null : jsonDecode(meta['line'] as String)['payload']['history_base'];
+      final payload = meta == null ? null : jsonObject(jsonDecode(meta['line'] as String)['payload']);
+      if (payload != null && payload['id'] != current) throw const FormatException('Invalid paginated history lineage: source identity does not match its thread');
+      final base = payload?['history_base'];
       if (base == null) break;
       final parent = requiredString(jsonObject(base), 'thread_id');
       validateTaskId(parent);

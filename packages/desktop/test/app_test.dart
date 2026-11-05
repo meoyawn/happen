@@ -15,7 +15,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
-  testWidgets('new-session project menu preserves the tab draft while adding and switching projects', (tester) async {
+  testWidgets('new-session project menu preserves the draft while adding and switching projects', (tester) async {
     late Directory root, firstFolder, secondFolder;
     late DesktopSession session;
     await tester.runAsync(() async {
@@ -121,12 +121,15 @@ void main() {
     await _shortcut(tester, LogicalKeyboardKey.bracketLeft, shift: true);
     expect(session.draftKey, draftKey);
     expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, 'Keep editing across projects');
-    await _shortcut(tester, LogicalKeyboardKey.bracketRight, shift: true);
-    expect(session.draftKey, secondDraftKey);
-    await _shortcut(tester, LogicalKeyboardKey.digit1);
-    expect(session.draftKey, draftKey);
     await _shortcut(tester, LogicalKeyboardKey.digit2);
+    expect(session.draftKey, draftKey, reason: 'Empty drafts do not occupy a sidebar shortcut');
+    await _shortcut(tester, LogicalKeyboardKey.bracketLeft);
     expect(session.draftKey, secondDraftKey);
+    await _shortcut(tester, LogicalKeyboardKey.bracketRight);
+    expect(session.draftKey, draftKey);
+    await _shortcut(tester, LogicalKeyboardKey.keyN);
+    expect(session.draftKey, secondDraftKey);
+    expect(find.text('New session'), findsNothing);
     await _shortcut(tester, LogicalKeyboardKey.keyB);
     expect(session.sidebarOpen, isFalse);
     await _shortcut(tester, LogicalKeyboardKey.keyB);
@@ -408,6 +411,7 @@ Future<void> _shortcut(WidgetTester tester, LogicalKeyboardKey key, {bool shift 
 // lets conversation inventory and teardown complete independently.
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
+  @override bool get sharedFilesystem => true;
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'thread/list') return {'data': <Object?>[], 'nextCursor': null};
     throw StateError('Unexpected request: $method');

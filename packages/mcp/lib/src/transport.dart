@@ -12,6 +12,7 @@ import 'package:telemetry/telemetry.dart';
 import 'challenges.dart';
 
 part 'stdio.dart';
+part 'input.dart';
 
 const mcpProtocolVersion = '2026-07-28';
 const mcpUserAgent = 'happen-mcp-client/0.1.0';
@@ -66,16 +67,31 @@ class McpCredentialFailure extends McpFailure {
   final bool authenticationRequired;
 }
 
+typedef McpInputHandler = Future<Json> Function(String id, Json request, CancellationToken cancellation);
+typedef McpRequestMetadata = Json? Function(Json capabilities);
+const Json mcpInputCapabilities = {
+  'elicitation': {'form': <String, Object?>{}, 'url': <String, Object?>{}},
+  'extensions': {'openai/form': <String, Object?>{}, 'openai/elicitation': {
+    'form': <String, Object?>{}, 'userVerification': <String, Object?>{},
+  }},
+};
+
 /// One shared transport generation. Requests have independent cancellation.
 class McpConnection {
-  McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge});
+  McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge, this.onRecover, this.clientCapabilities = const {}, this.requestMetadata});
   final Json config;
   final HttpClient http;
   final void Function(Json) onNotification;
+  final Json clientCapabilities;
+  final McpRequestMetadata? requestMetadata;
   final Future<String?> Function(CancellationToken)? authorization;
+  final Future<void> Function(CancellationToken)? onRecover;
   final void Function(int status, List<String> headers, {required bool sentToken})? onAuthChallenge;
   final lifetime = CancellationToken();
   final _pending = <Object, _Pending>{};
+  final _inputCancellations = <Object, CancellationToken>{};
+  final _earlyInputCancellations = <Object>{};
+  bool _inputCancellationSaturated = false;
   _StdioProcess? _process;
   StreamSubscription<String>? _stdout;
   StreamSubscription<List<int>>? _stderr;
@@ -164,7 +180,7 @@ class McpConnection {
     version = '2025-06-18';
     final result = await request('initialize', {
       'protocolVersion': version,
-      'capabilities': <String, Object?>{},
+      'capabilities': clientCapabilities,
       'clientInfo': {'name': 'happen', 'version': '0.1.0'},
     }, cancellation: cancellation);
     final selected = result['protocolVersion'];
@@ -186,10 +202,22 @@ class McpConnection {
     void Function(Json)? onNotification,
     Json? inputSchema,
     bool retrySafe = false,
-  }) => _request(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification, inputSchema: inputSchema, retrySafe: retrySafe);
+    McpInputHandler? onInput,
+    bool readOnly = false,
+  }) => onInput == null
+    ? _request(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification, inputSchema: inputSchema, retrySafe: retrySafe, readOnly: readOnly)
+    : requestWithInput(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification,
+        inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly);
+
+  Future<Json> requestWithInput(String method, Json params, {required CancellationToken cancellation,
+    Duration? timeout = const Duration(seconds: 60), void Function(Json)? onNotification, Json? inputSchema,
+    bool retrySafe = false, McpInputHandler? onInput, bool readOnly = false}) =>
+      _driveMcpInputs(this, method, params, cancellation, timeout: timeout, onNotification: onNotification,
+        inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly);
 
   Future<Json> _request(String method, Json params, {required CancellationToken cancellation, Duration? timeout,
-    void Function(Json)? onNotification, Json? inputSchema, bool retrySafe = false, bool recovered = false}) async {
+    void Function(Json)? onNotification, Json? inputSchema, bool retrySafe = false, bool recovered = false,
+    bool allowReplay = true, bool readOnly = false, McpInputHandler? onInput, _InputClock? clock}) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
     if (_pending.length >= 256) {
@@ -202,30 +230,37 @@ class McpConnection {
     final id = newId();
     final protocolVersion = version;
     final generation = _generation, stateful = !modern && _session != null;
+    try {
+    final metadata = {...jsonObject(params['_meta'] ?? {})};
+    if (method == 'tools/call' && requestMetadata != null) {
+      metadata.remove('codex/network-policy-meta');
+      metadata.addAll(requestMetadata!(jsonObject(discovery['capabilities'] ?? {})) ?? {});
+    }
+    if (readOnly) metadata['openai/readOnly'] = true;
     final body = <String, dynamic>{
       'jsonrpc': '2.0',
       'id': id,
       'method': method,
       'params': {
         ...params,
+        if (metadata.isNotEmpty) '_meta': metadata,
         if (protocolVersion == mcpProtocolVersion)
           '_meta': {
-            ...jsonObject(params['_meta'] ?? {}),
+            ...metadata,
             _versionKey: version,
             'io.modelcontextprotocol/clientInfo': {
               'name': 'happen',
               'version': '0.1.0',
             },
-            'io.modelcontextprotocol/clientCapabilities': <String, Object?>{},
+            'io.modelcontextprotocol/clientCapabilities': clientCapabilities,
           },
       },
     };
-    try {
       if (protocolVersion == mcpProtocolVersion && utf8.encode(jsonEncode(body)).length > _maxMessageBytes) {
         throw const McpFailure('MCP request exceeds $_maxMessageBytes bytes');
       }
       if (_process != null) {
-        final pending = _Pending(method, onNotification);
+        final pending = _Pending(method, onNotification, onInput, clock, token);
         _pending[id] = pending;
         final hook = CancellationHook(token, () {
           _pending.remove(id);
@@ -250,20 +285,22 @@ class McpConnection {
         }
       }
       return await _http(body, token, onNotification, inputSchema,
-        retrySafe: retrySafe, protocolVersion: protocolVersion);
+        retrySafe: retrySafe, allowReplay: allowReplay, protocolVersion: protocolVersion);
     } on McpFailure catch (error) {
-      if (recovered || _process != null || !stateful || error.status != 404 ||
+      if (!allowReplay || recovered || _process != null || !stateful || error.status != 404 ||
           const {'initialize', 'notifications/initialized', 'server/discover'}.contains(method)) rethrow;
       // The server rejected the old session before admitting this request.
       // Rebuild its envelope after the coalesced handshake, once per call.
       if (generation == _generation) {
         await (_recovering ??= () async {
           _session = null; version = mcpProtocolVersion;
+          await onRecover?.call(lifetime);
           await connect(lifetime);
         }().whenComplete(() => _recovering = null)).asCancellable(token);
       }
       return await _request(method, params, cancellation: token, onNotification: onNotification,
-        inputSchema: inputSchema, retrySafe: retrySafe, recovered: true);
+        inputSchema: inputSchema, retrySafe: retrySafe, recovered: true, allowReplay: allowReplay,
+        readOnly: readOnly, onInput: onInput, clock: clock);
     } finally {
       deadline.cancel();
     }
@@ -300,17 +337,22 @@ class McpConnection {
             'Modern MCP servers cannot send requests',
           );
         }
-        _write({
-          'jsonrpc': '2.0',
-          'id': message['id'],
-          'error': {
-            'code': -32601,
-            'message': 'Client capability is not supported',
-          },
-        });
+        unawaited(_serveMcpInput(this, message));
         return;
       }
       final params = jsonObject(message['params'] ?? {});
+      if (message['method'] == 'notifications/cancelled') {
+        final id = params['requestId'] as Object?;
+        if (id is String || id is int) {
+          final active = _inputCancellations[id];
+          if (active != null) active.cancel();
+          else if (!_inputCancellationSaturated && !_earlyInputCancellations.contains(id)) {
+            if (_earlyInputCancellations.length >= 1024 || id is String && utf8.encode(id).length > 1024) {
+              _inputCancellationSaturated = true; _earlyInputCancellations.clear();
+            } else { _earlyInputCancellations.add(id as Object); }
+          }
+        }
+      }
       final parent =
           params['_meta']?[_subscriptionKey] ?? params['progressToken'];
       if (parent != null) {
@@ -349,8 +391,8 @@ class McpConnection {
         !['complete', 'input_required'].contains(result['resultType'])) {
       throw const McpFailure('Unsupported MCP result type');
     }
-    // This client declares no elicitation, roots, or sampling capabilities.
-    // Preserve requestState at the protocol boundary for a caller that can resume.
+    // Raw protocol callers retain input_required and response metadata. The
+    // high-level operation drives continuations through requestWithInput.
     return result;
   }
 
@@ -360,9 +402,10 @@ class McpConnection {
     void Function(Json)? notify,
     Json? schema, {
     bool retrySafe = false,
+    bool allowReplay = true,
     required String protocolVersion,
   }) async {
-    final canRetry = retrySafe || const {
+    final canRetry = allowReplay && (retrySafe || const {
       'tools/list',
       'resources/list',
       'resources/templates/list',
@@ -370,7 +413,7 @@ class McpConnection {
       'prompts/list',
       'prompts/get',
       'events/list',
-    }.contains(body['method']);
+    }.contains(body['method']));
     for (var retries = 0; ; retries++) {
       token.throwIfCancelled();
       try {
@@ -616,10 +659,13 @@ class McpConnection {
 }
 
 class _Pending {
-  _Pending(this.method, this.notify);
+  _Pending(this.method, this.notify, this.input, this.clock, this.cancellation);
   final String method;
   final result = Completer<Json>();
   final void Function(Json)? notify;
+  final McpInputHandler? input;
+  final _InputClock? clock;
+  final CancellationToken cancellation;
 }
 
 // Codex rmcp-client/utils.rs and network-proxy/certs.rs. CA paths inherited

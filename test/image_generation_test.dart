@@ -56,7 +56,10 @@ void main() {
     final server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path,
       endpoint: 'http://127.0.0.1:${peer.port}/responses');
     final client = await AgentClient.connect(server.uri);
+    final nativeEvents = <Json>[], generated = <String, String>{};
+    final nativeSubscription = client.events.stream.listen((event) { if (event['params']?['item']?['type'] == 'imageGeneration') nativeEvents.add(event); });
     addTearDown(() async {
+      await nativeSubscription.cancel();
       await client.close(); await server.close();
       for (final response in held) { unawaited(response.close().catchError((Object _) {})); }
       await peer.close(force: true); await root.delete(recursive: true);
@@ -88,6 +91,7 @@ void main() {
       expect(content[1]['image_url'], 'data:image/png;base64,$_png');
       final folder = Directory('${root.path}/generated_images/$id');
       final file = (await folder.list().toList()).whereType<File>().single;
+      generated[id] = file.path;
       expect(await file.readAsBytes(), base64Decode(_png));
       expect(content[2]['text'], contains(file.path));
       final history = jsonObject(await client.request('thread/items/list', {'threadId': id}));
@@ -104,5 +108,19 @@ void main() {
     expect(Directory('${root.path}/generated_images/$id').existsSync(), isFalse);
     expect((await Directory('${root.path}/generated_images').list(recursive: true).toList())
       .where((file) => file.path.contains('.partial-')), isEmpty);
+    for (final entry in generated.entries) {
+      final lifecycle = nativeEvents.where((event) => event['params']['threadId'] == entry.key).toList();
+      expect(lifecycle.map((event) => event['method']), ['item/started', 'item/completed']);
+      final completed = jsonObject(lifecycle.last['params']['item']);
+      expect(completed['status'], 'completed'); expect(completed['savedPath'], entry.value);
+      expect(completed['fileId'], isA<String>()); expect(completed['generationId'], 'fixture-generation');
+      expect(jsonEncode(completed), isNot(contains(_png)), reason: 'The native item references the durable artifact, not copied base64.');
+      final page = jsonObject(await client.request('thread/items/list', {'threadId': entry.key}));
+      final row = (page['data'] as List).singleWhere((row) => row['item']['type'] == 'imageGeneration');
+      expect({...jsonObject(row['item']), 'startedAtMs': row['startedAtMs'], 'completedAtMs': row['completedAtMs']}, completed);
+    }
+    final cancelled = nativeEvents.where((event) => event['params']['threadId'] == id).toList();
+    expect(cancelled.map((event) => event['method']), ['item/started', 'item/completed']);
+    expect(cancelled.last['params']['item']['status'], 'failed');
   });
 }

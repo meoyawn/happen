@@ -182,14 +182,7 @@ class _OpenAITools extends ToolRuntime {
       }};
     }
     if (sleepTool && call.namespace == 'clock' && call.name == 'sleep') {
-      final arguments = jsonObject(jsonDecode(call.input));
-      final duration = arguments['duration_ms'];
-      if (arguments.keys.any((key) => key != 'duration_ms') || duration is! int || duration < 1 || duration > 43200000) {
-        return {'error': 'duration_ms must be between 1 and 43200000'};
-      }
-      final watch = Stopwatch()..start();
-      await cancellableDelay(Duration(milliseconds: duration), context.cancellation);
-      return {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep completed.'};
+      return jsonObject(await context.call('clock__sleep', jsonObject(jsonDecode(call.input)), cancellation: context.cancellation));
     }
     if (webSearch && call.namespace == 'web' && call.name == 'run') {
       return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};

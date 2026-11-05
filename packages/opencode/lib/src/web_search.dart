@@ -8,14 +8,14 @@ import 'package:protocol/protocol.dart';
 
 import '../auth.dart';
 
-Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancellation, {HttpConnections? connections}) async {
+Future<Json> openCodeFetch(HttpClient http, Json input, CancellationToken cancellation) async {
   final url = Uri.parse(_pageUrl(requiredString(input, 'url')));
   final deadline = TimeoutCancellationToken(Duration(milliseconds: ((input['timeout'] as num? ?? 30) * 1000).round()));
   final token = cancellation.merge(deadline);
   Future<void> Function()? closeBody;
   try {
     final response = await httpRequest(http, input['method'] as String? ?? 'GET', url,
-      connections: connections, cancellation: token, followRedirects: true,
+      cancellation: token, followRedirects: true,
       headers: {
         HttpHeaders.acceptHeader: input['format'] == 'html' ? 'text/html, */*;q=0.1'
           : 'text/markdown, text/plain, text/html, */*;q=0.1',
@@ -50,12 +50,11 @@ Future<String> openCodeWebSearch(
   Json commands, {
   required CancellationToken cancellation,
   Uri? endpoint,
-  HttpConnections? connections,
 }) async {
   cancellation.throwIfCancelled();
-  if (commands['fetch'] != null) return jsonEncode(await openCodeFetch(http, jsonObject(commands['fetch']), cancellation, connections: connections));
+  if (commands['fetch'] != null) return jsonEncode(await openCodeFetch(http, jsonObject(commands['fetch']), cancellation));
   if (commands['url'] != null) {
-    final response = await openCodeFetch(http, commands, cancellation, connections: connections);
+    final response = await openCodeFetch(http, commands, cancellation);
     if ((response['status'] as int) < 200 || (response['status'] as int) >= 300) {
       throw ModelFailure('web_fetch_http', 'Page retrieval failed (HTTP ${response['status']})');
     }
@@ -89,7 +88,7 @@ Future<String> openCodeWebSearch(
       final credentials = await auth.credentials(refresh: attempt != 0).asCancellable(cancellation);
       final response = await postWebSearch(http, endpoint ?? Uri.parse('${auth.endpoint}/api/websearch'), {
         'query': question, 'providerID': 'opencode',
-      }, cancellation: cancellation, connections: connections, headers: {
+      }, cancellation: cancellation, headers: {
         HttpHeaders.authorizationHeader: 'Bearer ${requiredString(credentials, 'access_token')}',
         'x-org-id': requiredString(credentials, 'org_id'),
       });
@@ -133,7 +132,7 @@ Future<String> openCodeWebSearch(
 
   Future<String> page(Json operation, bool find) async {
     final url = _pageUrl(requiredString(operation, 'ref_id'));
-    final response = await webSearchRequest(http, Uri.parse(url), cancellation: cancellation, connections: connections);
+    final response = await webSearchRequest(http, Uri.parse(url), cancellation: cancellation);
     if (response.status != 200) {
       throw ModelFailure('web_fetch_http', 'Page retrieval failed (HTTP ${response.status})');
     }

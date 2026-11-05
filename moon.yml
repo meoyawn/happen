@@ -56,7 +56,6 @@ tasks:
       - packages/tool_runtime/**/*
       - packages/telemetry/**/*
       - third_party/quickjs/**/*
-      - third_party/http/pkgs/http2/**/*
     outputs:
       - build/cli/happen
       - build/cli/build-report.json

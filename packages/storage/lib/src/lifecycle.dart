@@ -201,14 +201,16 @@ Future<String> _importRollout(String directory, String source, {String? operatio
   final stage = Directory('$directory/staging/${newId()}')..createSync(recursive: true);
   TaskStore? store;
   try {
-    final token = cancellation ?? CancellationToken(), input = ownStream(File(source).openRead(), token);
+    final token = cancellation ?? CancellationToken();
+    final input = ownStream(_rolloutInput(source, token), token);
     var expected = 0, batchSteps = 0, batchBytes = 0;
     Json? config, extension;
     try {
       await for (final raw in boundedLines(input.stream, maxBytes: maxContextBytes + maxFrameBytes)) {
         token.throwIfCancelled();
         final line = jsonObject(jsonDecode(raw));
-        if (line['ordinal'] != expected++ || line['timestamp'] is! String || !retainedCodexItem(line)) throw const FormatException('Invalid rollout record');
+        if (line['ordinal'] != null && line['ordinal'] != expected || line['timestamp'] is! String || !retainedCodexItem(line)) throw const FormatException('Invalid rollout record');
+        expected++;
         if (store == null) {
           if (line['type'] != 'session_meta' || line['payload']?['history_base'] != null) throw const FormatException('Import requires a standalone rollout');
           final payload = jsonObject(line['payload']);
@@ -250,6 +252,7 @@ Future<String> _importRollout(String directory, String source, {String? operatio
     }
     final now = DateTime.now().millisecondsSinceEpoch;
     store.state = {...store.state, ...jsonObject(extension?['runtime'] ?? {}), 'created': now, 'updated': now};
+    store._restoreObservedUsage();
     store._runtime(store.state);
     if (extension?['goal'] case final Map<String, Object?> goal) {
       store.goal('snapshot', {'goal': goal});
@@ -261,4 +264,19 @@ Future<String> _importRollout(String directory, String source, {String? operatio
     Directory('${stage.path}/tasks/$id').renameSync('$directory/tasks/$id');
     return id;
   } finally { store?.close(); stage.deleteSync(recursive: true); }
+}
+
+Stream<List<int>> _rolloutInput(String source, CancellationToken cancellation) async* {
+  cancellation.throwIfCancelled();
+  if (!source.endsWith('.zst')) { yield* File(source).openRead(); return; }
+  final file = InputFileStream(source);
+  final decoded = ZstdDecoder().decodeLazy(file, verify: true);
+  try {
+    while (!decoded.isEOS) {
+      cancellation.throwIfCancelled();
+      yield decoded.readBytes(64 * 1024).toUint8List();
+      await cancellableDelay(Duration.zero, cancellation);
+    }
+  } on ArchiveException { throw const FormatException('Invalid compressed rollout'); }
+  finally { await decoded.close(); await file.close(); }
 }

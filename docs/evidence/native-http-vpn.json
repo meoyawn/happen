@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-11-05T13:00:46.970129Z",
+  "source_revision": "7f86982fda9a72fe49fb3ec22e7f944f3280fce4",
+  "working_tree_changes": true,
+  "os": "macos",
+  "architecture": "arm64",
+  "dart": "3.13.7 (stable) (Thu Oct 22 14:28:57 2026 -0700) on \"macos_arm64\"",
+  "model": "gpt-6.1-sol",
+  "reasoning": "xhigh",
+  "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+  "probe": "The failed conversation request replayed in the running Flutter desktop through Dart MCP VM evaluation; no returned tools were executed.",
+  "request_bytes": 58393,
+  "before": {
+    "transport": "custom HTTP/2 pool",
+    "http_status": 403,
+    "response_content_type": "text/html; charset=UTF-8",
+    "edge_region": "DME"
+  },
+  "after": {
+    "transport": "dart:io HttpClient",
+    "http_status": 200,
+    "http_version": "1.1",
+    "edge_region": "FRA",
+    "idle_timeout_seconds": 15,
+    "additional_retries": 0
+  },
+  "checks": {
+    "command": "dart --disable-dart-dev tool/test_isolated.dart test test/http_client_test.dart test/openai_retry_test.dart test/deepseek_auth_test.dart test/dictation_test.dart test/openai_web_pages_test.dart --reporter expanded",
+    "passed": 110,
+    "analyze_exit_code": 0,
+    "analyze_errors": 0,
+    "analyze_warnings": 0,
+    "analyze_infos": 163
+  },
+  "post_restart": {
+    "hot_restart": "succeeded",
+    "probe": "A nonpersistent request sent through the desktop's newly started network worker using Dart MCP VM evaluation.",
+    "model": "gpt-6.1-sol",
+    "reasoning": "low",
+    "response_text": "OK",
+    "connected": true,
+    "completed": true,
+    "retries": 0
+  },
+  "limits": [
+    "The original request replay confirms response admission; the separate post-restart health request completed. The original coding task was not executed.",
+    "The user had already switched Karing; the VPN was not changed by the probe.",
+    "Native Dart HTTP currently uses HTTP/1.1; multiplexing performance was not benchmarked."
+  ]
+}

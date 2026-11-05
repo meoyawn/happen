@@ -599,14 +599,6 @@ class DesktopSession extends ChangeNotifier {
     ...openTabIds.where((id) => !pinnedTaskIds.contains(id)),
   ];
 
-  List<(Project, DesktopTask)> get pinnedTasks => [
-    for (final id in pinnedTaskIds)
-      for (final project in projects)
-        if (!project.removing)
-          for (final task in project.tasks)
-            if (task.id == id && !task.archived) (project, task),
-  ];
-
   List<(Project, DesktopTask)> get openTasks => [
     for (final id in navigationTabIds)
       for (final project in projects)
@@ -1151,6 +1143,22 @@ class DesktopSession extends ChangeNotifier {
     }
     await refreshSessions();
     if (!_lifetime.isCancelled) notifyListeners();
+  }
+
+  Future<void> openProjectFolder(Project owner) async {
+    if (!client.sharedFilesystem || !owner.available || owner.removing) return;
+    _lifetime.throwIfCancelled();
+    final process = await Process.start(Platform.isMacOS ? '/usr/bin/open'
+      : Platform.isWindows ? 'explorer.exe' : 'xdg-open', [owner.path]);
+    final hook = CancellationHook(_lifetime, process.kill);
+    try {
+      final results = await Future.wait<Object?>([
+        process.exitCode, process.stdout.drain<Object?>(), process.stderr.drain<Object?>(),
+      ]).asCancellable(_lifetime);
+      if (results.first != 0) throw FileSystemException('Could not open project folder', owner.path);
+    } finally {
+      hook.dispose();
+    }
   }
 
   Future<void> _checkProjectAvailability() async {

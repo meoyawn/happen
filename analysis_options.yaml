@@ -15,7 +15,6 @@ analyzer:
     avoid_void_async: error
   exclude:
     - '**/native/quickjs/**'
-    - 'third_party/http/**'
     - 'third_party/flutter/**'
 linter:
   rules:

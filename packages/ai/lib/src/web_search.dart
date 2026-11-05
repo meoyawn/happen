@@ -7,14 +7,13 @@ import 'package:protocol/protocol.dart';
 import 'model.dart';
 import 'http.dart';
 
-/// Both backends share the network owner's pool and release only their request.
+/// Both backends share the network owner's HTTP client and release only their request.
 Future<({int status, String text, String? contentType})> webSearchRequest(
   HttpClient http,
   Uri endpoint, {
   required CancellationToken cancellation,
   Json? body,
   Map<String, String> headers = const {},
-  HttpConnections? connections,
 }) async {
   cancellation.throwIfCancelled();
   if (!{'http', 'https'}.contains(endpoint.scheme) || endpoint.host.isEmpty || endpoint.userInfo.isNotEmpty) {
@@ -25,7 +24,7 @@ Future<({int status, String text, String? contentType})> webSearchRequest(
   Future<void> Function()? closeBody;
   try {
     final response = await httpRequest(http, body == null ? 'GET' : 'POST', endpoint,
-      connections: connections, cancellation: token, followRedirects: body == null,
+      cancellation: token, followRedirects: body == null,
       headers: {
         HttpHeaders.acceptHeader: body == null ? 'text/html, text/plain, text/markdown' : 'application/json',
         HttpHeaders.userAgentHeader: 'happen/0.1.0 (Dart)',
@@ -72,10 +71,9 @@ Future<({int status, Json body})> postWebSearch(
   Json body, {
   required CancellationToken cancellation,
   Map<String, String> headers = const {},
-  HttpConnections? connections,
 }) async {
   final response = await webSearchRequest(http, endpoint, body: body,
-      cancellation: cancellation, headers: headers, connections: connections);
+      cancellation: cancellation, headers: headers);
   if (response.status != 200) return (status: response.status, body: <String, dynamic>{});
   try {
     return (status: 200, body: jsonObject(jsonDecode(response.text)));

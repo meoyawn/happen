@@ -24,6 +24,7 @@ part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
 part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
+part 'src/mcp_input.dart';
 part 'src/goals.dart';
 
 class AgentServer {
@@ -63,6 +64,7 @@ class AgentServer {
   final _imports = <String, Future<String>>{};
   final _mcpDeliveries = <String, Future<void>>{};
   final _mcpOperations = <String, CancellationToken>{};
+  final _mcpInputs = <String, ({Json request, Completer<Json> answer, String? owner, String? threadId})>{};
   bool _closing = false;
   bool _networkExited = false;
   int _threadUnloadDelaySecs = 60;
@@ -546,6 +548,8 @@ class AgentServer {
 
   Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt, String identityKey) async {
     final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
+    if (method == 'mcp.input.list') return _listMcpInputs(client, params['threadId'] as String?);
+    if (method == 'mcp.input.reply') { _replyMcpInput(client, params); return null; }
     if (method.startsWith('mcp.') && params['threadId'] != null) {
       final id = requiredString(params, 'threadId'); validateTaskId(id);
       final page = await _readSession(_tasks[id] ?? _Task(id, null), 'thread/read', {'includeTurns': false}, cancellation);
@@ -603,11 +607,11 @@ class AgentServer {
     }
     switch (method) {
       case 'client.capabilities':
-        final questions = params['questions'];
-        if (questions is! bool || params.keys.any((key) => key != 'questions')) {
-          throw const FormatException('Provide a boolean questions capability');
+        if (params.isEmpty || params.entries.any((entry) => !{'questions', 'mcp_inputs'}.contains(entry.key) || entry.value is! bool)) {
+          throw const FormatException('Provide boolean client capabilities');
         }
-        client.questions = questions;
+        if (params['questions'] case final bool value) client.questions = value;
+        if (params['mcp_inputs'] case final bool value) client.mcpInputs = value;
         return null;
       case 'ping':
         return {'version': '0.1.0'};
@@ -1757,6 +1761,7 @@ class _Client {
   bool initialized = false;
   final optOutNotifications = <String>{};
   bool questions = false;
+  bool mcpInputs = false;
   final _outbound = StreamController<String>();
   Future<void>? _writing, _closing;
   int _queuedBytes = 0;

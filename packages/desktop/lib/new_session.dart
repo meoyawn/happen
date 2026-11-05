@@ -54,15 +54,21 @@ class NewSessionScreen extends StatelessWidget {
             child: Align(alignment: const Alignment(0, -.12), child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: newThreadComposerWidth),
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, spacing: 7, runSpacing: 6, children: [
-                  Text(project == null || narrow ? 'What should we build?' : 'What should we build in', style: heading),
-                  ConstrainedBox(constraints: BoxConstraints(maxWidth: (bounds.maxWidth - 48).clamp(0.0, newThreadComposerWidth)),
-                    child: projectSelector),
-                ]),
+                if (narrow) Column(children: [
+                  Text('What should we build?', textAlign: TextAlign.center, style: heading),
+                  const SizedBox(height: 8),
+                  projectSelector,
+                ])
+                else Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, spacing: 7, runSpacing: 6, children: [
+                    Text(project == null ? 'What should we build?' : 'What should we build in', style: heading),
+                    ConstrainedBox(constraints: BoxConstraints(maxWidth: (bounds.maxWidth - 48).clamp(0.0, newThreadComposerWidth)),
+                      child: projectSelector),
+                  ]),
                 const SizedBox(height: 48),
                 composer,
                 Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [
-                  PopupMenuButton<String>(tooltip: 'Checkout options', enabled: project != null,
+                  Expanded(child: Align(alignment: Alignment.centerLeft,
+                    child: PopupMenuButton<String>(tooltip: 'Checkout options', enabled: project != null,
                     onSelected: (value) {
                       if (value == 'trace') session.chooseTracing(!session.currentDraft.tracing);
                       onReturnFocus();
@@ -75,9 +81,10 @@ class NewSessionScreen extends StatelessWidget {
                     child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Icon(Icons.folder_outlined, size: 13, color: opencodeMuted), SizedBox(width: 6),
                       Text('Current checkout', style: TextStyle(fontSize: 12, color: opencodeMuted)),
-                    ]))),
-                  const Spacer(),
-                  if (project?.branch case final branch?) Flexible(child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    ]))))),
+                  if (project?.branch case final branch?) ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: bounds.maxWidth * .3),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.fork_right_rounded, size: 14, color: opencodeMuted),
                     const SizedBox(width: 6),
                     Flexible(child: Text(branch, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -96,14 +103,17 @@ class NewSessionScreen extends StatelessWidget {
                     style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
               ])))))),
         if (project != null && bounds.maxWidth >= 1100 && bounds.maxHeight >= 700)
-          Positioned(top: 12, right: 12, child: Container(width: 288, padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xffe8e8eb))),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Positioned(top: 12, right: 12, child: SizedBox(width: 288, child: Material(
+            color: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xffe8e8eb))),
+            clipBehavior: Clip.antiAlias,
+            child: Padding(padding: const EdgeInsets.symmetric(vertical: 10), child: Column(mainAxisSize: MainAxisSize.min, children: [
               ListTile(dense: true, minTileHeight: 34, contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+                minLeadingWidth: 16, horizontalTitleGap: 12,
                 leading: const Icon(Icons.computer_outlined, size: 16),
                 title: Text(session.client.sharedFilesystem ? 'Local machine' : 'Remote workspace', style: const TextStyle(fontSize: 13))),
               if (onOpenFolder != null) ListTile(dense: true, minTileHeight: 34,
+                minLeadingWidth: 16, horizontalTitleGap: 12,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 18), onTap: onOpenFolder,
                 leading: const Icon(Icons.folder_open_outlined, size: 16),
                 title: Text(Theme.of(context).platform == TargetPlatform.macOS ? 'Open in Finder' : 'Open folder',
@@ -111,10 +121,11 @@ class NewSessionScreen extends StatelessWidget {
               if (project.branch case final branch?) ...[
                 const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(height: 1)),
                 ListTile(dense: true, minTileHeight: 34, contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+                  minLeadingWidth: 16, horizontalTitleGap: 12,
                   leading: const Icon(Icons.fork_right_rounded, size: 16),
                   title: Text(branch, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
               ],
-            ]))),
+            ]))))),
       ]));
     });
   }

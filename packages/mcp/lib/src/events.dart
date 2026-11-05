@@ -89,7 +89,9 @@ class McpEventSubscription {
     'server': server,
     'name': name,
     'mode': mode,
-    'state': state,
+    // Early signed callbacks can be admitted during re-registration, but the
+    // restored subscription is not publicly active until its new grant is pinned.
+    'state': mode == 'webhook' && _restoredRegistration && state == 'active' ? 'starting' : state,
     'cursor': cursor,
     if (threadId != null) 'threadId': threadId,
   };

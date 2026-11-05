@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart' show ArchiveException, InputFileStream, ZstdDecoder;
 import 'package:ai/ai.dart';
 import 'package:openai/openai.dart' show gptInput, gptItemFromRollout;
 import 'package:protocol/protocol.dart';
@@ -59,6 +60,7 @@ class TaskStore {
         );
       ''');
       db.execute('COMMIT');
+      _restoreObservedUsage();
     } catch (_) {
       // A failed initializer must not leave a writable connection/transaction
       // behind after its writer isolate fails to start.
@@ -68,7 +70,6 @@ class TaskStore {
   }
 
   final String directory, taskId;
-  final _sessionId = newUuidV7();
   final _pendingNativeItems = <Json>[];
   Object? queueNativeCompletion(Json item) { _pendingNativeItems.add(item); return null; }
   late final TracedDatabase db;
@@ -112,7 +113,8 @@ class TaskStore {
     for (final value in values) {
       final data = jsonObject(value['data']), type = value['type'];
       if (type == 'turn.started') next['turnTokenUsage'] = <String, Object?>{};
-      final spending = data['incompleteUsage']?['usage'] as Json?;
+      final observation = data['observed_usage'] ?? data['incompleteUsage'];
+      final spending = observation?['usage'] as Json?;
       final usage = spending ?? (const {'model.completed', 'context.compacted'}.contains(type) ? <String, dynamic>{
         'input_tokens': data['usage']?['input_tokens'] ?? 0, 'output_tokens': data['usage']?['output_tokens'] ?? 0,
         'cached_input_tokens': data['usage']?['cached_input_tokens'] ?? 0,
@@ -126,10 +128,11 @@ class TaskStore {
           entry.key: (jsonObject(previous ?? {})[entry.key] as int? ?? 0) + (entry.value as int)};
         next['turnTokenUsage'] = total(next['turnTokenUsage']);
         next['totalTokenUsage'] = total(next['totalTokenUsage']);
-        if (spending != null && data['incompleteUsage']['response_id'] is String) {
-          data['tokenUsageRecord'] = {'thread_id': taskId, 'turn_id': next['turnID'], 'session_id': _sessionId,
-            'root_turn_id': next['turnID'], 'response_id': data['incompleteUsage']['response_id'], 'usage': spending,
+        if (spending != null && observation['response_id'] is String) {
+          data['tokenUsageRecord'] = {'thread_id': taskId, 'turn_id': next['turnID'], 'session_id': taskId,
+            'root_turn_id': next['turnID'], 'response_id': observation['response_id'], 'usage': spending,
             'turn_token_usage': next['turnTokenUsage'], 'thread_token_usage': next['totalTokenUsage']};
+          next['latestTokenUsageRecord'] = data['tokenUsageRecord'];
         }
       }
       next['sourceSeq'] = (next['sourceSeq'] as int? ?? 0) + 1;
@@ -207,9 +210,26 @@ class TaskStore {
     'sourceThrough': lastSequence, 'windowID': state['window'], 'effectiveReasoning': metadata('effective_reasoning'),
     'tokens': state['tokens'], 'created': state['created'], 'updated': state['updated'], 'archived': metadata('archived_at') != null,
   };
+  void _restoreObservedUsage() {
+    final checkpoint = withHistoryLineage(directory, taskId, db, (segments) {
+      for (final segment in segments.reversed) {
+        final row = segment.db.select("SELECT line FROM rollout_lines WHERE ordinal < ? AND json_extract(line,'\$.type') IN ('token_usage_record','compacted') ORDER BY ordinal DESC LIMIT 1", [segment.end]).firstOrNull;
+        if (row == null) continue;
+        final line = jsonObject(jsonDecode(row['line'] as String));
+        return (found: true, record: line['type'] == 'token_usage_record' ? line['payload'] : line['payload']['latest_token_usage_record']);
+      }
+      return (found: false, record: null);
+    });
+    if (!checkpoint.found) return;
+    final latest = checkpoint.record == null ? null : jsonObject(checkpoint.record);
+    state['latestTokenUsageRecord'] = latest;
+    state['totalTokenUsage'] = latest?['thread_token_usage'] ?? <String, Object?>{};
+    state['turnTokenUsage'] = latest != null && latest['turn_id'] == state['turnID']
+      ? latest['turn_token_usage'] ?? <String, Object?>{} : <String, Object?>{};
+  }
   Future<void> prepareSession({required CancellationToken cancellation}) async {
     cancellation.throwIfCancelled();
-    native.catchUp();
+    await native.catchUpCancellable(cancellation);
   }
   List<Json> startToolRuntime(String id) {
     final input = modelContext().map(ConversationItem.fromJson).toList();

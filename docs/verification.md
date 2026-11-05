@@ -4,6 +4,12 @@ Verify the behavior selected in [decisions.md](decisions.md). Record reproducibl
 sanitized results in `docs/evidence/`, including source revision, commands,
 operating system, architecture, Dart version, model, effort, and API route.
 
+## Codex port
+
+Port-specific gaps, current verification blockers and queued checks are maintained
+in [codex-port.md](codex-port.md). The general recipes below do not imply a
+final-source pass or authorize the paused desktop work and Flutter tests.
+
 ## Local checks
 
 Run `dart analyze`, `dart test`, and `git diff --check`. Do not run `dart format`
@@ -18,18 +24,15 @@ checkout. See [api.md](api.md) for configuration and the public API.
 
 - Static analysis, whitespace checks, and focused behavior tests. Exercise actual transport,
   storage, tool, and WebSocket boundaries; avoid tests that repeat implementation.
-- Run `dart test test/http_connections_test.dart test/deepseek_auth_test.dart -r expanded`
-  for pooled HTTP/2 across both providers and dictation uploads, HTTP/1.1 fallback,
-  cancellation before headers, stream limits, GOAWAY and disconnect recovery.
+- Run `dart test test/http_client_test.dart test/deepseek_auth_test.dart -r expanded`
+  for native Dart HTTP keep-alive, declared request lengths, and cancellation
+  before headers without interrupting sibling responses.
   The TLS fixtures contain a public test key and a 365-day localhost certificate;
   renew the certificate before expiry, keeping its SANs and server-auth usage.
-  See the connection-reuse decision and [latency evidence](evidence/http2-latency.json)
-  for live protocol observations and the limits of the timing comparison.
-  The late-DATA regression also checks actual WINDOW_UPDATE bytes after a stream
-  reset and requires the shared connection to remain usable. The pinned HTTP/2
-  fork and its own test command are documented in [third_party](../third_party/README.md);
-  [the upstream issue](https://github.com/dart-lang/http/issues/2051) contains a
-  standalone package-only reproducer. See [the failure comparison](evidence/http2-late-data.json).
+  The former manual HTTP/2 pool and its forked dependency have been removed.
+  [The live VPN-switch comparison](evidence/native-http-vpn.json) records the
+  same desktop request returning HTTP 403 on the old connection and HTTP 200
+  through native Dart HTTP, without an additional retry.
 - Verify streaming tool calls, provider state after save/load, append-only GPT
   effort updates, fixed DeepSeek effort, cancellation, incomplete streams, restart,
   independent forks, and validated export/import.

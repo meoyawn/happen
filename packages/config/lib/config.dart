@@ -190,7 +190,10 @@ class ConfigReader {
 /// Codex config/loader/mod.rs::discover_project_layers, adapted to Happen YAML.
 /// Repository layers run from the checkout root to cwd, with the closest last.
 Future<List<String>> mcpConfigPaths(String cwd, CancellationToken cancellation) async {
-  final current = Directory(p.normalize(p.absolute(cwd))), chain = <Directory>[];
+  // Walk the selected physical checkout. A lexical ancestor of a directory
+  // symlink need not be an ancestor of the working directory and must not gain
+  // authority to launch project MCPs for that target.
+  final current = Directory(await Directory(p.normalize(p.absolute(cwd))).resolveSymbolicLinks()), chain = <Directory>[];
   var cursor = current, repository = false;
   while (true) {
     cancellation.throwIfCancelled(); chain.add(cursor);

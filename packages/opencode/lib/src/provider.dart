@@ -23,11 +23,10 @@ Json openCodeRequest(ModelRequest request, {bool console = true, String transpor
 }
 
 /// DeepSeek Messages, with an explicit OpenAI-compatible route for gateways.
-/// The network owner supplies the HTTP pool and resolves credentials per request.
+/// The network owner supplies the Dart HTTP client and resolves credentials per request.
 class OpenCodeProvider implements ModelProvider {
   OpenCodeProvider.native({
     required this.http,
-    this.connections,
     required DeepSeekCredentials this.credentials,
     Uri? endpoint,
     this.searchAuth,
@@ -46,7 +45,6 @@ class OpenCodeProvider implements ModelProvider {
 
   OpenCodeProvider({
     required this.http,
-    this.connections,
     required OpenCodeAuthManager auth,
     Uri? endpoint,
     this.searchAuth,
@@ -60,7 +58,6 @@ class OpenCodeProvider implements ModelProvider {
        );
 
   final HttpClient http;
-  final HttpConnections? connections;
   final DeepSeekCredentials? credentials;
   final OpenCodeAuthManager? _console;
   final Uri endpoint;
@@ -81,7 +78,6 @@ class OpenCodeProvider implements ModelProvider {
   }) => openCodeWebSearch(http, searchAuth ?? _console, commands,
     cancellation: cancellation,
     endpoint: openCodeSearchEndpoint,
-    connections: connections,
   );
 
   String get defaultModel =>
@@ -568,7 +564,7 @@ class OpenCodeProvider implements ModelProvider {
         } else HttpHeaders.authorizationHeader: 'Bearer $key',
       };
       final response = await httpRequest(http, 'POST', endpoint,
-        connections: connections, cancellation: cancellation,
+        cancellation: cancellation,
         headers: headers, body: utf8.encode(jsonEncode(body)),
         headersTimeout: const Duration(seconds: 60));
       if (response.statusCode < 200 || response.statusCode >= 300) {

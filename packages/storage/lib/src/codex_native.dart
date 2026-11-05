@@ -99,15 +99,27 @@ class CodexSqlite {
       return false;
     }
   }
-  void catchUp() => traceSync('storage.native.projection', () {
+  void catchUp() => traceSync('storage.native.projection', () { while (_projectBatch()) {} },
+    category: 'storage', attributes: {'storage.architecture': 'codex', 'storage.phase': 'projection'});
+
+  Future<void> catchUpCancellable(CancellationToken cancellation) async {
+    while (true) {
+      cancellation.throwIfCancelled();
+      if (!_projectBatch()) return;
+      // The writer mailbox can admit Stop/close between physical checkpoints.
+      // The canonical live-write path still projects in its existing transaction.
+      await cancellableDelay(Duration.zero, cancellation);
+    }
+  }
+
+  bool _projectBatch() {
     final metadata = db.select("SELECT line FROM rollout_lines WHERE json_extract(line,'\$.type') IS 'session_meta' ORDER BY ordinal LIMIT 1").firstOrNull;
     final visibleFrom = metadata == null ? 0 : jsonDecode(metadata['line'] as String)['payload']['subagent_history_start_ordinal'] as int? ?? 0;
-    while (true) {
       final state = db.select('SELECT * FROM thread_history_projection_state WHERE thread_id IS ?', [threadID]).firstOrNull;
       final next = state?['next_rollout_ordinal'] as int? ?? initialOrdinal;
       final offset = state?['next_rollout_byte_offset'] as int? ?? 0;
       final candidates = db.select('SELECT * FROM rollout_lines WHERE ordinal >= ? ORDER BY ordinal LIMIT 256', [next]);
-      if (candidates.isEmpty) return;
+       if (candidates.isEmpty) return false;
       final rows = <Map<String, Object?>>[];
       var bytes = 0;
       for (final row in candidates) {
@@ -139,8 +151,8 @@ class CodexSqlite {
         if (!ownsTransaction) db.execute('RELEASE history_projection');
         rethrow;
       }
-    }
-  }, category: 'storage', attributes: {'storage.architecture': 'codex', 'storage.phase': 'projection'});
+    return true;
+  }
 
   void _projectLine(Json line, int startOffset, int endOffset) {
     final ordinal = line['ordinal'] as int;

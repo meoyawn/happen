@@ -5,6 +5,10 @@ extension _McpEvents on AgentServer {
     if (message['method'] == 'cancel') {
       _mcpOperations[message['params']['operation_id']]?.cancel(); return;
     }
+    if (message['method'] == 'mcp.input') {
+      final operation = _askMcpInput(message); _requests.add(operation);
+      unawaited(operation.whenComplete(() => _requests.remove(operation))); return;
+    }
     if (message['method'] == 'mcp.event.accept' || message['method'] == 'mcp.subscription.save' || message['method'] == 'mcp.subscription.remove') {
       final reply = message['reply'] as SendPort;
       if (_closing || _mcpOperations.length >= 256) { reply.send({'error': 'Thread event admission is unavailable'}); return; }

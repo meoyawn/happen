@@ -10,7 +10,10 @@ import 'transport.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
-  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent, this.persistSubscription});
+  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent, this.persistSubscription,
+    this.clientCapabilities = const {}, this.requestMetadata});
+  final Json clientCapabilities;
+  final McpRequestMetadata? requestMetadata;
   final HttpClient http;
   final void Function(String owner, Json event) onEvent;
   final String? publicUrl;
@@ -50,7 +53,7 @@ class McpManager {
     _Connection create() {
       final connection = _Connection(config['command'] == null ? launch : {...launch, 'legacy_fallback': true}, http,
         directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
-          ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name));
+          ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name), clientCapabilities, requestMetadata);
       _connections.add(connection); connection.start(); return connection;
     }
     final connection = config['command'] == null ? create() : _processes.putIfAbsent(key, create);
@@ -338,24 +341,21 @@ class McpManager {
   Future<Json> callTool(
     String name,
     Object? arguments,
-    CancellationToken cancellation, {String? scope}
+    CancellationToken cancellation, {String? scope, McpInputHandler? onInput, Json? meta,
+      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
   ) async {
     for (final server in _visible(scope).values) {
       final tool = server.tools[name];
       if (tool == null) continue;
       final result = await server.request(
         'tools/call',
-        {'name': tool['name'], 'arguments': jsonObject(arguments)},
+        {'name': tool['name'], 'arguments': jsonObject(arguments), '_meta': ?meta},
         cancellation,
         inputSchema: jsonObject(tool['inputSchema']),
+        onInput: onInput, timeout: timeout, readOnly: readOnly,
         retrySafe: tool['annotations']?['readOnlyHint'] == true ||
             tool['annotations']?['idempotentHint'] == true,
       );
-      if (result['resultType'] == 'input_required') {
-        throw const McpFailure(
-          'MCP server requested client input; no interactive capabilities are enabled',
-        );
-      }
       // Code Mode must receive the complete result before it filters or prints.
       // The transport bounds messages; the agent bounds model-facing output.
       return result;
@@ -369,22 +369,24 @@ class McpManager {
     String server,
     String method,
     Json params,
-    CancellationToken cancellation, {String? scope}
+    CancellationToken cancellation, {String? scope, McpInputHandler? onInput,
+      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
   ) async {
     final target = _visible(scope)[server];
     if (target == null) throw ArgumentError('Unknown MCP server in this scope');
-    return target.request(method, params, cancellation);
+    return target.request(method, params, cancellation, onInput: onInput, timeout: timeout, readOnly: readOnly);
   }
 
   Future<Json> resources(
     String method,
     Json params,
-    CancellationToken cancellation, {String? scope}
+    CancellationToken cancellation, {String? scope, McpInputHandler? onInput,
+      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
   ) async {
     if (method == 'resources/read') {
       return request(requiredString(params, 'server'), method, {
         'uri': requiredString(params, 'uri'),
-      }, cancellation, scope: scope);
+      }, cancellation, scope: scope, onInput: onInput, timeout: timeout, readOnly: readOnly);
     }
     final server = params['server'] as String?;
     if (server != null) {
@@ -495,19 +497,24 @@ class McpManager {
     );
     _subscriptions[subscription.id] = subscription;
     _subscriptionTargets[subscription.id] = target;
+    var admitted = false;
     try {
       if (subscription.threadId != null) {
         if (persistSubscription == null) throw const McpFailure('Durable event subscriptions are unavailable', status: 503);
-        await persistSubscription!('save', {'snapshot': subscription.toSnapshot(), 'create': restored == null}, cancellation);
+        await persistSubscription!('save', {'snapshot': subscription.toSnapshot(), 'create': restored == null}, lifetime);
+        admitted = true;
       }
-      await subscription.start(cancellation);
+      // Once desired thread state is durable, activation belongs to the host.
+      // Losing the initiating caller only stops its wait, not the saved job.
+      final activation = subscription.start(admitted ? lifetime : cancellation);
+      if (admitted) unawaited(activation.then<void>((_) {}, onError: (Object _) {}));
+      await activation.asCancellable(cancellation);
       return subscription.toJson();
     } catch (_) {
-      await subscription.stop();
-      _subscriptions.remove(subscription.id);
-      _subscriptionTargets.remove(subscription.id);
-      if (restored == null && subscription.threadId != null && !lifetime.isCancelled) {
-        await persistSubscription?.call('remove', {'threadId': subscription.threadId, 'subscription_id': subscription.id}, lifetime);
+      if (!admitted) {
+        await subscription.stop();
+        _subscriptions.remove(subscription.id);
+        _subscriptionTargets.remove(subscription.id);
       }
       rethrow;
     }
@@ -532,7 +539,15 @@ class McpManager {
 
   Future<void> unsubscribe(String owner, String id, {bool persist = true}) async {
     final subscription = _subscriptions[id];
-    if (subscription == null) return;
+    if (subscription == null) {
+      // A disabled/missing server may prevent an intent from materializing at
+      // startup. It is still removable by its saved thread owner.
+      if (persist && owner.startsWith('thread:')) {
+        final threadId = owner.substring(7); validateTaskId(threadId);
+        await persistSubscription?.call('remove', {'threadId': threadId, 'subscription_id': id}, lifetime);
+      }
+      return;
+    }
     if (subscription.owner != owner) {
       throw ArgumentError('Subscription belongs to another client');
     }
@@ -618,9 +633,11 @@ class _Server {
     if (_unsupported) throw McpFailure(error!);
     return connection;
   }
-  Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false}) async {
+  Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false,
+    McpInputHandler? onInput, Duration? timeout = const Duration(seconds: 60), bool readOnly = false}) async {
     await ready(cancellation);
-    return shared.request(method, params, cancellation.merge(lifetime), inputSchema: inputSchema, retrySafe: retrySafe);
+    return shared.request(method, params, cancellation.merge(lifetime), inputSchema: inputSchema, retrySafe: retrySafe,
+      onInput: onInput, timeout: timeout, readOnly: readOnly);
   }
   Future<List<Json>> list(String method, String key, CancellationToken cancellation) async {
     await ready(cancellation);
@@ -631,7 +648,9 @@ class _Server {
 
 /// Physical ownership is independent of aliases, config scope and request waiters.
 class _Connection {
-  _Connection(this.config, this.http, this.oauth, this.onAuthChanged);
+  _Connection(this.config, this.http, this.oauth, this.onAuthChanged, this.clientCapabilities, this.requestMetadata);
+  final Json clientCapabilities;
+  final McpRequestMetadata? requestMetadata;
   final Json config;
   final HttpClient http;
   final McpOAuth? oauth;
@@ -658,7 +677,8 @@ class _Connection {
       final current = McpConnection(config, http, _notification,
         authorization: oauth == null ? null : (token) async =>
           state == 'connecting' ? startupAccess : await oauth!.authorization(token),
-        onAuthChallenge: oauth?.challenge);
+        onAuthChallenge: oauth?.challenge, onRecover: oauth?.recover,
+        clientCapabilities: clientCapabilities, requestMetadata: requestMetadata);
       connection = current;
       try {
         state = 'connecting';
@@ -724,15 +744,19 @@ class _Connection {
     CancellationToken cancellation, {
     Json? inputSchema,
     bool retrySafe = false,
+    McpInputHandler? onInput,
+    Duration? timeout = const Duration(seconds: 60),
+    bool readOnly = false,
   }) async {
     final current = await ready(cancellation);
     try {
-      final result = await current.request(
+      final result = await current.requestWithInput(
         method,
         params,
         cancellation: cancellation,
         inputSchema: inputSchema,
         retrySafe: retrySafe,
+        onInput: onInput, timeout: timeout, readOnly: readOnly,
       );
       if (result['isError'] == true && result['_meta']?['mcp/www_authenticate'] != null) {
         authenticationRequired = true;

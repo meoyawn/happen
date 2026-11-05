@@ -10,6 +10,7 @@ import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
 import 'package:telemetry/telemetry.dart';
+import 'package:storage/src/codex_native.dart' show projectedCodexItem;
 
 import 'agents_md.dart';
 import 'skills.dart';
@@ -50,11 +51,9 @@ Future<void> _networkMain(List<Object?> args) async {
   final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
   final deepseekSearch = jsonObject(deepseekOptions['web_search'] ?? {});
   final http = HttpClient()
-    ..connectionTimeout = const Duration(seconds: 30)
-    ..idleTimeout = const Duration(minutes: 5);
-  final connections = HttpConnections(http: http);
-  final auth = AuthManager(directory, http: http, connections: connections);
-  final consoleAuth = OpenCodeAuthManager(directory, http: http, connections: connections);
+    ..connectionTimeout = const Duration(seconds: 30);
+  final auth = AuthManager(directory, http: http);
+  final consoleAuth = OpenCodeAuthManager(directory, http: http);
   final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
   final apiKeyEnv = startup['api_key_env'] as String? ?? gptOptions['api_key_env'] as String?;
   if (apiKeyEnv != null && endpoint == null) throw ArgumentError('An API-key Responses endpoint is required');
@@ -69,7 +68,6 @@ Future<void> _networkMain(List<Object?> args) async {
   final gpt = OpenAIProvider(
     ResponsesClient(
       http: http,
-      connections: connections,
       credentials: gptCredentials,
       endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
     ),
@@ -84,7 +82,6 @@ Future<void> _networkMain(List<Object?> args) async {
   final deepseek = backend == 'opencode'
       ? OpenCodeProvider(
           http: http,
-          connections: connections,
           auth: consoleAuth,
           endpoint: deepseekEndpoint,
           searchAuth: consoleAuth,
@@ -92,7 +89,6 @@ Future<void> _networkMain(List<Object?> args) async {
         )
       : OpenCodeProvider.native(
           http: http,
-          connections: connections,
           searchAuth: consoleAuth,
           openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
           credentials: () async {
@@ -114,7 +110,6 @@ Future<void> _networkMain(List<Object?> args) async {
   final openCodeSearch = jsonObject(openCodeOptions['web_search'] ?? {});
   final opencode = OpenCodeProvider(
     http: http,
-    connections: connections,
     auth: consoleAuth,
     searchAuth: consoleAuth,
     openCodeSearchEndpoint: openCodeSearch['endpoint'] == null ? null : Uri.parse(openCodeSearch['endpoint'] as String),
@@ -133,6 +128,14 @@ Future<void> _networkMain(List<Object?> args) async {
   final lifetime = CancellationToken();
   final mcp = McpManager(
     http: http,
+    clientCapabilities: mcpInputCapabilities,
+    // This host has no managed network sandbox/proxy policy. Report that fact
+    // only to a peer which negotiated the policy metadata capability; callers
+    // cannot replace this host-owned field or carry it across capability changes.
+    requestMetadata: (capabilities) => {
+      if (capabilities['experimental']?['codex/network-policy-meta'] != null)
+        'codex/network-policy-meta': {'enabled': false},
+    },
     directory: directory,
     onAuthChanged: (server) => (startup['events'] as SendPort?)?.send({
       'event': {'type': 'mcp.auth.changed', 'server': server},
@@ -337,7 +340,10 @@ Future<void> _networkMain(List<Object?> args) async {
     final id = params['task_id'] as String?;
     CancellationToken? cancellation;
     final operationId = request['operation_id'] as String? ?? newId();
-    final ownerId = id ?? 'client:${params['owner'] ?? 'server'}';
+    // task_id selects saved cwd/context for public MCP calls; it does not give
+    // a short-lived inference agent authority to cancel that client's request.
+    final clientMcp = (request['method'] as String).startsWith('mcp.') && params['owner'] is String;
+    final ownerId = clientMcp ? 'client:${params['owner']}' : id ?? 'client:${params['owner'] ?? 'server'}';
     try {
       if (request['method'] == 'cancel') {
         if (params['operation_id'] is String) {
@@ -467,6 +473,12 @@ Future<void> _networkMain(List<Object?> args) async {
           catch (_) { /* Retain the last accepted config, including on first discovery. */ }
         }
         final Object? result;
+        final McpInputHandler? input = id == null && params['owner'] == null ? null : (inputId, inputRequest, token) async =>
+          jsonObject(await callIsolate(startup['events'] as SendPort, 'mcp.input', {
+            'request_id': inputId, 'threadId': id, 'owner': params['owner'], 'source': params['server'] ?? params['name'] ?? 'MCP',
+            'request': inputRequest,
+          }, cancellation: token));
+        if (params['read_only'] != null && params['read_only'] is! bool) throw const FormatException('Expected read_only boolean');
         switch (request['method']) {
           case 'mcp.auth.login':
             final name = requiredString(params, 'server');
@@ -532,19 +544,21 @@ Future<void> _networkMain(List<Object?> args) async {
             result = await mcp.callTool(
               requiredString(params, 'name'),
               params['arguments'],
-              cancellation, scope: scope,
+              cancellation, scope: scope, onInput: input, readOnly: params['read_only'] == true,
             );
           case 'mcp.resources':
             result = await mcp.resources(
               requiredString(params, 'method'),
               jsonObject(params['arguments']),
-              cancellation, scope: scope,
+              cancellation, scope: scope, onInput: input, readOnly: params['read_only'] == true,
             );
           case 'mcp.request':
             final method = requiredString(params, 'method');
             if (!{
               'events/list',
               'events/poll',
+              'tools/list',
+              'tools/call',
               'resources/list',
               'resources/templates/list',
               'resources/read',
@@ -557,7 +571,7 @@ Future<void> _networkMain(List<Object?> args) async {
               requiredString(params, 'server'),
               method,
               jsonObject(params['arguments'] ?? {}),
-              cancellation, scope: scope,
+              cancellation, scope: scope, onInput: input, readOnly: params['read_only'] == true,
             );
           case 'mcp.events.subscribe':
             result = await mcp.subscribe(
@@ -741,7 +755,11 @@ Future<void> _networkMain(List<Object?> args) async {
       } else if (request['method'] == 'image.generate') {
         if (provider is! OpenAIProvider) throw ArgumentError('Provider does not support image generation');
         result = await provider.generateImage(input, jsonObject(params['arguments']), outputRoot: directory,
-          callId: requiredString(params, 'call_id'), turnId: requiredString(params, 'turn_id'), cancellation: cancellation);
+          callId: requiredString(params, 'call_id'), turnId: requiredString(params, 'turn_id'), cancellation: cancellation,
+          onItem: (phase, item) async => reply?.send({'event': {'type': 'native.item.$phase', 'data': {
+            'turnId': params['turn_id'], 'item': projectedCodexItem(item), 'canonicalItem': item,
+            if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch,
+          }}}));
       } else if (request['method'] == 'compact') {
         result = (await provider.compact(
           input,
@@ -799,7 +817,6 @@ Future<void> _networkMain(List<Object?> args) async {
         await mcp.close();
         auth.close();
         consoleAuth.close();
-        await connections.close();
         http.close(force: true);
         await Future.wait(pending.toList());
         (request['reply'] as SendPort).send({'result': null});

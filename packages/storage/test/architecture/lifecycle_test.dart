@@ -212,4 +212,53 @@ void main() {
     try { expect(gptInput(fork.modelContext().map(ConversationItem.fromJson)), [summary, ...responses]); }
     finally { fork.close(); }
   });
+
+  for (final corruption in ['missing ancestor', 'cycle', 'byte cutoff', 'ordinal cutoff', 'escaped symlink', 'wrong ancestor identity']) {
+    test('cold lineage read rejects $corruption rather than exposing an unrelated prefix', () async {
+      turn(parent, 'one', 'Private ancestor message'); await parent.fork('child', cancellation: cancellation);
+      final child = TaskStore(root.path, 'child', create: false);
+      try {
+        final row = child.db.select('SELECT line FROM rollout_lines ORDER BY ordinal LIMIT 1').single;
+        final header = jsonObject(jsonDecode(row['line'] as String)), payload = jsonObject(header['payload']);
+        final base = jsonObject(payload['history_base']);
+        switch (corruption) {
+          case 'cycle':
+            final end = child.db.select('SELECT ordinal,byte_offset+byte_length AS end FROM rollout_lines ORDER BY ordinal DESC LIMIT 1').single;
+            base.addAll({'thread_id': 'child', 'end_ordinal_exclusive': (end['ordinal'] as int) + 1, 'end_byte_offset': end['end']});
+          case 'byte cutoff': base['end_byte_offset'] = (base['end_byte_offset'] as int) + 1;
+          case 'ordinal cutoff': base['end_ordinal_exclusive'] = (base['end_ordinal_exclusive'] as int) + 1;
+          case 'wrong ancestor identity':
+            final source = jsonObject(jsonDecode(parent.db.select('SELECT line FROM rollout_lines ORDER BY ordinal LIMIT 1').single['line'] as String));
+            source['payload'] = {...jsonObject(source['payload']), 'id': 'someone-else'};
+            parent.db.execute('UPDATE rollout_lines SET line=? WHERE ordinal IS 0', [jsonEncode(source)]);
+          default: break;
+        }
+        payload['history_base'] = base; header['payload'] = payload;
+        child.db.execute('UPDATE rollout_lines SET line=?', [jsonEncode(header)]);
+      } finally { child.close(); }
+      parent.close();
+      if (corruption == 'missing ancestor' || corruption == 'escaped symlink') {
+        await Directory('${root.path}/tasks/parent').rename('${root.path}/external-parent');
+        if (corruption == 'escaped symlink') await Link('${root.path}/tasks/parent').create('${root.path}/external-parent');
+      }
+      await expectLater(read('child'), throwsA(isA<FormatException>()));
+    });
+  }
+
+  test('relocated data home preserves separate workspace cwd and read-only SQLite lineage replay', () async {
+    turn(parent, 'one', 'Retained message'); await parent.fork('child', cancellation: cancellation);
+    final child = TaskStore(root.path, 'child', create: false);
+    try { turn(child, 'two', 'Child suffix'); await child.fork('nested', cancellation: cancellation); }
+    finally { child.close(); }
+    parent.archive(true); parent.close();
+    final home = await Directory('${root.path}/separate-data-home').create();
+    await Directory('${root.path}/tasks').rename('${home.path}/tasks');
+    final page = await readSession(home.path, 'nested', 'thread/read', {'includeTurns': true}, cancellation: cancellation);
+    expect(turnIds(page), ['one', 'two']); expect(page['thread']['cwd'], root.path);
+    final moved = TaskStore(home.path, 'nested', create: false);
+    try { expect(moved.modelContext().map((i) => i['content'][0]['text']), ['Retained message', 'Child suffix']); }
+    finally { moved.close(); }
+    expect(home.listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.sqlite')), hasLength(3));
+    expect(await Directory('${root.path}/tasks').exists(), false);
+  });
 }

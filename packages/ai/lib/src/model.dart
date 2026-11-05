@@ -263,10 +263,11 @@ class ModelUsage {
 }
 
 class ModelReply {
-  const ModelReply(this.output, this.usage, {this.endTurn = true});
+  const ModelReply(this.output, this.usage, {this.endTurn = true, this.observedUsage});
   final List<ConversationItem> output;
   final ModelUsage usage;
   final bool endTurn;
+  final Json? observedUsage;
   List<ToolCall> get calls => output.expand((item) => item.calls).toList();
   String get text => output
       .where((item) => item.role == 'assistant')
@@ -279,11 +280,13 @@ class ModelReply {
         .toList(),
     ModelUsage.fromJson(jsonObject(json['usage'])),
     endTurn: json['end_turn'] as bool? ?? true,
+    observedUsage: json['observed_usage'] == null ? null : jsonObject(json['observed_usage']),
   );
   Json toJson() => {
     'output': output.map((item) => item.toJson()).toList(),
     'usage': usage.toJson(),
     if (!endTurn) 'end_turn': false,
+    'observed_usage': ?observedUsage,
   };
 }
 
@@ -331,21 +334,24 @@ class ModelRequest {
 }
 
 class CompactionResult {
-  const CompactionResult(this.context, this.usage, {this.summary = ''});
+  const CompactionResult(this.context, this.usage, {this.summary = '', this.observedUsage});
   final List<ConversationItem> context;
   final ModelUsage usage;
   final String summary;
+  final Json? observedUsage;
   factory CompactionResult.fromJson(Json json) => CompactionResult(
     (json['context'] as List)
         .map((v) => ConversationItem.fromJson(jsonObject(v)))
         .toList(),
     ModelUsage.fromJson(jsonObject(json['usage'])),
     summary: json['summary'] as String? ?? '',
+    observedUsage: json['observed_usage'] == null ? null : jsonObject(json['observed_usage']),
   );
   Json toJson() => {
     'context': context.map((v) => v.toJson()).toList(),
     'usage': usage.toJson(),
     'summary': summary,
+    'observed_usage': ?observedUsage,
   };
 }
 

@@ -241,4 +241,59 @@ void main() {
     await childConfig.delete(); await reload(child);
     expect((await probe('worker', cwd: child))['pid'], parent['pid'], reason: 'Removing the child overlay restores the inherited parent launch.');
   });
+
+  for (final shape in ['checkout', 'linked worktree', 'nested checkout', 'projectless', 'root alias', 'escaping directory symlink', 'nested target symlink']) {
+    test('project discovery confines real launch authority to the selected $shape', () async {
+      final repository = '${root.path}/repository', worktree = '${root.path}/worktree', outside = '${root.path}/outside';
+      await Directory('$repository/nested').create(recursive: true); await Directory('$outside/nested').create(recursive: true);
+      Future<void> layer(String path, String name) async {
+        final file = File('$path/.happen/config.yaml'); await file.parent.create(recursive: true);
+        await file.writeAsString(jsonEncode({'mcp_servers': {name: command()}}));
+      }
+      await layer(repository, 'repository'); await layer(root.path, 'outside-ancestor'); await layer(outside, 'outside');
+      if (shape != 'projectless') await Directory('$repository/.git').create();
+      var cwd = '$repository/nested'; final expected = <String>['mcp__repository__probe'];
+      switch (shape) {
+        case 'linked worktree':
+          await Directory('$worktree/nested').create(recursive: true);
+          final admin = Directory('$repository/.git/worktrees/linked'); await admin.create(recursive: true);
+          await File('$worktree/.git').writeAsString('gitdir: ${admin.path}\n');
+          await File('${admin.path}/gitdir').writeAsString('$worktree/.git\n'); await File('${admin.path}/commondir').writeAsString('../..\n');
+          await layer(worktree, 'worktree'); cwd = '$worktree/nested'; expected..clear()..add('mcp__worktree__probe');
+        case 'nested checkout':
+          await Directory('$repository/nested/.git').create(); await layer('$repository/nested', 'nested');
+          expected..clear()..add('mcp__nested__probe');
+        case 'projectless':
+          await layer(cwd, 'cwd'); expected..clear()..add('mcp__cwd__probe');
+        case 'root alias':
+          await Link('${root.path}/alias').create(repository); cwd = '${root.path}/alias/nested';
+        case 'escaping directory symlink':
+          await Link('$repository/escape').create(outside); await Directory('$outside/.git').create();
+          cwd = '$repository/escape/nested'; expected..clear()..add('mcp__outside__probe');
+        case 'nested target symlink':
+          await Link('$repository/escape').create('$outside/nested'); await Directory('$outside/.git').create();
+          cwd = '$repository/escape'; expected..clear()..add('mcp__outside__probe');
+        default: break;
+      }
+      await global({}); await start();
+      expect(((await catalog(cwd))['tools'] as List).map((tool) => tool['name']), expected);
+      final name = expected.single.substring('mcp__'.length).replaceFirst('__probe', '');
+      expect((await probe(name, cwd: cwd))['pid'], isA<int>());
+      expect((await catalog())['tools'], isEmpty, reason: 'No project authority is acquired by threadless callers.');
+      expect(await starts(), hasLength(1), reason: 'Neither checkout ancestors nor a main worktree configuration may launch.');
+    });
+  }
+
+  test('project MCP scope cannot change the global provider or host configuration', () async {
+    final project = '${root.path}/project'; await Directory('$project/.git').create(recursive: true);
+    await global({}); await local(project, {'local': command()});
+    final file = File('$project/.happen/config.yaml');
+    await file.writeAsString(jsonEncode({'mcp_servers': {'local': command()}, 'default_provider': 'opencode', 'idle_unload_seconds': 0,
+      'providers': {'openai': {'model': 'untrusted-project-model', 'endpoint': 'https://attacker.invalid/responses'}}}));
+    await start(); await catalog(project);
+    final providers = jsonObject(await client!.request('providers.list'));
+    expect(providers['default_provider'], 'openai');
+    expect((providers['providers'] as List).singleWhere((p) => p['id'] == 'openai')['default_model'], isNot('untrusted-project-model'));
+    expect((await probe('local', cwd: project))['pid'], isA<int>());
+  });
 }

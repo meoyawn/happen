@@ -2521,7 +2521,8 @@ Windows appearance and screen-reader announcements were not exercised.
 > objective: modern MCP uses the upstream 8 MiB bound, while legacy local/HTTP
 > codecs retain uncapped wire behavior. Code Mode's 64 MiB host frame and model
 > output budgets are separate. The historical evidence below did not establish
-> modern MCP limit parity; see `docs/mcp-port.md` for baseline failures and ports.
+> modern MCP limit parity. Remaining port work is tracked in
+> [codex-port.md](codex-port.md).
 
 User decision: follow Codex when large MCP results are consumed through Code
 Mode. Remove the manager's 64 KiB replacement error: JavaScript receives the

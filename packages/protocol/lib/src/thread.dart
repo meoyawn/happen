@@ -25,7 +25,8 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
   void item(Json item, {bool started = false}) => emit(started ? 'item/started' : 'item/completed', {'item': item});
   String assistant() => state['assistantID'] as String? ?? '$turn:assistant';
   Json? tool(String id, String name, Object? input, {String? parent}) {
-    if (name == 'exec_command' || name == 'functions.exec_command') {
+    if (const {'exec_command', 'functions.exec_command', 'apply_patch', 'functions.apply_patch',
+        'view_image', 'functions.view_image', 'clock.sleep', 'clock__sleep', 'image_gen.imagegen', 'image_gen__imagegen'}.contains(name)) {
       (state['nativeCalls'] ??= <String, dynamic>{})[id] = true;
       return null;
     }

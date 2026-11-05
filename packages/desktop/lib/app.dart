@@ -26,6 +26,7 @@ import 'file_autocomplete.dart';
 import 'model_picker.dart';
 import 'new_session.dart';
 import 'mcp_conversation.dart';
+import 'project_avatar.dart';
 import 'session.dart';
 import 'session_question.dart';
 import 'sidebar_frame.dart';
@@ -55,6 +56,9 @@ class _DesktopViewState extends State<DesktopView> {
   double? _dragSidebarWidth;
   final _composer = GlobalKey<_ComposerState>();
   final _conversationPaneKey = GlobalKey();
+  final _navigationHistory = <String>[];
+  int _navigationIndex = -1;
+  String? _sidebarProjectKey;
 
   @override
   void initState() {
@@ -94,6 +98,11 @@ class _DesktopViewState extends State<DesktopView> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session == session) return;
     oldWidget.session.removeListener(_syncWindowChrome);
+    oldWidget.session.removeListener(_rememberNavigation);
+    _navigationHistory.clear();
+    _navigationIndex = -1;
+    _sidebarProjectKey = null;
+    _bindNavigation();
     session.addListener(_syncWindowChrome);
     _syncWindowChrome();
   }
@@ -102,6 +111,7 @@ class _DesktopViewState extends State<DesktopView> {
   void dispose() {
     FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
     session.removeListener(_syncWindowChrome);
+    session.removeListener(_rememberNavigation);
     _desktop.setMethodCallHandler(null);
     _sessionSearchFocus.dispose();
     _windowChrome.dispose();
@@ -155,7 +165,7 @@ class _DesktopViewState extends State<DesktopView> {
         builder: (context) => CommandMenu(
           session: session,
           actions: [
-            (title: 'New session', keywords: 'new chat task', icon: Icons.edit_square,
+            (title: 'New thread', keywords: 'new chat task session', icon: Icons.edit_square,
               shortcut: mac ? '⌘ N' : 'Ctrl N', run: () => unawaited(_run(_newChat))),
             (title: 'Home', keywords: 'all sessions', icon: Icons.grid_view_outlined,
               shortcut: null, run: _showHome),
@@ -313,6 +323,32 @@ class _DesktopViewState extends State<DesktopView> {
   void _bindNavigation() {
     FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
     FocusManager.instance.addEarlyKeyEventHandler(_navigateKey);
+    session.removeListener(_rememberNavigation);
+    session.addListener(_rememberNavigation);
+    _rememberNavigation();
+  }
+
+  void _rememberNavigation() {
+    final location = _homeOpen ? 'home' : session.draftKey;
+    if (_navigationIndex >= 0 && _navigationHistory[_navigationIndex] == location) return;
+    _navigationHistory.removeRange(_navigationIndex + 1, _navigationHistory.length);
+    _navigationHistory.add(location);
+    _navigationIndex = _navigationHistory.length - 1;
+  }
+
+  void _navigateHistory(int offset) {
+    for (var index = _navigationIndex + offset; index >= 0 && index < _navigationHistory.length; index += offset) {
+      final id = _navigationHistory[index];
+      final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
+      final thread = [for (final project in session.projects.where((project) => !project.removing))
+        for (final task in project.tasks) if (task.id == id && !task.archived) (project, task)].firstOrNull;
+      if (id != 'home' && draft == null && thread == null) continue;
+      _navigationIndex = index;
+      if (id == 'home') { _showHome(); }
+      else if (draft != null) { _activateDraft(draft); }
+      else { _openTask(thread!.$1, thread.$2); }
+      return;
+    }
   }
 
   @override
@@ -354,6 +390,8 @@ class _DesktopViewState extends State<DesktopView> {
         },
         shortcut(LogicalKeyboardKey.keyW): _closeTerminal,
       } else ...{
+        shortcut(LogicalKeyboardKey.bracketLeft): () => _navigateHistory(-1),
+        shortcut(LogicalKeyboardKey.bracketRight): () => _navigateHistory(1),
         shortcut(LogicalKeyboardKey.keyK): () => unawaited(_commandMenu()),
         shortcut(LogicalKeyboardKey.keyN): () => unawaited(_run(_newChat)),
         shortcut(LogicalKeyboardKey.keyN, shift: true): () => unawaited(_run(_newChat)),
@@ -385,14 +423,14 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _selectAdjacentTask(int offset) {
-    final ids = sidebarThreadIds(session);
+    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
     _selectThreadAt(next);
   }
 
   void _selectThreadAt(int index) {
-    final ids = sidebarThreadIds(session);
+    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
     if (index < 0 || index >= ids.length) return;
     final id = ids[index];
     final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
@@ -514,10 +552,10 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
-    final minSidebarWidth = 200.0;
-    final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0).toDouble();
+    final minSidebarWidth = 280.0;
+    final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0);
     final savedWidth = session.sidebarWidth;
-    final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth).toDouble();
+    final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth);
     final pane = _conversationPane(context, tasks);
     return ColoredBox(color: const Color(0xfff9f9f9), child: DesktopSidebarFrame(
       open: session.sidebarOpen, width: sidebarWidth,
@@ -529,8 +567,14 @@ class _DesktopViewState extends State<DesktopView> {
           .any((task) => !task.archived && task.questions.isNotEmpty) ||
         session.sideChats.values.any((task) => task.questions.isNotEmpty),
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
+            titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
+            onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
+            onBack: _navigationIndex > 0 ? () => _navigateHistory(-1) : null,
+            onForward: _navigationIndex < _navigationHistory.length - 1 ? () => _navigateHistory(1) : null,
             onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
+            onAddProject: () => unawaited(_addProject()),
+            onRefresh: () => unawaited(_run(session.refreshProjects)),
             onSelect: _openTask, onDraft: _activateDraft,
             onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
         ,
@@ -559,7 +603,7 @@ class _DesktopViewState extends State<DesktopView> {
             sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.draftKey}'),
               session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
-            child: SessionPanelFrame(child: Stack(fit: StackFit.expand, children: [
+            child: Material(color: const Color(0xfffdfdfd), child: Stack(fit: StackFit.expand, children: [
               if (!home) Column(children: [
                 _header(context),
                 if (transcript == null)
@@ -567,6 +611,8 @@ class _DesktopViewState extends State<DesktopView> {
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),
                     onReturnFocus: _focusComposer,
+                    onOpenFolder: session.client.sharedFilesystem && session.project?.available == true
+                      ? () => unawaited(_run(() => session.openProjectFolder(session.project!))) : null,
                     composer: Column(mainAxisSize: MainAxisSize.min, children: [
                       if (session.project?.available == true)
                         McpConversationAuth(key: ValueKey(session.client), client: session.client),
@@ -649,25 +695,28 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _header(BuildContext context) => DesktopWindowDragRegion(child: AnimatedPadding(
     duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
-    padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 24) : 16, right: 12),
-    child: SizedBox(height: 48, child: Row(
+    padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
+    child: SizedBox(height: 56, child: Row(
       children: [
-        if (session.task != null && session.project != null) ...[
-          Flexible(child: Text(session.project!.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 13, color: opencodeMuted))),
-          const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('/', style: TextStyle(color: Color(0xffc8cacf)))),
-        ],
-        Expanded(
-          child: Text(
-            session.task?.title ?? 'New session',
+        Expanded(child: LayoutBuilder(builder: (context, bounds) => Row(children: [
+          if (session.project != null) ...[
+            ProjectAvatar(project: session.project!, size: 14, generated: session.projectAvatarStyle == 'generated'),
+            const SizedBox(width: 7),
+            ConstrainedBox(constraints: BoxConstraints(maxWidth: bounds.maxWidth * .4),
+              child: Text(session.project!.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13, color: opencodeMuted))),
+            const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('/', style: TextStyle(color: Color(0xffc8cacf)))),
+          ],
+          Expanded(child: Text(
+            session.task?.title ?? 'New thread',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500,
               letterSpacing: -.04,
               fontVariations: const [FontVariation('wght', 530)],
               color: opencodeInk),
-          ),
-        ),
+          )),
+        ]))),
         if (session.task != null)
           ContextUsageIndicator(messages: session.task!.messages.values,
             limit: session.task!.contextLimit ?? session.modelInfo?['context_limit'] as num?,
@@ -1087,6 +1136,7 @@ class _ComposerState extends State<_Composer> {
 
   Widget _input(BuildContext context, {QuestionComposer? answer}) {
     final session = widget.session;
+    final newThread = answer == null && _target == null;
     final running = _target?.running == true;
     final hasProject = _project?.available == true && _project?.removing != true;
     final authenticated = session.authenticatedFor(widget.target);
@@ -1152,9 +1202,9 @@ class _ComposerState extends State<_Composer> {
       child: Center(
       heightFactor: 1,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: opencodeSessionWidth),
+        constraints: BoxConstraints(maxWidth: newThread ? newThreadComposerWidth : opencodeSessionWidth),
         child: Padding(
-          padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
+          padding: newThread ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 8, 12, 12),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: answer == null ? double.infinity : MediaQuery.sizeOf(context).height * .65),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1191,10 +1241,10 @@ class _ComposerState extends State<_Composer> {
                 key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(newThread ? 18 : 10),
                   border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary
-                    : const Color(0x1f000000),
-                    width: _draggingAttachments ? 2 : .5),
+                    : const Color(0xffe8e8eb),
+                    width: _draggingAttachments ? 2 : 1),
                   boxShadow: const [
                     BoxShadow(color: Color(0x0a000000), blurRadius: 4, offset: Offset(0, 2)),
                     BoxShadow(color: Color(0x14000000), blurRadius: 2, spreadRadius: -1, offset: Offset(0, 1)),
@@ -1235,14 +1285,14 @@ class _ComposerState extends State<_Composer> {
                             TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
-                      ComposerEditor(
+                      ConstrainedBox(constraints: BoxConstraints(minHeight: newThread ? 72 : 44), child: ComposerEditor(
                         controller: controller,
                         focusNode: focus,
                         enabled: hasProject && session.connected && (answer?.enabled ?? true),
-                        placeholder: answer?.placeholder ?? 'Ask anything, / for commands, @ for context…',
+                        placeholder: answer?.placeholder ?? r'Ask anything. @ files, $ skills, / commands',
                         label: answer == null ? 'Message' : 'Answer',
                         paste: paste, copy: copy,
-                      ),
+                      )),
                       SizedBox(height: 44, child: Row(
                         children: [
                           if (answer == null)
@@ -1267,13 +1317,25 @@ class _ComposerState extends State<_Composer> {
                                 const PopupMenuItem(value: 'attach', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                   leading: Icon(Icons.attach_file_rounded, size: 16), title: Text('Attach files'))),
                             ],
-                            child: const SizedBox.square(dimension: 28,
-                              child: Icon(Icons.add_rounded, size: 20, color: Color(0xff656971)))),
+                            child: const SizedBox.square(dimension: 32,
+                              child: Icon(Icons.attach_file_rounded, size: 18, color: Color(0xff797986)))),
                           if (answer == null && _dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.start, children: [
+                          if (answer == null && defaultTargetPlatform == TargetPlatform.macOS) ...[
+                            DictationButton(
+                              phase: _voicePhase,
+                              amplitude: _voice.amplitude,
+                              enabled: available && (!_voice.active || _ownsVoice),
+                              onStart: () => unawaited(_startVoice()),
+                              onStop: () => unawaited(_finishVoice(DictationAction.insert)),
+                              onCancel: () => unawaited(_cancelVoice()),
+                              onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                             if (answer == null)
                               Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target,
                                 modelMenuKey: _modelMenu, effortMenuKey: _effortMenu))
@@ -1289,18 +1351,6 @@ class _ComposerState extends State<_Composer> {
                                 padding: const EdgeInsets.symmetric(horizontal: 10)),
                               child: const Text('Previous', style: TextStyle(fontSize: 12))),
                             const SizedBox(width: 6),
-                          ],
-                          if (answer == null && defaultTargetPlatform == TargetPlatform.macOS) ...[
-                            DictationButton(
-                              phase: _voicePhase,
-                              amplitude: _voice.amplitude,
-                              enabled: available && (!_voice.active || _ownsVoice),
-                              onStart: () => unawaited(_startVoice()),
-                              onStop: () => unawaited(_finishVoice(DictationAction.insert)),
-                              onCancel: () => unawaited(_cancelVoice()),
-                              onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
-                            ),
-                            const SizedBox(width: 8),
                           ],
                           if (answer != null)
                             FilledButton(onPressed: available && answer.canSubmit ? submit : null,
@@ -1319,8 +1369,8 @@ class _ComposerState extends State<_Composer> {
                             style: IconButton.styleFrom(
                               backgroundColor: const Color(0xff1a1c1f), foregroundColor: Colors.white,
                               disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
-                              minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              minimumSize: const Size.square(34), maximumSize: const Size.square(34), padding: EdgeInsets.zero,
+                              shape: const CircleBorder(),
                             ),
                             tooltip: _target?.sidePreparing == true ? 'Preparing side chat…'
                                 : stopWorking ? 'Stop task and clear pending messages' : running

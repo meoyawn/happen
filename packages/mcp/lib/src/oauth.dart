@@ -90,6 +90,13 @@ class McpOAuth {
 
   Future<void> _load() async { _credentials = await _readCredentials(); }
 
+  /// Recovery may discover an independently completed login only while this
+  /// owner has no pinned authority. A failed/removed pinned file never falls back.
+  Future<void> recover(CancellationToken cancellation) async {
+    if (_credentials == null && !_needsLogin) _loading = null;
+    await authorization(cancellation);
+  }
+
   Future<Json?> _readCredentials() async {
     lifetime.throwIfCancelled();
     try {

@@ -8,6 +8,7 @@ import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -94,21 +95,23 @@ void main() {
         onRemoveProject: (_) {}, onReturnFocus: () {},
       ))));
       if (projectCount == 1) {
-        final checkbox = find.byType(Checkbox);
-        expect(tester.widget<Checkbox>(checkbox).value, isFalse);
-        await tester.tap(find.text('Trace this session'));
-        await tester.pump();
-        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        await tester.tap(find.byTooltip('Checkout options'));
+        await tester.pumpAndSettle();
+        final trace = find.widgetWithText(CheckedPopupMenuItem<String>, 'Trace this session');
+        expect(tester.widget<CheckedPopupMenuItem<String>>(trace).checked, isFalse);
+        await tester.tap(trace);
+        await tester.pumpAndSettle();
+        expect(session.currentDraft.tracing, isTrue);
         final tracedDraft = session.currentDraft;
         session.newSession();
         await tester.pump();
         expect(session.currentDraft, same(tracedDraft));
         expect(session.sessionDrafts, hasLength(1));
-        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        expect(session.currentDraft.tracing, isTrue);
         session.drafts[tracedDraft.id] = 'Keep this draft';
         session.newSession();
         await tester.pump();
-        expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+        expect(session.currentDraft.tracing, isFalse);
         final attachmentDraft = session.currentDraft;
         final attachment = ComposerAttachment(name: 'draft.txt', path: '/draft.txt', image: false);
         session.attachmentDrafts[attachmentDraft.id] = [attachment];
@@ -118,11 +121,15 @@ void main() {
         expect(session.drafts[tracedDraft.id], 'Keep this draft');
         session.openDraft(tracedDraft);
         await tester.pump();
-        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        expect(session.currentDraft.tracing, isTrue);
         session.submitting = true;
         session.notifyListeners();
         await tester.pump();
-        expect(tester.widget<Checkbox>(checkbox).onChanged, isNull);
+        await tester.tap(find.byTooltip('Checkout options'));
+        await tester.pumpAndSettle();
+        expect(tester.widget<CheckedPopupMenuItem<String>>(trace).enabled, isFalse);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
         session.submitting = false;
         session.notifyListeners();
         await tester.pump();
@@ -179,6 +186,7 @@ void main() {
 
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
+  @override bool get sharedFilesystem => true;
   @override Future<Object?> request(String method, [Json params = const {}]) async => switch (method) {
     'client.capabilities' => <String, Object?>{},
     'providers.list' => {'providers': <Object?>[]},

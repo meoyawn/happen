@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:ai/ai.dart' show ModelFailure, decodeSse, HttpConnections, HttpReply, httpRequest;
+import 'package:ai/ai.dart' show ModelFailure, decodeSse, HttpReply, httpRequest;
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
@@ -16,11 +16,12 @@ import 'catalog.dart';
 typedef Credentials = Future<Json> Function({bool refresh});
 
 class ResponsesReply {
-  const ResponsesReply(this.output, this.usage, {this.endTurn = true, this.reasoningTimes = const {}});
+  const ResponsesReply(this.output, this.usage, {this.endTurn = true, this.reasoningTimes = const {}, this.observedUsage});
   final List<Json> output;
   final Json usage;
   final bool endTurn;
   final Map<String, Json> reasoningTimes;
+  final Json? observedUsage;
   String get text => output
       .where((item) => item['type'] == 'message')
       .expand((item) => (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>())
@@ -29,9 +30,9 @@ class ResponsesReply {
       .join('\n');
 }
 
-/// Transport only. The network owner supplies a shared HTTP connection pool.
+/// Transport only. The network owner supplies a shared Dart HTTP client.
 class ResponsesClient {
-  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http, this.connections})
+  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http})
     : endpoint =
           endpoint ??
           // Match Codex's endpoint for ChatGPT subscription OAuth.
@@ -41,7 +42,6 @@ class ResponsesClient {
   final Credentials credentials;
   final Uri endpoint;
   final HttpClient _http;
-  final HttpConnections? connections;
   final bool _ownsHttp;
   Future<Directory?>? _requestDump;
   bool _httpFallback = false;
@@ -139,7 +139,7 @@ class ResponsesClient {
       if (output is! String) {
         throw const ModelFailure('web_search_response', 'OpenAI search returned an invalid response');
       }
-      return clippedText(await recoverWebPages(_http, commands, output, cancellation: cancellation, connections: connections));
+      return clippedText(await recoverWebPages(_http, commands, output, cancellation: cancellation));
     }
     throw const ModelFailure('web_search_auth', 'OpenAI search authentication failed');
   }
@@ -261,7 +261,7 @@ class ResponsesClient {
     if (uri == endpoint) await _dump(() => utf8.decode(encoded), cancellation);
     cancellation.throwIfCancelled();
     final response = await httpRequest(_http, 'POST', uri,
-      connections: connections, cancellation: cancellation,
+      cancellation: cancellation,
       headers: {...headers, HttpHeaders.contentTypeHeader: 'application/json'},
       body: encoded, headersTimeout: headersTimeout);
     if (response.statusCode == 200) return response;
@@ -414,8 +414,10 @@ class ResponsesClient {
       for (final item in output) {
         if (item['type'] == 'reasoning') finishReasoning(item);
       }
+      final reported = _reportedUsage(response['usage']);
       return ResponsesReply(output, jsonObject(response['usage'] ?? {}),
-        endTurn: !interrupted && response['end_turn'] != false, reasoningTimes: reasoningTimes);
+        endTurn: !interrupted && response['end_turn'] != false, reasoningTimes: reasoningTimes,
+        observedUsage: reported != null && response['id'] is String ? {'response_id': response['id'], 'usage': reported} : null);
     }
     // Transport activity resets the idle deadline, including SSE heartbeats
     // during long reasoning. A healthy response has no wall-clock limit.

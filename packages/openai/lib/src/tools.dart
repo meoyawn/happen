@@ -29,12 +29,24 @@ class HostTools {
       if (raw is! String) {
         throw const FormatException('apply_patch expects a raw patch string');
       }
-      return applyPatch(directory, raw, cancellation: cancellation);
+      return applyPatch(directory, raw, cancellation: cancellation, callId: callId, onItem: onItem);
     }
     final input = jsonObject(raw);
     switch (name) {
       case 'clock__curr_time':
         return {'current_time': '${DateTime.now().toUtc().toIso8601String().substring(0, 19).replaceFirst('T', ' ')} UTC'};
+      case 'clock__sleep':
+        final duration = input['duration_ms'];
+        if (input.keys.any((key) => key != 'duration_ms') || duration is! int || duration < 1 || duration > 43200000) {
+          return {'error': 'duration_ms must be between 1 and 43200000'};
+        }
+        final item = <String, dynamic>{'type': 'Extension', 'kind': 'clock.sleep', 'id': callId, 'durationMs': duration};
+        await onItem?.call('started', item);
+        final watch = Stopwatch()..start();
+        try {
+          await cancellableDelay(Duration(milliseconds: duration), cancellation.merge(this.cancellation));
+          return {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep completed.'};
+        } finally { await onItem?.call('completed', item); }
       case 'view_image':
         final path = requiredString(input, 'path');
         final images = await prepareInputAttachments([{
@@ -42,6 +54,9 @@ class HostTools {
           'path': File.fromUri(Directory(directory).absolute.uri.resolveUri(Uri.file(path))).path,
           'detail': input['detail'] ?? 'high',
         }], cancellation: cancellation.merge(this.cancellation));
+        final item = <String, dynamic>{'type': 'ImageView', 'id': callId,
+          'path': File.fromUri(Directory(directory).absolute.uri.resolveUri(Uri.file(path))).path};
+        await onItem?.call('started', item); await onItem?.call('completed', item);
         return {'image_url': attachmentDataUrl(images.single), 'detail': images.single['detail']};
       case 'shell_command':
         final timeout = (input['timeout_ms'] as num? ?? 10000).toInt();

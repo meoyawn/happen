@@ -64,6 +64,40 @@ void main() {
     }
   }
 
+  test('a finishing agent turn cannot cancel a public thread subscription during activation', () async {
+    final server = await peer.launch(), id = await peer.thread(server);
+    peer.holdNext = true; peer.responseGate = Completer<void>(); peer.pollGate = Completer<void>(); peer.pollStarted = Completer<void>();
+    await server.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Finish this ordinary turn during subscription activation.'}]});
+    await peer.held.future;
+    final creating = peer.subscribe(server, id, 'poll');
+    unawaited(creating.then<void>((_) {}, onError: (Object _) {}));
+    await peer.pollStarted!.future;
+    peer.responseGate!.complete();
+    await peer.until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false);
+    peer.pollGate!.complete();
+    final subscription = await creating;
+    expect(subscription['state'], 'active');
+    expect((await server.request('mcp.events.subscriptions', {'threadId': id}) as List).single['subscription_id'], subscription['subscription_id']);
+    expect(peer.responses, hasLength(2));
+  }, timeout: const Timeout(Duration(seconds: 60)));
+
+  test('a durably admitted thread subscription survives client disconnect during activation', () async {
+    final server = await peer.launch(), id = await peer.thread(server), observer = await AgentClient.connect(server.uri);
+    try {
+      peer.pollGate = Completer<void>(); peer.pollStarted = Completer<void>();
+      final creating = peer.subscribe(server, id, 'poll');
+      unawaited(creating.then<void>((_) {}, onError: (Object _) {}));
+      await peer.pollStarted!.future;
+      await server.client.close(); await expectLater(creating, throwsStateError);
+      peer.pollGate!.complete();
+      await peer.until(() async {
+        final values = await observer.request('mcp.events.subscriptions', {'threadId': id}) as List;
+        return values.length == 1 && values.single['state'] == 'active';
+      });
+      expect(peer.responses, hasLength(1), reason: 'Activation is control state, never a model turn.');
+    } finally { await observer.close(); }
+  }, timeout: const Timeout(Duration(seconds: 60)));
+
   for (final fault in ['inbox', 'checkpoint']) {
     test('event $fault fault rolls back inbox, receipt and cursor; accepted/duplicate admission uses one/zero WAL commits', () async {
       var server = await peer.launch();
@@ -75,7 +109,7 @@ void main() {
       // connection while the production storage isolate owns this file.
       await server.stop();
       var database = sqlite3.open(peer.database(id));
-      final condition = fault == 'inbox' ? "instr(NEW.data,'evt-2')>0" : "NEW.key='mcp_event_subscriptions' AND instr(NEW.value,'cursor-2')>0";
+      final condition = fault == 'inbox' ? "instr(NEW.data,'evt-2')>0" : "NEW.key IS 'mcp_event_subscriptions' AND instr(NEW.value,'cursor-2')>0";
       database.execute('CREATE TRIGGER event_fault BEFORE UPDATE ON ${fault == 'inbox' ? 'happen_runtime' : 'metadata'} WHEN $condition BEGIN SELECT RAISE(ABORT,\'injected event transaction fault\'); END');
       database.close();
       server = await peer.launch();
@@ -144,6 +178,20 @@ void main() {
     expect(peer.registration!['delivery']['secret'], registration['delivery']['secret']);
   }, timeout: const Timeout(Duration(seconds: 60)));
 
+  test('unsubscribe clears retained intent even when the configured server is disabled on restart', () async {
+    var server = await peer.launch(); final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
+    await server.stop();
+    final config = File('${peer.cwd}/.happen/config.yaml'), original = await config.readAsString();
+    await config.writeAsString('$original    enabled: false\n');
+    server = await peer.launch();
+    await server.request('mcp.events.unsubscribe', {'threadId': id, 'subscription_id': subscription['subscription_id']});
+    final saved = jsonObject(jsonDecode(peer.snapshot(id)['mcp_event_subscriptions'] as String));
+    expect(saved, isNot(contains(subscription['subscription_id'])));
+    await server.stop(); await config.writeAsString(original); server = await peer.launch();
+    expect(await server.request('mcp.events.subscriptions', {'threadId': id}), isEmpty);
+    expect(peer.responses, hasLength(1));
+  }, timeout: const Timeout(Duration(seconds: 75)));
+
   for (final remove in ['unsubscribe', 'archive', 'provider termination']) {
     test('$remove is durable and cannot resurrect a subscription on the next process', () async {
       var server = await peer.launch(); final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
@@ -162,21 +210,25 @@ void main() {
 }
 
 class _Server {
-  _Server(this.process, this.client, this.pid, this.uri, this.output, this.errors);
+  _Server(this.process, this.client, this.pid, this.uri, this.output, this.errorOutput);
   final Process process;
   final AgentClient client;
   final int pid;
   final Uri uri;
   final StreamSubscription<String> output;
-  final Future<String> errors;
+  final StreamSubscription<String> errorOutput;
   bool stopped = false;
   Future<dynamic> request(String method, [Json params = const {}]) => client.request(method, params);
   Future<void> stop({bool crash = false}) async {
-    if (stopped) return; stopped = true; await client.close();
-    if (crash) Process.killPid(pid, ProcessSignal.sigkill); else process.stdin.writeln('stop');
-    try { await process.exitCode.timeout(const Duration(seconds: 8)); }
-    on TimeoutException { Process.killPid(pid, ProcessSignal.sigkill); process.kill(ProcessSignal.sigkill); await process.exitCode; }
-    await output.cancel(); await errors;
+    if (stopped) return; stopped = true;
+    try { await client.close().timeout(const Duration(seconds: 3)); }
+    finally {
+      if (crash) process.kill(ProcessSignal.sigkill); else process.stdin.writeln('stop');
+      try { await process.exitCode.timeout(const Duration(seconds: 8)); }
+      on TimeoutException { process.kill(ProcessSignal.sigkill); await process.exitCode; }
+      await process.stdin.close().then<void>((_) {}, onError: (Object _) {});
+      await output.cancel(); await errorOutput.cancel();
+    }
   }
 }
 
@@ -195,6 +247,7 @@ class _Events {
   final lifetime = TimeoutCancellationToken(const Duration(minutes: 2));
   final servers = <_Server>[], processes = <Process>[], calls = <Json>[], responses = <Json>[], occurrences = <Json>[];
   var held = Completer<void>();
+  Completer<void>? responseGate, pollGate, pollStarted;
   ({HttpResponse response, String id})? stream;
   Json? registration, pollReplay;
   String remoteId = 'remote-subscription';
@@ -212,18 +265,31 @@ class _Events {
     return peer;
   }
   Future<_Server> launch() async {
-    final process = await Process.start(Platform.resolvedExecutable, ['run', 'test/fixtures/mcp_event_server.dart',
+    final assets = File('.dart_tool/native_assets.yaml').absolute;
+    if (!assets.existsSync()) throw StateError('Run the Dart test runner to prepare native assets before the restart fixture.');
+    final process = await Process.start(Platform.resolvedExecutable, ['--disable-dart-dev',
+      '--packages=${File('.dart_tool/package_config.json').absolute.path}',
+      File('test/fixtures/mcp_event_server.dart').absolute.path,
       jsonEncode({'directory': root.path, 'endpoint': '$origin/responses'})]);
     processes.add(process);
-    final ready = Completer<Json>(), errors = utf8.decoder.bind(process.stderr).join();
+    final ready = Completer<Json>(), errors = StringBuffer();
+    final errorOutput = utf8.decoder.bind(process.stderr).listen(errors.write);
     final output = utf8.decoder.bind(process.stdout).transform(const LineSplitter()).listen((line) {
       if (line.startsWith('{') && !ready.isCompleted) ready.complete(jsonObject(jsonDecode(line)));
     });
-    unawaited(process.exitCode.then((code) async { if (!ready.isCompleted) ready.completeError(StateError('Server exited $code: ${await errors}')); }));
-    final info = await ready.future.asCancellable(lifetime);
-    final child = info['pid'] as int; if (child < 2 || child == pid) throw StateError('Invalid owned server PID');
-    final server = _Server(process, await AgentClient.connect(Uri.parse(info['uri'] as String)), child, Uri.parse(info['uri'] as String), output, errors);
-    servers.add(server); return server;
+    unawaited(process.exitCode.then((code) { if (!ready.isCompleted) ready.completeError(StateError('Server exited $code: $errors')); }));
+    final startup = TimeoutCancellationToken(const Duration(seconds: 30));
+    try {
+      final info = await ready.future.asCancellable(lifetime.merge(startup));
+      final child = info['pid'] as int;
+      if (child != process.pid || child < 2 || child == pid) throw StateError('Fixture did not directly own the server VM');
+      final server = _Server(process, await AgentClient.connect(Uri.parse(info['uri'] as String)), child, Uri.parse(info['uri'] as String), output, errorOutput);
+      servers.add(server); return server;
+    } catch (_) {
+      process.kill(ProcessSignal.sigkill); await process.exitCode;
+      await process.stdin.close().then<void>((_) {}, onError: (Object _) {});
+      await output.cancel(); await errorOutput.cancel(); rethrow;
+    } finally { startup.cancel(); }
   }
   Future<void> until(FutureOr<bool> Function() predicate) async {
     final deadline = TimeoutCancellationToken(const Duration(seconds: 8));
@@ -286,7 +352,7 @@ class _Events {
     request.response.headers.contentType = ContentType.json;
     if (request.uri.path == '/responses') {
       responses.add(body);
-      if (holdNext) { holdNext = false; if (!held.isCompleted) held.complete(); await Completer<void>().future.asCancellable(lifetime); }
+      if (holdNext) { holdNext = false; if (!held.isCompleted) held.complete(); await (responseGate ?? Completer<void>()).future.asCancellable(lifetime); }
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {'id': 'response-${responses.length}', 'status': 'completed',
         'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]}]}})}\n\n');
@@ -305,6 +371,11 @@ class _Events {
         case 'server/discover': result = {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}};
         case 'events/list': result = {'events': [{'name': 'comment.created', 'delivery': ['push', 'poll', 'webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]};
         case 'events/poll':
+          final gate = pollGate;
+          if (gate != null) {
+            if (pollStarted?.isCompleted == false) pollStarted!.complete();
+            await gate.future.asCancellable(lifetime); pollGate = null;
+          }
           final after = params['cursor'] == 'seed' ? 0 : int.parse((params['cursor'] as String).split('-').last);
           final events = pollReplay == null ? occurrences.where((e) => int.parse((e['cursor'] as String).split('-').last) > after).toList() : [pollReplay!];
           pollReplay = null;

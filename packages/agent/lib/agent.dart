@@ -679,6 +679,7 @@ class _Agent {
             'input': restored.map((v) => v.toJson()).toList(),
             'summary': result.summary,
             'usage': result.usage.toJson(),
+            'observed_usage': ?result.observedUsage,
             'reason': reason,
             'skills_state': freshSkills.snapshot,
           },
@@ -909,10 +910,34 @@ class _Agent {
                     } else if (service == 'web.search') {
                       output = await searchWeb(arguments, cancellation);
                     } else if (service == 'image.generate') {
+                      Json? started;
+                      var completed = false;
+                      Future<void> notifications = Future.value();
+                      try {
                       output = await callIsolate(network, 'image.generate', {
                         'provider': config['provider'], ...request().toJson(),
                         'arguments': arguments, 'call_id': id, 'turn_id': turnId,
-                      }, timeout: null, cancellation: cancellation);
+                      }, timeout: null, cancellation: cancellation, onEvent: (notification) {
+                        final data = jsonObject(notification['data']);
+                        if (notification['type'] == 'native.item.started') started = data;
+                        if (notification['type'] == 'native.item.completed') completed = true;
+                        notifications = notifications.then((_) async {
+                          if (notification['type'] == 'native.item.completed') await callIsolate(writer, 'native.item.queue', data);
+                          else event(await _append('native.item.started', data));
+                        });
+                        unawaited(notifications.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+                      });
+                      } finally {
+                        await notifications;
+                        // Cancellation closes the request mailbox before the
+                        // network worker can reply. Close only the item actually
+                        // announced to this caller, before its terminal commit.
+                        if (started != null && !completed) await callIsolate(writer, 'native.item.queue', {
+                          ...started!, 'item': {...jsonObject(started!['item']), 'status': 'failed'},
+                          'canonicalItem': {...jsonObject(started!['canonicalItem']), 'status': 'failed'},
+                          'completedAtMs': DateTime.now().millisecondsSinceEpoch,
+                        });
+                      }
                     } else if (service?.startsWith('goal.') == true) {
                       output = await goal(service!.substring(5), jsonObject(arguments), cancellation);
                     } else if (service?.startsWith('history.') == true) {

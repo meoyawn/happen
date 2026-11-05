@@ -703,9 +703,9 @@ again. Ephemeral `model.retrying` notifications contain `task_id`, `turn_id`,
 `attempt` (1–5), and `max_retries` (5). The desktop shows reconnecting progress,
 discards abandoned partial response text, and retains terminal failures in the
 conversation, including failures without a durable sequence number.
-HTTP/2 stream failures retire the affected pooled connection; retries use a
-fresh connection while accepted sibling responses finish. Caller cancellation
-resets only its stream. A GPT `response.created` acknowledgement emits ephemeral
+The shared Dart `HttpClient` manages HTTP/1.1 connections with its default
+15-second idle timeout. Request cancellation leaves other responses running.
+A GPT `response.created` acknowledgement emits ephemeral
 `model.connected` with `task_id` and `turn_id`, clearing reconnecting progress
 while the accepted request is processing, even before any text arrives.
 
@@ -900,6 +900,43 @@ and updates them between steps once loaded; its code mode uses `tools.client__NA
 OpenCode exposes `tools.client.NAME` through `execute` and `search`, keeping their
 schemas out of the native catalog.
 
+## MCP requests and caller input
+
+Clients that can present MCP input opt in on each connection with
+`client.capabilities {"mcp_inputs": true}`. This is separate from model questions
+and is not saved in thread/provider settings. Without a capable caller, an input
+request fails; the backend never supplies an answer, opens a URL, or creates a
+device proof automatically.
+
+`mcp.request` supports tools, resources, prompts, and event discovery/polling.
+Optional `threadId` selects the saved project scope; optional `read_only: true`
+sets host-owned `openai/readOnly` metadata that caller metadata cannot override.
+Form (`elicitation/create`, `openai/form`, `openai/elicitation/create`), URL, and
+native `openai/userVerification` requests use the same continuation driver.
+
+| Method/event | Payload |
+| --- | --- |
+| `mcp.input.requested` event | `request_id`, `source`, `request: {method, params}`, and `threadId` for agent-owned input. Treat display text, schemas, URLs, and metadata as untrusted server data. |
+| `mcp.input.list` | Optional `threadId`; returns only this client's authorized pending requests. Use after subscribing/reconnecting to a running thread. |
+| `mcp.input.reply` | `request_id`, `response: {action, content?, _meta?}`. `action` is `accept`, `decline`, or `cancel`. Only one reply wins. |
+| `mcp.input.closed` event | `request_id`, optional `threadId`; remove the pending prompt whether answered, cancelled, or failed. |
+
+A public request belongs to its exact client connection. An agent request can be
+answered only by an opted-in client subscribed to its thread. Cross-client or
+cross-thread replies are rejected. Disconnect cancels that client's public
+request, not shared MCP connections or other callers. Stop cancels the invoking
+agent's requests. Input is transport interaction, not a new model message or
+transcript item.
+
+Native verification accepts only bounded `credentialId`/base64url `signature`
+proofs supplied by the caller; invalid proofs become cancellation. Cancel/decline
+discard proof material and retain only a recognized verification reason.
+Human-input waits pause only that call's active-time timeout. All wire rounds
+share its remaining budget and use fresh IDs, with a ten-request continuation
+bound. Opaque `requestState` is preserved verbatim. Once an input is answered,
+failure cannot cause session recovery or transient replay of that operation.
+Sampling and roots are not advertised.
+
 ## MCP Events
 
 The core protocol is `2026-07-28`; Events follows the pinned experimental draft
@@ -915,7 +952,8 @@ implemented. Discovery and event delivery are distinct from model execution.
 | `mcp.auth.login.cancel` | Notification with `request_id`; cancels this client's pending auth request and its callback listener. Disconnect also cancels it. |
 | `mcp.auth.callback` | `server`, `login_id`, `callback_url`. Completes this connection's own pending login without requiring the browser to reach the server's loopback listener. |
 | `mcp.auth.logout` | `server`. Deletes local OAuth credentials and reconciles the shared connection. |
-| `mcp.request` | `server`, `method`, optional `arguments`; supports event discovery/polling, resources, and prompts. |
+| `mcp.request` | `server`, `method`, optional `arguments`, `threadId`, `read_only`; supports tools, resources, prompts, and event discovery/polling. |
+| `mcp.input.list` / `mcp.input.reply` | Caller-authorized pending input and replies; see [caller input](#mcp-requests-and-caller-input). |
 | `mcp.events.subscribe` | `server`, `name`, optional `arguments`, `mode` (`push`, `poll`, `webhook`), `cursor`, `max_age_ms`, `ttl_ms`, `threadId`. |
 | `mcp.events.subscriptions` | Optional `threadId`; lists that thread's server-owned subscriptions, or this connection's subscriptions if omitted. |
 | `mcp.events.unsubscribe` | `subscription_id`, and `threadId` for a thread-owned subscription. |
@@ -960,13 +998,21 @@ not an extra parameter sent to the upstream MCP server. Archive stops the thread
 subscriptions. Webhook `2xx` waits for durable inbox admission; inbox pressure
 returns `503` and retrying the same occurrence remains safe. A bounded receipt
 joins that admission's transaction rather than adding a second commit.
-Subscription/cursor restoration across a server process restart is not yet
-implemented; thread unload and desktop reconnect preserve them.
+Thread-owned desired subscriptions and cursors are saved in that thread's
+existing SQLite file and restored automatically across server-process restart,
+including its saved project-local MCP configuration. Restoration alone does not
+load the thread or run a model. A previously acknowledged, still-pending inbox
+event is resumed without waiting for a new occurrence. Unsubscribe, archive and
+provider termination remove desired state durably; ordinary connection-owned
+subscriptions are not restored. Webhook callback IDs and signing secrets remain
+private host state, excluded from inventory, model history and portable exports.
+An expired provider registration may receive a fresh remote ID on restoration;
+the new authenticated grant then pins that identity.
 
 Webhook delivery requires an HTTPS `public_url` in global configuration, routed
 to this server's `/mcp-events/...` callback paths. The server verifies webhook
-signatures and timestamps before delivery; signing secrets remain in the network
-owner. The ordinary SSH port-forward setup supports push and polling without a
+signatures and timestamps before delivery; signing secrets remain in private
+host state. The ordinary SSH port-forward setup supports push and polling without a
 public webhook endpoint.
 
 See [verification.md](verification.md) for executable checks and measured limits.

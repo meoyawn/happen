@@ -14,6 +14,7 @@ Future<Json> generateImage(ModelRequest request, Json arguments, {
   required String callId,
   required String turnId,
   required CancellationToken cancellation,
+  ToolItemEvent? onItem,
 }) async {
   cancellation.throwIfCancelled();
   const allowed = {'prompt', 'transparent_background', 'referenced_image_paths', 'num_last_images_to_include'};
@@ -55,6 +56,11 @@ Future<Json> generateImage(ModelRequest request, Json arguments, {
     if (recent.length < count) throw FormatException('requested the last $count conversation images, but only ${recent.length} were available');
     images.addAll(recent.skip(recent.length - count));
   }
+  final native = <String, dynamic>{'type': 'Extension', 'kind': 'image_gen.generation', 'id': callId,
+    'status': 'inProgress', 'revisedPrompt': null, 'result': '', 'transparentBackground': transparent, 'failure': null, 'generationId': null};
+  await onItem?.call('started', native);
+  Json? terminal;
+  try {
   final response = await send({
     if (images.isNotEmpty) 'images': [for (final image in images) {'image_url': image}],
     'prompt': prompt, 'background': transparent ? 'transparent' : 'opaque',
@@ -86,7 +92,11 @@ Future<Json> generateImage(ModelRequest request, Json arguments, {
   final hint = saved == null ? null : 'Generated images are saved to ${File(saved).parent.path} as $saved by default.\n'
     'If you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\n'
     'The generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.';
+  terminal = {...native, 'status': 'completed', 'revisedPrompt': data.first['revised_prompt'], 'generationId': data.first['generation_id'],
+    if (saved == null) 'result': encoded else ...{'fileId': 'generated_images/${safe(request.taskId)}/${safe(callId)}.png', 'savedPath': saved}};
+  if (saved != null) terminal.remove('result');
   return {'image_url': 'data:image/png;base64,$encoded', if (hint != null && utf8.encode(hint).length <= 1024) 'output_hint': hint};
+  } finally { await onItem?.call('completed', terminal ?? {...native, 'status': 'failed'}); }
 }
 
 const imageGenerationCatalog = <String, dynamic>{

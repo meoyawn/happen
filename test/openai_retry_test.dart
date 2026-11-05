@@ -180,7 +180,7 @@ void main() {
           expect(result.value, isA<ResponsesReply>().having((reply) => reply.text, 'text', 'Recovered'));
         }
         expect(transport.bodies, hasLength(search ? 3 : 4));
-        expect(transport.cancellations.take(3).every((token) => token.isCancelled), isTrue);
+        expect(transport.requests.take(3).every((request) => request.aborted), isTrue);
         if (!search) {
           transport.reply = (_, _) => Completer<HttpReply>().future;
           final token = CancellationToken();
@@ -188,7 +188,7 @@ void main() {
           time.flushMicrotasks();
           token.cancel();
           expect(_settle(time, pending).error, isA<CancelledException>());
-          expect(transport.cancellations.last.isCancelled, isTrue);
+          expect(transport.requests.last.aborted, isTrue);
           expect(token.hasCancellables, isFalse);
         }
       });
@@ -661,29 +661,63 @@ Stream<List<int>> _bytes(String body) {
   return source.stream;
 }
 
-class _Transport extends HttpConnections {
+class _Transport implements HttpClient {
   _Transport(this.reply);
   FutureOr<HttpReply> Function(int attempt, Json body) reply;
   final bodies = <Json>[];
   final paths = <String>[];
-  final cancellations = <CancellationToken>[];
+  final requests = <_Request>[];
 
   @override
-  Future<HttpReply> send(HttpClient http, String method, Uri uri, {
-    required CancellationToken cancellation, Map<String, String> headers = const {}, List<int> body = const [],
-  }) async {
-    cancellation.throwIfCancelled();
-    bodies.add(jsonObject(jsonDecode(utf8.decode(body))));
-    paths.add(uri.path);
-    cancellations.add(cancellation);
-    return Future<HttpReply>.sync(() => reply(bodies.length, bodies.last)).asCancellable(cancellation);
+  Future<HttpClientRequest> openUrl(String method, Uri uri) async {
+    final request = _Request(this, uri);
+    requests.add(request);
+    return request;
   }
+  @override void close({bool force = false}) {}
+  @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _Request implements HttpClientRequest {
+  _Request(this.transport, this.uri);
+  final _Transport transport;
+  @override final Uri uri;
+  final bytes = <int>[];
+  bool aborted = false;
+  @override final headers = _Headers({});
+  @override bool followRedirects = true;
+  @override int contentLength = -1;
+  @override void add(List<int> data) => bytes.addAll(data);
+  @override Future<HttpClientResponse> close() async {
+    transport.bodies.add(jsonObject(jsonDecode(utf8.decode(bytes))));
+    transport.paths.add(uri.path);
+    return _Response(await Future<HttpReply>.sync(() => transport.reply(transport.bodies.length, transport.bodies.last)));
+  }
+  @override void abort([Object? exception, StackTrace? stackTrace]) { aborted = true; }
+  @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _Response extends StreamView<List<int>> implements HttpClientResponse {
+  _Response(this.reply) : super(reply);
+  final HttpReply reply;
+  @override int get statusCode => reply.statusCode;
+  @override String get reasonPhrase => reply.reasonPhrase;
+  @override HttpHeaders get headers => _Headers(reply.headers);
+  @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _Headers implements HttpHeaders {
+  _Headers(this.values);
+  final Map<String, String> values;
+  @override void forEach(void Function(String, List<String>) action) => values.forEach((name, value) => action(name, [value]));
+  @override void set(String name, Object value, {bool preserveHeaderCase = false}) {}
+  @override List<String>? operator [](String name) => values[name] == null ? null : [values[name]!];
+  @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 ResponsesClient _client(_Transport transport, {List<bool>? refreshes}) {
-  final http = HttpClient();
-  addTearDown(() { http.close(force: true); return transport.close(); });
-  return ResponsesClient(http: http, connections: transport, endpoint: Uri.parse('https://fixture.test/responses'),
+  addTearDown(() => transport.close(force: true));
+  return ResponsesClient(http: transport, endpoint: Uri.parse('https://fixture.test/responses'),
     credentials: ({bool refresh = false}) async {
       refreshes?.add(refresh);
       return {'access_token': 'fixture', 'account_id': 'fixture'};

@@ -11,13 +11,15 @@ extension _NativeSession on TaskStore {
           if (data['history_base'] != null) 'history_base': data['history_base'],
           if (data['forked_from_id'] != null) 'forked_from_id': data['forked_from_id'],
         }});
-        if (type == 'context.compacted') lines.add({'type': 'compacted', 'payload': {
-          'message': data['summary'] ?? '', 'replacement_history': gptInput(context.map(ConversationItem.fromJson)),
-          'window_number': next['sourceSeq'],
-        }});
         if (data['tokenUsageRecord'] case final Map<String, Object?> usage) {
           lines.add({'type': 'token_usage_record', 'payload': usage});
         }
+        if (type == 'context.compacted') lines.add({'type': 'compacted', 'payload': {
+          'message': data['summary'] ?? '', 'replacement_history': gptInput(context.map(ConversationItem.fromJson)),
+          'window_number': next['sourceSeq'],
+          'compaction_response_id': data['observed_usage']?['response_id'],
+          'latest_token_usage_record': next['latestTokenUsageRecord'],
+        }});
         for (final item in type == 'context.compacted' ? <Json>[] : context) {
           for (final response in gptInput([ConversationItem.fromJson(item)])) {
             lines.add({'type': 'response_item', 'payload': response});

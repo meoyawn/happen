@@ -75,6 +75,58 @@ void main() {
     await provider.close(force: true); await root.delete(recursive: true);
   });
 
+  // Complete ordinary token_usage_rollout.rs matrix; a pure cell replaces
+  // upstream's plan tool without supplying accounting or persistence itself.
+  for (final transport in ['http', 'websocket']) {
+    test('observed response usage accumulates by turn/thread across restart: $transport', () async {
+      Json usage(int total) => {'input_tokens': total - 10, 'output_tokens': 10, 'total_tokens': total};
+      scripts.addAll([
+        [{'type': 'response.completed', 'response': {'id': 'response-a', 'status': 'completed', 'usage': usage(120), 'output': [
+          {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'cell-a', 'input': 'text(1);'},
+        ]}}],
+        [message('message-b', 'done'), completed('response-b', usage(80))],
+        [message('message-c', 'next'), completed('response-c', usage(30))],
+        [message('message-d', 'no usage'), {'type': 'response.completed', 'response': {'id': 'response-without-usage', 'status': 'completed'}}],
+      ]);
+      await launch(transport: transport);
+      final id = await createThread(client, {'cwd': root.path}), first = await runTurn(client, id, prompt: 'first');
+      expect(first['status'], 'completed');
+      await subscription.cancel(); await client.close(); await server.close(); await launch(transport: transport);
+      final second = await runTurn(client, id, prompt: 'second'); await runTurn(client, id, prompt: 'third');
+      final records = await usageRecords(id);
+      expect(records.map((record) => [record['response_id'], record['turn_token_usage']['total_tokens'], record['thread_token_usage']['total_tokens']]), [
+        ['response-a', 120, 120], ['response-b', 200, 200], ['response-c', 30, 230],
+      ]);
+      expect(records.map((r) => r['turn_id']), [first['id'], first['id'], second['id']]);
+      expect(records.map((r) => r['session_id']), everyElement(id));
+      expect(records.every((r) => r['thread_id'] == id && r['root_turn_id'] == r['turn_id']), true);
+    });
+
+    for (final total in [0, 25]) {
+      test('manual compaction checkpoints real spending, not the local estimate: $transport/$total', () async {
+        scripts.addAll([
+          [message('initial', 'Before compaction'), completed('initial', {'input_tokens': 990, 'output_tokens': 10, 'total_tokens': 1000})],
+          [{'type': 'response.completed', 'response': {'id': 'compact', 'status': 'completed',
+            'usage': {'input_tokens': total, 'output_tokens': 0, 'total_tokens': total},
+            'output': [{'type': 'compaction', 'id': 'checkpoint', 'encrypted_content': 'opaque-checkpoint'}]}}],
+          [message('after', 'After compaction'), completed('after', {'input_tokens': 9, 'output_tokens': 1, 'total_tokens': 10})],
+        ]);
+        await launch(transport: transport);
+        final id = await createThread(client, {'cwd': root.path}); await runTurn(client, id, prompt: 'Keep the fact.');
+        expect((await runTurn(client, id, compact: true))['status'], 'completed');
+        final before = await usageRecords(id), rollout = await rolloutLines(client, id);
+        expect(before.map((r) => r['usage']['total_tokens']), [1000, total]);
+        final checkpoint = rollout.singleWhere((line) => line['type'] == 'compacted')['payload'];
+        expect(checkpoint['compaction_response_id'], 'compact'); expect(checkpoint['latest_token_usage_record'], before.last);
+        expect(threadMetadata(root.path, id, 'context_usage'), isA<int>().having((value) => value, 'local estimate', greaterThan(0)));
+        await subscription.cancel(); await client.close(); await server.close(); await launch(transport: transport);
+        await runTurn(client, id, prompt: 'Continue.');
+        final after = await usageRecords(id); expect(after.last['thread_token_usage']['total_tokens'], 1010 + total);
+        expect(after.last['turn_token_usage']['total_tokens'], 10);
+      });
+    }
+  }
+
   for (final transport in ['http', 'websocket']) {
     for (final (name, usage) in [('usage', reported), ('missing_usage', null), ('malformed_usage', {'malformed': true})]) {
       test('incomplete_response_is_terminal: ${transport}_$name', () async {
@@ -121,7 +173,10 @@ void main() {
       expect(page['thread']['turns'], hasLength(1));
       expect((page['thread']['turns'][0]['items'] as List).where((item) => item['type'] == 'agentMessage').map((item) => item['text']),
         ['The first result is ready.', 'The second result is ready.']);
-      expect(await usageRecords(id), isEmpty, reason: 'A nonterminal interrupt is ordinary sampling, not terminal spending.');
+      final receipts = await usageRecords(id);
+      expect(receipts.map((r) => [r['response_id'], r['turn_token_usage']['total_tokens'], r['thread_token_usage']['total_tokens']]),
+        [['interrupted', 150, 150], ['answer', 161, 161]], reason: 'A nonterminal interrupt records ordinary sampling exactly once and continues the same turn.');
+      expect(receipts.map((r) => r['turn_id']), everyElement(turn['id']));
     });
   }
 
@@ -166,7 +221,7 @@ void main() {
     expect((await runTurn(client, id, prompt: 'hello'))['status'], 'completed');
     expect((await runTurn(client, id, prompt: 'x' * 240000))['status'], 'failed');
     final records = await usageRecords(id);
-    expect(records, hasLength(1)); expect(records.single['thread_token_usage']['total_tokens'], 140016);
+    expect(records.map((r) => [r['response_id'], r['thread_token_usage']['total_tokens']]), [['initial', 40000], ['incomplete', 140016]]);
     expect((await runTurn(client, id, prompt: 'continue'))['status'], 'completed');
     expect(requests, hasLength(3));
     expect(requests.expand((request) => request['input'] as List).where((item) => item['type'] == 'compaction_trigger'), isEmpty);
@@ -197,8 +252,8 @@ void main() {
       expect(goal['goal']['tokensUsed'], 42);
       expect(goal['goal']['status'], budget == 40 ? 'budgetLimited' : 'blocked');
       final records = await usageRecords(id);
-      expect(records, hasLength(1)); expect(records.single['thread_token_usage']['total_tokens'], 53);
-      expect(records.single['usage'], {'input_tokens': 7, 'cached_input_tokens': 1, 'cache_write_input_tokens': 0,
+      expect(records.map((r) => [r['response_id'], r['thread_token_usage']['total_tokens']]), [['initial', 33], ['incomplete', 53]]);
+      expect(records.last['usage'], {'input_tokens': 7, 'cached_input_tokens': 1, 'cache_write_input_tokens': 0,
         'output_tokens': 8, 'reasoning_output_tokens': 5, 'total_tokens': 20});
       final before = await context(id);
       expect(before['tokens'], {'input': 8, 'output': 17, 'reasoning': 3, 'cache': {'read': 2, 'write': 0}});

@@ -65,6 +65,29 @@ runtime authority. Logout waits for admitted refresh, and a bound replacement
 login is preserved without replaying the rejected tool call. JSON formatting
 alone does not create a new credential generation.
 
+## Continuations and caller input
+
+`McpConnection.request` preserves raw protocol results when no handler is
+provided. `requestWithInput` and the manager's high-level operations use one
+continuation driver. An explicit `McpInputHandler` receives validated raw form,
+URL, rich-form, or native verification requests and a caller cancellation token.
+Advertise only the capabilities the host can serve (`mcpInputCapabilities` is
+available to capable hosts); roots and sampling are not synthesized.
+
+Each operation has its own active-time clock. Human-input waits pause that clock,
+not another caller's timeout; network rounds consume its remaining budget. The
+driver validates every input in a round before prompting, preserves opaque state
+and caller metadata, and permits at most ten wire rounds with fresh IDs. An
+answered operation is never restarted or retransmitted after a continuation
+failure. Native proof validation is bounded structural validation, not proof
+generation. No URL opening, default answer, or hardware approval is automatic.
+
+The server exposes these interactions only to clients opting in with
+`client.capabilities {"mcp_inputs": true}`. Public inputs belong to their exact
+caller; agent inputs belong to subscribed clients of that thread. See
+[the input API](../../docs/api.md#mcp-requests-and-caller-input) for events,
+pending requests, replies, cancellation, and lifetimes.
+
 ## Experimental Events
 
 - Discover event definitions with `events/list`.
@@ -84,7 +107,16 @@ webhook success waits for admission, not model completion. Protocol control
 notifications never start a model turn. Thread identity is local metadata and
 is not sent as an extra draft parameter to the upstream server.
 
-Subscriptions and cursors are not yet restored after a server process restart.
+Thread-owned subscriptions and cursors are stored in the thread's existing
+SQLite file and restored at server startup, using its saved project scope.
+Restoring control state does not load a thread or run a model. An occurrence's
+cursor and bounded receipt join its inbox admission transaction; an acknowledged
+event left pending at process death wakes after restart without another event.
+Webhook IDs/signing material stay private and survive restart; an authenticated
+re-registration can replace an expired provider identity. Unsubscribe, archive
+and provider termination remove durable intent. Connection-owned subscriptions
+remain ephemeral. Storage uses one writer isolate per saved session, no writer
+lock files, and independent read-only connections.
 See [the API guide](../../docs/api.md#mcp-events) for configuration and lifetimes,
 [`test/mcp_test.dart`](../../test/mcp_test.dart) for transport contracts, and
 [`thread_unsubscribe_test.dart`](../server/test/thread_unsubscribe_test.dart)

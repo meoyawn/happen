@@ -5,6 +5,7 @@ resolution: workspace
 environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
+  archive: ^4.5.2
   ai: any
   sqlite3: ^3.8.0
   crypto: ^3.0.6

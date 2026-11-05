@@ -16,21 +16,37 @@ void main() {
       void Function(DesktopTask, bool)? archive}) => MaterialApp(home: Scaffold(body: SizedBox(width: 276,
     child: ThreadSidebar(session: session, home: true, windowControls: false,
       onHome: () {}, onSearch: () {}, onNew: () {}, onSettings: () {}, onDraft: (_) {},
+      onAddProject: () {}, onRefresh: () {}, onProjectFilter: (_) {},
       onSelect: select ?? (_, _) {}, onArchive: archive ?? (_, _) {}))));
 
-  testWidgets('one project tree includes saved interrupted and older finished threads without starting work', (tester) async {
-    final session = DesktopSession(_Client(), _Database());
-    addTearDown(session.close);
+  testWidgets('working threads lead the list while empty drafts and archives stay out', (tester) async {
+    late DesktopSession session;
+    await tester.runAsync(() async {
+      final root = await Directory.systemTemp.createTemp('sidebar-drafts-');
+      addTearDown(() => root.delete(recursive: true));
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      addTearDown(() => tester.runAsync(session.close));
+    });
     final interrupted = DesktopTask('interrupted', 'Saved work interrupted by a crash')..loaded = true;
     interrupted.turns['turn'] = {'id': 'turn', 'status': 'inProgress'};
     final completed = DesktopTask('completed', 'An older finished session');
-    session.projects.add(Project('project', '/project', '/project', [interrupted, completed]));
+    final working = DesktopTask('working', 'Currently running')..running = true;
+    final archived = DesktopTask('archived', 'Archived work')..archived = true;
+    session.projects.add(Project('project', '/project', '/project', [interrupted, completed, working, archived]));
+    session.sessionDrafts.addAll([SessionDraft('empty', 'project'), SessionDraft('saved', 'project')]);
+    session.drafts['saved'] = 'An unsent idea';
     DesktopTask? opened;
     await tester.pumpWidget(sidebar(session, select: (_, task) => opened = task));
     expect(find.byKey(const ValueKey('thread:interrupted')), findsOneWidget);
     expect(find.byKey(const ValueKey('thread:completed')), findsOneWidget);
     expect(find.byTooltip('Interrupted'), findsOneWidget);
-    expect(find.byTooltip('Working'), findsNothing);
+    expect(find.byTooltip('Working'), findsOneWidget);
+    expect(tester.getTopLeft(find.byKey(const ValueKey('thread:working'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const ValueKey('thread:interrupted'))).dy));
+    expect(find.byKey(const ValueKey('draft:empty')), findsNothing);
+    expect(find.text('An unsent idea'), findsOneWidget);
+    expect(find.byKey(const ValueKey('thread:archived')), findsNothing);
+    expect(find.text('Settled'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('thread:interrupted')));
     expect(opened, same(interrupted)); expect(interrupted.running, false);
     expect(tester.takeException(), isNull);
@@ -56,6 +72,7 @@ void main() {
     await tester.tap(find.byTooltip('Archive session')); await tester.pumpAndSettle();
     expect(actions, [(failed, true), (failed, true)]); expect(opened, false);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('parent questions override working status until the native resolution arrives', (tester) async {
@@ -70,12 +87,14 @@ void main() {
     expect(find.byTooltip('Input'), findsOneWidget); expect(find.byTooltip('Working'), findsNothing);
     event('item/started', {'turnId': 'turn', 'item': {'id': 'reply', 'type': 'agentMessage', 'text': ''}}); await tester.pump();
     expect(find.byTooltip('Input'), findsOneWidget);
-    event('happen/question/replied', {'requestID': 'request'}); await tester.pump();
+    event('happen/question/replied', {'requestID': 'request'});
+    await tester.pump();
+    await tester.pump();
     expect(find.byTooltip('Input'), findsNothing); expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('pinning moves threads above projects and persists without opening their history', (tester) async {
+  testWidgets('pinning moves a thread before other idle threads without opening its history', (tester) async {
     late DesktopSession session;
     await tester.runAsync(() async {
       final root = await Directory.systemTemp.createTemp('workspace-pinning-');
@@ -96,7 +115,6 @@ void main() {
       expect(jsonDecode(saved['settings']['sidebar_pinned_tasks'] as String), [older.id]);
     });
     await tester.pumpAndSettle();
-    expect(find.text('Pinned'), findsOneWidget);
     expect(tester.getTopLeft(row).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('thread:newer'))).dy));
     expect(opened, false); expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());

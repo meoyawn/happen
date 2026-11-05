@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'session.dart';
 import 'appearance.dart';
+import 'provider_icon.dart';
 
 String _modelLabel(String model) {
   if (!model.startsWith('gpt-')) return model;
@@ -98,7 +99,6 @@ class ComposerModelPicker extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle)),
-        const SizedBox(width: 6), const Icon(Icons.keyboard_arrow_down_rounded, size: 12, color: opencodeFaint),
       ])));
     return LayoutBuilder(builder: (context, constraints) => constraints.maxWidth < 140 ? combined : Row(
       mainAxisSize: MainAxisSize.min, children: [
@@ -109,7 +109,11 @@ class ComposerModelPicker extends StatelessWidget {
               model['provider'] == provider && model['id'] == (target?.model ?? session.modelId), canChangeModel),
             if (selected != null) const PopupMenuItem<String>(enabled: false,
               child: Text('Start a new task to change models.')),
-          ], child: control(_modelLabel(model)))),
+          ], child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Padding(padding: const EdgeInsets.only(left: 6),
+              child: providerIcon(provider, size: 15, color: const Color(0xff797986))),
+            Flexible(child: control(_modelLabel(model))),
+          ]))),
         if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(key: effortMenuKey,
           tooltip: 'Reasoning effort', enabled: enabled,
           onSelected: chooseEffort,

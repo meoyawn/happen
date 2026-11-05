@@ -17,11 +17,12 @@ class OpenAIProvider implements ModelProvider {
 
   Future<Json> generateImage(ModelRequest request, Json arguments, {
     required String outputRoot, required String callId, required String turnId, required CancellationToken cancellation,
+    ToolItemEvent? onItem,
   }) {
     _validate(request);
     if (request.settings['image_generation'] != true) throw const ModelFailure('image_generation_disabled', 'Image generation is not enabled for this provider');
     return image_generation.generateImage(request, arguments, send: client.image, outputRoot: outputRoot,
-      callId: callId, turnId: turnId, cancellation: cancellation);
+      callId: callId, turnId: turnId, cancellation: cancellation, onItem: onItem);
   }
 
   @override
@@ -236,6 +237,7 @@ class OpenAIProvider implements ModelProvider {
         gptItemFromNative(item, reasoningTimes: reply.reasoningTimes)).toList(),
       _usage(reply.usage),
       endTurn: reply.endTurn,
+      observedUsage: reply.observedUsage,
     );
   }
 
@@ -283,7 +285,7 @@ class OpenAIProvider implements ModelProvider {
     return CompactionResult([
       ...retained.reversed,
       gptItemFromNative(checkpoints.single),
-    ], _usage(reply.usage));
+    ], _usage(reply.usage), observedUsage: reply.observedUsage);
   }
 
   static ModelUsage _usage(Json usage) => ModelUsage(

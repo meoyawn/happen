@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'appearance.dart';
 import 'conversation_indicator.dart';
 import 'project_avatar.dart';
+import 'provider_icon.dart';
 import 'session.dart';
 import 'sidebar_hover.dart';
 import 'window_chrome.dart';
@@ -71,9 +72,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   @override
   void initState() {
     super.initState();
-    _clock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (session.projects.any((project) => project.tasks.any((task) => task.running))) setState(() {});
-    });
+    _clock = Timer.periodic(const Duration(minutes: 1), (_) => setState(() {}));
   }
 
   @override
@@ -133,18 +132,23 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Color(0xff9696a0))))
                 else const Spacer(),
                 if (task.provider != null) Tooltip(message: '${task.provider}${task.model == null ? '' : ' · ${task.model}'}',
-                  child: const Icon(Icons.auto_awesome_outlined, size: 13, color: Color(0xffb1b1ba))),
+                  child: providerIcon(task.provider, size: 13, color: const Color(0xffb1b1ba))),
               ])),
             ]))));
     }));
 
   Widget _draft(SessionDraft draft) {
     final project = session.projects.where((project) => project.checkoutKey == draft.checkoutKey).firstOrNull;
-    final text = (session.drafts[draft.id] ?? '').trim().split('\n').first;
+    var text = session.drafts[draft.id] ?? '';
+    for (final file in (session.fileDrafts[draft.id] ?? []).reversed) {
+      if (file.offset < 0 || file.offset >= text.length || text[file.offset] != '\uFFFC') continue;
+      text = text.replaceRange(file.offset, file.offset + 1, '${file.skillName == null ? '@' : r'$'}${file.label}');
+    }
+    text = text.trim().split('\n').first;
     final count = (session.fileDrafts[draft.id]?.length ?? 0) + (session.attachmentDrafts[draft.id]?.length ?? 0);
     final selected = !widget.home && session.task == null && session.currentDraft == draft;
-    return Material(color: selected ? const Color(0xffeeeef0) : Colors.transparent,
-      borderRadius: BorderRadius.circular(8), child: InkWell(key: ValueKey('draft:${draft.id}'),
+    return Material(key: ValueKey('draft:${draft.id}'), color: selected ? const Color(0xffeeeef0) : Colors.transparent,
+      borderRadius: BorderRadius.circular(8), child: InkWell(
         borderRadius: BorderRadius.circular(8), onTap: () => widget.onDraft(draft),
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -285,6 +289,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
 
 Widget _threadMenu(BuildContext context, DesktopSession session, DesktopTask task,
     void Function(DesktopTask, bool) onArchive, {required Widget child}) => GestureDetector(
+  key: ValueKey('thread-menu:${task.id}'),
   onSecondaryTapDown: (details) async {
     final pinned = session.pinnedTaskIds.contains(task.id), overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
     final action = await showMenu<String>(context: context,

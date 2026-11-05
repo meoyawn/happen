@@ -3,14 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
-import 'package:ai/ai.dart' show HttpConnections, httpRequest;
+import 'package:ai/ai.dart' show httpRequest;
 
 const _clientId = 'opencode-cli';
 
 /// Owns one Console login and its coalesced refresh operation.
 /// Browser authorization is completed at the URL delivered to [login].
 class OpenCodeAuthManager {
-  OpenCodeAuthManager(this.directory, {HttpClient? http, Uri? endpoint, this.connections})
+  OpenCodeAuthManager(this.directory, {HttpClient? http, Uri? endpoint})
     : _http =
           http ??
           (HttpClient()..connectionTimeout = const Duration(seconds: 30)),
@@ -20,7 +20,6 @@ class OpenCodeAuthManager {
   final String directory;
   final Uri endpoint;
   final HttpClient _http;
-  final HttpConnections? connections;
   final bool _ownsHttp;
   final _lifetime = CancellationToken();
   Future<Json>? _refreshing;
@@ -282,7 +281,7 @@ class OpenCodeAuthManager {
     try {
       final response = await httpRequest(_http, method,
         endpoint.replace(path: '${endpoint.path}$path'),
-        connections: connections, cancellation: cancellation,
+        cancellation: cancellation,
         headersTimeout: const Duration(seconds: 30), headers: {
           HttpHeaders.acceptHeader: 'application/json',
           HttpHeaders.userAgentHeader: 'happen/0.1.0 (Dart; OpenCode Console device login)',

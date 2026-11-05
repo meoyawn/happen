@@ -184,7 +184,7 @@ wait
       if (lab == 'openai') {
         for (final steer in [true, false]) {
           final started = client.events.stream.firstWhere((event) => event['params']?['threadId'] == id &&
-            event['method'] == 'item/started' && event['params']['item']['tool'] == 'sleep');
+            event['method'] == 'item/started' && event['params']['item']['type'] == 'sleep');
           final done = terminal();
           await send('sleep');
           await started.timeout(const Duration(seconds: 3));

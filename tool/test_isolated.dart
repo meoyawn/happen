@@ -10,6 +10,17 @@ Future<void> main(List<String> arguments) async {
   if (arguments.isEmpty) throw ArgumentError('Provide the Dart command to run in isolation');
   final source = Directory.current.absolute, cancellation = CancellationToken();
   final workspace = await Directory.systemTemp.createTemp('happen-check-');
+  final originalHome = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  final home = await Directory('${workspace.path}/home').create();
+  final environment = <String, String>{
+    for (final name in ['PATH', 'PATHEXT', 'SHELL', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'COMSPEC', 'TMPDIR', 'TMP', 'TEMP',
+      'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TZ', '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'DEVELOPER_DIR'])
+      if (Platform.environment[name] case final String value) name: value,
+    'HOME': home.path, 'USERPROFILE': home.path,
+    'XDG_CONFIG_HOME': '${home.path}/.config', 'XDG_CACHE_HOME': '${home.path}/.cache', 'XDG_DATA_HOME': '${home.path}/.local/share',
+    if (Platform.environment['PUB_CACHE'] ?? (originalHome == null ? null : '$originalHome/.pub-cache') case final String cache) 'PUB_CACHE': cache,
+    'HAPPEN_TEST_REPORT_ROOT': source.path,
+  };
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((s) => s.watch().listen((_) => cancellation.cancel())).toList();
   Process? child;
   final hook = CancellationHook(cancellation, () => child?.kill(ProcessSignal.sigterm));
@@ -17,7 +28,7 @@ Future<void> main(List<String> arguments) async {
     cancellation.throwIfCancelled();
     child = await Process.start(command.first, command.skip(1).toList(), workingDirectory: directory ?? workspace.path,
       mode: ProcessStartMode.inheritStdio,
-      environment: {'HAPPEN_TEST_REPORT_ROOT': source.path});
+      environment: environment, includeParentEnvironment: false);
     try { return await child!.exitCode.asCancellable(cancellation); }
     finally {
       final owned = child!; owned.kill(ProcessSignal.sigterm);
@@ -36,7 +47,7 @@ Future<void> main(List<String> arguments) async {
       if (type == FileSystemEntityType.notFound) continue; // A tracked deletion in the dirty checkout.
       await Directory(to).parent.create(recursive: true);
       if (type == FileSystemEntityType.directory) {
-        // Gitlinks: the Flutter SDK, HTTP fork and vendored QuickJS sources.
+        // Gitlinks: shared SDK and vendored native source inputs.
         await Link(to).create(from);
       } else if (type == FileSystemEntityType.link) {
         await Link(to).create(await Link(from).target());
@@ -44,7 +55,8 @@ Future<void> main(List<String> arguments) async {
     }
     // A few tools consume the workspace's Git root. An independent index/root,
     // not a link to the human's .git directory, keeps that discovery isolated.
-    final git = await Process.run('git', ['init', '--quiet', workspace.path]);
+    final git = await Process.run('git', ['init', '--quiet', workspace.path],
+      environment: environment, includeParentEnvironment: false);
     if (git.exitCode != 0) throw StateError('Could not initialize the isolated workspace');
     stderr.writeln('Isolated check workspace: ${workspace.path}');
     final resolved = await run([Platform.resolvedExecutable, 'pub', 'get', '--offline']);

@@ -5,18 +5,17 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:protocol/protocol.dart';
-import 'package:ai/ai.dart' show HttpConnections, HttpReply, httpRequest;
+import 'package:ai/ai.dart' show HttpReply, httpRequest;
 
 typedef TranscriptionCredentials = Future<Json> Function({bool refresh, required CancellationToken cancellation});
 
 /// Harness's non-streaming composer protocol, sent directly by the desktop.
 /// Audio and response bodies never enter task history or diagnostics.
 class TranscriptionClient {
-  TranscriptionClient({required this.http, required this.credentials, Uri? endpoint, this.connections})
+  TranscriptionClient({required this.http, required this.credentials, Uri? endpoint})
     : endpoint = endpoint ?? Uri.parse('https://chatgpt.com/backend-api/transcribe');
 
   final HttpClient http;
-  final HttpConnections? connections;
   final TranscriptionCredentials credentials;
   final Uri endpoint;
 
@@ -71,7 +70,7 @@ class TranscriptionClient {
     final hook = CancellationHook(cancellation, () { unawaited(input?.cancel()); });
     try {
       final response = await httpRequest(http, 'POST', endpoint,
-        connections: connections, cancellation: cancellation,
+        cancellation: cancellation,
         headers: {
           'Content-Type': 'multipart/form-data; boundary=$boundary',
           'Authorization': 'Bearer ${requiredString(auth, 'access_token')}',
