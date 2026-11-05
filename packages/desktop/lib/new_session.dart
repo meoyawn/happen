@@ -5,114 +5,118 @@ import 'appearance.dart';
 import 'session.dart';
 import 'project_avatar.dart';
 
-// OpenCode's new-session location tray, with an anchored project menu.
+// T3 Code's draft hero, project selector, and checkout toolbar.
 class NewSessionScreen extends StatelessWidget {
   const NewSessionScreen({super.key, required this.session, required this.composer,
     required this.picking, required this.onSelect, required this.onAddProject,
-    required this.onRemoveProject, required this.onReturnFocus});
+    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder});
   final DesktopSession session;
   final Widget composer;
   final bool picking;
   final ValueChanged<Project> onSelect, onRemoveProject;
   final VoidCallback onAddProject, onReturnFocus;
+  final VoidCallback? onOpenFolder;
 
   @override
   Widget build(BuildContext context) {
     final project = session.project;
     final hasProjects = session.projects.any((project) => !project.removing);
-    final buttonStyle = TextButton.styleFrom(foregroundColor: opencodeMuted,
-      textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(fontSize: 13,
-        height: 20 / 13, letterSpacing: -.04, fontWeight: FontWeight.w400),
-      padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(0, 32),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)));
-    return LayoutBuilder(builder: (context, bounds) => SingleChildScrollView(
-      child: Padding(padding: EdgeInsets.fromLTRB(12, (bounds.maxHeight * .22).clamp(24.0, 200.0), 12, 32),
-        child: Align(alignment: Alignment.topCenter,
-          child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: opencodeSessionWidth),
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              const Padding(padding: EdgeInsets.symmetric(horizontal: 12), child: Text('Happen',
-                style: TextStyle(fontSize: 40, height: 1.2, fontWeight: FontWeight.w700,
-                  letterSpacing: -2, color: Color(0xffc8c8c8)))),
-              const SizedBox(height: 24),
-              composer,
-              ListenableBuilder(listenable: session, builder: (context, _) => Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Align(alignment: Alignment.centerLeft, child: Tooltip(
-                  message: 'Record this session’s timings. Export the trace from Context.',
-                  child: InkWell(
-                    onTap: session.submitting ? null : () => session.chooseTracing(!session.currentDraft.tracing),
-                    borderRadius: BorderRadius.circular(6),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Checkbox(value: session.currentDraft.tracing,
-                        onChanged: session.submitting ? null : (value) => session.chooseTracing(value!),
-                        visualDensity: VisualDensity.compact,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                      const Padding(padding: EdgeInsets.only(right: 8), child: Text('Trace this session',
-                        style: TextStyle(fontSize: 12, color: opencodeMuted))),
-                    ])))))),
-              Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: LayoutBuilder(builder: (context, tray) => Row(children: [
-                  if (hasProjects) ...[
-                    ConstrainedBox(constraints: BoxConstraints(maxWidth: tray.maxWidth * .4),
-                      child: MenuAnchor(
-                        onClose: onReturnFocus,
-                        style: MenuStyle(padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-                          backgroundColor: const WidgetStatePropertyAll(Colors.white),
-                          surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
-                          elevation: const WidgetStatePropertyAll(8),
-                          shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(8),
-                            side: const BorderSide(color: opencodeBorder)))),
-                        menuChildren: [Builder(builder: (context) => _ProjectPicker(
-                          projects: session.projects.where((project) => !project.removing).toList(), selected: project,
-                          generated: session.projectAvatarStyle == 'generated',
-                          onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
-                          onAdd: () { MenuController.maybeOf(context)?.close(); onAddProject(); }))],
-                        builder: (context, controller, _) => Tooltip(message: 'Select project', child: TextButton(
-                          onPressed: picking || session.submitting ? null : () => controller.isOpen ? controller.close() : controller.open(),
-                          style: buttonStyle,
-                          child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            if (project != null) ProjectAvatar(project: project, generated: session.projectAvatarStyle == 'generated')
-                            else const Icon(Icons.folder_open_outlined, size: 16),
-                            const SizedBox(width: 6),
-                            Flexible(child: Text(project?.name ?? 'Select project', maxLines: 1, overflow: TextOverflow.ellipsis)),
-                            const SizedBox(width: 6), const Icon(Icons.keyboard_arrow_down_rounded, size: 14),
-                          ]))))),
-                    if (project?.branch != null && tray.maxWidth >= 520) ...[
-                      const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: Text('/', style: TextStyle(color: opencodeFaint))),
-                      ConstrainedBox(constraints: const BoxConstraints(maxWidth: 140), child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.fork_right, size: 14, color: opencodeFaint), const SizedBox(width: 4),
-                        Flexible(child: Text(project!.branch!, maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 12, color: opencodeFaint))),
-                      ])),
+    return LayoutBuilder(builder: (context, bounds) {
+      final narrow = bounds.maxWidth < 600;
+      final heading = TextStyle(fontSize: narrow ? 24 : 30, height: 1.25,
+        fontWeight: FontWeight.w400, letterSpacing: -.9, color: opencodeInk);
+      final projectSelector = MenuAnchor(
+        onClose: onReturnFocus,
+        style: MenuStyle(padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+          backgroundColor: const WidgetStatePropertyAll(Colors.white),
+          surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+          elevation: const WidgetStatePropertyAll(8),
+          shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: opencodeBorder)))),
+        menuChildren: [Builder(builder: (context) => _ProjectPicker(
+          projects: session.projects.where((project) => !project.removing).toList(), selected: project,
+          generated: session.projectAvatarStyle == 'generated',
+          onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
+          onAdd: () { MenuController.maybeOf(context)?.close(); onAddProject(); }))],
+        builder: (context, controller, _) => Tooltip(message: 'Select project', child: TextButton(
+          onPressed: picking || session.submitting ? null : hasProjects
+            ? () => controller.isOpen ? controller.close() : controller.open() : onAddProject,
+          style: TextButton.styleFrom(foregroundColor: opencodeInk, padding: const EdgeInsets.symmetric(horizontal: 2),
+            minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5))),
+          child: Text(project == null ? picking ? 'Opening project…' : hasProjects ? 'Choose a project' : 'Add a project'
+            : '${project.name}${narrow ? '' : '?'}', maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: heading.copyWith(fontWeight: FontWeight.w500, fontSize: narrow ? 20 : 30)))));
+      return ColoredBox(color: const Color(0xfffdfdfd), child: Stack(children: [
+        SingleChildScrollView(child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+          child: ConstrainedBox(constraints: BoxConstraints(minHeight: (bounds.maxHeight - 80).clamp(0.0, double.infinity)),
+            child: Align(alignment: const Alignment(0, -.12), child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: newThreadComposerWidth),
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, spacing: 7, runSpacing: 6, children: [
+                  Text(project == null || narrow ? 'What should we build?' : 'What should we build in', style: heading),
+                  ConstrainedBox(constraints: BoxConstraints(maxWidth: (bounds.maxWidth - 48).clamp(0.0, newThreadComposerWidth)),
+                    child: projectSelector),
+                ]),
+                const SizedBox(height: 48),
+                composer,
+                Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [
+                  PopupMenuButton<String>(tooltip: 'Checkout options', enabled: project != null,
+                    onSelected: (value) {
+                      if (value == 'trace') session.chooseTracing(!session.currentDraft.tracing);
+                      onReturnFocus();
+                    },
+                    itemBuilder: (_) => [
+                      if (project != null) PopupMenuItem<String>(enabled: false, child: Text(project.path)),
+                      CheckedPopupMenuItem(value: 'trace', checked: session.currentDraft.tracing,
+                        enabled: !session.submitting, child: const Text('Trace this session')),
                     ],
-                    if (project != null && tray.maxWidth >= 640)
-                      Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Tooltip(message: project.path, child: Text(project.path,
-                          maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.right,
-                          style: const TextStyle(fontSize: 12, color: opencodeFaint)))))
-                    else const Spacer(),
-                  ],
-                  if (!hasProjects) TextButton.icon(onPressed: picking || session.submitting ? null : onAddProject, style: buttonStyle,
-                    icon: picking
-                      ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 1.5))
-                      : const Icon(Icons.create_new_folder_outlined, size: 16),
-                    label: Text(picking ? 'Opening project…' : 'Add project')),
-                ]))),
-              if (project?.removing == true)
-                const Padding(padding: EdgeInsets.all(12), child: Text('Removing project…', style: TextStyle(fontSize: 13, color: opencodeFaint)))
-              else if (project?.available == false)
-                Padding(padding: const EdgeInsets.all(12), child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 8, children: [
-                  const Text('Project folder is unavailable. Choose another project.', style: TextStyle(fontSize: 13, color: opencodeFaint)),
-                  TextButton(onPressed: () => onRemoveProject(project!), child: const Text('Remove project')),
+                    child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.folder_outlined, size: 13, color: opencodeMuted), SizedBox(width: 6),
+                      Text('Current checkout', style: TextStyle(fontSize: 12, color: opencodeMuted)),
+                    ]))),
+                  const Spacer(),
+                  if (project?.branch case final branch?) Flexible(child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.fork_right_rounded, size: 14, color: opencodeMuted),
+                    const SizedBox(width: 6),
+                    Flexible(child: Text(branch, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+                  ])),
                 ])),
-              if (session.error case final error?)
-                Padding(padding: const EdgeInsets.all(12), child: SelectableText(error,
-                  style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
-            ]),
-          ),
-        ),
-      ),
-    ));
+                if (project?.removing == true)
+                  const Padding(padding: EdgeInsets.all(12), child: Text('Removing project…', style: TextStyle(fontSize: 13, color: opencodeFaint)))
+                else if (project?.available == false)
+                  Padding(padding: const EdgeInsets.all(12), child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 8, children: [
+                    const Text('Project folder is unavailable. Choose another project.', style: TextStyle(fontSize: 13, color: opencodeFaint)),
+                    TextButton(onPressed: () => onRemoveProject(project!), child: const Text('Remove project')),
+                  ])),
+                if (session.error case final error?)
+                  Padding(padding: const EdgeInsets.all(12), child: SelectableText(error,
+                    style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
+              ])))))),
+        if (project != null && bounds.maxWidth >= 1100 && bounds.maxHeight >= 700)
+          Positioned(top: 12, right: 12, child: Container(width: 288, padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xffe8e8eb))),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              ListTile(dense: true, minTileHeight: 34, contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+                leading: const Icon(Icons.computer_outlined, size: 16),
+                title: Text(session.client.sharedFilesystem ? 'Local machine' : 'Remote workspace', style: const TextStyle(fontSize: 13))),
+              if (onOpenFolder != null) ListTile(dense: true, minTileHeight: 34,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 18), onTap: onOpenFolder,
+                leading: const Icon(Icons.folder_open_outlined, size: 16),
+                title: Text(Theme.of(context).platform == TargetPlatform.macOS ? 'Open in Finder' : 'Open folder',
+                  style: const TextStyle(fontSize: 13))),
+              if (project.branch case final branch?) ...[
+                const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(height: 1)),
+                ListTile(dense: true, minTileHeight: 34, contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+                  leading: const Icon(Icons.fork_right_rounded, size: 16),
+                  title: Text(branch, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+              ],
+            ]))),
+      ]));
+    });
   }
 }
 

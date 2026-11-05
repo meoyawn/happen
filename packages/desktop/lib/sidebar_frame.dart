@@ -118,13 +118,13 @@ class _DesktopSidebarFrameState extends State<DesktopSidebarFrame> with TickerPr
           // Keep both halves of the handle in the parent's hit-test bounds.
           Positioned(left: widget.width * _dock.value + widget.resizerOffset - 4, top: 0, bottom: 0,
             child: Offstage(offstage: !widget.open, child: widget.resizer)),
-          Positioned(top: 18, left: widget.collapsedInset + (widget.width - 36 - widget.collapsedInset) * _dock.value,
+          Positioned(top: 14, left: widget.collapsedInset,
             child: MouseRegion(
               onEnter: (_) { _overToggle = true; _peekAfter(500); },
               onExit: (_) { _overToggle = false; _dwell?.cancel(); },
               child: Semantics(expanded: widget.open, child: IconButton(
                 key: const ValueKey('sidebar-toggle'), focusNode: _toggleFocus,
-                tooltip: 'Toggle sidebar (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⇧B' : 'Ctrl+Shift+B'})',
+                tooltip: 'Toggle sidebar (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘B' : 'Ctrl+B'})',
                 onPressed: widget.onToggle,
                 style: IconButton.styleFrom(minimumSize: const Size(28, 28), maximumSize: const Size(28, 28),
                   padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),

@@ -175,7 +175,7 @@ class DesktopSession extends ChangeNotifier {
   bool viewingConversation = true;
   final openTabIds = <String>[];
   final viewedTasks = <String, int>{};
-  double sidebarWidth = 248;
+  double sidebarWidth = 336;
   final collapsedSidebarSections = <String>{};
   final pinnedTaskIds = <String>[];
   final pinnedProjectKeys = <String>[];
@@ -679,7 +679,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> chooseSidebarSection(String section, bool collapsed) async {
-    if (section != 'pinned' && !projects.any((project) => section == 'project:${project.checkoutKey}')) {
+    if (section != 'working') {
       throw ArgumentError('Invalid sidebar section');
     }
     if (collapsed) {
@@ -1002,7 +1002,7 @@ class DesktopSession extends ChangeNotifier {
       // Read markers are optional presentation state.
     }
     final savedSidebarWidth = double.tryParse(settings['sidebar_width'] as String? ?? '');
-    sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 248;
+    sidebarWidth = savedSidebarWidth != null && savedSidebarWidth.isFinite && savedSidebarWidth > 0 ? savedSidebarWidth : 336;
     List<String> savedIds(String key) {
       final value = settings[key];
       if (value is! String) return const [];
@@ -1013,7 +1013,7 @@ class DesktopSession extends ChangeNotifier {
         return const [];
       }
     }
-    collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed'));
+    collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed').where((section) => section == 'working'));
     pinnedTaskIds..clear()..addAll(savedIds('sidebar_pinned_tasks'));
     pinnedProjectKeys..clear()..addAll(savedIds('sidebar_pinned_projects'));
     for (final raw in saved['projects'] as List) {

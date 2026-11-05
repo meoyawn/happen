@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 // OpenCode: ui/src/styles/tailwind/index.css and theme/themes/oc-2.json.
 const opencodeSessionWidth = 744.0;
+const newThreadComposerWidth = 800.0;
 const opencodeInk = Color(0xff161616);
 const opencodeMuted = Color(0xff5c5c5c);
 const opencodeFaint = Color(0xff808080);
