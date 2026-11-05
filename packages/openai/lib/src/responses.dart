@@ -11,6 +11,7 @@ import 'web_pages.dart';
 import 'retry.dart';
 import 'trace.dart';
 import 'request.dart';
+import 'catalog.dart';
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -157,15 +158,38 @@ class ResponsesClient {
     String reasoningSummary = 'auto',
     int? maxOutputTokens,
     void Function(Json event)? onEvent,
+    Future<void> Function(Json item)? onRecovery,
   }) async {
     var activeTransport = transport == 'websocket' && _httpFallback ? 'http' : transport;
     var body = responsesRequest(model: model, instructions: instructions, input: input,
       tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
       transport: activeTransport, verbosity: verbosity, reasoningSummary: reasoningSummary,
       maxOutputTokens: maxOutputTokens);
+    final sampling = !input.any((item) => item['type'] == 'compaction_trigger');
+    final delivered = <Json>[];
+    final retained = <Object>{for (final item in body['input'] as List) if (item['id'] != null) item['id'] as Object};
+    void receive(Json event) {
+      if (sampling && event['type'] == 'model.output' && event['item']['type'] == 'message') {
+        delivered.add(jsonObject(event['item']));
+      }
+      onEvent?.call(event);
+    }
     return traceAsync('openai.responses', () => retryResponseStream(
-      () => _respond(body, sessionId, activeTransport, cancellation, onEvent), cancellation,
-      unboundedConnections: !input.any((item) => item['type'] == 'compaction_trigger'),
+      () { delivered.clear(); return _respond(body, sessionId, activeTransport, cancellation, receive); }, cancellation,
+      unboundedConnections: sampling,
+      onContentFilter: !sampling ? null : () async {
+        final item = <String, dynamic>{'id': 'msg_${newUuidV7()}', 'type': 'message', 'role': 'developer',
+          'content': [{'type': 'input_text', 'text': '<content_filter_guidance>\n${GptModel(model).contentFilterGuidance}\n</content_filter_guidance>'}]};
+        // Only delivered messages are retained. Failed streams cannot admit or
+        // execute deferred tool calls. The host durably admits this context on
+        // the same ordered event channel before another request can be sent.
+        if (onRecovery != null) await onRecovery(item);
+        else onEvent?.call({'type': 'model.recovery', 'item': item});
+        cancellation.throwIfCancelled();
+        body = {...body, 'input': [...body['input'] as List,
+          for (final output in delivered) if (retained.add(output['id'] as Object? ?? output)) output,
+          item]};
+      },
       fallbackTransport: () {
         if (activeTransport != 'websocket') return false;
         activeTransport = 'http';
@@ -451,14 +475,14 @@ class ResponsesClient {
             final value = details is Map ? details['reason'] : null;
             final reason = value is String ? value : 'unknown';
             if (reason == 'interrupted') return completed(response, interrupted: true);
-            if (reason != 'content_filter') {
-              final usage = _reportedUsage(response['usage']);
-              if (usage != null) {
-                onEvent?.call({'type': 'model.incomplete', 'response_id': response['id'], 'usage': usage});
-              }
+            if (reason == 'content_filter') {
+              throw const ResponseFailure('content_filter', 'Response blocked by content filter', retryable: true);
             }
-            throw ModelFailure('incomplete_response', '${reason == 'content_filter' ? 'stream disconnected before completion: ' : ''}'
-              'Incomplete response returned, reason: $reason');
+            final usage = _reportedUsage(response['usage']);
+            if (usage != null) {
+              onEvent?.call({'type': 'model.incomplete', 'response_id': response['id'], 'usage': usage});
+            }
+            throw ModelFailure('incomplete_response', 'Incomplete response returned, reason: $reason');
           case 'response.completed':
           case 'response.done':
             final response = jsonObject(event['response']);

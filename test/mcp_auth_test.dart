@@ -53,9 +53,11 @@ void main() {
       }, cancellation: token));
       expect(result['structuredContent'], {'workouts': 3});
       fixture.access = 'opaque-revoked';
-      await expectLater(callIsolate(server.network.port, 'mcp.call', {
+      final rejected = jsonObject(await callIsolate(server.network.port, 'mcp.call', {
         'name': 'mcp__strength__workout_history', 'arguments': <String, Object?>{},
-      }, cancellation: token), throwsA(isA<RemoteFailure>()));
+      }, cancellation: token));
+      expect(rejected, {'isError': true, 'content': [{'type': 'text', 'text': 'Authentication required'}],
+        '_meta': {'mcp/www_authenticate': ['Basic realm="ignored", Bearer resource_metadata="${fixture.issuer}/resource", scope="training"']}});
       final deadline = DateTime.now().add(const Duration(seconds: 10));
       while ((await client.mcpInventory(cancellation: token))['servers'][0]['tool_count'] != 1) {
         if (DateTime.now().isAfter(deadline)) fail('A rejected access token did not refresh');
@@ -249,6 +251,11 @@ class _OAuthFixture {
   }
 
   Future<void> _resource(HttpRequest request) async {
+    if (request.method == 'GET') {
+      request.response.statusCode = 401;
+      request.response.headers.set('WWW-Authenticate', 'Bearer resource_metadata="$issuer/resource", scope="training"');
+      await request.response.close(); return;
+    }
     final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
     if (body['method'] == 'tools/call') toolCalls++;
     if (request.headers.value('authorization') != 'Bearer $access') {

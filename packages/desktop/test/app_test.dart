@@ -6,6 +6,8 @@ import 'package:desktop/composer_editor.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
+import 'package:desktop/terminal.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -103,21 +105,33 @@ void main() {
     expect(find.byKey(const ValueKey('project-search')), findsNothing);
     expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, 'Keep editing across projects');
     expect(session.drafts[draftKey], 'Keep editing across projects');
-    session.newSession();
+    await _shortcut(tester, LogicalKeyboardKey.keyN);
     final secondDraftKey = session.draftKey;
-    await tester.pumpAndSettle();
+    expect(secondDraftKey, isNot(draftKey));
     expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, isEmpty);
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
-    await tester.pumpAndSettle();
+    for (final (key, shift) in [
+      (LogicalKeyboardKey.keyN, false),
+      (LogicalKeyboardKey.keyN, true),
+      (LogicalKeyboardKey.keyO, true),
+    ]) {
+      await _shortcut(tester, key, shift: shift);
+      expect(session.draftKey, secondDraftKey);
+      expect(session.sessionDrafts, hasLength(2));
+    }
+    await _shortcut(tester, LogicalKeyboardKey.bracketLeft, shift: true);
     expect(session.draftKey, draftKey);
     expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, 'Keep editing across projects');
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
-    await tester.pumpAndSettle();
+    await _shortcut(tester, LogicalKeyboardKey.bracketRight, shift: true);
     expect(session.draftKey, secondDraftKey);
+    await _shortcut(tester, LogicalKeyboardKey.digit1);
+    expect(session.draftKey, draftKey);
+    await _shortcut(tester, LogicalKeyboardKey.digit2);
+    expect(session.draftKey, secondDraftKey);
+    await _shortcut(tester, LogicalKeyboardKey.keyB);
+    expect(session.sidebarOpen, isFalse);
+    await _shortcut(tester, LogicalKeyboardKey.keyB);
+    expect(session.sidebarOpen, isTrue);
+    await _shortcut(tester, LogicalKeyboardKey.keyB);
     tester.view.physicalSize = const Size(420, 600);
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Select project'));
@@ -132,6 +146,83 @@ void main() {
     await tester.pump();
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('T3 Code panel, picker and terminal shortcuts follow focus', (tester) async {
+    late Directory root;
+    late DesktopSession session;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-shortcuts-');
+      addTearDown(() => root.delete(recursive: true));
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      addTearDown(() => tester.runAsync(session.close));
+    });
+    final task = DesktopTask('task', 'Shortcut focus')
+      ..loaded = true..provider = 'openai'..model = 'example'
+      ..reasoning = 'low'..reasoningUpdates = true;
+    final project = Project('checkout', 'project', root.path, [task]);
+    session.projects.add(project);
+    session.project = project;
+    session.task = task;
+    session.providers = [
+      {'id': 'openai', 'name': 'ChatGPT', 'auth': 'chatgpt', 'status': 'signed_in', 'models': [
+        {'id': 'example', 'default_reasoning': 'low', 'reasoning_levels': ['low', 'high']},
+      ]},
+    ];
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    await tester.pumpAndSettle();
+
+    await _shortcut(tester, LogicalKeyboardKey.keyM, shift: true);
+    expect(find.text('Start a new task to change models.'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await _shortcut(tester, LogicalKeyboardKey.keyE, shift: true);
+    expect(find.text('High'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+
+    await _shortcut(tester, LogicalKeyboardKey.keyB, alt: true);
+    final panels = session.panelsFor(task);
+    expect(panels.opened, isTrue);
+    expect(panels.tabs, hasLength(1));
+    await _shortcut(tester, LogicalKeyboardKey.keyT);
+    expect(panels.tabs, hasLength(2));
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(panels.tabs, hasLength(1));
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(panels.opened, isFalse);
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(session.task, same(task), reason: 'Closing an empty panel must keep the thread open');
+
+    await _shortcut(tester, LogicalKeyboardKey.keyJ);
+    final group = session.terminals.groups[(project.checkoutKey, task.id)]!;
+    expect(group.visible, isTrue);
+    expect(group.sessions, hasLength(1));
+    expect(terminalHasFocus, isTrue);
+    await _shortcut(tester, LogicalKeyboardKey.keyN);
+    expect(group.sessions, hasLength(2));
+    expect(session.sessionDrafts, isEmpty, reason: 'New in a terminal creates a shell');
+    await _shortcut(tester, LogicalKeyboardKey.keyK);
+    expect(find.byType(Dialog), findsNothing, reason: 'The terminal keeps its command-palette chord');
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(group.sessions, hasLength(1));
+    await _shortcut(tester, LogicalKeyboardKey.keyJ);
+    expect(group.visible, isFalse);
+    await _shortcut(tester, LogicalKeyboardKey.keyJ);
+    expect(group.sessions, hasLength(1), reason: 'Showing the terminal reuses its shell');
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(group.visible, isFalse);
+    expect(session.task, same(task));
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows, TargetPlatform.linux}));
 
   testWidgets('tool details remain readable through updates and expansion', (tester) async {
     late Directory root;
@@ -299,14 +390,26 @@ void main() {
   });
 }
 
+Future<void> _shortcut(WidgetTester tester, LogicalKeyboardKey key, {bool shift = false, bool alt = false}) async {
+  final primary = defaultTargetPlatform == TargetPlatform.macOS
+    ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+  await tester.sendKeyDownEvent(primary);
+  if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+  if (alt) await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+  await tester.runAsync(() => tester.sendKeyEvent(key));
+  if (alt) await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+  if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+  await tester.sendKeyUpEvent(primary);
+  await tester.pumpAndSettle();
+}
+
 // This test owns rendering of incoming events. Real WebSocket ownership is
 // exercised by lifecycle_test; keeping I/O out of Flutter's fake clock also
 // lets conversation inventory and teardown complete independently.
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'session.active') return {'data': <String, Object?>{}};
-    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
+    if (method == 'thread/list') return {'data': <Object?>[], 'nextCursor': null};
     throw StateError('Unexpected request: $method');
   }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>

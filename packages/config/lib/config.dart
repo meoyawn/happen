@@ -18,6 +18,15 @@ typedef ConfigSnapshot = ({String? path, Map<String, dynamic> values});
 const _maxBytes = 1024 * 1024;
 final _configValidator = JsonSchema.fromJson(globalConfigSchema)
     .compile(options: SchemaOptions(assertFormats: true));
+final _localMcpValidator = () {
+  final properties = globalConfigSchema['properties']! as Map<String, Object?>;
+  final mcp = properties['mcp_servers']! as Map<String, Object?>;
+  final server = Map<String, Object?>.of(mcp['additionalProperties']! as Map<String, Object?>)
+    ..remove('oneOf')..remove('dependencies');
+  return JsonSchema.fromJson({...globalConfigSchema, 'properties': {
+    ...properties, 'mcp_servers': {...mcp, 'additionalProperties': server},
+  }}).compile(options: SchemaOptions(assertFormats: true));
+}();
 
 /// Configuration has its own home; moving it does not move credentials/history.
 String defaultConfigPath() {
@@ -32,7 +41,7 @@ String defaultConfigPath() {
 /// Parses one YAML document into immutable plain Dart data. `code_mode_only`
 /// accepts a boolean; OpenAI defaults to true when it is omitted. Never includes
 /// source text or rejected values in errors: env/headers can contain credentials.
-Map<String, dynamic> parseConfig(String source) {
+Map<String, dynamic> parseConfig(String source, {bool partialMcp = false}) {
   if (utf8.encode(source).length > _maxBytes) {
     throw const FormatException('Configuration exceeds 1 MiB');
   }
@@ -87,7 +96,7 @@ Map<String, dynamic> parseConfig(String source) {
                     line.trim().isEmpty || line.trimLeft().startsWith('#'),
               ));
   final value = empty ? const <String, dynamic>{} : plain(root);
-  final error = _configValidator.validate(value);
+  final error = (partialMcp ? _localMcpValidator : _configValidator).validate(value);
   if (error != null) {
     final location = error.instancePath.isEmpty ? '/' : error.instancePath;
     final reason = switch (error.keyword) {
@@ -149,6 +158,8 @@ Future<ConfigSnapshot> loadConfig(
 /// Content equality also detects same-size edits with preserved timestamps and
 /// edits made by a tool before the filesystem watcher's debounce has fired.
 class ConfigReader {
+  ConfigReader({this.partialMcp = false});
+  final bool partialMcp;
   String? _path, _source;
   Map<String, dynamic>? _values;
 
@@ -162,7 +173,7 @@ class ConfigReader {
         final source = await _read(File(candidate), cancellation);
         cancellation?.throwIfCancelled();
         if (_path == candidate && _source == source) return (path: candidate, values: _values!);
-        final values = parseConfig(source);
+        final values = parseConfig(source, partialMcp: partialMcp);
         _path = candidate; _source = source; _values = values;
         return (path: candidate, values: values);
       } on PathNotFoundException {
@@ -175,6 +186,37 @@ class ConfigReader {
     return (path: null, values: const <String, dynamic>{});
   }
 }
+
+/// Codex config/loader/mod.rs::discover_project_layers, adapted to Happen YAML.
+/// Repository layers run from the checkout root to cwd, with the closest last.
+Future<List<String>> mcpConfigPaths(String cwd, CancellationToken cancellation) async {
+  final current = Directory(p.normalize(p.absolute(cwd))), chain = <Directory>[];
+  var cursor = current, repository = false;
+  while (true) {
+    cancellation.throwIfCancelled(); chain.add(cursor);
+    final type = await FileSystemEntity.type('${cursor.path}/.git');
+    if (type == FileSystemEntityType.file || type == FileSystemEntityType.directory) { repository = true; break; }
+    if (cursor.parent.path == cursor.path) break;
+    cursor = cursor.parent;
+  }
+  cancellation.throwIfCancelled();
+  return [for (final dir in repository ? chain.reversed : [current]) p.join(dir.path, '.happen', 'config.yaml')];
+}
+
+/// Codex config/merge.rs: tables merge recursively; arrays/scalars replace.
+Map<String, dynamic> mergeMcpConfig(Map<String, dynamic> base, Map<String, dynamic> overlay) => {
+  ...base,
+  for (final entry in overlay.entries) entry.key: base[entry.key] is Map && entry.value is Map
+    ? mergeMcpConfig(Map<String, dynamic>.from(base[entry.key] as Map), Map<String, dynamic>.from(entry.value as Map)) : entry.value,
+};
+
+Map<String, dynamic> resolveMcpCwds(Map<String, dynamic> servers, {required String base, String? defaultCwd}) => {
+  for (final entry in servers.entries) entry.key: {
+    ...entry.value as Map,
+    if (entry.value['cwd'] != null || entry.value['command'] != null && defaultCwd != null)
+      'cwd': p.normalize(p.absolute(p.join(base, entry.value['cwd'] as String? ?? defaultCwd!))),
+  },
+};
 
 Future<String> _read(File file, CancellationToken? cancellation) async {
   cancellation?.throwIfCancelled();

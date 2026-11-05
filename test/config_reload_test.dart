@@ -88,7 +88,7 @@ void main() {
   $name:
     command: ${jsonEncode(command ?? Platform.resolvedExecutable)}
     args: ${jsonEncode([fixture])}
-    env: {MCP_DISCOVERY_DELAY_MS: "$delay"}
+    env: {MCP_DISCOVERY_DELAY_MS: "$delay", MCP_INSTANCE: "$name"}
     enabled: $enabled
     legacy_fallback: false
 ''';

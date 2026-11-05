@@ -5,11 +5,11 @@ import 'package:protocol/protocol.dart' show boundedLines;
 /// SSE framing shared by HTTP model and MCP transports. Bounds each event.
 Stream<Map<String, dynamic>> decodeSse(
   Stream<List<int>> bytes, {
-  int maxEventBytes = 8 * 1024 * 1024,
+  int? maxEventBytes = 8 * 1024 * 1024,
 }) async* {
   var data = <String>[];
   var size = 0;
-  await for (final line in boundedLines(bytes, maxBytes: maxEventBytes)) {
+  await for (final line in boundedLines(bytes, maxBytes: maxEventBytes ?? 8 * 1024 * 1024, byteLimit: () => maxEventBytes)) {
     if (line.isEmpty) {
       if (data.isNotEmpty) {
         final payload = data.join('\n');
@@ -25,8 +25,8 @@ Stream<Map<String, dynamic>> decodeSse(
     } else if (line.startsWith('data:')) {
       final value = line.substring(5).replaceFirst(RegExp(r'^ '), '');
       size += utf8.encode(value).length;
-      if (size > maxEventBytes) {
-        throw const FormatException('SSE event too large');
+      if (maxEventBytes != null && size > maxEventBytes) {
+        throw FormatException('SSE event too large ($maxEventBytes bytes)');
       }
       data.add(value);
     }

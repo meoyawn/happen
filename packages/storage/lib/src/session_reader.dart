@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,6 +11,32 @@ typedef HistorySegment = ({TracedDatabase db, String id, int end});
 Object? storedMetadata(TracedDatabase db, String key) {
   final row = db.select('SELECT value FROM metadata WHERE key IS ?', [key]).firstOrNull;
   return row == null ? null : jsonDecode(row['value'] as String);
+}
+
+/// Only called inside caller-cancellable read isolates. A fresh WAL connection
+/// can see SQLITE_BUSY_RECOVERY while another process opens/checkpoints it.
+/// Close the failed snapshot before yielding; do not block in a native busy
+/// handler or quietly misclassify a live session as a corrupt neighbor.
+Future<T> withReadOnlySnapshot<T>(String path, T Function(TracedDatabase) read) async {
+  final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
+  var reported = false;
+  try {
+    while (true) {
+      TracedDatabase? db;
+      try {
+        db = openTracedDatabase(path, mode: OpenMode.readOnly);
+        db.execute('PRAGMA query_only=ON'); db.execute('BEGIN');
+        return read(db);
+      } on SqliteException catch (error, stack) {
+        if (error.resultCode != 5) rethrow;
+        if (!reported) { traceInstant('sqlite.read.busy', category: 'sqlite', attributes: {'db.name': path}); reported = true; }
+        // Release the connection before the cancellable delay/retry.
+        db?.close(); db = null;
+        try { await cancellableDelay(const Duration(milliseconds: 20), deadline); }
+        on TimeoutException { Error.throwWithStackTrace(error, stack); }
+      } finally { db?.close(); }
+    }
+  } finally { deadline.cancel(); }
 }
 
 /// Codex RolloutLineage: ancestor ranges are immutable, exclusive bookmarks.
@@ -52,13 +79,46 @@ Future<Json> readSession(String directory, String sessionID, String method, Json
     {required CancellationToken cancellation}) async {
   cancellation.throwIfCancelled(); validateTaskId(sessionID);
   final carrier = currentTrace?.carrier();
-  return CancellableIsolate.run(() => withTrace(traceContextFrom(carrier, service: 'storage'), () {
-    final db = openTracedDatabase('$directory/tasks/$sessionID/history.sqlite', mode: OpenMode.readOnly);
-    try {
-      db.execute('PRAGMA query_only=ON'); db.execute('BEGIN');
-      return readStoredSession(db, method, params, directory: directory, id: sessionID);
-    } finally { db.close(); }
-  }), cancellation);
+  return CancellableIsolate.run(() => withTrace(traceContextFrom(carrier, service: 'storage'), () =>
+    withReadOnlySnapshot('$directory/tasks/$sessionID/history.sqlite',
+      (db) => readStoredSession(db, method, params, directory: directory, id: sessionID))), cancellation);
+}
+
+/// Startup inventory only: never opens a writer, loads a thread, copies lineage
+/// or subscribes a client. Subscription secrets stay in this private host path,
+/// outside portable history/fork metadata and ordinary thread reads.
+Future<List<Json>> readMcpEventOwners(String directory, {required CancellationToken cancellation}) async {
+  cancellation.throwIfCancelled();
+  return CancellableIsolate.run(() async {
+    final folder = Directory('$directory/tasks'), result = <Json>[];
+    if (!folder.existsSync()) return result;
+    for (final entry in folder.listSync(followLinks: false)) {
+      if (entry is! Directory) continue;
+      final id = entry.uri.pathSegments.where((p) => p.isNotEmpty).last;
+      try {
+        validateTaskId(id);
+        final path = File('${entry.path}/history.sqlite');
+        if (FileSystemEntity.typeSync(path.path, followLinks: false) != FileSystemEntityType.file) continue;
+        final owner = await withReadOnlySnapshot<Json?>(path.path, (db) {
+          if (storedMetadata(db, 'archived_at') != null) return null;
+          final subscriptions = jsonObject(storedMetadata(db, 'mcp_event_subscriptions') ?? {});
+          final receipts = (storedMetadata(db, 'mcp_event_receipts') as List? ?? []).cast<String>().toSet();
+          final row = db.select('SELECT data FROM happen_runtime').firstOrNull;
+          final state = row == null ? <String, dynamic>{} : jsonObject(jsonDecode(row['data'] as String));
+          final pending = jsonObject(state['pendingInputs'] ?? {}).values.map(jsonObject).any((item) => receipts.contains(item['id']));
+          if (subscriptions.isEmpty && !pending) return null;
+          final config = jsonObject(storedMetadata(db, 'config'));
+          return {'threadId': id, 'cwd': config['cwd'], 'subscriptions': subscriptions.values.toList(), 'pending': pending};
+        });
+        if (owner != null) result.add(owner);
+      } on FormatException { /* One corrupt neighbor cannot hide other subscriptions. */ }
+      on SqliteException catch (error) {
+        if (error.resultCode == 5) rethrow;
+        /* An incomplete/unrelated session is not a subscription owner. */
+      }
+    }
+    return result;
+  }, cancellation);
 }
 
 Json readStoredSession(TracedDatabase db, String method, Json params, {required String directory, required String id}) {

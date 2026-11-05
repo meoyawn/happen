@@ -291,6 +291,30 @@ expansion requires an explicit shell command, such as `command: sh` with
 `args: [-c, "exec my-server"]`. Both transports accept `enabled` and
 `legacy_fallback`. A server needs exactly one of `command` or `url`.
 
+### Project-local MCP configuration
+
+Use `.happen/config.yaml` inside a checkout. Repository layers are read from the
+checkout root through the selected thread's cwd, with closer settings taking
+precedence. Like Codex, table fields merge recursively, while arrays and scalar
+values replace. A project can therefore override only `enabled`, `args`, or
+selected environment keys of a global server. The final merged server must still
+have exactly one valid transport. Explicit relative `cwd` paths resolve beside
+the declaring config (`cwd: ..` selects the parent of `.happen/`). A new local
+command without a cwd defaults to the invoking cwd; a global command defaults to
+the server process's launch directory.
+
+Matching command/arguments, effective cwd and environment reuse one stdio
+process, even across global/local entries with different server names. Changing
+a binding cancels its pending requests, not unrelated calls on a shared process.
+The last config owner releases that process. URL connections do not own a remote
+server process.
+
+MCP API requests may supply `threadId` to select its project configuration.
+Inventory/status remain read-only thread operations: they do not subscribe,
+load a saved thread, or run a model turn. Without a thread/cwd, inventory is
+global-only. Project MCP files reload at model/catalog boundaries and on watched
+file or executable changes. Other provider settings remain startup configuration.
+
 HTTP servers can use browser OAuth without adding tokens to global config:
 
 ```sh
@@ -308,6 +332,10 @@ sign-in inline in the conversation above the composer. **Sign in** opens the
 default browser, with waiting, retry and cancellation controls kept in the
 conversation. `/mcp` and `/mcp verbose` also offer sign-in and sign-out actions.
 Account sign-in (`happen login`) remains separate from MCP server sign-in.
+MCP OAuth follows Codex's ordinary standards-based flow only; no ChatGPT
+connectors, enterprise connector authorization, or plugin system is enabled.
+Discovery uses GET, follows bounded same-origin metadata redirects, and rejects
+cross-origin redirects before sending resource credentials elsewhere.
 
 Local subprocess servers use `env` / `inherit_env`. Explicit HTTP `Authorization`
 headers take precedence over OAuth. `oauth: false` disables interactive auth for

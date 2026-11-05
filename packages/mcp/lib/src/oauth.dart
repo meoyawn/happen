@@ -1,13 +1,30 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'transport.dart';
+import 'challenges.dart';
+
+part 'oauth_lock.dart';
+
+const _reauthenticationRequired = McpCredentialFailure(
+  'MCP authentication required. Reconnect to continue using this server.',
+  authenticationRequired: true, status: 401);
+
+// Codex oauth/issuer_binding.rs: narrow compatibility for providers without
+// RFC 9207. Match the complete HTTPS issuer and both endpoint origins, never a
+// hostname suffix or an arbitrary path on the same provider.
+const _providerEndpointExceptions = {
+  ('https://mcp.mercadopago.com/mcp', 'https://auth.mercadopago.com', 'https://mcp.mercadopago.com'),
+  ('https://agent.robinhood.com/mcp/trading', 'https://robinhood.com', 'https://api.robinhood.com'),
+};
 
 bool hasAuthorizationHeader(Json config) => [
   ...jsonObject(config['headers'] ?? {}).keys,
@@ -51,27 +68,33 @@ class McpOAuth {
   Future<String?> authorization(CancellationToken cancellation) async {
     final token = cancellation.merge(lifetime);
     token.throwIfCancelled();
-    try { await (_loading ??= _load()).asCancellable(token); } on McpFailure { _needsLogin = true; return null; }
+    try { await (_loading ??= _load()).asCancellable(token); }
+    on McpFailure { _needsLogin = true; throw _reauthenticationRequired; }
     token.throwIfCancelled();
     final saved = _credentials;
-    if (saved == null || _needsLogin) return null;
+    if (_needsLogin) throw _reauthenticationRequired;
+    if (saved == null) return null;
     final expires = saved['expires_at'] as num?;
-    if (!_rejected && (expires == null || expires > DateTime.now().millisecondsSinceEpoch + 60000)) {
+    final refreshable = (saved['refresh_token'] as String? ?? '').isNotEmpty;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!_rejected && (expires == null || expires > now && (!refreshable || expires > now + 60000))) {
       return saved['access_token'] as String;
     }
-    if ((saved['refresh_token'] as String? ?? '').isEmpty) {
+    if (!refreshable) {
       _needsLogin = true;
-      return null;
+      throw _reauthenticationRequired;
     }
     // Individual requests may stop waiting; the shared server owns the refresh.
     return (_refreshing ??= _refresh(saved).whenComplete(() => _refreshing = null)).asCancellable(token);
   }
 
-  Future<void> _load() async {
+  Future<void> _load() async { _credentials = await _readCredentials(); }
+
+  Future<Json?> _readCredentials() async {
     lifetime.throwIfCancelled();
     try {
       _diskStamp = await _stamp();
-      if (await FileSystemEntity.type(_file.path, followLinks: false) == FileSystemEntityType.notFound) return;
+      if (await FileSystemEntity.type(_file.path, followLinks: false) == FileSystemEntityType.notFound) return null;
       if (await FileSystemEntity.type(_file.path, followLinks: false) != FileSystemEntityType.file ||
           (await _file.stat()).size > 65536) {
         throw const McpFailure('MCP credential file is invalid; sign in again');
@@ -87,7 +110,7 @@ class McpOAuth {
           _options['client_id'] != null && _options['client_id'] != saved['client_id']) {
         throw const McpFailure('MCP credentials do not match this server; sign in again');
       }
-      _credentials = saved;
+      return saved;
     } on CancelledException {
       rethrow;
     } on McpFailure {
@@ -97,43 +120,80 @@ class McpOAuth {
     }
   }
 
-  Future<String?> _refresh(Json saved) => _withCredentialLock(lifetime, () async {
+  Future<String?> _refresh(Json saved) async {
     try {
+      return await _withCredentialLock(lifetime, () async {
       // A different process may already have rotated this credential while
       // this owner waited for the file lock. Never refresh the stale copy.
-      _credentials = null;
-      await _load();
-      final current = _credentials;
-      if (current == null) { _needsLogin = true; return null; }
-      if (current['refresh_token'] != saved['refresh_token'] &&
-          (current['expires_at'] == null || (current['expires_at'] as int) > DateTime.now().millisecondsSinceEpoch + 60000)) {
+      final current = await _readCredentials();
+      if (current == null) { _needsLogin = true; throw _reauthenticationRequired; }
+      if (current['client_id'] != saved['client_id'] || current['issuer'] != saved['issuer'] || current['resource'] != saved['resource']) {
+        _needsLogin = true; throw _reauthenticationRequired;
+      }
+      final changed = current['access_token'] != saved['access_token'] || current['refresh_token'] != saved['refresh_token'];
+      final usable = current['expires_at'] == null || (current['expires_at'] as num) > DateTime.now().millisecondsSinceEpoch;
+      saved = current;
+      if (saved['issuer'] is! String || (saved['issuer'] as String).isEmpty ||
+          !(changed && usable) && (saved['refresh_token'] as String? ?? '').isEmpty) {
+        _needsLogin = true; throw _reauthenticationRequired;
+      }
+      // Refresh does not need an authorization-code/PKCE capability. Resolve
+      // one trusted metadata snapshot and keep it through exchange/persistence;
+      // never rediscover after a failure and post to a replacement issuer.
+      final info = await _discover(lifetime, interactive: false);
+      if (saved['issuer'] != info.metadata['issuer'] || saved['resource'] != info.resource) {
+        _needsLogin = true; throw _reauthenticationRequired;
+      }
+      if (changed && usable) {
+        _credentials = current;
         _rejected = false;
         return current['access_token'] as String;
       }
-      saved = current;
-      final info = await _discover(lifetime);
-      if (saved['issuer'] == null || saved['issuer'] != info.metadata['issuer'] || saved['resource'] != info.resource) {
-        _needsLogin = true;
-        throw const McpFailure('MCP authorization server changed; sign in again', status: 401);
+      bool replaced(Json value) => !_credentialJsonEqual(value, saved);
+      bool adoptable(Json value) => value['issuer'] == info.metadata['issuer'] && value['resource'] == info.resource &&
+        (value['expires_at'] == null || (value['expires_at'] as num) > DateTime.now().millisecondsSinceEpoch);
+      String adopt(Json value) { _credentials = value; _rejected = _needsLogin = false; return value['access_token'] as String; }
+      try {
+        final response = await _exchange(info.metadata, saved, {
+          'grant_type': 'refresh_token', 'refresh_token': saved['refresh_token'] as String,
+          'resource': info.resource,
+        }, lifetime);
+        final next = _tokens(response, saved);
+        // Cooperating owners hold this guard. A separately completed import or
+        // login can still replace the file; never overwrite a newer authority.
+        final latest = await _readCredentials();
+        if (latest == null) { _needsLogin = true; throw _reauthenticationRequired; }
+        if (replaced(latest)) {
+          if (adoptable(latest)) return adopt(latest);
+          _needsLogin = true; throw _reauthenticationRequired;
+        }
+        await _save(next, lifetime);
+        return adopt(next);
+      } catch (error, stack) {
+        lifetime.throwIfCancelled();
+        // A failed provider request does not erase a bound browser login that
+        // completed independently. Missing/unbound/corrupt replacements remain
+        // untouched, and a failed save never publishes the unsaved response.
+        Json? latest;
+        try { latest = await _readCredentials(); } on McpFailure { /* Preserve the original failure and cached snapshot. */ }
+        if (latest != null && replaced(latest) && adoptable(latest)) return adopt(latest);
+        Error.throwWithStackTrace(error, stack);
       }
-      final response = await _exchange(info.metadata, saved, {
-        'grant_type': 'refresh_token', 'refresh_token': saved['refresh_token'] as String,
-        'resource': info.resource,
-      }, lifetime);
-      final next = _tokens(response, saved);
-      await _save(next, lifetime);
-      _credentials = next;
-      _rejected = false;
-      return next['access_token'] as String;
+      });
     } on CancelledException {
       rethrow;
-    } on McpFailure catch (error) {
-      if (error.status == 401) _needsLogin = true;
-      rethrow;
-    } catch (_) {
-      throw const McpFailure('Unable to refresh MCP sign-in');
+    } catch (error) {
+      if (error is McpFailure && error.status == 401) _needsLogin = true;
+      final expires = saved['expires_at'] as num?;
+      if (_needsLogin || _rejected || expires != null && expires <= DateTime.now().millisecondsSinceEpoch) {
+        throw _reauthenticationRequired;
+      }
+      // A proactive refresh failure must not rewrite otherwise-valid durable
+      // credentials, masquerade as a resource 401, or spend the MCP retry budget.
+      throw McpCredentialFailure('Unable to refresh MCP sign-in', authenticationRequired: false,
+        status: error is McpFailure ? error.status : null);
     }
-  });
+  }
 
   Future<void> login(CancellationToken cancellation, void Function(String url) notify) {
     if (_loggingIn != null) throw const McpFailure('An MCP sign-in is already in progress');
@@ -169,8 +229,7 @@ class McpOAuth {
       Json client;
       if (_options['client_id'] is String) {
         client = {'client_id': _options['client_id'],
-          'token_endpoint_auth_method': _options['token_endpoint_auth_method'] ??
-            (_options['client_secret_env'] == null ? 'none' : 'client_secret_post')};
+          'token_endpoint_auth_method': _tokenAuthMethod(metadata, {})};
       } else {
         final registration = metadata['registration_endpoint'];
         if (registration is! String) {
@@ -188,8 +247,12 @@ class McpOAuth {
         client = {
           'client_id': response.body['client_id'],
           'client_secret': ?response.body['client_secret'],
-          'token_endpoint_auth_method': response.body['token_endpoint_auth_method'] ?? 'none',
+          'token_endpoint_auth_method': ?response.body['token_endpoint_auth_method'],
         };
+        // A confidential DCR response can omit its auth method. Negotiate from
+        // this metadata snapshot rather than treating its returned secret as a
+        // public client. Retain the selected method for later refreshes.
+        client['token_endpoint_auth_method'] = _tokenAuthMethod(metadata, client);
       }
       final state = _random(), verifier = _random();
       final authorization = _webUri(metadata['authorization_endpoint'] as String);
@@ -208,9 +271,13 @@ class McpOAuth {
       _redirect = Uri.parse(redirect);
       _callback = (uri) {
         final query = uri.queryParametersAll;
-        if (received || token.isCancelled || query['state']?.length != 1 || query['state']!.single != state) {
+        if (received || token.isCancelled || query.values.any((values) => values.length != 1) ||
+            query['state']?.single != state || query.containsKey('code') && query.containsKey('error') ||
+            !query.containsKey('error') && (query['code']?.single ?? '').isEmpty) {
           throw const McpFailure('Invalid or expired MCP sign-in callback');
         }
+        // Malformed/ambiguous input is not an authorization response. Reject it
+        // before consuming the login, for both pasted and loopback callbacks.
         received = true;
         final issuer = query['iss'];
         if (issuer != null && (issuer.length != 1 || issuer.single != metadata['issuer']) || issuerBound && issuer == null) {
@@ -218,9 +285,6 @@ class McpOAuth {
           return false;
         } else if (query.containsKey('error')) {
           result.completeError(const McpFailure('MCP sign-in was declined'));
-          return false;
-        } else if (query['code']?.length != 1 || query['code']!.single.isEmpty) {
-          result.completeError(const McpFailure('MCP sign-in callback did not contain a code'));
           return false;
         } else {
           result.complete(query['code']!.single);
@@ -279,7 +343,7 @@ class McpOAuth {
   }
 
   void completeLogin(String value) {
-    final uri = value.length <= 16384 ? Uri.tryParse(value) : null;
+    final uri = value.length <= 65536 && utf8.encode(value).length <= 65536 ? Uri.tryParse(value.trim()) : null;
     if (uri == null || _redirect == null || _callback == null || uri.userInfo.isNotEmpty || uri.hasFragment ||
         uri.scheme != _redirect!.scheme || uri.host != _redirect!.host || uri.port != _redirect!.port || uri.path != _redirect!.path) {
       throw const McpFailure('Paste the complete callback URL from this sign-in');
@@ -294,13 +358,17 @@ class McpOAuth {
 
   Future<bool> credentialsChanged() async => !signingIn && _loading != null && await _stamp() != _diskStamp;
 
-  Future<({Json metadata, String resource, List<String> scopes})> _discover(CancellationToken token) async {
+  Future<({Json metadata, String resource, List<String> scopes})> _discover(CancellationToken token, {bool interactive = true}) async {
+    // OIDC fallback candidates share the original metadata operation's budget;
+    // neither another candidate nor a same-origin hop grants another 20 seconds.
+    final deadline = TimeoutCancellationToken(const Duration(seconds: 20));
+    token = token.merge(lifetime).merge(deadline);
+    try {
     final resourceUri = _webUri(_url);
-    // Discovery is deliberately unauthenticated. Resource-only headers never
-    // travel to a separate authorization server or metadata origin.
-    final probe = await _request('POST', resourceUri, token, resourceHeaders: true, body: {
-      'jsonrpc': '2.0', 'id': newId(), 'method': 'server/discover', 'params': <String, Object?>{},
-    });
+    // Codex auth_status.rs and oauth_http_client.rs: discover with GET, never
+    // create a legacy MCP session merely to inspect OAuth support. Resource
+    // headers stay on their origin, including its metadata and redirects.
+    final probe = await _request('GET', resourceUri, token, resourceHeaders: true);
     if (probe.status == 401 || probe.status == 403) {
       final next = _bearerChallenge(probe.headers['www-authenticate'] ?? []);
       if (next.isNotEmpty) _challenge = next;
@@ -315,10 +383,12 @@ class McpOAuth {
       final response = await _request('GET', uri, token);
       if (response.status == 200) { resource = response.body; break; }
       if (response.status != 404 && response.status != 405) {
-        throw const McpFailure('Unable to discover MCP authorization metadata');
+        throw McpFailure('Unable to discover MCP authorization metadata', status: response.status);
       }
     }
-    final canonical = resource?['resource'] as String? ?? resourceUri.toString();
+    final fallbackIssuer = Uri(scheme: resourceUri.scheme, host: resourceUri.host,
+      port: resourceUri.hasPort ? resourceUri.port : null, path: resourceUri.path);
+    final canonical = resource?['resource'] as String? ?? fallbackIssuer.toString();
     final canonicalUri = _webUri(canonical);
     if (canonicalUri.origin != resourceUri.origin || canonicalUri.hasQuery ||
         resourceUri.path != canonicalUri.path &&
@@ -329,37 +399,74 @@ class McpOAuth {
     if (resource != null && (issuers == null || issuers.isEmpty)) {
       throw const McpFailure('MCP resource metadata has no authorization server');
     }
-    final issuer = issuers == null ? resourceUri.origin : issuers.first as String;
+    final issuer = issuers == null ? fallbackIssuer.toString() : issuers.first as String;
     final base = _webUri(issuer);
     if (base.hasQuery) throw const McpFailure('MCP authorization issuer is invalid');
     final issuerPath = base.path == '/' ? '' : base.path;
+    final document = base.path.startsWith('/.well-known/') || base.path.endsWith('.json');
     Json? metadata;
+    McpFailure? unavailable;
     for (final uri in <Uri>{
+      if (document) base,
       base.replace(path: '/.well-known/oauth-authorization-server$issuerPath'),
       base.replace(path: '/.well-known/openid-configuration$issuerPath'),
       base.replace(path: '$issuerPath/.well-known/openid-configuration'),
     }) {
-      final response = await _request('GET', uri, token);
-      if (response.status == 200) { metadata = response.body; break; }
-      if (response.status != 404 && response.status != 405 && response.status != 503) {
-        throw const McpFailure('Unable to discover MCP authorization server');
+      final response = await _request('GET', uri, token,
+        followRedirects: unavailable == null, tolerateInvalidJson: unavailable != null);
+      if (response.status == 200) {
+        if (unavailable != null && (response.body['authorization_endpoint'] is! String || response.body['token_endpoint'] is! String)) continue;
+        metadata = response.body; break;
+      }
+      if (response.status == 503 && (uri.path == '/.well-known/oauth-authorization-server' ||
+          uri.path.startsWith('/.well-known/oauth-authorization-server/'))) {
+        unavailable ??= const McpFailure('MCP authorization metadata is unavailable (HTTP 503)', status: 503);
+        continue;
+      }
+      if (unavailable != null) {
+        if ([404, 405, 503].contains(response.status)) continue;
+        if (![408, 425, 429].contains(response.status) && response.status < 500) throw unavailable;
+      }
+      if (response.status != 404 && response.status != 405) {
+        throw McpFailure('Unable to discover MCP authorization server (HTTP ${response.status})', status: response.status);
       }
     }
-    if (metadata == null || metadata['issuer'] != issuer) {
+    if (metadata == null) throw unavailable ?? const McpFailure('MCP server does not advertise OAuth authorization metadata');
+    final advertised = metadata['issuer'] as String?;
+    if (advertised != null && (_webUri(advertised).origin != base.origin || !document && advertised != issuer)) {
       throw const McpFailure('MCP authorization metadata issuer did not match');
     }
     final authorization = _webUri(requiredString(metadata, 'authorization_endpoint'));
     final endpoint = _webUri(requiredString(metadata, 'token_endpoint'));
     if (metadata['registration_endpoint'] case final String registration) _webUri(registration);
-    if (metadata['authorization_response_iss_parameter_supported'] != true &&
-        authorization.origin != base.origin && authorization.origin != endpoint.origin) {
-      throw const McpFailure('MCP authorization endpoints are not bound to their issuer');
+    if (metadata['authorization_response_iss_parameter_supported'] == true) {
+      if (advertised == null) throw const McpFailure('MCP issuer-bound callbacks require a metadata issuer');
+    } else if (advertised == null) {
+      if (authorization.origin != endpoint.origin) throw const McpFailure('MCP OAuth token endpoint is not bound to its authorization server');
+    } else if (authorization.origin != base.origin && authorization.origin != endpoint.origin &&
+        !_providerEndpointExceptions.contains((advertised, authorization.origin, endpoint.origin))) {
+      throw const McpFailure('MCP OAuth authorization endpoint is not bound to its authorization server');
     }
-    if (!(metadata['code_challenge_methods_supported'] as List? ?? []).contains('S256')) {
+    if (interactive && !(metadata['code_challenge_methods_supported'] as List? ?? []).contains('S256')) {
       throw const McpFailure('MCP authorization server does not support PKCE S256');
     }
     return (metadata: metadata, resource: canonical,
       scopes: (resource?['scopes_supported'] as List? ?? []).cast<String>());
+    } finally { deadline.cancel(); }
+  }
+
+  String _tokenAuthMethod(Json metadata, Json client) {
+    if (_options['token_endpoint_auth_method'] case final String method) return method;
+    if (_options['client_secret_env'] == null) {
+      if (client['token_endpoint_auth_method'] case final String method) return method;
+    }
+    if (_options['client_secret_env'] != null || (client['client_secret'] as String? ?? '').isNotEmpty) {
+      final supported = metadata['token_endpoint_auth_methods_supported'] as List?;
+      if (supported == null || supported.contains('client_secret_basic')) return 'client_secret_basic';
+      if (supported.contains('client_secret_post')) return 'client_secret_post';
+      throw const McpFailure('MCP OAuth provider does not support configured client authentication');
+    }
+    return 'none';
   }
 
   Future<Json> _exchange(Json metadata, Json client, Map<String, String> form, CancellationToken token) async {
@@ -367,7 +474,7 @@ class McpOAuth {
     String? basic;
     final secret = _options['client_secret_env'] is String
       ? Platform.environment[_options['client_secret_env']] : client['client_secret'] as String?;
-    final method = client['token_endpoint_auth_method'] ?? 'none';
+    final method = _tokenAuthMethod(metadata, client);
     if (method != 'none') {
       if (secret == null || secret.isEmpty) throw const McpFailure('MCP OAuth client secret is missing');
       if (method == 'client_secret_post') {
@@ -408,12 +515,17 @@ class McpOAuth {
   Future<({int status, Json body, Map<String, List<String>> headers})> _request(
     String method, Uri uri, CancellationToken cancellation, {
     Json? body, Map<String, String>? form, String? authorization, bool resourceHeaders = false,
+    bool? followRedirects, bool tolerateInvalidJson = false,
   }) async {
     final deadline = TimeoutCancellationToken(const Duration(seconds: 20));
     final token = cancellation.merge(lifetime).merge(deadline);
     HttpClientRequest? request;
     final hook = CancellationHook(token, () => request?.abort(token.exception));
     try {
+      final mayFollow = followRedirects ?? (method == 'GET' || body != null);
+      final registration = method == 'POST' && body != null;
+      var droppedBody = false;
+      for (var redirects = 0; ; redirects++) {
       token.throwIfCancelled();
       request = await http.openUrl(method, uri).then((value) {
         if (token.isCancelled) value.abort(token.exception);
@@ -421,32 +533,41 @@ class McpOAuth {
       }).asCancellable(token);
       token.throwIfCancelled();
       request.followRedirects = false;
-      request.headers.set('Accept', 'application/json, text/event-stream');
-      if (resourceHeaders && uri.origin == _webUri(_url).origin) {
-        for (final entry in jsonObject(config['headers'] ?? {}).entries) { request.headers.set(entry.key, entry.value as Object); }
+      final configured = <String, String>{};
+      if (uri.origin == _webUri(_url).origin) {
+        for (final entry in jsonObject(config['headers'] ?? {}).entries) { configured[entry.key.toLowerCase()] = entry.value as String; }
         for (final entry in jsonObject(config['header_env'] ?? {}).entries) {
           final value = Platform.environment[entry.value];
           if (value == null) throw const McpFailure('MCP credential environment variable is missing');
-          request.headers.set(entry.key, value);
+          configured[entry.key.toLowerCase()] = value;
         }
       }
-      if (authorization != null) request.headers.set('Authorization', authorization);
+      final fields = <String, String>{'accept': 'application/json, text/event-stream', 'user-agent': mcpUserAgent, ...configured,
+        if (authorization != null) 'authorization': authorization};
+      List<int>? bytesOut;
       if (form != null) {
-        request.headers.contentType = ContentType('application', 'x-www-form-urlencoded');
-        request.write(form.entries.map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}').join('&'));
+        fields['content-type'] = ContentType('application', 'x-www-form-urlencoded').toString();
+        bytesOut = utf8.encode(form.entries.map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}').join('&'));
       } else if (body != null) {
-        request.headers.contentType = ContentType.json;
-        request.write(jsonEncode(body));
+        fields['content-type'] = ContentType.json.toString(); bytesOut = utf8.encode(jsonEncode(body));
       }
+      final ownedHeaders = {if (bytesOut != null) ...['content-type', 'content-length'], if (authorization != null) 'authorization',
+        if (droppedBody) ...['content-type', 'content-length', 'content-encoding', 'transfer-encoding']};
+      final sensitive = configured.entries.any((entry) => !ownedHeaders.contains(entry.key) &&
+        (entry.key != 'user-agent' || entry.value != mcpUserAgent));
+      if (droppedBody) { for (final name in ['content-type', 'content-length', 'content-encoding', 'transfer-encoding']) { fields.remove(name); } }
+      fields.forEach(request.headers.set);
+      if (bytesOut != null) { request.contentLength = bytesOut.length; request.add(bytesOut); }
       final response = await traceAsync('mcp.oauth.http.headers', () => request!.close().asCancellable(token),
         category: 'http', attributes: {'http.request.method': method, 'server.address': uri.host, 'url.path': uri.path});
       traceInstant('mcp.oauth.http.response', category: 'http',
         attributes: {'http.response.status_code': response.statusCode});
       final headers = <String, List<String>>{};
       response.headers.forEach((name, values) => headers[name.toLowerCase()] = values);
+      final redirect = mayFollow && const {301, 302, 303, 307, 308}.contains(response.statusCode);
       // A discovery probe can be an indefinitely open SSE response. Only its
       // status and challenge are needed; never wait for a successful stream.
-      if (resourceHeaders) {
+      if (resourceHeaders && !redirect) {
         await response.listen((_) {}).cancel();
         return (status: response.statusCode, body: <String, dynamic>{}, headers: headers);
       }
@@ -458,14 +579,34 @@ class McpOAuth {
           if (bytes.length > 1024 * 1024) throw const McpFailure('MCP OAuth response exceeds 1 MiB');
         }
       } finally { await input.cancel(); }
+      // Bound redirect bodies before following them. Rebuild headers for each
+      // origin; resource credentials may only follow same-origin hops. An
+      // uncredentialed DCR request can follow an ordinary cross-origin redirect,
+      // but token/code exchanges never opt into redirect replay.
+      if (redirect) {
+        final location = headers['location']?.firstOrNull;
+        if (location == null) throw const McpFailure('MCP OAuth discovery redirect has no location');
+        final next = _webUri(uri.resolve(location).toString());
+        if (next.origin != uri.origin && (!registration || sensitive)) {
+          throw const McpFailure('MCP OAuth discovery redirect to a different origin was rejected');
+        }
+        if (redirects >= 10) throw const McpFailure('MCP OAuth discovery exceeded 10 redirects');
+        if (response.statusCode == 303 || [301, 302].contains(response.statusCode) && method == 'POST') {
+          if (method != 'HEAD') method = 'GET';
+          body = null; form = null; droppedBody = true;
+        }
+        request.abort(); uri = next; continue;
+      }
       Json data = {};
       try { data = jsonObject(jsonDecode(utf8.decode(bytes))); } catch (_) {
-        if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (!tolerateInvalidJson && response.statusCode >= 200 && response.statusCode < 300) {
           throw const McpFailure('MCP OAuth endpoint returned invalid JSON');
         }
       }
       return (status: response.statusCode, body: data, headers: headers);
+      }
     } on CancelledException { rethrow;
+    } on TimeoutException { throw const McpFailure('MCP OAuth request timed out');
     } on McpFailure { rethrow;
     } catch (_) {
       token.throwIfCancelled();
@@ -503,25 +644,15 @@ class McpOAuth {
     await _private(locks.path, '700');
     final path = '${locks.path}/$_key.lock';
     if (FileSystemEntity.isLinkSync(path)) throw const McpFailure('MCP credential lock must not be a symbolic link');
-    final lock = await File(path).open(mode: FileMode.append);
-    var acquired = false;
+    final release = await _acquireCredentialLock(path, token);
     try {
-      await _private(path, '600');
-      while (!acquired) {
-        token.throwIfCancelled();
-        try { await lock.lock(FileLock.exclusive); acquired = true; } on FileSystemException catch (error) {
-          if (![11, 13, 35].contains(error.osError?.errorCode)) rethrow;
-          await cancellableDelay(const Duration(milliseconds: 25), token);
-        }
-      }
       token.throwIfCancelled();
       return await action();
     } on CancelledException { rethrow;
     } on McpFailure { rethrow;
     } catch (_) { throw const McpFailure('Unable to update MCP credentials');
     } finally {
-      if (acquired) await lock.unlock();
-      await lock.close();
+      await release();
     }
   }
 
@@ -535,6 +666,11 @@ class McpOAuth {
   }
 
   Future<void> logout(CancellationToken cancellation) async {
+    // Explicit sign-out queues behind an admitted shared refresh; shutting its
+    // provider socket early can lose a rotating grant before removing the file.
+    try { await _refreshing?.asCancellable(cancellation); }
+    on CancelledException { rethrow; }
+    catch (_) { cancellation.throwIfCancelled(); }
     await close();
     _credentials = null;
     await _withCredentialLock(cancellation, () async {
@@ -548,6 +684,12 @@ class McpOAuth {
       try { await work; } catch (_) { /* Shutdown owns cancellation. */ }
     }
   }
+}
+
+bool _credentialJsonEqual(Object? a, Object? b) {
+  if (a is Map && b is Map) return a.length == b.length && a.entries.every((entry) => b.containsKey(entry.key) && _credentialJsonEqual(entry.value, b[entry.key]));
+  if (a is List && b is List) return a.length == b.length && Iterable<int>.generate(a.length).every((index) => _credentialJsonEqual(a[index], b[index]));
+  return a == b;
 }
 
 Future<void> _private(String path, String mode) async {
@@ -570,21 +712,6 @@ Uri _webUri(String value) {
 String _random() => base64Url.encode(List.generate(32, (_) => Random.secure().nextInt(256))).replaceAll('=', '');
 
 Json _bearerChallenge(List<String> headers) {
-  for (final header in headers) {
-    for (final start in RegExp(r'(?:^|,)\s*Bearer(?:\s+|$)', caseSensitive: false).allMatches(header)) {
-      final values = <String, dynamic>{};
-      var offset = start.end, invalid = false;
-      final parameter = RegExp(r'''\s*([!#$%&'*+.^_`|~A-Za-z0-9-]+)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^,\s]+))\s*(?:,|$)''');
-      while (offset < header.length) {
-        final match = parameter.matchAsPrefix(header, offset);
-        if (match == null) break;
-        final key = match[1]!.toLowerCase();
-        if (values.containsKey(key)) invalid = true;
-        values[key] = (match[2] ?? match[3]!).replaceAllMapped(RegExp(r'\\(.)'), (m) => m[1]!);
-        offset = match.end;
-      }
-      if (!invalid && values.isNotEmpty) return values;
-    }
-  }
-  return {};
+  final challenge = bearerChallenges(headers).where((challenge) => challenge.parameters.isNotEmpty).firstOrNull;
+  return {if (challenge != null) for (final entry in challenge.parameters.entries) if (entry.value != null) entry.key: entry.value};
 }

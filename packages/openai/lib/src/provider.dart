@@ -163,8 +163,9 @@ class OpenAIProvider implements ModelProvider {
     ModelRequest request,
     List<Json> input,
     CancellationToken cancellation,
-    void Function(Json)? onEvent,
-  ) {
+    void Function(Json)? onEvent, {
+    Future<void> Function(ConversationItem)? onRecovery,
+  }) {
     _validate(request);
     return client.respond(
       model: request.model,
@@ -187,6 +188,11 @@ class OpenAIProvider implements ModelProvider {
             'reasoning_tokens': usage['reasoning_output_tokens']}).toJson(),
           'incompleteUsage': {'response_id': event['response_id'], 'usage': usage}});
       },
+      onRecovery: (wire) async {
+        final item = gptItemFromNative(wire);
+        if (onRecovery != null) await onRecovery(item);
+        else onEvent?.call({'type': 'model.recovery', 'item': item.toJson()});
+      },
     );
   }
 
@@ -195,6 +201,7 @@ class OpenAIProvider implements ModelProvider {
     ModelRequest request, {
     required CancellationToken cancellation,
     void Function(Json)? onEvent,
+    Future<void> Function(ConversationItem)? onRecovery,
   }) async {
     final completed = <Object, ConversationItem>{};
     Object key(Json item) => item['id'] as String? ?? item;
@@ -222,7 +229,7 @@ class OpenAIProvider implements ModelProvider {
         if (completed.containsKey(id)) return;
         completed[id] = item;
         onEvent?.call({'type': 'model.output', 'item': item.toJson()});
-      },
+      }, onRecovery: onRecovery,
     );
     return ModelReply(
       reply.output.map((item) => completed[key(item)] ??

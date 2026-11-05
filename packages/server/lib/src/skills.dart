@@ -6,7 +6,8 @@ import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'package:yaml/yaml.dart';
 
-/// Local host skills from user and repository .agents/skills directories.
+/// Local host skills from user and repository .agents/skills directories
+/// and the user's .codex/skills/.system directory.
 /// Uses Codex 67f0994's parser and bounded walk.
 /// Catalogs contain metadata only. Bodies are read afresh when explicitly loaded.
 class FilesystemSkills {
@@ -74,6 +75,7 @@ class FilesystemSkills {
       for (final directory in repository ? chain.reversed : [chain.first])
         (path: p.join(directory, '.agents', 'skills'), scope: 'repo'),
       if (homeDirectory != null) (path: p.join(homeDirectory!, '.agents', 'skills'), scope: 'user'),
+      if (homeDirectory != null) (path: p.join(homeDirectory!, '.codex', 'skills', '.system'), scope: 'user'),
     ];
     final skills = <Json>[], errors = <Json>[];
     final seenRoots = <String>{}, seenFiles = <String>{};

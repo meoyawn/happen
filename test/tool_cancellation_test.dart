@@ -137,12 +137,15 @@ wait
           if (entry['item']['type'] == 'dynamicToolCall' && entry['item']['tool'] == name)
             jsonObject(jsonDecode(entry['item']['contentItems'][0]['text'] as String))];
       }
+      final commandStarted = lab == 'openai' ? client.events.stream.firstWhere((event) =>
+        event['method'] == 'item/started' && event['params']['threadId'] == id &&
+        event['params']['item']['type'] == 'commandExecution') : null;
       await turn('start');
       final a = File('${root.path}/a/session.pid'), b = File('${root.path}/b/session.pid');
       await _until(() => a.exists());
       expect(await _alive(a), isTrue, reason: 'A task-owned process must survive turn completion');
       if (lab == 'openai') {
-        session = (await hostResults('exec_command')).single['session_id'] as int;
+        session = int.parse((await commandStarted!)['params']['item']['processId'] as String);
       }
       await turn('session');
       if (lab == 'openai') {

@@ -2517,6 +2517,12 @@ Windows appearance and screen-reader announcements were not exercised.
 
 ## 2026-10-31 — Codex-style MCP result and output boundaries
 
+> Wire-size policy superseded 2026-11-05 by the explicit Codex MCP completion
+> objective: modern MCP uses the upstream 8 MiB bound, while legacy local/HTTP
+> codecs retain uncapped wire behavior. Code Mode's 64 MiB host frame and model
+> output budgets are separate. The historical evidence below did not establish
+> modern MCP limit parity; see `docs/mcp-port.md` for baseline failures and ports.
+
 User decision: follow Codex when large MCP results are consumed through Code
 Mode. Remove the manager's 64 KiB replacement error: JavaScript receives the
 complete MCP envelope so it can parse and filter data before printing. Preserve

@@ -1,35 +1,69 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ai/ai.dart' show decodeSse;
+import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
+import 'challenges.dart';
+
+part 'stdio.dart';
+
 const mcpProtocolVersion = '2026-07-28';
-// Independent of model output budgets, matching Codex's Code Mode frame limit.
-const _maxMessageBytes = 64 * 1024 * 1024;
+const mcpUserAgent = 'happen-mcp-client/0.1.0';
+// Codex's modern MCP wire bound, independent of Code Mode/model budgets.
+// Its legacy local codec and legacy HTTP retain their uncapped wire behavior.
+const _maxMessageBytes = 8 * 1024 * 1024;
 const _versionKey = 'io.modelcontextprotocol/protocolVersion';
 const _subscriptionKey = 'io.modelcontextprotocol/subscriptionId';
 // Match Codex's bounded streamable HTTP recovery delays.
 const _httpRetryDelays = [Duration(milliseconds: 250), Duration(seconds: 1)];
+const _legacyVersions = {'2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'};
+
+bool _onlyLegacy(Object? value) => value is List && value.isNotEmpty && value.every(_legacyVersions.contains);
+bool _legacyPrevalidation(String message) {
+  if (message == 'Bad Request: No valid session ID provided') return true;
+  final match = RegExp(r'^Bad Request: Unsupported protocol version(?:: 2026-07-28)? \(supported versions: (.+)\)$').firstMatch(message);
+  if (match == null) return false;
+  final versions = match[1]!.split(',').map((value) => value.trim()).toList();
+  return versions.any(_legacyVersions.contains) && versions.every((value) => RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value) && value.compareTo(mcpProtocolVersion) < 0);
+}
+
+bool _legacyError(Json error) => error['code'] == -32601 ||
+  error['code'] == -32022 && _onlyLegacy(error['data']?['supported']) ||
+  const {-32022, -32600, -32602}.contains(error['code']) &&
+    (error['message'] as String? ?? '').trim().toLowerCase() == 'unsupported protocol version: 2026-07-28';
 
 bool _transientHttpStatus(int? status) =>
     const {408, 429, 500, 502, 503, 504}.contains(status);
 
 bool _retryableHttpFailure(Object error) => switch (error) {
+  McpCredentialFailure() => false,
   SocketException() || HttpException() || HandshakeException() => true,
   McpFailure(:final status) => _transientHttpStatus(status),
   _ => false,
 };
 
 class McpFailure implements Exception {
-  const McpFailure(this.message, {this.code, this.status, this.data});
+  const McpFailure(this.message, {this.code, this.status, this.data, this.legacyFallback = false});
   final String message;
   final int? code, status;
   final Json? data;
+  final bool legacyFallback;
   @override
   String toString() => message;
+}
+
+/// A credential preparation failure is not a transient MCP HTTP response.
+/// In particular, a failed proactive refresh of a still-valid token is an
+/// ordinary error, while expired/rejected credentials require reconnecting.
+class McpCredentialFailure extends McpFailure {
+  const McpCredentialFailure(super.message, {required this.authenticationRequired, super.status});
+  final bool authenticationRequired;
 }
 
 /// One shared transport generation. Requests have independent cancellation.
@@ -42,10 +76,13 @@ class McpConnection {
   final void Function(int status, List<String> headers, {required bool sentToken})? onAuthChallenge;
   final lifetime = CancellationToken();
   final _pending = <Object, _Pending>{};
-  Process? _process;
+  _StdioProcess? _process;
   StreamSubscription<String>? _stdout;
   StreamSubscription<List<int>>? _stderr;
-  Future<void>? _closing;
+  final _stderrDone = Completer<void>();
+  final _stderrLine = <int>[];
+  Future<void>? _closing, _recovering;
+  var _generation = 0;
   final closed = Completer<void>();
   String version = mcpProtocolVersion;
   String? _session;
@@ -54,38 +91,31 @@ class McpConnection {
   int? get processId => _process?.pid;
 
   Future<void> connect(CancellationToken cancellation) async {
+    final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
+    try { await _connect(cancellation.merge(lifetime).merge(deadline)); }
+    finally { deadline.cancel(); }
+  }
+
+  Future<void> _connect(CancellationToken cancellation) async {
     cancellation.throwIfCancelled();
     if (config['command'] != null) {
-      final process =
-          await Process.start(
-                requiredString(config, 'command'),
-                (config['args'] as List? ?? []).cast<String>(),
-                workingDirectory: config['cwd'] as String?,
-                environment: _environment(),
-                includeParentEnvironment: false,
-              )
-              .then((value) {
-                if (cancellation.isCancelled || lifetime.isCancelled) {
-                  value.kill(ProcessSignal.sigkill);
-                }
-                return value;
-              })
-              .asCancellable(cancellation);
-      cancellation.throwIfCancelled();
+      final process = await _startStdio(config, cancellation);
       _process = process;
-      _stderr = process.stderr.listen((_) {});
-      _stdout = boundedLines(process.stdout, maxBytes: _maxMessageBytes).listen(
+      _stderr = process.error.listen(_logStderr, onDone: () {
+        _flushStderr(); if (!_stderrDone.isCompleted) _stderrDone.complete();
+      }, onError: (Object _) { if (!_stderrDone.isCompleted) _stderrDone.complete(); });
+      _stdout = boundedLines(process.output, maxBytes: _maxMessageBytes, byteLimit: () => modern ? _maxMessageBytes : null).listen(
         (line) {
           try {
             _receive(jsonObject(jsonDecode(line)));
-          } catch (_) {
-            unawaited(close());
+          } catch (error) {
+            unawaited(close(reason: McpFailure(error.toString())));
           }
         },
-        onError: (Object _) => unawaited(close()),
+        onError: (Object error) => unawaited(close(reason: McpFailure(error.toString()))),
         onDone: () => unawaited(close()),
       );
-      unawaited(process.exitCode.then((_) => close()));
+      unawaited(process.exited.then((_) => close()));
     } else {
       final uri = Uri.parse(requiredString(config, 'url'));
       if (!{'https', 'http'}.contains(uri.scheme) || uri.userInfo.isNotEmpty) {
@@ -94,7 +124,9 @@ class McpConnection {
         );
       }
     }
+    for (var attempt = 0; ; attempt++) {
     try {
+      try {
       discovery = await request(
         'server/discover',
         {},
@@ -104,61 +136,39 @@ class McpConnection {
       if (!(discovery['supportedVersions'] as List? ?? []).contains(
         mcpProtocolVersion,
       )) {
-        throw const McpFailure(
+        throw McpFailure(
           'MCP server does not support the requested modern protocol',
           code: -32022,
+          legacyFallback: _onlyLegacy(discovery['supportedVersions']),
         );
       }
     } on McpFailure catch (error) {
-      // Modern errors identify the era. They must never silently downgrade.
-      if (error.code != null &&
-          error.code! <= -32020 &&
-          error.code! >= -32029) {
-        rethrow;
-      }
-      if (error.status == 401 ||
-          error.status == 403 ||
-          _transientHttpStatus(error.status) ||
-          config['legacy_fallback'] == false) {
+      if (!error.legacyFallback || error.status == 401 || error.status == 403 || config['legacy_fallback'] == false) {
         rethrow;
       }
       await _legacy(cancellation);
-    } on TimeoutException {
-      if (_process == null || config['legacy_fallback'] == false) rethrow;
-      await _legacy(cancellation);
+      }
+      _generation++;
+      return;
+    } catch (error) {
+      final modernRetry = error is McpFailure && error.code == -32022 &&
+        (error.data?['supported'] as List? ?? []).contains(mcpProtocolVersion);
+      if (_process != null || attempt >= _httpRetryDelays.length || !modernRetry && !_retryableHttpFailure(error)) rethrow;
+      await cancellableDelay(_httpRetryDelays[attempt], cancellation);
+      version = mcpProtocolVersion; _session = null;
     }
-  }
-
-  Map<String, String> _environment() {
-    final result = <String, String>{};
-    for (final name in [
-      'PATH',
-      'HOME',
-      'USER',
-      'SHELL',
-      'TMPDIR',
-      'LANG',
-      'LC_ALL',
-      ...(config['inherit_env'] as List? ?? []).cast<String>(),
-    ]) {
-      final value = Platform.environment[name];
-      if (value != null) result[name] = value;
     }
-    for (final entry in jsonObject(config['env'] ?? {}).entries) {
-      result[entry.key] = entry.value as String;
-    }
-    return result;
   }
 
   Future<void> _legacy(CancellationToken cancellation) async {
-    version = '2025-11-25';
+    version = '2025-06-18';
     final result = await request('initialize', {
       'protocolVersion': version,
       'capabilities': <String, Object?>{},
       'clientInfo': {'name': 'happen', 'version': '0.1.0'},
     }, cancellation: cancellation);
     final selected = result['protocolVersion'];
-    if (!['2025-11-25', '2025-06-18', '2025-03-26'].contains(selected)) {
+    if (!_legacyVersions.contains(selected)) {
       throw const McpFailure(
         'MCP server selected an unsupported legacy version',
       );
@@ -176,7 +186,10 @@ class McpConnection {
     void Function(Json)? onNotification,
     Json? inputSchema,
     bool retrySafe = false,
-  }) async {
+  }) => _request(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification, inputSchema: inputSchema, retrySafe: retrySafe);
+
+  Future<Json> _request(String method, Json params, {required CancellationToken cancellation, Duration? timeout,
+    void Function(Json)? onNotification, Json? inputSchema, bool retrySafe = false, bool recovered = false}) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
     if (_pending.length >= 256) {
@@ -187,13 +200,15 @@ class McpConnection {
         : TimeoutCancellationToken(timeout);
     final token = cancellation.merge(lifetime).merge(deadline);
     final id = newId();
+    final protocolVersion = version;
+    final generation = _generation, stateful = !modern && _session != null;
     final body = <String, dynamic>{
       'jsonrpc': '2.0',
       'id': id,
       'method': method,
       'params': {
         ...params,
-        if (modern)
+        if (protocolVersion == mcpProtocolVersion)
           '_meta': {
             ...jsonObject(params['_meta'] ?? {}),
             _versionKey: version,
@@ -205,12 +220,12 @@ class McpConnection {
           },
       },
     };
-    if (utf8.encode(jsonEncode(body)).length > _maxMessageBytes) {
-      throw const McpFailure('MCP request exceeds the 64 MiB transport limit');
-    }
     try {
+      if (protocolVersion == mcpProtocolVersion && utf8.encode(jsonEncode(body)).length > _maxMessageBytes) {
+        throw const McpFailure('MCP request exceeds $_maxMessageBytes bytes');
+      }
       if (_process != null) {
-        final pending = _Pending(onNotification);
+        final pending = _Pending(method, onNotification);
         _pending[id] = pending;
         final hook = CancellationHook(token, () {
           _pending.remove(id);
@@ -235,7 +250,20 @@ class McpConnection {
         }
       }
       return await _http(body, token, onNotification, inputSchema,
-        retrySafe: retrySafe);
+        retrySafe: retrySafe, protocolVersion: protocolVersion);
+    } on McpFailure catch (error) {
+      if (recovered || _process != null || !stateful || error.status != 404 ||
+          const {'initialize', 'notifications/initialized', 'server/discover'}.contains(method)) rethrow;
+      // The server rejected the old session before admitting this request.
+      // Rebuild its envelope after the coalesced handshake, once per call.
+      if (generation == _generation) {
+        await (_recovering ??= () async {
+          _session = null; version = mcpProtocolVersion;
+          await connect(lifetime);
+        }().whenComplete(() => _recovering = null)).asCancellable(token);
+      }
+      return await _request(method, params, cancellation: token, onNotification: onNotification,
+        inputSchema: inputSchema, retrySafe: retrySafe, recovered: true);
     } finally {
       deadline.cancel();
     }
@@ -243,7 +271,22 @@ class McpConnection {
 
   void _write(Json message) {
     if (lifetime.isCancelled) return;
-    _process?.stdin.writeln(jsonEncode(message));
+    _process?.input.writeln(jsonEncode(message));
+  }
+
+  void _logStderr(List<int> bytes) {
+    for (final byte in bytes) {
+      if (byte == 10) { _flushStderr(); continue; }
+      _stderrLine.add(byte);
+      if (_stderrLine.length >= 16384) _flushStderr();
+    }
+  }
+  void _flushStderr() {
+    if (_stderrLine.isEmpty) return;
+    // Diagnostics are untrusted local logs, never MCP responses, client events
+    // or telemetry carriers. Bound unterminated lines independently of framing.
+    stderr.writeln('MCP server stderr: ${utf8.decode(_stderrLine, allowMalformed: true)}');
+    _stderrLine.clear();
   }
 
   void _receive(Json message) {
@@ -281,20 +324,21 @@ class McpConnection {
     final pending = _pending.remove(message['id']);
     if (pending == null || pending.result.isCompleted) return;
     try {
-      pending.result.complete(_result(message));
+      pending.result.complete(_result(message, discovery: pending.method == 'server/discover'));
     } catch (error, stack) {
       pending.result.completeError(error, stack);
     }
   }
 
-  Json _result(Json message, {int? status}) {
+  Json _result(Json message, {int? status, bool discovery = false, bool legacyHttp = false}) {
     if (message['error'] is Map) {
       final error = jsonObject(message['error']);
       throw McpFailure(
-        'MCP request failed (code ${error['code']})',
+        error['message'] as String? ?? 'MCP request failed (code ${error['code']})',
         code: error['code'] as int?,
         status: status,
         data: error['data'] is Map ? jsonObject(error['data']) : null,
+        legacyFallback: discovery && (legacyHttp || _legacyError(error)),
       );
     }
     if (status != null && (status < 200 || status >= 300)) {
@@ -316,11 +360,9 @@ class McpConnection {
     void Function(Json)? notify,
     Json? schema, {
     bool retrySafe = false,
+    required String protocolVersion,
   }) async {
     final canRetry = retrySafe || const {
-      'server/discover',
-      'initialize',
-      'notifications/initialized',
       'tools/list',
       'resources/list',
       'resources/templates/list',
@@ -332,7 +374,7 @@ class McpConnection {
     for (var retries = 0; ; retries++) {
       token.throwIfCancelled();
       try {
-        return await _httpOnce(body, token, notify, schema);
+        return await _httpOnce(body, token, notify, schema, protocolVersion: protocolVersion);
       } catch (error) {
         token.throwIfCancelled();
         if (!canRetry || retries >= _httpRetryDelays.length ||
@@ -356,28 +398,32 @@ class McpConnection {
     Json body,
     CancellationToken token,
     void Function(Json)? notify,
-    Json? schema,
+    Json? schema, {required String protocolVersion}
   ) async {
     HttpClientRequest? outgoing;
     StreamIterator<Json>? messages;
     Future<void> Function()? closeBody;
-    final hook = CancellationHook(
-      token,
-      () => outgoing?.abort(token.exception),
-    );
+    final hook = CancellationHook(token, () => outgoing?.abort(token.exception));
     try {
       final access = await authorization?.call(token);
+      var uri = Uri.parse(requiredString(config, 'url')), verb = 'POST';
+      Uri? referer;
+      var sendBody = true;
+      final modern = protocolVersion == mcpProtocolVersion;
+      final version = protocolVersion;
+      final messageLimit = modern ? _maxMessageBytes : null;
+      final encodedBody = utf8.encode(jsonEncode(body));
+      HttpClientResponse response;
+      for (var redirects = 0; ; redirects++) {
       token.throwIfCancelled();
-      outgoing = await http
-          .postUrl(Uri.parse(requiredString(config, 'url')))
-          .then((value) {
-            if (token.isCancelled) value.abort(token.exception);
-            return value;
-          })
-          .asCancellable(token);
+      outgoing = await http.openUrl(verb, uri).then((value) {
+        if (token.isCancelled) value.abort(token.exception);
+        return value;
+      }).asCancellable(token);
       token.throwIfCancelled();
       outgoing.followRedirects = false;
-      outgoing.headers.contentType = ContentType.json;
+      outgoing.headers.set('User-Agent', mcpUserAgent);
+      if (sendBody) outgoing.headers.contentType = ContentType.json;
       outgoing.headers.set('Accept', 'application/json, text/event-stream');
       for (final entry in jsonObject(config['headers'] ?? {}).entries) {
         outgoing.headers.set(entry.key, entry.value as String);
@@ -390,6 +436,13 @@ class McpConnection {
         outgoing.headers.set(entry.key, value);
       }
       if (access != null) outgoing.headers.set('Authorization', 'Bearer $access');
+      if (referer != null) {
+        outgoing.headers.set('Referer', referer.toString());
+        if (uri.scheme == 'http') outgoing.headers.removeAll('Proxy-Authorization');
+      }
+      if (!sendBody) {
+        for (final name in ['Content-Type', 'Content-Length', 'Content-Encoding', 'Transfer-Encoding']) { outgoing.headers.removeAll(name); }
+      }
       outgoing.headers.set('MCP-Protocol-Version', version);
       if (_session != null && !modern) {
         outgoing.headers.set('Mcp-Session-Id', _session!);
@@ -399,23 +452,48 @@ class McpConnection {
         final params = jsonObject(body['params']);
         outgoing.headers.set('Mcp-Method', method);
         if (['tools/call', 'resources/read', 'prompts/get'].contains(method)) {
-          outgoing.headers.set(
-            'Mcp-Name',
-            headerValue(params[method == 'resources/read' ? 'uri' : 'name']),
-          );
+          outgoing.headers.set('Mcp-Name', headerValue(params[method == 'resources/read' ? 'uri' : 'name']));
         }
         if (method == 'tools/call' && schema != null) {
           final headers = schemaHeaders(schema, params['arguments']);
           headers.forEach(outgoing.headers.set);
         }
       }
-      outgoing.write(jsonEncode(body));
-      final uri = Uri.parse(requiredString(config, 'url'));
-      final response = await traceAsync('mcp.http.headers', () => outgoing!.close().asCancellable(token),
-        category: 'http', attributes: {'http.request.method': 'POST', 'server.address': uri.host, 'url.path': uri.path});
+      if (sendBody) { outgoing.contentLength = encodedBody.length; outgoing.add(encodedBody); }
+      response = await traceAsync('mcp.http.headers', () => outgoing!.close().asCancellable(token),
+        category: 'http', attributes: {'http.request.method': verb, 'server.address': uri.host, 'url.path': uri.path});
       traceInstant('mcp.http.response', category: 'http', attributes: {'http.response.status_code': response.statusCode});
+      if (const {301, 302, 303, 307, 308}.contains(response.statusCode)) {
+        await response.listen((_) {}).cancel();
+        if (modern) throw McpFailure('MCP modern HTTP redirect rejected (${response.statusCode})', status: response.statusCode);
+        final location = response.headers.value('location');
+        if (location == null) throw McpFailure('MCP redirect has no location', status: response.statusCode);
+        final next = uri.resolve(location);
+        if (!{'http', 'https'}.contains(next.scheme) || next.userInfo.isNotEmpty || next.origin != uri.origin) {
+          throw McpFailure('MCP redirect to a different origin was rejected', status: response.statusCode);
+        }
+        if (redirects >= 10) throw McpFailure('MCP redirect limit exceeded', status: response.statusCode);
+        if (const {301, 302, 303}.contains(response.statusCode) && verb == 'POST') { verb = 'GET'; sendBody = false; }
+        outgoing.abort(); referer = uri; uri = next.removeFragment(); continue;
+      }
+      break;
+      }
       if (response.statusCode == 401 || response.statusCode == 403) {
-        onAuthChallenge?.call(response.statusCode, response.headers['www-authenticate'] ?? [], sentToken: access != null);
+        final headers = response.headers['www-authenticate'] ?? <String>[];
+        onAuthChallenge?.call(response.statusCode, headers, sentToken: access != null);
+        final challenges = bearerChallenges(headers);
+        final insufficient = challenges.where((challenge) => challenge.parameters['error'] == 'insufficient_scope').firstOrNull;
+        if (response.statusCode == 403 && insufficient != null) {
+          await response.listen((_) {}).cancel();
+          throw McpFailure('Insufficient scope', status: 403, data: {
+            'required_scope': requiredScope(insufficient), 'www_authenticate': insufficient.header,
+          });
+        }
+        if (response.statusCode == 401 && body['method'] == 'tools/call' && challenges.isNotEmpty) {
+          await response.listen((_) {}).cancel();
+          return {'content': [{'type': 'text', 'text': 'Authentication required'}], 'isError': true,
+            '_meta': {'mcp/www_authenticate': [headers.join(', ')]}};
+        }
       }
       if (!modern && body['method'] == 'initialize') {
         _session = response.headers.value('Mcp-Session-Id');
@@ -430,8 +508,8 @@ class McpConnection {
             onCancel: () => unawaited(input.cancel()),
           )) {
             bytes.addAll(input.current);
-            if (bytes.length > _maxMessageBytes) {
-              throw const McpFailure('MCP response exceeds the 64 MiB transport limit');
+            if (messageLimit != null && bytes.length > messageLimit) {
+              throw McpFailure('MCP response exceeds $messageLimit bytes');
             }
           }
         } finally {
@@ -444,13 +522,15 @@ class McpConnection {
           throw McpFailure(
             'MCP endpoint returned an invalid response',
             status: response.statusCode,
+            legacyFallback: body['method'] == 'server/discover' && const {404, 405}.contains(response.statusCode),
           );
         }
-        if (message['id'] != body['id'] &&
-            !(response.statusCode >= 400 && message['id'] == null)) {
-          throw const McpFailure('MCP response ID does not match its request');
+        final legacyHttp = body['method'] == 'server/discover' && response.statusCode == 400 && message['id'] == null &&
+          message['error']?['code'] == -32000 && _legacyPrevalidation(message['error']['message'] as String? ?? '');
+        if (message['id'] != body['id'] && !legacyHttp) {
+          throw McpFailure('MCP response ID does not match its request', status: response.statusCode, code: -32020);
         }
-        return _result(message, status: response.statusCode);
+        return _result(message, status: response.statusCode, discovery: body['method'] == 'server/discover', legacyHttp: legacyHttp);
       }
       if (response.statusCode != 200) {
         throw McpFailure(
@@ -461,14 +541,14 @@ class McpConnection {
       final input = ownStream(traceStream(response, 'mcp.http.body', size: (chunk) => chunk.length, cancellation: token), token);
       closeBody = input.close;
       messages = StreamIterator(
-        decodeSse(input.stream, maxEventBytes: _maxMessageBytes),
+        decodeSse(input.stream, maxEventBytes: messageLimit),
       );
       while (await messages.moveNext().asCancellable(
         token,
         onCancel: () => unawaited(messages!.cancel()),
       )) {
         final message = messages.current;
-        if (message['id'] == body['id']) return _result(message);
+        if (message['id'] == body['id']) return _result(message, discovery: body['method'] == 'server/discover');
         if (message.containsKey('id')) {
           throw const McpFailure('Unexpected MCP server request or response');
         }
@@ -505,52 +585,75 @@ class McpConnection {
     if (_process != null) {
       _write(body);
     } else {
-      await _http(body, token, null, null);
+      await _http(body, token, null, null, protocolVersion: version);
     }
   }
 
-  Future<void> close() => _closing ??= _close();
-  Future<void> _close() async {
-    lifetime.cancel(
-      const McpFailure(
-        'MCP connection closed; an interrupted call may have taken effect',
-      ),
-    );
+  Future<void> close({McpFailure? reason}) => _closing ??= _close(reason);
+  Future<void> _close(McpFailure? reason) async {
+    final failure = reason ?? const McpFailure('MCP connection closed; an interrupted call may have taken effect');
+    lifetime.cancel(failure);
     for (final pending in _pending.values.toList()) {
       if (!pending.result.isCompleted) {
-        pending.result.completeError(
-          const McpFailure(
-            'MCP connection closed; an interrupted call may have taken effect',
-          ),
-        );
+        pending.result.completeError(failure);
       }
     }
     _pending.clear();
     final process = _process;
     if (process != null) {
-      unawaited(process.stdin.close().catchError((Object _) {}));
-      try {
-        await process.exitCode.timeout(const Duration(seconds: 1));
-      } on TimeoutException {
-        process.kill(ProcessSignal.sigterm);
-        try {
-          await process.exitCode.timeout(const Duration(seconds: 1));
-        } on TimeoutException {
-          process.kill(ProcessSignal.sigkill);
-          await process.exitCode;
-        }
-      }
+      // Queue a bounded drain before yielding. An escaped descendant may hold
+      // stderr forever; neither dropping diagnostics nor waiting for EOF is OK.
+      final drained = _stderrDone.future.timeout(const Duration(milliseconds: 250), onTimeout: () {});
+      await process.stop();
+      await drained;
+      await process.dispose();
     }
     await _stdout?.cancel();
     await _stderr?.cancel();
+    _flushStderr();
     if (!closed.isCompleted) closed.complete();
   }
 }
 
 class _Pending {
-  _Pending(this.notify);
+  _Pending(this.method, this.notify);
+  final String method;
   final result = Completer<Json>();
   final void Function(Json)? notify;
+}
+
+// Codex rmcp-client/utils.rs and network-proxy/certs.rs. CA paths inherited
+// from the host are relative to the host cwd, not the server's configured cwd.
+const _caEnvironment = ['CODEX_CA_CERTIFICATE', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'GIT_SSL_CAINFO', 'CARGO_HTTP_CAINFO',
+  'PIP_CERT', 'BUNDLE_SSL_CA_CERT', 'npm_config_cafile', 'NPM_CONFIG_CAFILE'];
+const _hostOnlyEnvironment = {'codex_exec_server_noise_auth_token', 'node_repl_auth_token',
+  'codex_guardian_decisions_api_key', 'openai_federation_rule_id',
+  'openai_identity_token_file', 'openai_workload_identity_context'};
+
+Map<String, String> mcpEnvironment(Json config) {
+  final defaults = Platform.isWindows ? ['PATH', 'PATHEXT', 'SHELL', 'COMSPEC', 'SYSTEMROOT', 'WINDIR',
+    'SYSTEMDRIVE', 'USERNAME', 'USERDOMAIN', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'PROGRAMFILES',
+    'PROGRAMFILES(X86)', 'PROGRAMW6432', 'PROGRAMDATA', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP',
+    'TMPDIR', 'POWERSHELL', 'PWSH'] : ['PATH', 'HOME', 'LOGNAME', 'USER', 'SHELL',
+    '__CF_USER_TEXT_ENCODING', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TZ'];
+  final environment = <String, String>{
+    for (final name in [...defaults, ...(config['inherit_env'] as List? ?? []).cast<String>()])
+      if (Platform.environment[name] case final String value) name: value,
+  };
+  for (final name in _caEnvironment) {
+    final value = Platform.environment[name];
+    if (value == null || value.isEmpty) { environment.remove(name); continue; }
+    environment[name] = File(value).absolute.path;
+  }
+  for (final entry in jsonObject(config['env'] ?? {}).entries) {
+    if (Platform.isWindows || _caEnvironment.any((name) => name.toLowerCase() == entry.key.toLowerCase())) {
+      environment.removeWhere((name, _) => name.toLowerCase() == entry.key.toLowerCase());
+    }
+    environment[entry.key] = entry.value as String;
+  }
+  environment.removeWhere((name, _) => _hostOnlyEnvironment.contains(name.toLowerCase()));
+  return environment;
 }
 
 String headerValue(Object? value) {

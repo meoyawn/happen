@@ -174,7 +174,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       hasActiveLocalTasks: (_server?.activeTaskCount ?? 0) > 0,
       child: child!,
     ),
-    debugShowCheckedModeBanner: false,
+    debugShowCheckedModeBanner: true,
     theme: desktopTheme(),
     home: _error != null
         ? Scaffold(

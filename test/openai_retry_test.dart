@@ -569,7 +569,79 @@ void main() {
       expect(retryAdvice(value), isNull, reason: '$value');
     }
   });
+
+  // Codex scenarios_content_filter.rs and prompts/model_messages.rs. Recovery
+  // changes the next actual request; ordinary transport retries above do not.
+  for (final (name, guidance, expected) in [
+    ('default', null, _filterGuidance), ('empty', ' \n ', _filterGuidance),
+    ('catalog', 'Your previous response was blocked. Offer a permitted alternative.',
+      'Your previous response was blocked. Offer a permitted alternative.'),
+    ('512 UTF-8 bytes', 'é' * 256, 'é' * 256), ('oversized UTF-8', 'é' * 257, _filterGuidance),
+  ]) {
+    test('Codex content-filter recovery appends bounded $name guidance after each block and retains delivered output', () {
+      final messages = GptModel('gpt-6.1-sol').data['model_messages'] as Map;
+      final previous = messages['content_filter_guidance']; messages['content_filter_guidance'] = guidance;
+      addTearDown(() => messages['content_filter_guidance'] = previous);
+      fakeAsync((time) {
+        const partial = {'type': 'message', 'id': 'partial-message', 'role': 'assistant',
+          'content': [{'type': 'output_text', 'text': 'I can help with this topic.'}]};
+        final transport = _Transport((attempt, _) => _events(attempt <= 2 ? [
+          if (attempt == 1) {'type': 'response.output_item.done', 'output_index': 0, 'item': partial},
+          _filtered,
+        ] : [_completed]));
+        final events = <Json>[];
+        final result = _settle(time, _respond(_client(transport), input: const [
+          {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'Help me with this topic.'}]},
+        ], onEvent: events.add), within: const Duration(seconds: 2));
+        expect(result.error, isNull); expect(result.value!.text, 'Recovered');
+        expect(transport.bodies, hasLength(3));
+        final inputs = transport.bodies.map((body) => body['input'] as List).toList();
+        expect(inputs[0], hasLength(1)); expect(inputs[1], hasLength(3)); expect(inputs[2], hasLength(4));
+        expect(inputs[1][1], partial); expect(inputs[2][1], partial);
+        for (final input in [inputs[1].skip(2), inputs[2].skip(2)]) {
+          for (final item in input) {
+            expect(item['role'], 'developer');
+            expect(item['content'], [{'type': 'input_text', 'text': '<content_filter_guidance>\n$expected\n</content_filter_guidance>'}]);
+          }
+        }
+        expect(events.where((event) => event['type'] == 'model.output'), hasLength(1));
+        expect(events.where((event) => event['type'] == 'model.retrying').map((event) => event['attempt']), [1, 2]);
+      });
+    });
+  }
+  for (final compaction in [false, true]) {
+    test('Codex content-filter exhaustion keeps the stream budget and ${compaction ? 'does not add sampling guidance during compaction' : 'records guidance even for the final block'}', () {
+      fakeAsync((time) {
+        final transport = _Transport((_, _) => _events([_filtered]));
+        final events = <Json>[];
+        final result = _settle(time, _respond(_client(transport), input: [if (compaction) {'type': 'compaction_trigger'}],
+          onEvent: events.add), within: const Duration(seconds: 15));
+        expect(result.error, isA<ModelFailure>().having((error) => error.code, 'typed content filter', 'content_filter'));
+        expect(transport.bodies, hasLength(6));
+        expect(events.where((event) => event['type'] == 'model.recovery'), hasLength(compaction ? 0 : 6));
+        expect(transport.bodies.map((body) => (body['input'] as List).length), compaction ? everyElement(1) : [0, 1, 2, 3, 4, 5]);
+        final count = transport.bodies.length; time.elapse(const Duration(hours: 1)); expect(transport.bodies, hasLength(count));
+      });
+    });
+  }
+  test('cancelling content-filter host admission stops waiting without sending another request', () {
+    fakeAsync((time) {
+      final transport = _Transport((_, _) => _events([_filtered]));
+      final blocked = Completer<void>(), cancellation = CancellationToken();
+      var admitted = false;
+      final pending = _client(transport).respond(model: 'gpt-6.1-sol', instructions: '', input: [], tools: [],
+        sessionId: 'cancel-recovery', cancellation: cancellation, onRecovery: (_) { admitted = true; return blocked.future; });
+      time.flushMicrotasks(); expect(admitted, true); cancellation.cancel();
+      try {
+        expect(_settle(time, pending).error, isA<CancelledException>());
+        expect(transport.bodies, hasLength(1));
+      } finally { blocked.complete(); time.flushMicrotasks(); }
+    });
+  });
 }
+
+const _filterGuidance = 'Your previous response was blocked by a content filter. Do not treat this as a transient failure or try to reproduce or work around the blocked content through repeated attempts, altered formatting, splitting, encoding, tools, subagents, or later wakes. Briefly explain the limitation and offer a permitted alternative. Continue unrelated authorized work.';
+const _filtered = <String, dynamic>{'type': 'response.incomplete', 'response': {'incomplete_details': {'reason': 'content_filter'}}};
 
 const _completed = <String, dynamic>{'type': 'response.completed', 'response': {
   'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': 'Recovered'}]}],

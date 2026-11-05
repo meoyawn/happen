@@ -897,7 +897,17 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void newSession([Project? owner]) {
-    final draft = SessionDraft('draft:${newId()}', (owner ?? project)?.checkoutKey,
+    final checkoutKey = (owner ?? project)?.checkoutKey;
+    final existing = sessionDrafts.reversed.where((draft) =>
+      draft.checkoutKey == checkoutKey && draft.submission == null &&
+      (drafts[draft.id] ?? '').trim().isEmpty &&
+      (fileDrafts[draft.id]?.isEmpty ?? true) &&
+      (attachmentDrafts[draft.id]?.isEmpty ?? true)).firstOrNull;
+    if (existing != null) {
+      openDraft(existing);
+      return;
+    }
+    final draft = SessionDraft('draft:${newId()}', checkoutKey,
       provider: _provider, model: _model, reasoning: _reasoning);
     sessionDrafts.add(draft);
     openTabIds.add(draft.id);

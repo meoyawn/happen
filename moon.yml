@@ -5,7 +5,7 @@ toolchains:
 tasks:
   analyze:
     description: Check Dart types and configured lint rules across the workspace
-    command: dart analyze
+    command: dart --disable-dart-dev tool/test_isolated.dart analyze
     preset: utility
     inputs:
       - analysis_options.yaml
@@ -69,7 +69,7 @@ tasks:
 
   test-unit:
     description: Run source-level Dart tests without building the CLI
-    command: dart run tool/test_unit.dart
+    command: dart --disable-dart-dev tool/test_isolated.dart run tool/test_unit.dart
     preset: utility
     inputs:
       - pubspec.yaml
@@ -83,7 +83,7 @@ tasks:
 
   test-e2e:
     description: Compare real outbound OpenAI requests and behavior against Codex
-    command: dart run tool/test_e2e.dart
+    command: dart --disable-dart-dev tool/test_isolated.dart run tool/test_e2e.dart
     preset: utility
     inputs:
       - test/contracts/**/*

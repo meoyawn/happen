@@ -1,16 +1,7 @@
 part of '../storage.dart';
 
 extension _NativeSession on TaskStore {
-  void _persistNative(List<Json> records, Json changes, Json next) {
-    var transaction = false, recorded = false;
-    final ownsTransaction = db.raw.autocommit;
-    void begin() {
-      if (!transaction) {
-        db.execute(ownsTransaction ? 'BEGIN' : 'SAVEPOINT native_append'); transaction = true;
-      }
-    }
-    try {
-      for (final record in records) {
+  ({List<Json> lines, List<Json> context}) _nativeRecord(Json record, Json next) {
         final data = jsonObject(record['data']), type = record['type'];
         final context = modelContextItems(type as String, data).map((item) => item.toJson()).toList();
         final lines = <Json>[];
@@ -52,8 +43,36 @@ extension _NativeSession on TaskStore {
           }
           if (method == 'thread/tokenUsage/updated') lines.add(event('token_count', {'info': params['tokenUsage']}));
         }
+    return (lines: lines, context: context);
+  }
+
+  int _persistNative(List<Json> records, Json changes, Json next) {
+    final entries = [for (final record in records) (record: record, batch: _nativeRecord(record, next))];
+    if (entries.any((entry) => entry.batch.context.isNotEmpty && entry.batch.lines.isEmpty)) {
+      throw StateError('Context has no native rollout record');
+    }
+    final durableRuntime = records.any((record) => const {
+      'input.pending', 'input.delivery', 'input.discarded', 'task.forked', 'task.archived', 'task.unarchived',
+    }.contains(record['type']));
+    if (!entries.any((entry) => entry.batch.lines.isNotEmpty) && changes.isEmpty && !durableRuntime) return 0;
+    final nativeCount = _pendingNativeItems.length;
+    if (nativeCount > 0) {
+      // Foreground exits piggyback on an existing durability boundary. A later
+      // streaming delta must neither commit nor announce the queued completion.
+      final completions = _pendingNativeItems.take(nativeCount).toList();
+      final completion = <String, dynamic>{...records.first, 'type': 'native.completions', 'data': {'nativeCompletions': completions}};
+      final notifications = threadNotifications(taskId, completion, next);
+      completion['notifications'] = notifications;
+      entries.insert(0, (record: completion, batch: _nativeRecord(completion, next)));
+      records.first['data'] = {...jsonObject(records.first['data']), 'nativeCompletions': completions};
+      records.first['notifications'] = [...notifications, ...records.first['notifications'] as List];
+    }
+    final ownsTransaction = db.raw.autocommit;
+    db.execute(ownsTransaction ? 'BEGIN' : 'SAVEPOINT native_append');
+    try {
+      for (final entry in entries) {
+        final record = entry.record, lines = entry.batch.lines, context = entry.batch.context;
         if (lines.isNotEmpty) {
-          begin(); recorded = true;
           final first = native.nextOrdinal;
           native.record(lines, timestamp: record['created_at'] as String);
           if (context.isNotEmpty) {
@@ -62,26 +81,15 @@ extension _NativeSession on TaskStore {
             db.execute("UPDATE rollout_lines SET happen_context='[]',happen_seq=? WHERE ordinal >= ?", [record['seq'], first]);
             db.execute('UPDATE rollout_lines SET happen_context=? WHERE ordinal IS ?', [jsonEncode(context), first]);
           }
-        } else if (context.isNotEmpty) {
-          throw StateError('Context has no native rollout record');
         }
       }
-      // Durable inbox admission and ownership changes cannot wait for a model
-      // response. Streaming starts/deltas themselves are never canonical rows.
-      final durableRuntime = records.any((record) => const {
-        'input.pending', 'input.delivery', 'input.discarded', 'task.forked',
-        'task.archived', 'task.unarchived',
-      }.contains(record['type']));
-      if (recorded || changes.isNotEmpty || durableRuntime) {
-        begin(); _metadata(changes); _runtime(next);
-        if (recorded) native.tryProject();
-        db.execute(ownsTransaction ? 'COMMIT' : 'RELEASE native_append');
-      }
+      _metadata(changes); _runtime(next);
+      if (entries.any((entry) => entry.batch.lines.isNotEmpty)) native.tryProject();
+      db.execute(ownsTransaction ? 'COMMIT' : 'RELEASE native_append');
+      return nativeCount;
     } catch (_) {
-      if (transaction) {
-        db.execute(ownsTransaction ? 'ROLLBACK' : 'ROLLBACK TO native_append');
-        if (!ownsTransaction) db.execute('RELEASE native_append');
-      }
+      db.execute(ownsTransaction ? 'ROLLBACK' : 'ROLLBACK TO native_append');
+      if (!ownsTransaction) db.execute('RELEASE native_append');
       rethrow;
     }
   }

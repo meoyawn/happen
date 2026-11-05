@@ -156,7 +156,7 @@ class _DesktopViewState extends State<DesktopView> {
           session: session,
           actions: [
             (title: 'New session', keywords: 'new chat task', icon: Icons.edit_square,
-              shortcut: null, run: () => unawaited(_run(_newChat))),
+              shortcut: mac ? '⌘ N' : 'Ctrl N', run: () => unawaited(_run(_newChat))),
             (title: 'Home', keywords: 'all sessions', icon: Icons.grid_view_outlined,
               shortcut: null, run: _showHome),
             (title: 'Archived sessions', keywords: 'archive chats tasks restore unarchive',
@@ -167,16 +167,16 @@ class _DesktopViewState extends State<DesktopView> {
             (title: 'Settings', keywords: 'preferences appearance accounts interface', icon: Icons.settings_outlined,
               shortcut: mac ? '⌘ ,' : null, run: () => unawaited(_settings())),
             if (_canOpenTerminal)
-              (title: 'Open terminal', keywords: 'shell console', icon: Icons.terminal_outlined,
-                shortcut: mac ? '⌘ J' : 'Ctrl J', run: _openTerminal),
+              (title: 'Toggle terminal', keywords: 'shell console', icon: Icons.terminal_outlined,
+                shortcut: mac ? '⌘ J' : 'Ctrl J', run: _toggleTerminal),
               (title: 'Toggle sidebar', keywords: 'show hide navigation', icon: Icons.view_sidebar_outlined,
-                shortcut: mac ? '⌘ ⇧ B' : 'Ctrl Shift B',
+                shortcut: mac ? '⌘ B' : 'Ctrl B',
                 run: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)))),
             if (task != null && !_homeOpen) ...[
               (title: 'Open browser', keywords: 'web url page preview', icon: Icons.language_rounded,
-                shortcut: null, run: () => session.openBrowserPanel(task)),
+                shortcut: mac ? '⌘ ⇧ J' : 'Ctrl Shift J', run: _toggleBrowserPanel),
               (title: 'Toggle side panel', keywords: 'context files changes', icon: Icons.vertical_split_outlined,
-                shortcut: mac ? '⌘ B' : 'Ctrl B', run: _toggleSidePanel),
+                shortcut: mac ? '⌘ ⌥ B' : 'Ctrl Alt B', run: _toggleSidePanel),
               if (session.connected && !task.archiving)
                 (title: task.archived ? 'Unarchive current session' : 'Archive current session',
                   keywords: 'archive restore task', icon: task.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
@@ -327,52 +327,94 @@ class _DesktopViewState extends State<DesktopView> {
     if (!mounted || ModalRoute.of(context)?.isCurrent != true ||
         event is! KeyDownEvent && event is! KeyRepeatEvent) { return KeyEventResult.ignored; }
     final keyboard = HardwareKeyboard.instance;
-    final primary = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isMetaPressed : keyboard.isControlPressed;
-    final other = defaultTargetPlatform == TargetPlatform.macOS ? keyboard.isControlPressed : keyboard.isMetaPressed;
-    if (event.logicalKey == LogicalKeyboardKey.keyK && primary && !other &&
-        !keyboard.isShiftPressed && !keyboard.isAltPressed) {
-      if (event is KeyDownEvent) unawaited(_commandMenu());
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
-        keyboard.isShiftPressed && !keyboard.isAltPressed) {
-      if (event is KeyDownEvent) unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)));
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.keyJ && primary && !other &&
-        !keyboard.isAltPressed && !keyboard.isShiftPressed && _canOpenTerminal) {
-      if (event is KeyDownEvent) { _openTerminal(); }
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.keyB && primary && !other &&
-        !keyboard.isShiftPressed && !keyboard.isAltPressed && session.task != null && !_homeOpen) {
-      if (event is KeyDownEvent) _toggleSidePanel();
-      return KeyEventResult.handled;
-    }
-    if (!keyboard.isAltPressed || keyboard.isMetaPressed ||
-        keyboard.isControlPressed || keyboard.isShiftPressed) { return KeyEventResult.ignored; }
-    final offset = switch (event.logicalKey) {
-      LogicalKeyboardKey.arrowUp => -1,
-      LogicalKeyboardKey.arrowDown => 1,
-      _ => 0,
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed)) return KeyEventResult.ignored;
+    SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
+      SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
+    final task = _homeOpen ? null : session.task;
+    final panels = task == null ? null : session.panelLayouts[task.id];
+    final terminalFocused = terminalHasFocus;
+    final bindings = <ShortcutActivator, VoidCallback>{
+      shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
+      shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
+      shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
+      shortcut(LogicalKeyboardKey.keyJ, shift: true): _toggleBrowserPanel,
+      shortcut(LogicalKeyboardKey.comma): () => unawaited(_settings()),
+      shortcut(LogicalKeyboardKey.bracketLeft, shift: true): () => _selectAdjacentTask(-1),
+      shortcut(LogicalKeyboardKey.bracketRight, shift: true): () => _selectAdjacentTask(1),
+      for (final (index, key) in [
+        LogicalKeyboardKey.digit1, LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
+        LogicalKeyboardKey.digit4, LogicalKeyboardKey.digit5, LogicalKeyboardKey.digit6,
+        LogicalKeyboardKey.digit7, LogicalKeyboardKey.digit8, LogicalKeyboardKey.digit9,
+      ].indexed)
+        shortcut(key): () => _selectThreadAt(index),
+      if (terminalFocused) ...{
+        shortcut(LogicalKeyboardKey.keyN): () {
+          if (_terminalScope case final scope?) session.terminals.newShell(scope);
+        },
+        shortcut(LogicalKeyboardKey.keyW): _closeTerminal,
+      } else ...{
+        shortcut(LogicalKeyboardKey.keyK): () => unawaited(_commandMenu()),
+        shortcut(LogicalKeyboardKey.keyN): () => unawaited(_run(_newChat)),
+        shortcut(LogicalKeyboardKey.keyN, shift: true): () => unawaited(_run(_newChat)),
+        shortcut(LogicalKeyboardKey.keyO, shift: true): () => unawaited(_run(_newChat)),
+        shortcut(LogicalKeyboardKey.keyM, shift: true): () => _openComposerMenu(),
+        shortcut(LogicalKeyboardKey.keyE, shift: true): () => _openComposerMenu(effort: true),
+        shortcut(LogicalKeyboardKey.keyW): () {
+          if (task != null && panels?.opened == true && panels?.active != null) {
+            session.closeSessionPanel(task, panels!.active!);
+            if (!panels.opened) _focusComposer();
+          }
+        },
+        if (task != null) ...{
+          if (panels?.opened == true)
+            shortcut(LogicalKeyboardKey.keyT): () => session.newSessionPanelTab(task),
+          shortcut(LogicalKeyboardKey.keyP, shift: true): () =>
+            unawaited(_run(() => session.pinTask(task, !session.pinnedTaskIds.contains(task.id)))),
+        },
+      },
+      if (task != null && panels?.closed.isNotEmpty == true)
+        shortcut(LogicalKeyboardKey.keyT, shift: true): () => session.openSessionPanel(task, panels!.closed.first),
     };
-    if (offset == 0) return KeyEventResult.ignored;
-    _selectAdjacentTask(offset);
-    return KeyEventResult.handled;
+    for (final binding in bindings.entries) {
+      if (!binding.key.accepts(event, keyboard)) continue;
+      if (event is KeyDownEvent) binding.value();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   void _selectAdjacentTask(int offset) {
-    final tasks = sidebarThreads(session);
-    final ids = tasks.map((entry) => entry.$2.id).toList();
+    final ids = sidebarThreadIds(session);
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
-    if (next < 0 || next >= ids.length) { return; }
-    final draft = session.sessionDrafts.where((draft) => draft.id == ids[next]).firstOrNull;
+    _selectThreadAt(next);
+  }
+
+  void _selectThreadAt(int index) {
+    final ids = sidebarThreadIds(session);
+    if (index < 0 || index >= ids.length) return;
+    final id = ids[index];
+    final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
     if (draft != null) { _activateDraft(draft); }
     else {
-      final entry = tasks.where((entry) => entry.$2.id == ids[next]).firstOrNull;
-      if (entry != null) { _openTask(entry.$1, entry.$2); }
+      for (final project in session.projects) {
+        final task = project.tasks.where((task) => task.id == id).firstOrNull;
+        if (task != null) {
+          _openTask(project, task);
+          _focusComposer();
+          return;
+        }
+      }
     }
+  }
+
+  void _openComposerMenu({bool effort = false}) {
+    final composer = FocusManager.instance.primaryFocus?.context?.findAncestorStateOfType<_ComposerState>() ??
+      _composer.currentState;
+    if (composer == null) return;
+    final menu = (effort ? composer._effortMenu.currentState : null) ?? composer._modelMenu.currentState;
+    if (menu?.widget.enabled == true) menu!.showButtonMenu();
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
@@ -422,6 +464,34 @@ class _DesktopViewState extends State<DesktopView> {
     if (!_canOpenTerminal || project == null) return;
     if (_homeOpen) setState(() => session.viewingConversation = true);
     session.terminals.open(_terminalScope!, project.path);
+  }
+
+  void _toggleTerminal() {
+    final scope = _terminalScope;
+    if (scope == null) return;
+    if (session.terminals.groups[scope]?.visible == true) {
+      session.terminals.hide(scope);
+      _focusComposer();
+    } else {
+      _openTerminal();
+    }
+  }
+
+  void _closeTerminal() {
+    final scope = _terminalScope;
+    final shell = session.terminals.groups[scope]?.active;
+    if (scope == null || shell == null) return;
+    session.terminals.closeShell(scope, shell);
+    if (session.terminals.groups[scope]?.visible != true) _focusComposer();
+  }
+
+  void _toggleBrowserPanel() {
+    final task = _homeOpen ? null : session.task;
+    if (task == null) return;
+    final tab = session.panelsFor(task).tabs.where(isBrowserPanel).firstOrNull;
+    if (tab == null) { session.openBrowserPanel(task); }
+    else { session.openSessionPanel(task, tab, toggle: true); }
+    if (!session.panelsFor(task).opened) _focusComposer();
   }
 
   void _toggleSidePanel() {
@@ -607,8 +677,8 @@ class _DesktopViewState extends State<DesktopView> {
             }),
         if (session.project != null)
           IconButton(
-            tooltip: 'Open terminal (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘J' : 'Ctrl+J'})',
-            onPressed: _canOpenTerminal ? _openTerminal : null,
+            tooltip: 'Toggle terminal (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘J' : 'Ctrl+J'})',
+            onPressed: _canOpenTerminal ? _toggleTerminal : null,
             icon: const Icon(Icons.terminal_outlined, size: 17, color: Color(0xff777b82)),
           ),
         if (session.task != null && session.project != null)
@@ -619,7 +689,7 @@ class _DesktopViewState extends State<DesktopView> {
           ),
         if (session.task != null && session.panelLayouts[session.task!.id]?.opened != true)
           IconButton(key: const ValueKey('toggle-side-panel'),
-            tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘B' : 'Ctrl+B'})',
+            tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})',
             onPressed: _toggleSidePanel,
             icon: const SidePanelIcon(opened: false)),
       ],
@@ -656,6 +726,8 @@ class _ComposerState extends State<_Composer> {
   );
   final _focus = FocusNode();
   final _autocomplete = GlobalKey<ComposerAutocompleteState>();
+  late final _modelMenu = GlobalKey<PopupMenuButtonState<String>>();
+  late final _effortMenu = GlobalKey<PopupMenuButtonState<String>>();
   var _attachmentLifetime = CancellationToken();
   bool _receivingAttachments = false, _draggingAttachments = false;
   List<ComposerAttachment> get _attachments => _submitting ? const []
@@ -1049,7 +1121,7 @@ class _ComposerState extends State<_Composer> {
         target: widget.target,
         commands: {
           if (widget.target == null && _project != null)
-            '/new': (description: 'Start a new session', run: () => unawaited(session.select(_project!))),
+            '/new': (description: 'Start a new session', run: () => session.newSession(_project!)),
           if (defaultTargetPlatform == TargetPlatform.macOS)
             '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
           '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
@@ -1203,7 +1275,8 @@ class _ComposerState extends State<_Composer> {
                           ],
                           Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.start, children: [
                             if (answer == null)
-                              Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target))
+                              Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target,
+                                modelMenuKey: _modelMenu, effortMenuKey: _effortMenu))
                             else if (!answer.sending)
                               const Flexible(child: Padding(padding: EdgeInsets.only(left: 16),
                                 child: Text('↵ to continue · ⇧↵ for a new line', maxLines: 1, overflow: TextOverflow.ellipsis,

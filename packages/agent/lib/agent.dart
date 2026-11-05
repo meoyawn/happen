@@ -331,7 +331,7 @@ class _Agent {
       var mcpCatalog = mcpSnapshot, clientCatalog = clientSnapshot;
       Future<Json> readMcpCatalog([CancellationToken? token, bool revalidate = true]) async {
         final current = jsonObject(await callIsolate(network, 'mcp.catalog', {
-          'task_id': taskId, 'revision': mcpCatalog['revision'], 'revalidate': revalidate,
+          'task_id': taskId, 'cwd': cwd, 'revision': mcpCatalog['revision'], 'revalidate': revalidate,
         }, cancellation: token ?? work));
         if (current['unchanged'] != true) mcpCatalog = current;
         return mcpCatalog;
@@ -591,6 +591,16 @@ class _Agent {
                     // Accepted terminal usage drains before turn settlement, even
                     // when an interrupt races the received provider failure.
                     await countUsage(ModelUsage.fromJson(jsonObject(value['usage'])), token: _lifetime);
+                  } else if (value['type'] == 'model.recovery') {
+                    final acknowledgement = value['ack'] as SendPort;
+                    try {
+                      active.throwIfCancelled();
+                      event(await _append('context.injected', {'item': value['item']}));
+                      acknowledgement.send({'result': null});
+                    } catch (error) {
+                      acknowledgement.send({'error': 'Unable to persist recovery context'});
+                      rethrow;
+                    }
                   } else if (value['type'] == 'model.output') {
                     final item = jsonObject(value['item']);
                     if (!committedOutputIDs.add(requiredString(item, 'id'))) return;
@@ -924,14 +934,14 @@ class _Agent {
                     } else if (name.startsWith('mcp__')) {
                       output = jsonObject(
                         await callIsolate(network, 'mcp.call', {
-                          'task_id': taskId,
+                          'task_id': taskId, 'cwd': cwd,
                           'name': name,
                           'arguments': arguments,
                         }, cancellation: cancellation),
                       )..remove('_meta');
                     } else if (service != null) {
                       output = await callIsolate(network, 'mcp.resources', {
-                        'task_id': taskId,
+                        'task_id': taskId, 'cwd': cwd,
                         'method': service,
                         'arguments': arguments,
                       }, cancellation: cancellation);

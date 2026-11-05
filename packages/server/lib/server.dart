@@ -159,6 +159,11 @@ class AgentServer {
       events.listen((raw) {
         server._networkEvent(jsonObject(raw));
       });
+      final restoringEvents = server._restoreMcpEvents();
+      server._requests.add(restoringEvents);
+      unawaited(restoringEvents.catchError((Object error) {
+        if (!server._closing) traceError(error);
+      }).whenComplete(() => server._requests.remove(restoringEvents)));
       unawaited(
         network.done.then((_) {
           server._networkExited = true;
@@ -541,6 +546,11 @@ class AgentServer {
 
   Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt, String identityKey) async {
     final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
+    if (method.startsWith('mcp.') && params['threadId'] != null) {
+      final id = requiredString(params, 'threadId'); validateTaskId(id);
+      final page = await _readSession(_tasks[id] ?? _Task(id, null), 'thread/read', {'includeTurns': false}, cancellation);
+      params = {...params, 'task_id': id, 'cwd': page['thread']['cwd']};
+    }
     if (method == 'mcp.auth.login' || method == 'mcp.auth.logout') {
       final deadline = TimeoutCancellationToken(const Duration(minutes: 5));
       client.mcpLogins[requestId] = deadline;
@@ -1155,7 +1165,9 @@ class AgentServer {
         await _taskTools.release(task.id);
         _clientTools.archive(task.id);
         await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
-        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}'}, cancellation: _lifetime);
+        // Archive already cleared desired subscriptions in its own commit. Do
+        // not start a second writer operation while holding maintenance here.
+        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}', 'persist': false}, cancellation: _lifetime);
       }
       _broadcast(task.id, event);
     } finally {

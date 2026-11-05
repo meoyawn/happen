@@ -138,6 +138,12 @@ Future<void> _networkMain(List<Object?> args) async {
       'event': {'type': 'mcp.auth.changed', 'server': server},
     }),
     publicUrl: global['public_url'] as String?,
+    persistSubscription: (operation, params, cancellation) async {
+      try {
+        await callIsolate(startup['events'] as SendPort, 'mcp.subscription.$operation', params, cancellation: cancellation);
+      } on CancelledException { rethrow; }
+      catch (_) { throw const McpFailure('Unable to persist the thread event subscription', status: 503); }
+    },
     acceptThreadEvent: (event, cancellation) async {
       try {
         await callIsolate(startup['events'] as SendPort, 'mcp.event.accept', {'event': event}, cancellation: cancellation);
@@ -149,16 +155,23 @@ Future<void> _networkMain(List<Object?> args) async {
       'event': event,
     }),
   );
-  final startupServers = jsonObject(global['mcp_servers'] ?? {});
+  final startupServers = resolveMcpCwds(jsonObject(global['mcp_servers'] ?? {}),
+    base: Directory.current.path, defaultCwd: Directory.current.path);
   final startupExecutables = await readMcpExecutables(startupServers, lifetime);
   Map<String, String> revisions(Map<String, McpExecutable> executables) => {
     for (final entry in executables.entries) entry.key: entry.value.revision,
   };
   String fingerprint(Json servers, Map<String, McpExecutable> executables) =>
       jsonEncode([servers, revisions(executables)]);
+  final localCwds = <String>{}, localApplied = <String, String>{}, localErrors = <String, String>{};
+  final localPaths = <String, List<String>>{}, localReaders = <String, ConfigReader>{};
+  final localExecutables = <String, Map<String, McpExecutable>>{};
+  var acceptedServers = startupServers, acceptedExecutables = startupExecutables;
   Iterable<String> watchedPaths(Map<String, McpExecutable> executables) => [
     configPath, '$directory/config.json',
     for (final executable in executables.values) ...executable.paths,
+    for (final paths in localPaths.values) ...paths,
+    for (final executables in localExecutables.values) for (final executable in executables.values) ...executable.paths,
   ];
   final initialized = mcp.configure(startupServers, lifetime,
     executableRevisions: revisions(startupExecutables));
@@ -178,10 +191,47 @@ Future<void> _networkMain(List<Object?> args) async {
     });
   }
 
-  Future<void> reload(CancellationToken cancellation) {
+  Future<void> reloadLocal(String scope, CancellationToken cancellation) async {
+    try {
+      final paths = localPaths[scope] = await mcpConfigPaths(scope, cancellation);
+      var local = <String, dynamic>{};
+      for (final path in paths) {
+        if (path == configPath) continue;
+        final reader = localReaders.putIfAbsent(path, () => ConfigReader(partialMcp: true));
+        final layer = await reader.load(path, cancellation: cancellation);
+        local = mergeMcpConfig(local, resolveMcpCwds(jsonObject(layer.values['mcp_servers'] ?? {}), base: File(path).parent.path));
+      }
+      final servers = resolveMcpCwds({for (final name in local.keys)
+        name: mergeMcpConfig(jsonObject(acceptedServers[name] ?? {}), jsonObject(local[name]))}, base: scope, defaultCwd: scope);
+      parseConfig(jsonEncode({'mcp_servers': servers}));
+      final executables = await readMcpExecutables(servers, cancellation);
+      final encoded = fingerprint(servers, executables);
+      localExecutables[scope] = executables;
+      watcher.updatePaths(watchedPaths(acceptedExecutables));
+      if (encoded != localApplied[scope]) {
+        localApplied.remove(scope);
+        await mcp.configure(servers, cancellation, scope: scope, executableRevisions: revisions(executables));
+        localApplied[scope] = encoded;
+        configEvent('mcp.config.reloaded', {'cwd': scope, 'servers': mcp.status(scope: scope)});
+      }
+      localErrors.remove(scope);
+    } on CancelledException { rethrow;
+    } catch (error) {
+      final message = error is FormatException ? error.message : 'Could not reload project MCP configuration';
+      if (localErrors[scope] != message) {
+        localErrors[scope] = message; configEvent('mcp.config.error', {'cwd': scope, 'error': message});
+      }
+      watcher.updatePaths(watchedPaths(acceptedExecutables));
+      rethrow;
+    }
+  }
+
+  Future<void> reload(CancellationToken cancellation, {String? cwd}) {
+    if (cwd != null) localCwds.add(cwd);
     final next = reloads.then((_) async {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
+      Object? globalFailure;
       try {
         final updated = await configReader.load(
           configPath,
@@ -197,10 +247,12 @@ Future<void> _networkMain(List<Object?> args) async {
             'Configuration file is missing; keeping the running MCP servers',
           );
         }
-        final servers = jsonObject(updated.values['mcp_servers'] ?? {});
+        final servers = resolveMcpCwds(jsonObject(updated.values['mcp_servers'] ?? {}),
+          base: Directory.current.path, defaultCwd: Directory.current.path);
         final executables = await readMcpExecutables(servers, cancellation);
         cancellation.throwIfCancelled();
         lifetime.throwIfCancelled();
+        acceptedExecutables = executables;
         watcher.updatePaths(watchedPaths(executables));
         final encoded = fingerprint(servers, executables);
         final changed = encoded != appliedMcp;
@@ -215,6 +267,7 @@ Future<void> _networkMain(List<Object?> args) async {
         cancellation.throwIfCancelled();
         lifetime.throwIfCancelled();
         appliedMcp = encoded;
+        acceptedServers = servers;
         loadedConfigPath = updated.path;
         configError = null;
         if (changed || recovered) {
@@ -230,8 +283,16 @@ Future<void> _networkMain(List<Object?> args) async {
           configError = message;
           configEvent('mcp.config.error', {'error': message});
         }
-        rethrow;
+        globalFailure = error;
       }
+      Object? localFailure;
+      for (final scope in localCwds.toList()) {
+        try { await reloadLocal(scope, cancellation); }
+        on CancelledException { rethrow; }
+        catch (error) { localFailure ??= error; }
+      }
+      if (globalFailure != null) Error.throwWithStackTrace(globalFailure, StackTrace.current);
+      if (localFailure != null) Error.throwWithStackTrace(localFailure, StackTrace.current);
     });
     reloads = next.catchError((Object _) {});
     return next;
@@ -398,78 +459,86 @@ Future<void> _networkMain(List<Object?> args) async {
       }
       if ((request['method'] as String).startsWith('mcp.')) {
         await initialized.asCancellable(cancellation);
+        final cwd = params['cwd'] as String?;
+        final scope = cwd == null ? null : Directory(cwd).absolute.uri.normalizePath().toFilePath();
+        if (scope != null && !localCwds.contains(scope)) {
+          try { await reload(cancellation, cwd: scope); }
+          on CancelledException { rethrow; }
+          catch (_) { /* Retain the last accepted config, including on first discovery. */ }
+        }
         final Object? result;
         switch (request['method']) {
           case 'mcp.auth.login':
             final name = requiredString(params, 'server');
+            final key = jsonEncode([scope, name]);
             final login = requiredString(params, 'login_id');
-            if (mcpLogins.containsKey(name)) throw StateError('An MCP sign-in is already in progress');
-            mcpLogins[name] = (owner: requiredString(params, 'owner'), id: login);
+            if (mcpLogins.containsKey(key)) throw StateError('An MCP sign-in is already in progress');
+            mcpLogins[key] = (owner: requiredString(params, 'owner'), id: login);
             try {
               final signingIn = mcp.login(name, cancellation, (url) => reply?.send({'event': {
                 'type': 'mcp.auth.login', 'server': name, 'login_id': login, 'url': url,
-              }}));
+              }}), scope: scope);
               configEvent('mcp.auth.changed', {'server': name});
               result = await signingIn;
             } finally {
-              mcpLogins.remove(name);
+              mcpLogins.remove(key);
               configEvent('mcp.auth.changed', {'server': name});
             }
           case 'mcp.auth.callback':
             final name = requiredString(params, 'server');
-            final login = mcpLogins[name];
+            final login = mcpLogins[jsonEncode([scope, name])];
             if (login == null || login.owner != params['owner'] || login.id != params['login_id']) {
               throw StateError('No matching MCP sign-in is waiting for a callback');
             }
-            mcp.completeLogin(name, requiredString(params, 'callback_url'));
+            mcp.completeLogin(name, requiredString(params, 'callback_url'), scope: scope);
             result = null;
           case 'mcp.auth.logout':
             final name = requiredString(params, 'server');
-            await mcp.logout(name, cancellation);
+            await mcp.logout(name, cancellation, scope: scope);
             configEvent('mcp.auth.changed', {'server': name});
             result = null;
           case 'mcp.status':
-            result = mcp.status();
+            result = mcp.status(scope: scope);
           case 'mcp.inventory':
             if (params['verbose'] != null && params['verbose'] is! bool ||
                 params['server'] != null && params['server'] is! String) {
               throw const FormatException('Expected verbose boolean and optional server name');
             }
             try {
-              await reload(cancellation);
+              await reload(cancellation, cwd: scope);
             } on CancelledException {
               rethrow;
             } catch (_) {
               // Keep the last accepted configuration and its live connections.
             }
             result = {
-              ...await mcp.inventory(cancellation, verbose: params['verbose'] == true, server: params['server'] as String?),
-              'config_error': ?configError,
+              ...await mcp.inventory(cancellation, verbose: params['verbose'] == true, server: params['server'] as String?, scope: scope),
+              'config_error': ?(localErrors[scope] ?? configError),
             };
           case 'mcp.catalog':
             // A model step can follow a config edit before the watcher fires.
             // Read and serialize reconciliation here as well as on file events.
             if (params['revalidate'] != false) {
               try {
-                await reload(cancellation);
+                await reload(cancellation, cwd: scope);
               } on CancelledException {
                 rethrow;
               } catch (_) {
                 // reload already sent a sanitized diagnostic; use the live catalog.
               }
             }
-            result = await mcp.catalog(cancellation, knownRevision: params['revision'] as String?);
+            result = await mcp.catalog(cancellation, knownRevision: params['revision'] as String?, scope: scope);
           case 'mcp.call':
             result = await mcp.callTool(
               requiredString(params, 'name'),
               params['arguments'],
-              cancellation,
+              cancellation, scope: scope,
             );
           case 'mcp.resources':
             result = await mcp.resources(
               requiredString(params, 'method'),
               jsonObject(params['arguments']),
-              cancellation,
+              cancellation, scope: scope,
             );
           case 'mcp.request':
             final method = requiredString(params, 'method');
@@ -488,14 +557,17 @@ Future<void> _networkMain(List<Object?> args) async {
               requiredString(params, 'server'),
               method,
               jsonObject(params['arguments'] ?? {}),
-              cancellation,
+              cancellation, scope: scope,
             );
           case 'mcp.events.subscribe':
             result = await mcp.subscribe(
               requiredString(params, 'owner'),
               params,
-              cancellation,
+              cancellation, scope: scope,
             );
+          case 'mcp.events.restore':
+            await mcp.restore(requiredString(params, 'threadId'), (params['subscriptions'] as List).map(jsonObject).toList(), cancellation, scope: scope);
+            result = null;
           case 'mcp.events.unsubscribe':
             await mcp.unsubscribe(
               requiredString(params, 'owner'),
@@ -511,7 +583,7 @@ Future<void> _networkMain(List<Object?> args) async {
                     <CancellationToken>[]) {
               if (!identical(token, cancellation)) token.cancel();
             }
-            await mcp.detach(owner);
+            await mcp.detach(owner, persist: params['persist'] != false);
             result = null;
           case 'mcp.webhook':
             result = await mcp.webhook(
@@ -521,8 +593,8 @@ Future<void> _networkMain(List<Object?> args) async {
               cancellation,
             );
           case 'mcp.reload':
-            await reload(cancellation);
-            result = mcp.status();
+            await reload(cancellation, cwd: scope);
+            result = mcp.status(scope: scope);
           default:
             throw StateError('Unknown MCP operation');
         }
@@ -676,6 +748,19 @@ Future<void> _networkMain(List<Object?> args) async {
           cancellation: cancellation,
           onEvent: onEvent,
         )).toJson();
+      } else if (provider is OpenAIProvider) {
+        result = (await provider.respond(input, cancellation: cancellation, onEvent: onEvent,
+          onRecovery: (item) async {
+            final acknowledgement = ReceivePort();
+            try {
+              if (reply == null) throw StateError('Content recovery requires a host');
+              // The ordinary ordered event channel is also used for completed
+              // output, so the agent commits those items before this guidance.
+              reply.send({'event': {'type': 'model.recovery', 'item': item.toJson(), 'ack': acknowledgement.sendPort}});
+              final admitted = jsonObject(await acknowledgement.first.asCancellable(cancellation));
+              if (admitted['error'] != null) throw const ModelFailure('recovery_failed', 'Unable to persist content-filter guidance');
+            } finally { acknowledgement.close(); }
+          })).toJson();
       } else {
         result = (await provider.respond(
           input,

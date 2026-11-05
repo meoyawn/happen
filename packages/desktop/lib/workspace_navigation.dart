@@ -11,12 +11,15 @@ import 'window_chrome.dart';
 
 // T3Code Sidebar + SidebarProjectFolderHeader + SidebarThreadRow: one project
 // tree, pinned threads, compact status rows and a persistent connection footer.
-List<(Project, DesktopTask)> sidebarThreads(DesktopSession session) => [
-  ...session.pinnedTasks.where((entry) => !session.collapsedSidebarSections.contains('pinned') || session.task == entry.$2),
-  for (final project in session.projects.where((project) => !project.removing))
-    ..._projectThreads(session, project).where((task) =>
-      !session.collapsedSidebarSections.contains('project:${project.checkoutKey}') || session.task == task)
-      .map((task) => (project, task)),
+List<String> sidebarThreadIds(DesktopSession session) => [
+  for (final (_, task) in session.pinnedTasks)
+    if (!session.collapsedSidebarSections.contains('pinned') || session.task == task) task.id,
+  for (final project in session.projects.where((project) => !project.removing)) ...[
+    if (!session.collapsedSidebarSections.contains('project:${project.checkoutKey}'))
+      for (final draft in session.sessionDrafts.where((draft) => draft.checkoutKey == project.checkoutKey)) draft.id,
+    for (final task in _projectThreads(session, project))
+      if (!session.collapsedSidebarSections.contains('project:${project.checkoutKey}') || session.task == task) task.id,
+  ],
 ];
 
 List<DesktopTask> _projectThreads(DesktopSession session, Project project) =>

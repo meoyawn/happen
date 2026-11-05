@@ -70,7 +70,8 @@ extension ThreadLifecycle on TaskStore {
   }
   Json archive(bool archived) {
     final time = archived ? DateTime.now().toUtc().toIso8601String() : null;
-    return append(archived ? 'task.archived' : 'task.unarchived', {'archived_at': time}, metadata: {'archived_at': time});
+    return append(archived ? 'task.archived' : 'task.unarchived', {'archived_at': time},
+      metadata: {'archived_at': time, if (archived) 'mcp_event_subscriptions': <String, Object?>{}});
   }
   Json maintain() {
     if (metadata('archived_at') == null) return {'archived': false};

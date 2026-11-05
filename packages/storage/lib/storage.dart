@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
+import 'package:ffi/ffi.dart';
 import 'package:openai/openai.dart' show gptInput, gptItemFromRollout;
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
@@ -10,13 +12,15 @@ import 'src/codex_native.dart';
 import 'src/session_reader.dart';
 
 export 'src/owner.dart' show startStore, importHistory;
-export 'src/session_reader.dart' show readSession;
+export 'src/session_reader.dart' show readSession, readMcpEventOwners;
 export 'src/thread_list.dart' show listThreads;
 
 part 'src/kv.dart';
 part 'src/native_adapter.dart';
 part 'src/lifecycle.dart';
 part 'src/goals.dart';
+part 'src/mcp_events.dart';
+part 'src/writer_lock.dart';
 
 /// One WAL database, exclusively owned by one writer isolate, per session.
 /// Codex RolloutLines are canonical; thread history is a rebuildable projection.
@@ -29,12 +33,11 @@ class TaskStore {
     }
     if (!inMemory) {
       folder.createSync(recursive: true);
-      _lock = File('${folder.path}/writer.lock').openSync(mode: FileMode.append);
-      try { _lock!.lockSync(FileLock.exclusive); }
-      catch (_) { _lock!.closeSync(); rethrow; }
+      _releaseWriter = _acquireWriter('${folder.path}/writer.lock', taskId);
     }
+    TracedDatabase? opened;
     try {
-      db = openTracedDatabase(inMemory ? ':memory:' : '${folder.path}/history.sqlite');
+      db = opened = openTracedDatabase(inMemory ? ':memory:' : '${folder.path}/history.sqlite');
       db.execute('PRAGMA journal_mode=WAL');
       db.execute('PRAGMA synchronous=NORMAL');
       db.execute('PRAGMA foreign_keys=ON');
@@ -61,7 +64,10 @@ class TaskStore {
       ''');
       db.execute('COMMIT');
     } catch (_) {
-      _lock?.closeSync();
+      // Do not offer the lease again while a failed initializer still owns a
+      // writable connection or uncommitted schema transaction.
+      try { opened?.close(); }
+      finally { _releaseWriter?.call(); _releaseWriter = null; }
       rethrow;
     }
   }
@@ -73,13 +79,13 @@ class TaskStore {
   late final TracedDatabase db;
   late final CodexSqlite native;
   late Json state;
-  RandomAccessFile? _lock;
+  void Function()? _releaseWriter;
   bool _closed = false;
   void close() {
     if (_closed) return;
-    _closed = true;
     db.close();
-    _lock?.closeSync();
+    _closed = true;
+    _releaseWriter?.call(); _releaseWriter = null;
   }
 
   int get lastSequence => state['sourceSeq'] as int? ?? 0;
@@ -109,11 +115,9 @@ class TaskStore {
     }
     final next = jsonObject(jsonDecode(jsonEncode(state))), records = <Json>[];
     final now = DateTime.now().toUtc();
-    final nativeCount = _pendingNativeItems.length;
     next['created'] ??= now.millisecondsSinceEpoch;
     for (final value in values) {
       final data = jsonObject(value['data']), type = value['type'];
-      if (records.isEmpty && nativeCount > 0) data['nativeCompletions'] = _pendingNativeItems.take(nativeCount).toList();
       if (type == 'turn.started') next['turnTokenUsage'] = <String, Object?>{};
       final spending = data['incompleteUsage']?['usage'] as Json?;
       final usage = spending ?? (const {'model.completed', 'context.compacted'}.contains(type) ? <String, dynamic>{
@@ -156,7 +160,7 @@ class TaskStore {
       record['notifications'] = threadNotifications(taskId, record, next);
       records.add(record);
     }
-    _persistNative(records, metadata, next);
+    final nativeCount = _persistNative(records, metadata, next);
     state = next;
     _pendingNativeItems.removeRange(0, nativeCount);
     return records;

@@ -77,6 +77,7 @@ Future<T> retryRequest<T>(Future<T> Function() send, CancellationToken cancellat
 Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken cancellation, {
   required bool unboundedConnections,
   bool Function()? fallbackTransport,
+  Future<void> Function()? onContentFilter,
   void Function(Json)? onEvent,
 }) async {
   var retries = 0;
@@ -88,6 +89,11 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
       return await traceAsync('openai.stream.attempt', send, category: 'model', attributes: {'attempt': retries + 1});
     } catch (error) {
       cancellation.throwIfCancelled();
+      // Codex responses_retry.rs records sampling guidance before deciding
+      // whether this block has exhausted the ordinary stream retry budget.
+      if (error is ModelFailure && error.code == 'content_filter' && onContentFilter != null) {
+        await onContentFilter().asCancellable(cancellation);
+      }
       final retryable = transportFailure(error) || switch (error) {
         ResponseFailure(:final retryable) => retryable,
         ModelFailure(:final code) => {'stream_disconnected', 'stream_idle_timeout'}.contains(code),

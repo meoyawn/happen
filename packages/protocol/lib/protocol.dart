@@ -118,13 +118,17 @@ String clippedText(String value, [int limit = maxToolOutputBytes]) {
 }
 
 /// Reject oversized records before buffering an unbounded unterminated line.
+/// A protocol may change [byteLimit] between records after negotiation; a null
+/// dynamic limit selects its explicitly unbounded legacy codec.
 Stream<String> boundedLines(
   Stream<List<int>> chunks, {
   required int maxBytes,
+  int? Function()? byteLimit,
 }) async* {
   var line = <int>[];
   var afterCr = false;
   await for (final chunk in chunks) {
+    var limit = byteLimit == null ? maxBytes : byteLimit();
     for (final byte in chunk) {
       if (afterCr && byte == 10) {
         afterCr = false;
@@ -134,10 +138,11 @@ Stream<String> boundedLines(
       if (byte == 10 || byte == 13) {
         yield utf8.decode(line);
         line = [];
+        limit = byteLimit == null ? maxBytes : byteLimit();
         afterCr = byte == 13;
       } else {
-        if (line.length >= maxBytes) {
-          throw const FormatException('Record exceeds byte limit');
+        if (limit != null && line.length >= limit) {
+          throw FormatException('Record exceeds byte limit ($limit bytes)');
         }
         line.add(byte);
       }

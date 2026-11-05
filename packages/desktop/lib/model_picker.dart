@@ -30,10 +30,12 @@ PopupMenuItem<String> _option(String value, String label, bool selected, bool en
 );
 
 class ComposerModelPicker extends StatelessWidget {
-  const ComposerModelPicker({super.key, required this.session, required this.enabled, this.target});
+  const ComposerModelPicker({super.key, required this.session, required this.enabled, this.target,
+    required this.modelMenuKey, required this.effortMenuKey});
   final DesktopSession session;
   final bool enabled;
   final DesktopTask? target;
+  final GlobalKey<PopupMenuButtonState<String>> modelMenuKey, effortMenuKey;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +51,7 @@ class ComposerModelPicker extends StatelessWidget {
     const muted = Color(0xff626862);
     const heading = TextStyle(fontSize: 10, letterSpacing: 1, color: muted);
     final combined = LayoutBuilder(builder: (context, constraints) => PopupMenuButton<String>(
+      key: modelMenuKey,
       tooltip: 'Model and reasoning effort',
       enabled: enabled,
       borderRadius: BorderRadius.circular(8),
@@ -99,7 +102,7 @@ class ComposerModelPicker extends StatelessWidget {
       ])));
     return LayoutBuilder(builder: (context, constraints) => constraints.maxWidth < 140 ? combined : Row(
       mainAxisSize: MainAxisSize.min, children: [
-        Flexible(child: PopupMenuButton<String>(tooltip: 'Model', enabled: enabled,
+        Flexible(child: PopupMenuButton<String>(key: modelMenuKey, tooltip: 'Model', enabled: enabled,
           onSelected: chooseModel,
           itemBuilder: (_) => [
             for (final model in session.models) _option(model['id'] as String, model['id'] as String,
@@ -107,7 +110,8 @@ class ComposerModelPicker extends StatelessWidget {
             if (selected != null) const PopupMenuItem<String>(enabled: false,
               child: Text('Start a new task to change models.')),
           ], child: control(_modelLabel(model)))),
-        if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(tooltip: 'Reasoning effort', enabled: enabled,
+        if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(key: effortMenuKey,
+          tooltip: 'Reasoning effort', enabled: enabled,
           onSelected: chooseEffort,
           itemBuilder: (_) => [
             for (final effort in efforts.cast<String>()) _option(effort, _effortLabel(effort),

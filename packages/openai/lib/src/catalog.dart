@@ -48,4 +48,9 @@ class GptModel {
   );
   String get persistentInstructions =>
       data['model_messages']['persistent_instructions'] as String? ?? '';
+  String get contentFilterGuidance {
+    final text = data['model_messages']['content_filter_guidance'];
+    return text is String && text.trim().isNotEmpty && utf8.encode(text).length <= 512 ? text
+      : 'Your previous response was blocked by a content filter. Do not treat this as a transient failure or try to reproduce or work around the blocked content through repeated attempts, altered formatting, splitting, encoding, tools, subagents, or later wakes. Briefly explain the limitation and offer a permitted alternative. Continue unrelated authorized work.';
+  }
 }

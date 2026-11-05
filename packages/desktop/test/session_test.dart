@@ -37,9 +37,12 @@ void main() {
       'expires_at': expires,
     }));
     final requests = <({String path, Json body})>[];
+    Completer<void>? arrived, release;
     provider.listen((request) async {
       requests.add((path: request.uri.path,
         body: jsonObject(jsonDecode(await utf8.decoder.bind(request).join()))));
+      arrived?.complete();
+      if (release != null) await release!.future;
       request.response.headers.contentType = ContentType('text', 'event-stream');
       final response = request.uri.path == '/responses'
         ? {'type': 'response.completed', 'response': {
@@ -82,6 +85,37 @@ void main() {
       expect(session.task!.provider, id);
       expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
     }
+    final completed = session.task!, owner = session.project!;
+    await session.closeTab(completed);
+    expect(completed.messages, isEmpty, reason: 'Closing a chat releases its loaded transcript');
+    expect(conversation(completed), isEmpty, reason: 'The rendered conversation must also be released');
+    expect((await session.client.request('thread/unsubscribe', {'threadId': completed.id}) as Json)['status'],
+      'notSubscribed', reason: 'Closed idle chats must allow their server owners to unload');
+    final completedRequestCount = requests.length;
+    await session.select(owner, completed);
+    expect(conversation(completed).where((entry) => entry.role == 'Happen').single.text, 'ChatGPT reply');
+    expect(requests, hasLength(completedRequestCount), reason: 'Reopening reads history without running inference');
+
+    arrived = Completer<void>();
+    release = Completer<void>();
+    addTearDown(() { if (!release!.isCompleted) release!.complete(); });
+    expect(await session.send('Finish after closing the tab'), isTrue, reason: session.error);
+    await arrived!.future.timeout(const Duration(seconds: 20));
+    await session.closeTab(completed);
+    expect(completed.running, isTrue, reason: 'Closing the tab preserves active work');
+    expect(completed.loaded, isTrue, reason: 'Active chats keep receiving completion and question events');
+    release!.complete();
+    await _until(session, () => !completed.running && !completed.loaded);
+    expect(completed.messages, isEmpty);
+    expect(completed.turns, isEmpty);
+    expect(conversation(completed), isEmpty);
+    expect((await session.client.request('thread/unsubscribe', {'threadId': completed.id}) as Json)['status'],
+      'notSubscribed');
+    arrived = null;
+    final finishedRequestCount = requests.length;
+    await session.select(owner, completed);
+    expect(conversation(completed).where((entry) => entry.role == 'Happen').length, 2);
+    expect(requests, hasLength(finishedRequestCount));
     final ids = session.project!.tasks.map((task) => task.id).toSet();
     final requestCount = requests.length;
     await session.close();

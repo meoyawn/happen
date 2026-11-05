@@ -3,7 +3,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
@@ -125,12 +124,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         if (state != null && state.tabs.isNotEmpty)
           Positioned(top: 0, right: 0, bottom: 0, width: sideWidth,
             child: Offstage(offstage: !opened, child: ExcludeFocus(excluding: !opened,
-              child: FocusScope(node: _focus, child: CallbackShortcuts(bindings: {
-                SingleActivator(LogicalKeyboardKey.keyW,
-                  meta: defaultTargetPlatform == TargetPlatform.macOS,
-                  control: defaultTargetPlatform != TargetPlatform.macOS):
-                    () { if (state.active case final tab?) _close(tab); },
-              }, child: SessionPanelFrame(key: const ValueKey('session-side-region'), child: Column(children: [
+              child: FocusScope(node: _focus,
+                child: SessionPanelFrame(key: const ValueKey('session-side-region'), child: Column(children: [
                 _strip(state),
                 Expanded(child: Stack(fit: StackFit.expand, children: [
                   if (state.tabs.contains(contextPanel))
@@ -159,7 +154,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                             child: _sideChat(side, opened && state.active == tab)))),
                   if (state.active?.startsWith('new:') == true) _launchers(state),
                 ])),
-              ]))))))),
+              ])))))),
         if (opened && wide) Positioned(left: chatWidth - 4, top: 0, bottom: 0, width: 8,
           child: SidebarResizer(key: const ValueKey('session-panel-resizer'),
             label: 'Resize session panels', size: chatWidth, min: 400,
@@ -241,7 +236,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
       _panelButton('Add tab', Icons.add_rounded, () => widget.session.newSessionPanelTab(widget.task!)),
       const SizedBox(width: 4),
       SizedBox.square(dimension: 28, child: IconButton(key: const ValueKey('toggle-side-panel'),
-        tooltip: 'Hide side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘B' : 'Ctrl+B'})', onPressed: _hide,
+        tooltip: 'Hide side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})', onPressed: _hide,
         padding: EdgeInsets.zero, icon: const SidePanelIcon(opened: true))),
     ]),
   ));

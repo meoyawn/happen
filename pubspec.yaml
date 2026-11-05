@@ -31,6 +31,7 @@ dependencies:
   code_mode: any
   telemetry: any
 dev_dependencies:
+  ffi: ^2.1.4
   sqlite3: ^3.8.0
   http2: ^3.1.0
   crypto: ^3.0.6

@@ -12,7 +12,7 @@ import '../test/fixtures/context_contract/environment.dart';
 Future<void> main(List<String> arguments) async {
   if (arguments.isNotEmpty) throw ArgumentError('The E2E matrix is fixed; run moon run test-e2e without overrides');
   final home = await Directory.systemTemp.createTemp('happen-context-contract-');
-  final output = '${Directory.current.path}/.local/context-contract/${DateTime.now().microsecondsSinceEpoch}';
+  final output = '${Platform.environment['HAPPEN_TEST_REPORT_ROOT'] ?? Directory.current.path}/.local/context-contract/${DateTime.now().microsecondsSinceEpoch}';
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();

@@ -10,42 +10,84 @@ import 'transport.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
-  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent});
+  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent, this.persistSubscription});
   final HttpClient http;
   final void Function(String owner, Json event) onEvent;
   final String? publicUrl;
   final String? directory;
   final void Function(String server)? onAuthChanged;
   final Future<void> Function(Json event, CancellationToken cancellation)? acceptThreadEvent;
+  final Future<void> Function(String operation, Json params, CancellationToken cancellation)? persistSubscription;
   final lifetime = CancellationToken();
   final _servers = <String, _Server>{};
+  final _localServers = <String, Map<String, _Server>>{};
+  final _localConfigured = <String, Json>{};
+  final _processes = <String, _Connection>{};
+  final _connections = <_Connection>{};
   Json _configured = {};
   final _subscriptions = <String, McpEventSubscription>{};
+  final _subscriptionTargets = <String, _Server>{};
   Future<void> _reload = Future.value();
-  List<(String, Map<String, Json>, String?)> _catalogSources = [];
-  Json? _catalog;
-  final _authenticating = <String>{};
+  final _catalogs = <String, ({List<(String, Map<String, Json>, String?)> sources, Json value})>{};
+  final _authenticating = <_Server>{};
 
-  _Server _server(String name, Json config, String? executableRevision) => _Server(name, config, executableRevision, http,
-    directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
-      ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name));
+  Map<String, _Server> _visible(String? scope) => scope == null ? _servers : {
+    for (final entry in _servers.entries) if (!(_localConfigured[scope]?.containsKey(entry.key) ?? false)) entry.key: entry.value,
+    ...?_localServers[scope],
+  };
+  Json _configuration(String? scope) => {..._configured, if (scope != null) ...?_localConfigured[scope]};
+  Iterable<_Server> get _bindings => [..._servers.values, for (final servers in _localServers.values) ...servers.values];
+
+  Json _launch(Json config) => config['command'] == null ? config : {
+    'command': config['command'], 'args': config['args'] ?? <String>[],
+    'cwd': Directory(config['cwd'] as String? ?? Directory.current.path).absolute.uri.normalizePath().toFilePath(),
+    'env': mcpEnvironment(config),
+  };
+
+  _Server _server(String name, Json config, String? executableRevision, String? scope) {
+    final launch = _launch(config);
+    final key = jsonEncode([_ordered(launch), executableRevision]);
+    _Connection create() {
+      final connection = _Connection(config['command'] == null ? launch : {...launch, 'legacy_fallback': true}, http,
+        directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
+          ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name));
+      _connections.add(connection); connection.start(); return connection;
+    }
+    final connection = config['command'] == null ? create() : _processes.putIfAbsent(key, create);
+    return _Server(name, config, executableRevision, scope, connection);
+  }
+
+  Future<void> _retire(_Server server) async {
+    for (final subscription in _subscriptions.values.where((s) => identical(_subscriptionTargets[s.id], server)).toList()) {
+      await subscription.stop(); _subscriptions.remove(subscription.id); _subscriptionTargets.remove(subscription.id);
+    }
+    server.close();
+  }
+
+  Future<void> _prune() async {
+    final live = _bindings.map((binding) => binding.shared).toSet();
+    for (final connection in _connections.difference(live)) {
+      _processes.removeWhere((_, value) => identical(value, connection));
+      _connections.remove(connection); await connection.close();
+    }
+  }
 
   Future<void> configure(Json config, CancellationToken cancellation, {
     Map<String, String> executableRevisions = const {},
+    String? scope,
   }) {
-    final next = _reload.then((_) => _configure(config, cancellation, executableRevisions));
+    final next = _reload.then((_) => _configure(config, cancellation, executableRevisions, scope));
     _reload = next.catchError((Object _) {});
     return next;
   }
 
-  Future<void> _configure(Json config, CancellationToken cancellation, Map<String, String> executableRevisions) async {
+  Future<void> _configure(Json config, CancellationToken cancellation, Map<String, String> executableRevisions, String? scope) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
-    if (config.length > 64) {
-      throw ArgumentError('At most 64 global MCP servers are supported');
-    }
-    final normalized = <String>{};
-    for (final entry in config.entries) {
+    void validate(Json values) {
+      if (values.length > 64) throw ArgumentError('At most 64 MCP servers per scope are supported');
+      final normalized = <String>{};
+      for (final entry in values.entries) {
       if (!normalized.add(_safeName(entry.key))) {
         throw ArgumentError('MCP server names collide after normalization');
       }
@@ -53,40 +95,73 @@ class McpManager {
       if ((value['command'] == null) == (value['url'] == null)) {
         throw ArgumentError('MCP server needs exactly one command or URL');
       }
-    }
-    _configured = Map.of(config);
-    for (final entry in _servers.entries.toList()) {
-      cancellation.throwIfCancelled();
-      lifetime.throwIfCancelled();
-      if (jsonEncode(config[entry.key]) != jsonEncode(entry.value.config) ||
-          executableRevisions[entry.key] != entry.value.executableRevision) {
-        for (final subscription
-            in _subscriptions.values
-                .where((s) => s.server == entry.key)
-                .toList()) {
-          await subscription.stop();
-          _subscriptions.remove(subscription.id);
-        }
-        await entry.value.close();
-        _servers.remove(entry.key);
       }
     }
+    validate(scope == null ? config : {..._configured, ...config});
+    if (scope == null) {
+      validate(config);
+      for (final local in _localConfigured.values) { validate({...config, ...local}); }
+      _configured = Map.of(config);
+    } else { _localConfigured[scope] = Map.of(config); }
+    final servers = scope == null ? _servers : _localServers.putIfAbsent(scope, () => {});
+    try {
+    final rebuilding = <_Connection, String?>{};
+    for (final entry in config.entries) {
+      final value = jsonObject(entry.value);
+      if (value['command'] == null || value['enabled'] == false) continue;
+      final launch = jsonEncode(_ordered(_launch(value)));
+      for (final binding in _bindings) {
+        if (binding.config['command'] != null && binding.executableRevision != executableRevisions[entry.key] &&
+            jsonEncode(_ordered(_launch(binding.config))) == launch) {
+          rebuilding[binding.shared] = executableRevisions[entry.key];
+        }
+      }
+    }
+    for (final rebuild in rebuilding.entries) {
+      final affected = _bindings.where((binding) => identical(binding.shared, rebuild.key)).toList();
+      // Executable generations belong to the physical launch, not the config
+      // scope which noticed the rebuild. Drain every owner before launching.
+      for (final binding in affected) {
+        await _retire(binding);
+        (binding.scope == null ? _servers : _localServers[binding.scope]!).remove(binding.name);
+      }
+      await _prune();
+      lifetime.throwIfCancelled();
+      // Once retirement begins, restoring all bindings is manager-owned even
+      // if the initiating reload is cancelled while the old process drains.
+      for (final binding in affected) {
+        final value = binding.scope == scope ? config[binding.name] : binding.config;
+        if (value == null || value['enabled'] == false) continue;
+        final revision = binding.scope == scope ? executableRevisions[binding.name] : rebuild.value;
+        (binding.scope == null ? _servers : _localServers[binding.scope]!)[binding.name] =
+          _server(binding.name, jsonObject(value), revision, binding.scope);
+      }
+    }
+    for (final entry in servers.entries.toList()) {
+      cancellation.throwIfCancelled();
+      lifetime.throwIfCancelled();
+      if (jsonEncode(_ordered(config[entry.key])) != jsonEncode(_ordered(entry.value.config)) ||
+          executableRevisions[entry.key] != entry.value.executableRevision) {
+        await _retire(entry.value);
+        servers.remove(entry.key);
+      }
+    }
+    await _prune();
     for (final entry in config.entries) {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
-      if (_servers.containsKey(entry.key) || entry.value['enabled'] == false) {
+      if (servers.containsKey(entry.key) || entry.value['enabled'] == false) {
         continue;
       }
-      final server = _server(entry.key, jsonObject(entry.value), executableRevisions[entry.key]);
-      _servers[entry.key] = server;
-      server.start();
+      servers[entry.key] = _server(entry.key, jsonObject(entry.value), executableRevisions[entry.key], scope);
     }
-    await Future.wait(_servers.values.map((server) => server.initial.future))
+    } finally { await _prune(); }
+    await Future.wait(servers.values.map((server) => server.initial.future))
         .asCancellable(cancellation.merge(lifetime));
   }
 
-  List<Json> status() => [
-    for (final server in _servers.values)
+  List<Json> status({String? scope}) => [
+    for (final server in _visible(scope).values)
       {
         'name': server.name,
         'state': server.state,
@@ -97,25 +172,26 @@ class McpManager {
       },
   ];
 
-  Future<Json> login(String name, CancellationToken cancellation, void Function(String url) notify) async {
+  Future<Json> login(String name, CancellationToken cancellation, void Function(String url) notify, {String? scope}) async {
     cancellation.throwIfCancelled();
-    final server = _servers[name];
+    final server = _visible(scope)[name];
     if (server?.oauth == null) throw const McpFailure('Browser sign-in is unavailable for this MCP server');
-    if (!_authenticating.add(name)) throw const McpFailure('An MCP sign-in is already in progress');
+    if (!_authenticating.add(server!)) throw const McpFailure('An MCP sign-in is already in progress');
     try {
-      await server!.oauth!.login(cancellation.merge(lifetime).merge(server.lifetime), notify);
+      await server.oauth!.login(cancellation.merge(lifetime).merge(server.lifetime), notify);
       // Credential installation is the commit point. Reconcile the shared
       // connection even if this client stops waiting immediately afterwards.
       await _restart(name, server, lifetime);
-      return {'server': name, 'state': _servers[name]!.state, 'tool_count': _servers[name]!.tools.length};
+      final replacement = _visible(scope)[name]!;
+      return {'server': name, 'state': replacement.state, 'tool_count': replacement.tools.length};
     } finally {
-      _authenticating.remove(name);
+      _authenticating.remove(server);
     }
   }
 
-  Future<void> logout(String name, CancellationToken cancellation) async {
+  Future<void> logout(String name, CancellationToken cancellation, {String? scope}) async {
     cancellation.throwIfCancelled();
-    final server = _servers[name];
+    final server = _visible(scope)[name];
     if (server?.oauth == null) throw const McpFailure('OAuth sign-out is unavailable for this MCP server');
     try {
       await server!.oauth!.logout(cancellation.merge(lifetime));
@@ -124,17 +200,17 @@ class McpManager {
     }
   }
 
-  void completeLogin(String name, String callbackUrl) {
-    final auth = _servers[name]?.oauth;
+  void completeLogin(String name, String callbackUrl, {String? scope}) {
+    final auth = _visible(scope)[name]?.oauth;
     if (auth == null) throw const McpFailure('No MCP sign-in is waiting for a callback');
     auth.completeLogin(callbackUrl);
   }
 
   Future<void> _refreshAuthentication(CancellationToken cancellation) async {
-    for (final entry in _servers.entries.toList()) {
+    for (final server in _bindings.toList()) {
       cancellation.throwIfCancelled();
-      if (!_authenticating.contains(entry.key) && await entry.value.oauth?.credentialsChanged() == true) {
-        try { await _restart(entry.key, entry.value, cancellation); } on CancelledException {
+      if (!_authenticating.contains(server) && await server.oauth?.credentialsChanged() == true) {
+        try { await _restart(server.name, server, cancellation); } on CancelledException {
           cancellation.throwIfCancelled();
         }
       }
@@ -145,17 +221,15 @@ class McpManager {
     final next = _reload.then((_) async {
       cancellation.throwIfCancelled();
       lifetime.throwIfCancelled();
-      if (!identical(_servers[name], previous)) throw const CancelledException();
-      for (final subscription in _subscriptions.values.where((s) => s.server == name).toList()) {
-        await subscription.stop();
-        _subscriptions.remove(subscription.id);
-      }
-      await previous.close();
+      final servers = previous.scope == null ? _servers : _localServers[previous.scope]!;
+      if (!identical(servers[name], previous)) throw const CancelledException();
+      await _retire(previous);
+      servers.remove(name);
+      await _prune();
       // Starting the replacement belongs to the manager after retiring the old
       // generation, even if this client stops waiting at the same instant.
       lifetime.throwIfCancelled();
-      final replacement = _servers[name] = _server(name, previous.config, previous.executableRevision);
-      replacement.start();
+      final replacement = servers[name] = _server(name, previous.config, previous.executableRevision, previous.scope);
       await replacement.initial.future.asCancellable(cancellation.merge(lifetime));
     });
     _reload = next.catchError((Object _) {});
@@ -164,14 +238,15 @@ class McpManager {
 
   /// Client display data comes from the shared owner, never client-local config.
   /// Keep credentials, launch arguments, schemas and private metadata out of it.
-  Future<Json> inventory(CancellationToken cancellation, {bool verbose = false, String? server}) async {
+  Future<Json> inventory(CancellationToken cancellation, {bool verbose = false, String? server, String? scope}) async {
     cancellation.throwIfCancelled();
     await _refreshAuthentication(cancellation);
-    final names = _configured.keys.where((name) => server == null || name == server).toList()..sort();
+    final configured = _configuration(scope), servers = _visible(scope);
+    final names = configured.keys.where((name) => server == null || name == server).toList()..sort();
     final rows = await Future.wait(names.map((name) async {
-      final config = jsonObject(_configured[name]);
+      final config = jsonObject(configured[name]);
       final enabled = config['enabled'] != false;
-      final target = _servers[name];
+      final target = servers[name];
       final state = !enabled ? 'disabled' : target?.state ?? 'starting';
       final tools = state == 'ready' ? target!.tools.values.toList() : <Json>[];
       final headers = jsonObject(config['headers'] ?? {});
@@ -180,7 +255,7 @@ class McpManager {
         'name': name,
         'enabled': enabled,
         'state': target?.authenticationRequired == true && enabled ? 'authentication_required' : state,
-        'auth_status': _authenticating.contains(name) ? 'signing_in'
+        'auth_status': _authenticating.contains(target) ? 'signing_in'
             : target?.authenticationRequired == true && enabled ? 'not_authenticated'
             : target?.oauth?.authenticated == true ? 'oauth'
             : headers.isNotEmpty || headerEnv.isNotEmpty ? 'configured_headers' : 'unsupported',
@@ -222,26 +297,27 @@ class McpManager {
     return result;
   }
 
-  Future<Json> catalog(CancellationToken cancellation, {String? knownRevision}) async {
+  Future<Json> catalog(CancellationToken cancellation, {String? knownRevision, String? scope}) async {
     cancellation.throwIfCancelled();
     await _refreshAuthentication(cancellation);
-    await Future.wait(_servers.values.map((s) => s.initial.future))
+    final servers = _visible(scope);
+    await Future.wait(servers.values.map((s) => s.initial.future))
         .asCancellable(cancellation);
     // Tool maps are replaced atomically on discovery, notifications and
     // disconnect. Compare their identities before rebuilding/copying schemas.
-    final sources = [for (final server in _servers.values) (
+    final sources = [for (final server in servers.values) (
       server.name, server.tools,
       server.state == 'ready' && server.connection?.discovery['instructions'] is String
           ? server.connection!.discovery['instructions'] as String : null,
     )];
-    if (_catalog == null || sources.length != _catalogSources.length ||
-        List.generate(sources.length, (i) => i).any((i) => sources[i] != _catalogSources[i])) {
-      _catalogSources = sources;
-      _catalog = {
+    var cached = _catalogs[scope ?? ''];
+    if (cached == null || sources.length != cached.sources.length ||
+        List.generate(sources.length, (i) => i).any((i) => sources[i] != cached!.sources[i])) {
+      final value = <String, dynamic>{
         'revision': newId(),
-        'tools': [for (final server in _servers.values) ...server.catalog],
+        'tools': [for (final server in servers.values) ...server.catalog],
         'instructions': [
-          for (final server in _servers.values)
+          for (final server in servers.values)
             if (server.state == 'ready' &&
                 server.connection?.discovery['instructions'] is String)
               {
@@ -251,19 +327,20 @@ class McpManager {
               },
         ],
       };
+      cached = _catalogs[scope ?? ''] = (sources: sources, value: value);
     }
-    if (knownRevision == _catalog!['revision']) {
+    if (knownRevision == cached.value['revision']) {
       return {'revision': knownRevision, 'unchanged': true};
     }
-    return _catalog!;
+    return cached.value;
   }
 
   Future<Json> callTool(
     String name,
     Object? arguments,
-    CancellationToken cancellation,
+    CancellationToken cancellation, {String? scope}
   ) async {
-    for (final server in _servers.values) {
+    for (final server in _visible(scope).values) {
       final tool = server.tools[name];
       if (tool == null) continue;
       final result = await server.request(
@@ -292,28 +369,28 @@ class McpManager {
     String server,
     String method,
     Json params,
-    CancellationToken cancellation,
+    CancellationToken cancellation, {String? scope}
   ) async {
-    final target = _servers[server];
-    if (target == null) throw ArgumentError('Unknown global MCP server');
+    final target = _visible(scope)[server];
+    if (target == null) throw ArgumentError('Unknown MCP server in this scope');
     return target.request(method, params, cancellation);
   }
 
   Future<Json> resources(
     String method,
     Json params,
-    CancellationToken cancellation,
+    CancellationToken cancellation, {String? scope}
   ) async {
     if (method == 'resources/read') {
       return request(requiredString(params, 'server'), method, {
         'uri': requiredString(params, 'uri'),
-      }, cancellation);
+      }, cancellation, scope: scope);
     }
     final server = params['server'] as String?;
     if (server != null) {
       return request(server, method, {
         if (params['cursor'] != null) 'cursor': params['cursor'],
-      }, cancellation);
+      }, cancellation, scope: scope);
     }
     if (params['cursor'] != null) {
       throw ArgumentError('A resource cursor requires its server name');
@@ -321,7 +398,7 @@ class McpManager {
     final key = method == 'resources/list' ? 'resources' : 'resourceTemplates';
     final values = <Json>[];
     final cursors = <String, String>{};
-    for (final entry in _servers.entries) {
+    for (final entry in _visible(scope).entries) {
       if (entry.value.connection?.discovery['capabilities']?['resources'] ==
           null) {
         continue;
@@ -345,8 +422,10 @@ class McpManager {
   Future<Json> subscribe(
     String owner,
     Json params,
-    CancellationToken cancellation,
-  ) async {
+    CancellationToken cancellation, {String? scope}
+  ) => _subscribe(owner, params, cancellation, scope: scope);
+
+  Future<Json> _subscribe(String owner, Json params, CancellationToken cancellation, {String? scope, Json? restored}) async {
     lifetime.throwIfCancelled();
     cancellation.throwIfCancelled();
     if (_subscriptions.values.where((v) => v.owner == owner).length >= 64 ||
@@ -354,8 +433,8 @@ class McpManager {
       throw const McpFailure('MCP event subscription limit reached');
     }
     final server = requiredString(params, 'server');
-    final target = _servers[server];
-    if (target == null) throw ArgumentError('Unknown global MCP server');
+    final target = _visible(scope)[server];
+    if (target == null) throw ArgumentError('Unknown MCP server in this scope');
     final connection = await target.ready(cancellation);
     if (!connection.modern ||
         connection.discovery['capabilities']?['events'] == null) {
@@ -384,7 +463,7 @@ class McpManager {
     }
     late final McpEventSubscription subscription;
     subscription = McpEventSubscription(
-      id: newId(),
+      id: restored == null ? newId() : requiredString(restored, 'subscription_id'),
       owner: owner,
       server: server,
       name: name,
@@ -395,23 +474,54 @@ class McpManager {
       ttlMs: params.containsKey('ttl_ms') ? params['ttl_ms'] as int? : 300000,
       publicUrl: publicUrl,
       threadId: params['threadId'] as String?,
-      acceptEvent: params['threadId'] == null ? null : (occurrence, token) async {
+      restoredCallback: restored?['callback'] as String?,
+      restoredSecret: restored?['secret'] == null ? null : base64.decode(restored!['secret'] as String),
+      restoredUpstreamId: restored?['upstream_id'] as String?,
+      checkpoint: params['threadId'] == null ? null : (snapshot, token) async {
+        if (persistSubscription == null) throw const McpFailure('Durable event subscriptions are unavailable', status: 503);
+        await persistSubscription!('save', {'snapshot': snapshot}, token);
+      },
+      onTerminated: params['threadId'] == null ? null : (token) async {
+        await persistSubscription?.call('remove', {'threadId': params['threadId'], 'subscription_id': subscription.id}, token);
+      },
+      acceptEvent: params['threadId'] == null ? null : (occurrence, snapshot, token) async {
         if (acceptThreadEvent == null) throw const McpFailure('Thread event delivery is unavailable', status: 503);
         await acceptThreadEvent!({'threadId': params['threadId'], 'subscription_id': subscription.id,
-          'server': server, 'notification': {'method': 'notifications/events/event', 'params': occurrence}}, token);
+          'server': server, 'snapshot': snapshot, 'notification': {'method': 'notifications/events/event', 'params': occurrence}}, token);
       },
       connection: target.ready,
       onEvent: (event) =>
           onEvent(owner, {if (params['threadId'] != null) 'threadId': params['threadId'], ...event}),
     );
     _subscriptions[subscription.id] = subscription;
+    _subscriptionTargets[subscription.id] = target;
     try {
+      if (subscription.threadId != null) {
+        if (persistSubscription == null) throw const McpFailure('Durable event subscriptions are unavailable', status: 503);
+        await persistSubscription!('save', {'snapshot': subscription.toSnapshot(), 'create': restored == null}, cancellation);
+      }
       await subscription.start(cancellation);
       return subscription.toJson();
     } catch (_) {
       await subscription.stop();
       _subscriptions.remove(subscription.id);
+      _subscriptionTargets.remove(subscription.id);
+      if (restored == null && subscription.threadId != null && !lifetime.isCancelled) {
+        await persistSubscription?.call('remove', {'threadId': subscription.threadId, 'subscription_id': subscription.id}, lifetime);
+      }
       rethrow;
+    }
+  }
+
+  Future<void> restore(String threadId, List<Json> snapshots, CancellationToken cancellation, {String? scope}) async {
+    for (final snapshot in snapshots) {
+      cancellation.throwIfCancelled();
+      try {
+        final id = requiredString(snapshot, 'subscription_id');
+        if (!RegExp(r'^[a-f0-9]{32}$').hasMatch(id) || snapshot['threadId'] != threadId || _subscriptions.containsKey(id)) continue;
+        await _subscribe('thread:$threadId', snapshot, cancellation, scope: scope, restored: snapshot);
+      } on CancelledException { rethrow; }
+      catch (_) { /* Retain desired state for a later startup/config repair. */ }
     }
   }
 
@@ -420,22 +530,26 @@ class McpManager {
       .map((s) => s.toJson())
       .toList();
 
-  Future<void> unsubscribe(String owner, String id) async {
+  Future<void> unsubscribe(String owner, String id, {bool persist = true}) async {
     final subscription = _subscriptions[id];
     if (subscription == null) return;
     if (subscription.owner != owner) {
       throw ArgumentError('Subscription belongs to another client');
     }
+    if (persist && subscription.threadId != null) await persistSubscription?.call('remove', {
+      'threadId': subscription.threadId, 'subscription_id': id,
+    }, lifetime);
     await subscription.stop();
     _subscriptions.remove(id);
+    _subscriptionTargets.remove(id);
   }
 
-  Future<void> detach(String owner) async {
+  Future<void> detach(String owner, {bool persist = true}) async {
     await Future.wait(
       _subscriptions.values
           .where((s) => s.owner == owner)
           .toList()
-          .map((s) => unsubscribe(owner, s.id)),
+          .map((s) => unsubscribe(owner, s.id, persist: persist)),
     );
   }
 
@@ -448,29 +562,42 @@ class McpManager {
   Future<void> close() async {
     lifetime.cancel();
     await _reload;
-    await Future.wait(_subscriptions.values.toList().map((s) => s.stop()));
+    await Future.wait(_subscriptions.values.toList().map((s) => s.stop(preserveRemote: s.threadId != null)));
     _subscriptions.clear();
-    await Future.wait(_servers.values.toList().map((s) => s.close()));
+    _subscriptionTargets.clear();
+    for (final server in _bindings) { server.close(); }
+    await Future.wait(_connections.map((connection) => connection.close()));
     _servers.clear();
+    _localServers.clear(); _localConfigured.clear(); _connections.clear(); _processes.clear(); _catalogs.clear();
   }
 }
 
 class _Server {
-  _Server(this.name, this.config, this.executableRevision, this.http, this.oauth, this.onAuthChanged);
+  _Server(this.name, this.config, this.executableRevision, this.scope, this.shared);
   final String name;
   final Json config;
   final String? executableRevision;
-  final HttpClient http;
-  final McpOAuth? oauth;
-  final void Function() onAuthChanged;
+  final String? scope;
+  final _Connection shared;
   final lifetime = CancellationToken();
-  final initial = Completer<void>();
-  Future<void>? _runner, _refreshing;
-  McpConnection? connection;
-  String state = 'starting';
-  String? error;
-  bool authenticationRequired = false;
-  Map<String, Json> tools = {};
+  Completer<void> get initial => shared.initial;
+  McpConnection? get connection => shared.connection;
+  McpOAuth? get oauth => shared.oauth;
+  bool get _unsupported => config['legacy_fallback'] == false && shared.state == 'ready' && connection?.modern == false;
+  String get state => _unsupported ? 'failed' : shared.state;
+  String? get error => _unsupported ? 'MCP server does not support the required modern protocol' : shared.error;
+  bool get authenticationRequired => shared.authenticationRequired;
+  Map<String, Json>? _source;
+  Map<String, Json> _tools = {};
+  Map<String, Json> get tools {
+    if (_unsupported) return const {};
+    if (!identical(_source, shared.tools)) {
+      _source = shared.tools;
+      _tools = {for (final tool in shared.tools.values)
+        'mcp__${_safeName(name)}__${_safeName(tool['name'] as String)}': tool};
+    }
+    return _tools;
+  }
   List<Json> get catalog => [
     for (final entry in tools.entries)
       {
@@ -486,6 +613,38 @@ class _Server {
       },
   ];
 
+  Future<McpConnection> ready(CancellationToken cancellation) async {
+    final connection = await shared.ready(cancellation.merge(lifetime));
+    if (_unsupported) throw McpFailure(error!);
+    return connection;
+  }
+  Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false}) async {
+    await ready(cancellation);
+    return shared.request(method, params, cancellation.merge(lifetime), inputSchema: inputSchema, retrySafe: retrySafe);
+  }
+  Future<List<Json>> list(String method, String key, CancellationToken cancellation) async {
+    await ready(cancellation);
+    return shared.list(method, key, cancellation.merge(lifetime));
+  }
+  void close() => lifetime.cancel();
+}
+
+/// Physical ownership is independent of aliases, config scope and request waiters.
+class _Connection {
+  _Connection(this.config, this.http, this.oauth, this.onAuthChanged);
+  final Json config;
+  final HttpClient http;
+  final McpOAuth? oauth;
+  final void Function() onAuthChanged;
+  final lifetime = CancellationToken();
+  final initial = Completer<void>();
+  Future<void>? _runner, _refreshing;
+  McpConnection? connection;
+  String state = 'starting';
+  String? error;
+  bool authenticationRequired = false;
+  Map<String, Json> tools = {};
+
   void start() {
     _runner = _run();
   }
@@ -494,11 +653,19 @@ class _Server {
     var failures = 0;
     while (!lifetime.isCancelled && failures < 6) {
       final since = Stopwatch()..start();
+      var credentialFailure = false;
+      String? startupAccess;
       final current = McpConnection(config, http, _notification,
-        authorization: oauth?.authorization, onAuthChallenge: oauth?.challenge);
+        authorization: oauth == null ? null : (token) async =>
+          state == 'connecting' ? startupAccess : await oauth!.authorization(token),
+        onAuthChallenge: oauth?.challenge);
       connection = current;
       try {
         state = 'connecting';
+        // OAuth preparation owns its own request deadline, before the MCP
+        // handshake starts. One prepared token serves the complete handshake
+        // and initial catalog, even when the provider reports zero lifetime.
+        startupAccess = await oauth?.authorization(lifetime);
         await current.connect(lifetime);
         await _refresh();
         state = 'ready';
@@ -512,7 +679,9 @@ class _Server {
       } on CancelledException {
         if (lifetime.isCancelled) break;
       } catch (failure) {
-        authenticationRequired = failure is McpFailure && (failure.status == 401 || failure.status == 403);
+        credentialFailure = failure is McpCredentialFailure;
+        authenticationRequired = failure is McpCredentialFailure ? failure.authenticationRequired
+          : failure is McpFailure && (failure.status == 401 || failure.status == 403);
         error = authenticationRequired ? 'MCP server requires authentication' : 'MCP connection unavailable';
         if (authenticationRequired) onAuthChanged();
       } finally {
@@ -521,7 +690,7 @@ class _Server {
         if (!initial.isCompleted) initial.complete();
       }
       if (lifetime.isCancelled) break;
-      if (authenticationRequired && oauth?.canRefresh != true) { state = 'failed'; break; }
+      if (authenticationRequired && (credentialFailure || oauth?.canRefresh != true)) { state = 'failed'; break; }
       if (since.elapsed > const Duration(minutes: 1)) failures = 0;
       failures++;
       state = failures == 6 ? 'failed' : 'reconnecting';
@@ -558,19 +727,40 @@ class _Server {
   }) async {
     final current = await ready(cancellation);
     try {
-      return await current.request(
+      final result = await current.request(
         method,
         params,
         cancellation: cancellation,
         inputSchema: inputSchema,
         retrySafe: retrySafe,
       );
+      if (result['isError'] == true && result['_meta']?['mcp/www_authenticate'] != null) {
+        authenticationRequired = true;
+        error = 'MCP server requires authentication';
+        onAuthChanged();
+        // Refresh/reconnect may repair the shared owner for later user calls,
+        // but the rejected tools/call has already completed and is never replayed.
+        if (oauth?.canRefresh == true) { tools = {}; unawaited(current.close()); }
+      } else if (authenticationRequired) {
+        authenticationRequired = false; error = null; onAuthChanged();
+      }
+      return result;
     } on SocketException {
       unawaited(current.close());
       throw const McpFailure(
         'MCP transport disconnected; an interrupted call may have taken effect',
       );
     } on McpFailure catch (failure) {
+      if (failure is McpCredentialFailure) {
+        if (!failure.authenticationRequired) rethrow;
+        authenticationRequired = true; error = 'MCP server requires authentication'; onAuthChanged();
+        // No tool request left this process. Keep the original credentials and
+        // catalog for an explicit later retry; do not start an automatic loop.
+        if (method == 'tools/call') return {'isError': true,
+          'content': [{'type': 'text', 'text': failure.message}],
+          '_meta': {'mcp/www_authenticate': 'Bearer error="invalid_token"'}};
+        rethrow;
+      }
       if (failure.status == 401 || failure.status == 403) {
         authenticationRequired = true;
         error = 'MCP server requires authentication';
@@ -634,8 +824,7 @@ class _Server {
           continue;
         }
       }
-      final callable =
-          'mcp__${_safeName(name)}__${_safeName(requiredString(tool, 'name'))}';
+      final callable = _safeName(requiredString(tool, 'name'));
       if (next.containsKey(callable)) {
         throw const McpFailure('MCP tool names collide after normalization');
       }
@@ -730,3 +919,9 @@ class _Server {
 
 String _safeName(String value) =>
     value.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+
+Object? _ordered(Object? value) => switch (value) {
+  Map() => {for (final key in value.keys.cast<String>().toList()..sort()) key: _ordered(value[key])},
+  List() => value.map(_ordered).toList(),
+  _ => value,
+};

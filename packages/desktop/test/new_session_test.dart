@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:desktop/composer_attachments.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
@@ -40,7 +41,20 @@ void main() {
         final tracedDraft = session.currentDraft;
         session.newSession();
         await tester.pump();
+        expect(session.currentDraft, same(tracedDraft));
+        expect(session.sessionDrafts, hasLength(1));
+        expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+        session.drafts[tracedDraft.id] = 'Keep this draft';
+        session.newSession();
+        await tester.pump();
         expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+        final attachmentDraft = session.currentDraft;
+        final attachment = ComposerAttachment(name: 'draft.txt', path: '/draft.txt', image: false);
+        session.attachmentDrafts[attachmentDraft.id] = [attachment];
+        session.newSession();
+        expect(session.currentDraft, isNot(same(attachmentDraft)));
+        expect(session.attachmentDrafts[attachmentDraft.id], [attachment]);
+        expect(session.drafts[tracedDraft.id], 'Keep this draft');
         session.openDraft(tracedDraft);
         await tester.pump();
         expect(tester.widget<Checkbox>(checkbox).value, isTrue);
@@ -50,6 +64,15 @@ void main() {
         expect(tester.widget<Checkbox>(checkbox).onChanged, isNull);
         session.submitting = false;
         session.notifyListeners();
+        await tester.pump();
+      }
+      if (projectCount > 1) {
+        final firstDraft = session.currentDraft;
+        session.newSession(session.projects.last);
+        expect(session.currentDraft, isNot(same(firstDraft)));
+        session.newSession(session.projects.first);
+        expect(session.currentDraft, same(firstDraft));
+        expect(session.sessionDrafts, hasLength(2));
         await tester.pump();
       }
 

@@ -9,6 +9,9 @@ import 'package:xterm2/xterm.dart';
 
 import 'terminal_process.dart';
 
+bool get terminalHasFocus =>
+  FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<_TerminalView>() != null;
+
 /// Shells belong to a chat or draft tab, independently of the panel's view.
 class DesktopTerminals extends ChangeNotifier {
   final groups = <(String, String?), TerminalGroup>{};

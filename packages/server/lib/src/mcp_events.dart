@@ -5,16 +5,20 @@ extension _McpEvents on AgentServer {
     if (message['method'] == 'cancel') {
       _mcpOperations[message['params']['operation_id']]?.cancel(); return;
     }
-    if (message['method'] == 'mcp.event.accept') {
+    if (message['method'] == 'mcp.event.accept' || message['method'] == 'mcp.subscription.save' || message['method'] == 'mcp.subscription.remove') {
       final reply = message['reply'] as SendPort;
       if (_closing || _mcpOperations.length >= 256) { reply.send({'error': 'Thread event admission is unavailable'}); return; }
-      final event = jsonObject(message['params']['event']);
-      final id = requiredString(event, 'threadId');
+      final params = jsonObject(message['params']);
+      final accepting = message['method'] == 'mcp.event.accept';
+      final event = accepting ? jsonObject(params['event']) : params;
+      final id = requiredString(accepting || params['snapshot'] == null ? event : jsonObject(params['snapshot']), 'threadId');
       final key = requiredString(message, 'operation_id'), token = _mcpOperations[requiredString(message, 'operation_id')] = CancellationToken();
-      // Only occurrences cross this admission path. Protocol control remains in
-      // packages/mcp; the network owner waits for durable enqueue before ACKing.
+      // packages/mcp owns protocol control. Its private checkpoints share this
+      // per-thread queue but never load a thread or start a model; occurrences
+      // wait for atomic durable admission before the network owner ACKs them.
       final operation = (_mcpDeliveries[id] ?? Future<void>.value())
-        .then((_) => _deliverMcpEvent(id, event, token.merge(_lifetime)))
+        .then((_) => accepting ? _deliverMcpEvent(id, event, token.merge(_lifetime))
+          : _saveMcpSubscription(id, message['method'] as String, params, token.merge(_lifetime)))
         .then<void>((_) { reply.send({'result': null}); }, onError: (Object error, StackTrace stack) {
           traceError(error);
           reply.send({'error': 'Unable to admit MCP event to its thread', if (error is CancelledException) 'code': 'cancelled'});
@@ -39,6 +43,36 @@ extension _McpEvents on AgentServer {
     }
   }
 
+  Future<void> _saveMcpSubscription(String id, String method, Json params, CancellationToken cancellation) async {
+    while (true) {
+      cancellation.throwIfCancelled();
+      final task = _tasks[id] ?? _Task(id, null);
+      if (task.maintenance) { await task.maintenanceDone!.future.asCancellable(cancellation); continue; }
+      if (task.finishing) { await task.running!.asCancellable(cancellation); continue; }
+      if (task.busy && task.writer == null) { await task.ready!.future.asCancellable(cancellation); continue; }
+      await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation));
+      return;
+    }
+  }
+
+  Future<void> _restoreMcpEvents() async {
+    final owners = await readMcpEventOwners(directory, cancellation: _lifetime);
+    for (final owner in owners) {
+      _lifetime.throwIfCancelled();
+      final id = requiredString(owner, 'threadId');
+      if (owner['pending'] == true) {
+        // An ACK can precede a crash while another turn owns the thread. Wake
+        // the already-admitted inbox even if no upstream occurrence follows.
+        final task = await _loadThread(id, _lifetime);
+        if (!task.busy && task.pending.isNotEmpty) {
+          final next = task.pending.first;
+          _begin(task, next['prompt'] as String, settings: {'message_id': next['id'], 'sent_at': next['created_at']});
+        }
+      }
+      await callIsolate(network.port, 'mcp.events.restore', owner, cancellation: _lifetime);
+    }
+  }
+
   Future<void> _deliverMcpEvent(String id, Json event, CancellationToken cancellation) async {
     final task = await _loadThread(id, cancellation);
     task.eventAdmissions++;
@@ -55,23 +89,11 @@ extension _McpEvents on AgentServer {
           })}',
       };
       await _withWriter(task, (writer) async {
-        if (await callIsolate(writer.port, 'metadata', {'key': 'archived_at'}, cancellation: cancellation) != null) {
-          throw StateError('Cannot deliver an event to an archived thread');
-        }
-        final receipts = (await callIsolate(writer.port, 'metadata', {'key': 'mcp_event_receipts'}, cancellation: cancellation) as List? ?? []).cast<String>();
-        if (receipts.contains(receipt)) {
-          final inbox = jsonObject(await callIsolate(writer.port, 'session.inbox', {}, cancellation: cancellation));
-          task.pending..clear()..addAll((inbox['data'] as List).map(jsonObject));
-          return null;
-        }
-        if (task.pending.length >= 32 || task.pending.fold<int>(utf8.encode(message['prompt'] as String).length,
-            (size, input) => size + utf8.encode(input['prompt'] as String).length) > 512 * 1024) {
-          throw StateError('Pending message limit reached');
-        }
-        final admitted = jsonObject(await callIsolate(writer.port, 'append', {'type': 'input.pending', 'data': message,
-          'metadata': {'mcp_event_receipts': [...receipts.skip((receipts.length - 2047).clamp(0, receipts.length)), receipt]}}, cancellation: cancellation));
-        task.pending.add(message);
-        _broadcast(id, admitted);
+        final admitted = jsonObject(await callIsolate(writer.port, 'mcp.event.admit', {
+          'snapshot': event['snapshot'], 'receipt': receipt, 'message': message,
+        }, cancellation: cancellation));
+        task.pending..clear()..addAll((admitted['pending'] as List).map(jsonObject));
+        if (admitted['event'] != null) _broadcast(id, jsonObject(admitted['event']));
         return null;
       });
       if (!task.busy && task.pending.isNotEmpty) {

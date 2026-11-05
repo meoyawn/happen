@@ -42,6 +42,15 @@ void main() {
     });
   });
 
+  test('unencodable model context is rejected without advancing memory or committing', () {
+    final sequence = store.lastSequence;
+    budget(0, () => expect(() => store.append('context.injected', {
+      'item': ConversationItem(role: 'assistant').toJson(),
+    }), throwsA(isA<StateError>().having((error) => error.message, 'canonical context invariant', 'Context has no native rollout record'))));
+    expect(store.lastSequence, sequence);
+    expect(store.modelContext(), isEmpty);
+  });
+
   test('each changed goal uses one commit; reads, stale writes and empty accounting add none', () {
     budget(1, () => store.goal('replace', {'objective': 'Goal', 'tokenBudget': 100}));
     budget(1, () => store.goal('account', {'tokenDelta': 23}));
@@ -67,6 +76,33 @@ void main() {
     expect(store.native.items(), isEmpty);
     budget(0, store.native.catchUp);
   });
+
+  for (final terminal in ['tool.completed', 'turn.cancelled']) {
+    test('queued native CLI completions join the next ordinary commit, not intervening streaming records: $terminal', () {
+      store.append('turn.started', {'id': 'turn'});
+      store.append('tool.started', {'call_id': 'command', 'name': 'exec_command', 'input': {'cmd': 'true'}});
+      final canonical = <String, dynamic>{'type': 'CommandExecution', 'id': 'command', 'command': ['/bin/sh', '-c', 'true'],
+        'cwd': root.path, 'parsed_cmd': <Json>[], 'source': 'unified_exec_startup', 'status': 'completed', 'process_id': '1',
+        'aggregated_output': 'done', 'exit_code': 0, 'duration': {'secs': 0, 'nanos': 0}};
+      budget(0, () {
+        store.append('native.item.started', {'turnId': 'turn', 'item': {'type': 'commandExecution', 'id': 'command', 'status': 'inProgress'}});
+        store.queueNativeCompletion({'turnId': 'turn', 'canonicalItem': canonical, 'completedAtMs': 1234,
+          'item': {'type': 'commandExecution', 'id': 'command', 'status': 'completed', 'processId': '1'}});
+      });
+      late Json streamed;
+      budget(0, () { streamed = store.append('text.delta', {'delta': 'still streaming'}); });
+      expect((streamed['notifications'] as List).where((event) => event['method'] == 'item/completed'), isEmpty);
+      late Json committed;
+      budget(1, () { committed = store.append(terminal, terminal == 'tool.completed'
+        ? {'item': ConversationItem.toolResult(ToolCall(id: 'command', name: 'exec_command', input: '{"cmd":"true"}'), 'done').toJson()} : {}); });
+      expect((committed['notifications'] as List).first['params']['item']['id'], 'command');
+      final lines = store.db.select("SELECT line FROM rollout_lines WHERE json_extract(line,'\$.payload.item.id') IS 'command'");
+      expect(lines, hasLength(1)); expect(jsonDecode(lines.single['line'] as String)['payload']['item'], canonical);
+      budget(0, store.native.catchUp);
+      budget(0, () { store.append('text.delta', {'delta': 'later'}); });
+      expect(store.db.select("SELECT line FROM rollout_lines WHERE json_extract(line,'\$.payload.item.id') IS 'command'"), hasLength(1));
+    });
+  }
 
   test('cold tool settlement and its reset notice share one commit; warm ownership writes nothing', () {
     budget(0, () => store.startToolRuntime('old'));

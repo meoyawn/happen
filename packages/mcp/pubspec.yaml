@@ -9,3 +9,4 @@ dependencies:
   ai: any
   telemetry: any
   crypto: ^3.0.7
+  ffi: ^2.1.4
