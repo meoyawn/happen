@@ -325,6 +325,11 @@ class _DesktopNotificationWindowState extends State<DesktopNotificationWindow> {
 
   VoidCallback? _showToast(TaskNotification notification, String title) =>
     showDesktopToast(context, title, tag: 'chat:${notification.task.id}', description: notification.task.title,
+      type: switch (notification.kind) {
+        TaskNotificationKind.input => DesktopToastType.info,
+        TaskNotificationKind.completion => DesktopToastType.success,
+        TaskNotificationKind.failure => DesktopToastType.error,
+      },
       icon: switch (notification.kind) {
         TaskNotificationKind.input => Icons.question_answer_outlined,
         TaskNotificationKind.completion => Icons.check_circle_outline,

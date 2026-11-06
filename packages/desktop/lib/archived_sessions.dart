@@ -105,9 +105,6 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
                   },
                 ))),
             ])),
-        if (widget.session.error case final error?)
-          Padding(padding: const EdgeInsets.only(top: 12),
-            child: SelectableText(error, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
       ]);
     },
   );

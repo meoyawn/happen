@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 import 'support/thread.dart';
 
 void main() {
@@ -25,7 +26,9 @@ void main() {
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     requests.clear();
     provider.listen((request) async {
-      requests.add(jsonObject(jsonDecode(await utf8.decoder.bind(request).join())));
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      requests.add(body);
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
         'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant',

@@ -22,6 +22,7 @@ import 'src/questions.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
+part 'src/thread_names.dart';
 part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
 part 'src/mcp_input.dart';
@@ -54,6 +55,8 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
+  late final _threadNameQueue = <String>{};
+  late final _namingThreads = <String>{};
   final _sideForks = <String, Future<_Task>>{};
   final _goals = <String, GoalRuntime>{};
   final _goalRequests = ReceivePort();
@@ -1403,6 +1406,7 @@ class AgentServer {
         task.pending.add(message);
         _broadcast(task.id, admitted);
       }
+      if (!compact) _queueThreadName(task.id);
       for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
         settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
         cancellation: turnLifetime)) {
@@ -1627,9 +1631,13 @@ class AgentServer {
       }
     }
     for (final client in _clients.toList()) {
-      if (!client.subscriptions.contains(taskId) &&
-          !{'goal.updated', 'goal.cleared', 'task.archived', 'task.unarchived'}.contains(event['type'])) continue;
-      for (final notification in notifications) { client.event(notification); }
+      final receivesAll = client.subscriptions.contains(taskId) ||
+        {'goal.updated', 'goal.cleared', 'task.archived', 'task.unarchived', 'thread.name.updated'}.contains(event['type']);
+      for (final notification in notifications) {
+        if (receivesAll || {'turn/started', 'turn/completed'}.contains(notification['method'])) {
+          client.event(notification);
+        }
+      }
     }
     if (event['type'] == 'model.started') _tasks[taskId]?.assistantMessageID = event['data']['assistantMessageID'] as String?;
   }

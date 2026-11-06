@@ -1,3 +1,5 @@
+const defaultNotificationMode = 'sound';
+
 const notificationModes = {
   'off': 'Off',
   'notifications': 'Notifications only',

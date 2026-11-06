@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/thread_names.dart';
 
 import '../support/openai_output.dart';
 import '../support/thread.dart';
@@ -57,6 +58,7 @@ void main() {
       var sequence = 0;
       provider.listen((request) async {
         final requestBody = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        if (await respondToThreadName(request, requestBody)) return;
         requests.add(requestBody);
         final messages = (requestBody[openCode ? 'messages' : 'input'] as List).map(jsonObject).toList();
         final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');

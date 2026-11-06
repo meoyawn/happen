@@ -10,6 +10,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:storage/storage.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
   late Directory root;
@@ -42,6 +43,7 @@ void main() {
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
       requests.add(body); arrived.add(body);
       if (jsonEncode((body['input'] as List).last).contains('hold ')) await release.future;
       request.response.headers.contentType = ContentType('text', 'event-stream');

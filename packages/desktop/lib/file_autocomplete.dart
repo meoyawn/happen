@@ -589,9 +589,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     return true;
   }
 
-  bool completeSelection() {
+  bool completeSelection({bool completeQuery = false}) {
     if (!_visible) return false;
-    if (_choiceCount > 0) _chooseSelected();
+    if (_choiceCount > 0) _chooseSelected(completeQuery: completeQuery);
     return true;
   }
 
@@ -610,7 +610,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     widget.focusNode.requestFocus();
   }
 
-  void _chooseSelected() {
+  void _chooseSelected({bool completeQuery = false}) {
     if (_historyOpen) {
       final text = _historyItems[_selected];
       dismiss();
@@ -618,18 +618,29 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       widget.focusNode.requestFocus();
     }
     else if (_command != null) { _chooseCommand(); }
-    else if (_selected < _paths.length) { _choose(_paths[_selected]); }
+    else if (_selected < _paths.length) { _choose(_paths[_selected], completeQuery: completeQuery); }
     else if (_selected < _paths.length + _skills.length) { _chooseSkill(_skills[_selected - _paths.length]); }
     else { _chooseContext(_contextOptions[_selected - _paths.length - _skills.length]); }
   }
 
-  void _choose(String path) {
+  void _choose(String path, {bool completeQuery = false}) {
     final mention = _mention;
     if (mention == null || _mentionAt(widget.controller.value) != mention) return;
     final controller = widget.controller;
     if (controller is! ComposerTextController) return;
-    dismiss();
-    controller.insertFile(TextRange(start: mention.start, end: mention.end), path);
+    if (completeQuery && path.endsWith('/')) {
+      final quoted = controller.text.startsWith('"', mention.start + 1) ||
+          RegExp(r'[\s@$"\)\]}\uFFFC]').hasMatch(path);
+      final query = quoted ? '"${path.replaceAll('\\', r'\\').replaceAll('"', r'\"')}"' : path;
+      final start = mention.start + 1;
+      controller.value = TextEditingValue(
+        text: controller.text.replaceRange(start, mention.end, query),
+        selection: TextSelection.collapsed(offset: start + query.length - (quoted ? 1 : 0)),
+      );
+    } else {
+      dismiss();
+      controller.insertFile(TextRange(start: mention.start, end: mention.end), path);
+    }
     widget.focusNode.requestFocus();
   }
 
@@ -668,7 +679,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
             if (_mcpFilter.isEmpty) const SingleActivator(LogicalKeyboardKey.backspace): dismiss,
           },
           if (_choiceCount > 0) ...{
-            const SingleActivator(LogicalKeyboardKey.tab): _chooseSelected,
+            const SingleActivator(LogicalKeyboardKey.tab, includeRepeats: false): () => completeSelection(completeQuery: true),
             const SingleActivator(LogicalKeyboardKey.arrowDown): () => _move(1),
             const SingleActivator(LogicalKeyboardKey.arrowUp): () => _move(-1),
             const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => _move(1),

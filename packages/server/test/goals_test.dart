@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:storage/storage.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
   late Directory root;
@@ -35,6 +36,7 @@ void main() {
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
       requests.add(body);
       final compact = (body['input'] as List).lastOrNull?['type'] == 'compaction_trigger';
       if (compact) { compactStarted.complete(); await compactRelease.future; }
@@ -226,7 +228,7 @@ void main() {
   for (final method in ['thread/archive', 'turn/interrupt']) {
     test('$method flushes in-flight goal usage while stopping the owning turn', () async {
       final id = await start(); sleeping = true;
-      final started = client.events.stream.firstWhere((event) => event['method'] == 'item/started' && event['params']['item']['tool'] == 'sleep');
+      final started = client.events.stream.firstWhere((event) => event['method'] == 'item/started' && event['params']['item']['type'] == 'sleep');
       await set(id, {'objective': 'Finish the objective', 'origin': 'user'});
       final item = await started.timeout(const Duration(seconds: 5));
       final completed = client.events.stream.firstWhere((event) => event['method'] == 'turn/completed' && event['params']['threadId'] == id);

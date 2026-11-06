@@ -188,7 +188,7 @@ class _FileViewerState extends State<FileViewer> {
     } on CancelledException {
       // The viewer was closed.
     } catch (_) {
-      if (mounted) showDesktopToast(context, 'This file could not be revealed.');
+      if (mounted) showDesktopToast(context, 'This file could not be revealed.', type: DesktopToastType.error);
     } finally {
       if (mounted) setState(() => _revealing = false);
     }

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 import 'support/thread.dart';
 
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
@@ -22,6 +23,7 @@ void main() {
     final imageStarted = Completer<void>();
     peer.listen((http) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(http).join()));
+      if (await respondToThreadName(http, body)) return;
       if (http.uri.path.endsWith('/responses')) {
         inference.add(body);
         final input = (body['input'] as List).map(jsonObject).toList();

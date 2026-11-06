@@ -18,6 +18,7 @@ import 'appearance.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
+import 'desktop_notice.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -37,7 +38,8 @@ class Project {
 
 class DesktopTask {
   DesktopTask(this.id, this.title, {this.sideParentID, this.sideDraftID, this.tracing = false});
-  final String id, title;
+  final String id;
+  String title;
   final String? sideParentID;
   final String? sideDraftID;
   bool tracing;
@@ -70,11 +72,35 @@ class DesktopTask {
   bool reasoningUpdates = false;
   num? contextLimit;
   int lastActivity = 0;
-  int? runStartedAt;
+  int? runStartedAt, lastSentAt;
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending;
   Object? _conversationState;
   CancellationToken? _historyRead;
+}
+
+int taskLastSentAt(DesktopTask task) {
+  var latest = task.lastSentAt;
+  if (latest == null) {
+    for (final item in task.messages.values) {
+      if (item['type'] != 'userMessage') continue;
+      final time = item['startedAtMs'] as int?;
+      if (time != null && time > (latest ?? 0)) latest = time;
+    }
+  }
+  var sentAt = latest ?? task.runStartedAt ?? (task.projectionState['summary']?['createdAt'] as int? ?? 0) * 1000;
+  for (final input in task.pending.values) {
+    final time = DateTime.tryParse(input['created_at'] as String? ?? '')?.millisecondsSinceEpoch;
+    if (time != null && time > sentAt) sentAt = time;
+  }
+  return sentAt;
+}
+
+String _threadTitle(Json thread) {
+  final name = (thread['name'] as String?)?.trim();
+  if (name != null && name.isNotEmpty) return name;
+  final preview = (thread['preview'] as String? ?? '').trim();
+  return preview.isEmpty ? 'New session' : preview.split('\n').first;
 }
 
 class QuestionDraft {
@@ -118,8 +144,7 @@ class DesktopSession extends ChangeNotifier {
         if (_lifetime.isCancelled) return;
         connected = false;
         unawaited(_dictation?.cancel());
-        error = 'Connection closed. Reopen Happen to reconnect.';
-        notifyListeners();
+        showError('Connection closed. Reopen Happen to reconnect.', title: 'Connection lost');
       },
     );
     _disconnect = CancellationHook(_lifetime, () => unawaited(client.close()));
@@ -131,6 +156,7 @@ class DesktopSession extends ChangeNotifier {
   final sideChats = <String, DesktopTask>{};
   final terminals = DesktopTerminals();
   final panelLayouts = <String, SessionPanelState>{};
+  late final panelSelection = ChangeNotifier();
   final _changedPanelLayouts = <String>{};
   bool _panelsLoaded = false;
   final drafts = <String, String>{};
@@ -164,12 +190,18 @@ class DesktopSession extends ChangeNotifier {
   final _releasingThreads = <String, Future<void>>{};
   late final _notifications = StreamController<TaskNotification>.broadcast();
   Stream<TaskNotification> get notifications => _notifications.stream;
+  late final _pendingNotices = <DesktopNotice>[];
+  late final StreamController<DesktopNotice> _notices = StreamController<DesktopNotice>.broadcast(onListen: () {
+    for (final notice in _pendingNotices) { _notices.add(notice); }
+    _pendingNotices.clear();
+  });
+  Stream<DesktopNotice> get notices => _notices.stream;
   List<Json> providers = [];
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
   String dictationMode = 'live';
   String projectAvatarStyle = 'letters';
-  String notificationMode = 'off';
+  String notificationMode = defaultNotificationMode;
   bool inAppNotificationsEnabled = false;
   bool sidebarOpen = true;
   bool viewingConversation = true;
@@ -267,9 +299,9 @@ class DesktopSession extends ChangeNotifier {
         if (project == null || project.removing || !projects.contains(project)) continue;
         final id = requiredString(info, 'id');
         final existing = project.tasks.where((task) => task.id == id).firstOrNull;
-        final preview = info['name'] as String? ?? info['preview'] as String? ?? '';
-        final title = preview.trim().isEmpty ? 'New session' : preview.trim().split('\n').first;
-        final target = existing ?? DesktopTask(id, title.length > 72 ? '${title.substring(0, 72)}…' : title);
+        final title = _threadTitle(info);
+        final target = existing ?? DesktopTask(id, title);
+        target.title = title;
         if (existing == null) project.tasks.add(target);
         if (!target.loaded) target.running = info['status']?['type'] == 'active';
         target.projectionState['summary'] = info;
@@ -285,6 +317,22 @@ class DesktopSession extends ChangeNotifier {
       } while (cursor != null);
     }
     if (!_lifetime.isCancelled) notifyListeners();
+  }
+
+  void _updateThreadTitle(DesktopTask target, Json info) {
+    target.projectionState['summary'] = info;
+    final title = _threadTitle(info);
+    if (target.title == title) return;
+    target.title = title;
+    final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
+    if (owner == null) return;
+    unawaited(callIsolate(database.port, 'task.add', {
+      'id': target.id, 'checkout_key': owner.checkoutKey, 'title': title,
+      'archived': target.archived, 'last_activity': target.lastActivity,
+    }, cancellation: _lifetime).catchError((Object failure) {
+      if (failure is! CancelledException) { showError(failure); }
+      return null;
+    }));
   }
 
   Future<void> chooseDeliveryMode(String mode) async {
@@ -345,6 +393,7 @@ class DesktopSession extends ChangeNotifier {
     await _setting('project_name:${target.checkoutKey}', value ?? '');
     target.displayName = value;
     notifyListeners();
+    _notice('Project renamed', description: target.name);
   }
 
   Future<void> chooseProjectAvatarImage(Project target, Uint8List? image) async {
@@ -386,9 +435,10 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _savePanels(DesktopTask target) {
+  void _savePanels(DesktopTask target, {bool selectionOnly = false}) {
     _changedPanelLayouts.add(target.id);
-    notifyListeners();
+    if (selectionOnly) { panelSelection.notifyListeners(); }
+    else { notifyListeners(); }
     unawaited(loadPanelLayouts(_lifetime).then((_) {
       _saveNavigation('session_panels', jsonEncode({
         for (final entry in panelLayouts.entries) entry.key: writeSessionPanels(entry.value),
@@ -455,9 +505,9 @@ class DesktopSession extends ChangeNotifier {
 
   void selectSessionPanel(DesktopTask target, String tab) {
     final state = panelsFor(target);
-    if (!state.tabs.contains(tab)) return;
+    if (!state.tabs.contains(tab) || state.active == tab) return;
     state.active = tab;
-    _savePanels(target);
+    _savePanels(target, selectionOnly: true);
   }
 
   void closeSessionPanel(DesktopTask target, String tab) {
@@ -653,11 +703,20 @@ class DesktopSession extends ChangeNotifier {
     _saveNavigation('viewed_tasks', jsonEncode(viewedTasks));
   }
 
+  bool hasUnseenCompletion(DesktopTask target) => !target.running && !target.archived && !target.archiving &&
+    !target._stopRequested && target.turns.values.lastOrNull?['status'] == 'completed' &&
+    target.lastActivity > (viewedTasks[target.id] ?? -1);
+
   /// Releases a transcript when archiving or leaving an archived preview.
   void releaseHistory(DesktopTask target) {
     target._historyRead?.cancel();
+    target.lastSentAt ??= taskLastSentAt(target);
     target.messages.clear();
+    final latestTurn = target.turns.values.lastOrNull;
     target.turns.clear();
+    if (latestTurn != null) {
+      target.turns[latestTurn['id'] as String] = {...latestTurn, 'items': const <Json>[]};
+    }
     target.liveEvents.clear();
     target.projectionState.removeWhere((key, _) => key != 'summary');
     target._conversation = null;
@@ -743,11 +802,15 @@ class DesktopSession extends ChangeNotifier {
       await _request('auth.login', {'provider': provider, 'login_id': id});
       await refreshProviders();
       loginSucceeded = true;
+      _notice('Signed in to ${provider == 'openai' ? 'ChatGPT' : 'OpenCode'}');
       return true;
     } on CancelledException {
       // The desktop lifetime owns the connection and server-side cancellation.
     } catch (failure) {
-      if (!_loginCancelled) loginError = failure.toString();
+      if (!_loginCancelled) {
+        loginError = failure.toString();
+        _notice('Could not sign in', type: DesktopToastType.error, description: loginError);
+      }
     } finally {
       if (_loginId == id) {
         _loginId = null;
@@ -778,10 +841,12 @@ class DesktopSession extends ChangeNotifier {
     try {
       await _request('auth.logout', {'provider': provider});
       await refreshProviders();
+      _notice('Signed out of ${provider == 'openai' ? 'ChatGPT' : 'OpenCode'}');
     } on CancelledException {
       // Application exit owns cancellation.
     } catch (failure) {
       loginError = failure.toString();
+      _notice('Could not sign out', type: DesktopToastType.error, description: loginError);
     } finally {
       signingOut = null;
       if (!_lifetime.isCancelled) notifyListeners();
@@ -796,6 +861,7 @@ class DesktopSession extends ChangeNotifier {
     } catch (_) {
       if (_loginId == id && !_lifetime.isCancelled) {
         loginError = 'Could not open the browser. Try Open browser again.';
+        _notice('Could not open sign-in', type: DesktopToastType.error, description: loginError);
         notifyListeners();
       }
     }
@@ -981,7 +1047,7 @@ class DesktopSession extends ChangeNotifier {
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
     final savedNotificationMode = settings['notification_mode'] as String?;
-    notificationMode = notificationModes.containsKey(savedNotificationMode) ? savedNotificationMode! : 'off';
+    notificationMode = notificationModes.containsKey(savedNotificationMode) ? savedNotificationMode! : defaultNotificationMode;
     inAppNotificationsEnabled = settings['in_app_notifications'] == 'true';
     sidebarOpen = settings['sidebar_open'] != 'false';
     try {
@@ -1115,6 +1181,7 @@ class DesktopSession extends ChangeNotifier {
     _pruneEmptyDrafts();
     _saveNavigation('open_tabs', jsonEncode(openTabIds));
     notifyListeners();
+    _notice('Project opened', description: project!.name);
   }
 
   Future<void> _refreshIdentity(Project target) async {
@@ -1214,6 +1281,7 @@ class DesktopSession extends ChangeNotifier {
       }
       if (!_lifetime.isCancelled) notifyListeners();
       for (final attachment in attachments) { await attachment.discard(); }
+      _notice('Project removed', description: target.name);
     } finally {
       target.removing = false;
       if (!_lifetime.isCancelled) notifyListeners();
@@ -1296,11 +1364,13 @@ class DesktopSession extends ChangeNotifier {
       if (target.archived) await terminals.removeTask(target.id);
       read.throwIfCancelled();
       target.through = page['notificationThrough'] as int? ?? 0;
+      if (target.loaded) target.lastSentAt ??= taskLastSentAt(target);
       target.messages.clear();
       target.turns.clear();
       target.projectionState
         ..clear()
         ..addAll(jsonObject(page['state'] ?? {}));
+      _updateThreadTitle(target, jsonObject(page['thread']));
       for (final raw in (recentTurns['data'] as List).reversed) {
         final turn = jsonObject(raw);
         target.turns[turn['id'] as String] = turn;
@@ -1329,6 +1399,7 @@ class DesktopSession extends ChangeNotifier {
         }
       }
       target.questionDrafts.removeWhere((id, _) => !target.questions.containsKey(id));
+      target.lastSentAt ??= taskLastSentAt(target);
       target.loaded = true;
       if (task == target) _markViewed(target);
     } on CancelledException {
@@ -1549,6 +1620,7 @@ class DesktopSession extends ChangeNotifier {
             // The server already admitted this turn. Do not offer to resend it.
             error =
                 'Task started, but its sidebar reference could not be saved: $failure';
+            _notice('Thread started, but could not be saved', type: DesktopToastType.warning, description: '$failure');
           }
         } else if (sideCommand != null) {
           await openSideChat(existing, prompt: prompt.substring(sideCommand.end).trimLeft(), attachments: input);
@@ -1572,8 +1644,7 @@ class DesktopSession extends ChangeNotifier {
       rethrow;
     } catch (failure) {
       existing?.running = wasRunning;
-      if (target == null) { error = failure.toString(); }
-      else { target.sideError = failure.toString(); }
+      showError(failure, target: target, title: 'Could not send message');
       return false;
     } finally {
       if (!admitted && local?.pending[inboxID]?['sending'] == true) local!.pending.remove(inboxID);
@@ -1647,7 +1718,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> setArchived(DesktopTask target, bool archived) async {
     final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
-    if (target.archiving || owner == null || owner.removing) return;
+    if (target.archiving || target.archived == archived || owner == null || owner.removing) return;
     target.archiving = true;
     final closingTerminals = archived ? terminals.removeTask(target.id) : Future<void>.value();
     notifyListeners();
@@ -1660,6 +1731,12 @@ class DesktopSession extends ChangeNotifier {
         await _releaseArchivedThread(target);
       }
       await _saveArchived(target);
+      _notice(archived ? 'Thread archived' : 'Thread restored',
+        tag: 'archive:${target.id}', description: target.title,
+        actionLabel: archived ? 'Undo' : null,
+        onAction: archived ? () => unawaited(setArchived(target, false).catchError((Object failure) {
+          if (failure is! CancelledException) showError(failure, title: 'Could not restore thread');
+        })) : null);
     } finally {
       target.archiving = false;
       if (!_lifetime.isCancelled) notifyListeners();
@@ -1699,10 +1776,26 @@ class DesktopSession extends ChangeNotifier {
     for (final attachment in attachments) { await attachment.discard(); }
   }
 
-  void showError(Object failure, {DesktopTask? target}) {
+  void _notice(String title, {
+    String? description, DesktopToastType type = DesktopToastType.success, Object? tag,
+    String? actionLabel, VoidCallback? onAction,
+  }) {
+    if (_lifetime.isCancelled) return;
+    final notice = (title: title, description: description, type: type, tag: tag,
+      actionLabel: actionLabel, onAction: onAction);
+    if (_notices.hasListener) {
+      _notices.add(notice);
+    } else {
+      if (_pendingNotices.length == 3) _pendingNotices.removeAt(0);
+      _pendingNotices.add(notice);
+    }
+  }
+
+  void showError(Object failure, {DesktopTask? target, String title = 'Action failed'}) {
     if (_lifetime.isCancelled) return;
     if (target == null) { error = failure.toString(); }
     else { target.sideError = failure.toString(); }
+    _notice(title, type: DesktopToastType.error, description: failure.toString());
     notifyListeners();
   }
 
@@ -1810,10 +1903,8 @@ class DesktopSession extends ChangeNotifier {
   void _observeActivity(DesktopTask target, Iterable<Json> events) {
     var latest = target.lastActivity;
     for (final event in events) {
-      if (!{'input.pending', 'input.committed', 'turn.started', 'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(event['type'])) continue;
-      var timestamp = event['created_at'];
-      if (event['type'] == 'input.pending') timestamp ??= event['data']?['created_at'];
-      final time = timestamp is String ? DateTime.tryParse(timestamp)?.millisecondsSinceEpoch : null;
+      if (!{'happen/inbox/enqueued', 'happen/inbox/delivered', 'turn/started', 'turn/completed'}.contains(event['method'])) continue;
+      final time = event['params']?['happen']?['createdAt'] as int?;
       if (time != null && time > latest) latest = time;
     }
     if (latest <= target.lastActivity) return;
@@ -1881,6 +1972,9 @@ class DesktopSession extends ChangeNotifier {
         if (target.nextReasoning == target.reasoning) target.nextReasoning = null;
       case 'happen/inbox/enqueued':
         final input = jsonObject(data['input']); target.pending['msg_${input['id']}'] = input;
+        final sentAt = DateTime.tryParse(input['created_at'] as String? ?? '')?.millisecondsSinceEpoch ??
+          data['happen']?['createdAt'] as int?;
+        if (sentAt != null && sentAt > (target.lastSentAt ?? 0)) target.lastSentAt = sentAt;
       case 'happen/inbox/delivered': target.pending.remove('msg_${data['id']}');
       case 'happen/inbox/updated':
         final id = 'msg_${data['id']}';
@@ -1889,6 +1983,11 @@ class DesktopSession extends ChangeNotifier {
         for (final id in data['ids'] as List? ?? []) { target.pending.remove('msg_$id'); }
       case 'thread/archived': target.archived = true;
       case 'thread/unarchived': target.archived = false;
+      case 'thread/name/updated':
+        _updateThreadTitle(target, {
+          ...jsonObject(target.projectionState['summary'] ?? {'preview': target.title}),
+          'name': data['threadName'],
+        });
       case 'thread/status/changed':
         target.running = data['status']?['type'] == 'active';
         if (!target.running) {
@@ -1924,6 +2023,8 @@ class DesktopSession extends ChangeNotifier {
     _disconnect.dispose();
     await _events.cancel();
     await _notifications.close();
+    _pendingNotices.clear();
+    await _notices.close();
     await client.close();
     await database.close();
     for (final side in sideChats.values) { side.liveText.dispose(); }
@@ -1933,6 +2034,7 @@ class DesktopSession extends ChangeNotifier {
       for (final attachment in entry.value) { await attachment.discard(); }
     }
     attachmentDrafts.clear();
+    panelSelection.dispose();
     dispose();
   }
 }
@@ -1964,19 +2066,34 @@ class ToolActivity {
 
 /// A visible transcript row. Provider replay state never enters this projection.
 typedef ChatResponse = ({String? provider, String? model, String? reasoning, Duration? duration, bool interrupted});
+typedef ChatQuestionAnswer = ({String question, String answer});
+
+List<ChatQuestionAnswer> _questionReplyAnswers(String text) {
+  const opening = '<send_user_message_question_reply>', closing = '</send_user_message_question_reply>';
+  final source = text.trim();
+  if (!source.startsWith(opening) || !source.endsWith(closing)) return const [];
+  try {
+    final value = jsonDecode(source.substring(opening.length, source.length - closing.length));
+    if (value is! List || value.isEmpty || value.any((item) =>
+        item is! Map || item['question'] is! String || item['answer'] is! String)) return const [];
+    return [for (final item in value) (question: item['question'] as String, answer: item['answer'] as String)];
+  } on FormatException { return const []; }
+}
 
 class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
     this.tool, this.compaction, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
-    this.response,
+    this.response, this.turnId, this.phase, this.questionAnswers = const [],
   });
   final String id, role, text;
+  final String? turnId, phase;
   final ToolActivity? tool;
   final CompactionActivity? compaction;
   final DateTime? timestamp, startedAt;
   final bool streaming;
   final List<Json> attachments;
   final ChatResponse? response;
+  final List<ChatQuestionAnswer> questionAnswers;
 }
 
 class CompactionActivity {
@@ -2012,8 +2129,11 @@ List<ChatEntry> conversation(DesktopTask task) {
     switch (message['type']) {
       case 'userMessage':
         final content = (message['content'] as List? ?? []).map(jsonObject).toList();
-        result.add(ChatEntry(id, 'You', content.where((part) => part['type'] == 'text').map((part) => part['text']).join('\n'),
-          attachments: content.where((part) => part['type'] != 'text').toList(), timestamp: created));
+        final text = content.where((part) => part['type'] == 'text').map((part) => part['text']).join('\n');
+        final answers = _questionReplyAnswers(text);
+        result.add(ChatEntry(id, answers.isEmpty ? 'You' : 'Answer', answers.isEmpty ? text : '',
+          attachments: content.where((part) => part['type'] != 'text').toList(), timestamp: created,
+          turnId: message['turnId'] as String?, questionAnswers: answers));
       case 'agentMessage':
       case 'reasoning':
         final reasoning = message['type'] == 'reasoning';
@@ -2024,25 +2144,57 @@ List<ChatEntry> conversation(DesktopTask task) {
           ? Duration(seconds: (turn!['completedAt'] as int) - (turn['startedAt'] as int)) : null;
         result.add(ChatEntry(id, reasoning ? 'Reasoning' : 'Happen', text, timestamp: at(message['completedAtMs']) ?? created,
           startedAt: created, streaming: task.running && message['live'] == true,
-          response: reasoning || message['live'] == true ? null : (provider: task.provider, model: task.model, reasoning: task.reasoning,
+          turnId: message['turnId'] as String?, phase: message['phase'] as String?,
+          response: reasoning || message['live'] == true || message['phase'] == 'commentary' ? null
+            : (provider: task.provider, model: task.model, reasoning: task.reasoning,
             duration: duration, interrupted: turn?['status'] == 'interrupted')));
       case 'mcpToolCall':
       case 'dynamicToolCall':
       case 'commandExecution':
-        final tool = ToolActivity(id, message['type'] == 'mcpToolCall' ? '${message['server']}.${message['tool']}' :
-          message['tool'] as String? ?? 'Shell', message['arguments'] ?? message['command'], startedAt: created, formatInput: true);
+      case 'fileChange':
+      case 'webSearch':
+      case 'imageView':
+      case 'imageGeneration':
+      case 'sleep':
+      case 'collabAgentToolCall':
+        final name = switch (message['type']) {
+          'mcpToolCall' => '${message['server']}.${message['tool']}',
+          'fileChange' => 'apply_patch',
+          'webSearch' => 'web_search',
+          'imageView' => 'view_image',
+          'imageGeneration' => 'imagegen',
+          'sleep' => 'sleep',
+          _ => message['tool'] as String? ?? 'Shell',
+        };
+        final input = message['arguments'] ?? message['command'] ?? switch (message['type']) {
+          'fileChange' => {'changes': message['changes']},
+          'webSearch' => {'query': message['query'], 'action': message['action']},
+          'imageView' => {'path': message['path']},
+          'imageGeneration' => {'prompt': message['revisedPrompt']},
+          'sleep' => {'duration': message['durationMs']},
+          _ => {'prompt': message['prompt'], 'agents': message['receiverThreadIds']},
+        };
+        final tool = ToolActivity(id, name, input, startedAt: created, formatInput: true);
         tool.status = switch (message['status']) {'completed' => 'done', 'failed' => 'failed',
-          'inProgress' => task.running ? 'running' : 'interrupted', _ => 'interrupted'};
+          'inProgress' => task.running ? 'running' : 'interrupted',
+          null => message['live'] == true && task.running ? 'running' : 'done', _ => 'interrupted'};
+        if (tool.status != 'interrupted' && (message['success'] == false || message['error'] != null ||
+            message['exitCode'] is int && message['exitCode'] != 0)) tool.status = 'failed';
         tool.endedAt = at(message['completedAtMs']);
         final output = message['contentItems'] ?? message['result']?['content'];
         if (output is List) {
           final text = output.where((part) => {'text', 'inputText'}.contains(part['type'])).map((part) => part['text']).join('\n');
           if (text.isNotEmpty) tool.output = text;
         } else if (message['error'] != null || message['aggregatedOutput'] != null) { tool.output = message['error'] ?? message['aggregatedOutput']; }
+        else if (message['type'] == 'fileChange') {
+          tool.output = (message['changes'] as List? ?? []).map((change) => '${change['path']}\n${change['diff'] ?? ''}').join('\n\n');
+        } else if (message['type'] == 'webSearch') { tool.output = message['results']; }
+        else if (message['type'] == 'collabAgentToolCall') { tool.output = message['agentsStates']; }
         tools[id] = tool;
         final parent = tools[message['parentCallId']];
         if (parent != null) { parent.children.add(tool); }
-        else { result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: created)); }
+        else { result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: created,
+          turnId: message['turnId'] as String?)); }
       case 'contextCompaction':
         final activity = CompactionActivity(startedAt: created)
           ..status = switch (message['status']) {'completed' => 'done',
@@ -2050,7 +2202,8 @@ List<ChatEntry> conversation(DesktopTask task) {
             _ => task.running ? 'running' : 'interrupted'}
           ..endedAt = at(message['completedAtMs'])
           ..summary = message['summary'] as String? ?? '';
-        result.add(ChatEntry(id, 'Compaction', '', compaction: activity));
+        result.add(ChatEntry(id, 'Compaction', '', compaction: activity,
+          turnId: message['turnId'] as String?));
     }
   }
   final terminal = task.turns.values.lastOrNull;
@@ -2063,8 +2216,10 @@ List<ChatEntry> conversation(DesktopTask task) {
     final sourceID = entry.key.replaceFirst(RegExp(r'^msg_'), '');
     if (messages.any((message) => message['clientId'] == sourceID)) continue;
     final queued = item['delivery'] == 'queue';
-    result.add(ChatEntry(queued ? 'pending:${entry.key}' : entry.key, queued ? 'Queued' : 'You',
-      item['prompt'] as String? ?? '',
+    final text = item['prompt'] as String? ?? '';
+    final answers = _questionReplyAnswers(text);
+    result.add(ChatEntry(queued ? 'pending:${entry.key}' : entry.key, answers.isNotEmpty ? 'Answer' : queued ? 'Queued' : 'You',
+      answers.isEmpty ? text : '', questionAnswers: answers,
       attachments: (item['attachments'] as List? ?? []).map(jsonObject).toList(),
       timestamp: DateTime.tryParse(item['created_at'] as String? ?? '')));
   }

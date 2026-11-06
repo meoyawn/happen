@@ -208,7 +208,7 @@ class _AttachmentTileState extends State<_AttachmentTile> {
       if (location == null) throw const FormatException('File path is unavailable');
       ConversationFileScope.open(context, location);
     } catch (_) {
-      showDesktopToast(context, 'This file could not be opened.');
+      showDesktopToast(context, 'This file could not be opened.', type: DesktopToastType.error);
     }
   }
 

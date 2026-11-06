@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 
-// OpenCode: ui/src/styles/tailwind/index.css and theme/themes/oc-2.json.
-const opencodeSessionWidth = 744.0;
+// T3 Code: --chat-content-max-width and the default light palette.
+const conversationWidth = 736.0;
+const conversationCanvas = Color(0xfffcfcfc);
+const conversationForeground = Color(0xff27272a);
+const conversationSecondary = Color(0xff71717b);
+const conversationSurface = Color(0xfff4f4f5);
+const conversationOutline = Color(0xffe4e4e7);
+const conversationAccent = Color(0xff1b4ed8);
 const newThreadComposerWidth = 800.0;
 const opencodeInk = Color(0xff161616);
 const opencodeMuted = Color(0xff5c5c5c);
@@ -22,12 +28,16 @@ const opencodeProjectColors = {
   'gray': (background: Color(0xff5c5c5c), border: Color(0xff3a3a3a)),
 };
 
-class ConversationTypography extends StatelessWidget {
-  const ConversationTypography({super.key, required this.child});
-  final Widget child;
-  @override
-  Widget build(BuildContext context) => child;
-}
+ThemeData conversationTheme(ThemeData base) => base.copyWith(
+  colorScheme: base.colorScheme.copyWith(
+    primary: conversationAccent, onPrimary: Colors.white,
+    surface: conversationCanvas, onSurface: conversationForeground,
+    onSurfaceVariant: conversationSecondary, outlineVariant: conversationOutline,
+    surfaceContainer: conversationSurface,
+  ),
+  textTheme: base.textTheme.apply(bodyColor: conversationForeground, displayColor: conversationForeground),
+  dividerColor: conversationOutline,
+);
 
 ThemeData desktopTheme() {
   const ink = Color(0xff1a1c1f);

@@ -210,6 +210,54 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  _testComposer('Tab browses directories while Enter inserts them as references', (tester) async {
+    final client = _Client();
+    final composer = await _open(tester, client: client);
+    for (final (input, directory, quoted) in [
+      ('li', 'lib/', false),
+      ('docs', 'My Docs/', true),
+      ('"My D"', 'My Docs/', true),
+    ]) {
+      client.readFiles = (query, _) async => {
+        'paths': [query == directory ? '${directory}src/' :
+          query == '${directory}src/' ? '${directory}src/main.dart' : directory],
+        'truncated': false,
+      };
+      Future<void> start() async {
+        composer.text.value = TextEditingValue(text: 'See @$input after',
+          selection: TextSelection.collapsed(offset: 5 + input.length - (input.endsWith('"') ? 1 : 0)));
+        await tester.pump(const Duration(milliseconds: 220));
+        await tester.pump();
+        await tester.pump();
+      }
+      await start();
+      for (final path in [directory, '${directory}src/']) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump(const Duration(milliseconds: 220));
+        await tester.pump();
+        await tester.pump();
+        expect(composer.text.text, 'See @${quoted ? '"$path"' : path} after');
+        expect(composer.text.selection, TextSelection.collapsed(offset: 5 + path.length + (quoted ? 1 : 0)));
+        expect(composer.text.files, isEmpty);
+        expect(find.text('Add context'), findsOneWidget);
+        expect(_selected(tester), path == directory ? 'src' : 'main.dart');
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      expect(composer.text.files.single.path, '${directory}src/main.dart');
+      expect(composer.text.serializePrompt(), 'See [main.dart](${directory}src/main.dart) after');
+      expect(find.text('Add context'), findsNothing);
+
+      await start();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(composer.text.files.single.path, directory);
+      expect(find.text('Add context'), findsNothing);
+      expect(composer.submissions.value, 0);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   _testComposer('reference navigation and deletion are atomic and undo/redo retain their paths', (tester) async {
     final composer = await _open(tester);
     await _type(tester, composer, '@');

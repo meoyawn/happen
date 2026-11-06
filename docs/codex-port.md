@@ -75,6 +75,9 @@ counts, inferred Codex budgets or a Happen-only fixture for that comparison.
   explicitly classify failure modes eliminated by SQLite atomic rows.
 - **Native items:** finish the broader live-item inventory and integrated
   lifecycle/replay verification without reopening retired generic item paths.
+- **Shell snapshots:** port the applicable local capture/replay matrix from
+  `ddd1812a51f4aded35c3ec5446672474d5cb546b`, implement the Dart runtime owner,
+  and verify the final source before removing this entry.
 - **MCP:** finish applicability classification for any remaining ordinary
   transport/OAuth/stdio/config cases. Mark each case as ported, adapted or
   excluded with its reason; do not infer universal parity from focused families.

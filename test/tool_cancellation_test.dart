@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 
 import 'support/openai_output.dart';
 import 'support/thread.dart';
@@ -53,6 +54,7 @@ wait
       final modelRequests = <Json>[];
       provider.listen((request) async {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        if (await respondToThreadName(request, body)) return;
         modelRequests.add(body);
         final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
         final user = input.lastIndexWhere((item) => item['role'] == 'user');

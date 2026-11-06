@@ -6,6 +6,7 @@ import 'package:opencode/src/instructions.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 import 'support/thread.dart';
 
 void main() {
@@ -56,6 +57,7 @@ void main() {
       final body = jsonObject(
         jsonDecode(await utf8.decoder.bind(request).join()),
       );
+      if (await respondToThreadName(request, body)) return;
       requests.add(body);
       expect(request.uri.path, '/inference/openai/v1/chat/completions');
       expect(request.headers.value('Authorization'), 'Bearer fixture-access');

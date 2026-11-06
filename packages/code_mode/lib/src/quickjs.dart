@@ -379,7 +379,8 @@ var __cell = (() => {
       if (!item) throw new Error("Unknown host call");
       pending.delete(reply.id);
       if (reply.ok) item.resolve(reply.value);
-      else item.reject(new Error(String(reply.value)));
+      // Codex rejects host failures with text so allSettled/text preserve them.
+      else item.reject(String(reply.value));
     }
   };
   function text(value) {

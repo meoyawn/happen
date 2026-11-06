@@ -147,6 +147,51 @@ text({moduleValue, moduleThis: this === undefined});
     expect(invoked, ['mcp__archive___probe', 'client___probe']);
   });
 
+  test('Codex code mode preserves MCP result envelopes and printable host failures', () async {
+    const interface = OpenAIToolInterface();
+    final runtime = interface.createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    const rpcError = 'RPCError when invoking method evaluate: invalid scope parameter: '
+      'Cannot evaluate against a VM-internal object';
+    const replies = {
+      'rpc': {'isError': true, 'content': [{'type': 'text', 'text': rpcError}]},
+      'structured': {'content': [{'type': 'text', 'text': 'ordinary text'}],
+        'structuredContent': {'answer': 42}},
+      'text': {'content': [{'type': 'text', 'text': 'ready'}]},
+    };
+    final catalog = interface.externalCatalog([
+      for (final name in [...replies.keys, 'transport']) {
+        'name': 'mcp__archive__$name', 'namespace': 'mcp__archive', 'tool_name': name,
+        'description': 'Inspect a record', 'parameters': {'type': 'object'},
+      },
+    ]);
+    final result = await runtime.execute(ToolCall(id: newId(), namespace: 'functions',
+      name: 'exec', format: 'text', input: '''
+const results = await Promise.allSettled([
+  tools.mcp__archive__rpc({}),
+  tools.mcp__archive__structured({}),
+  tools.mcp__archive__text({}),
+  tools.mcp__archive__transport({}),
+]);
+text(results);
+if (results[0].value.isError) text(results[0].value.content);
+text(results[1].value.structuredContent);
+'''), ToolExecution(catalog: (_) async => catalog, values: const {}, cancellation: cancellation,
+      call: (name, _, {required cancellation}) async {
+        if (name == 'mcp__archive__transport') throw StateError('MCP transport disconnected');
+        return replies[name.substring('mcp__archive__'.length)];
+      }));
+    expect(result['error'], isNull);
+    expect((result['output'] as List).cast<String>().map(jsonDecode).toList(), [
+      [
+        for (final reply in replies.values) {'status': 'fulfilled', 'value': reply},
+        {'status': 'rejected', 'reason': 'Bad state: MCP transport disconnected'},
+      ],
+      replies['rpc']!['content'],
+      {'answer': 42},
+    ]);
+  });
+
   test('Codex exec yields real cells; wait drains output, completes, and terminates host work', () async {
     const interface = OpenAIToolInterface();
     final runtime = interface.createRuntime(root.path, cancellation);

@@ -310,14 +310,14 @@ class _ComposerEditorState extends State<ComposerEditor> {
       for (final line in segment.codeLines) {
         if (line.length > 1200) { _height.value = 180; return; }
         final painter = TextPainter(text: TextSpan(text: line.text.isEmpty ? ' ' : line.text,
-          style: const TextStyle(fontFamily: 'Inter', fontSize: 13, height: 20 / 13)),
-          textDirection: TextDirection.ltr, textScaler: _scaler)..layout(maxWidth: (_width - 32).clamp(1, double.infinity));
+          style: const TextStyle(fontFamily: 'Inter', fontSize: 14, height: 1.625)),
+          textDirection: TextDirection.ltr, textScaler: _scaler)..layout(maxWidth: (_width - 16).clamp(1, double.infinity));
         height += painter.height;
         painter.dispose();
         if (++count >= 8 || height >= 156) { _height.value = 180; return; }
       }
     }
-    _height.value = (height + 24).clamp(44, 180);
+    _height.value = (height + 24).clamp(48, 180);
   }
 
   @override
@@ -355,11 +355,11 @@ class _ComposerEditorState extends State<ComposerEditor> {
           child: CodeEditor(key: const ValueKey('composer-editor'), controller: _code,
             focusNode: widget.focusNode, autofocus: true, readOnly: !widget.enabled,
             wordWrap: true, autocompleteSymbols: false, chunkAnalyzer: const NonCodeChunkAnalyzer(),
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            padding: const EdgeInsets.fromLTRB(8, 16, 8, 8),
             hint: widget.placeholder,
-            style: const CodeEditorStyle(fontFamily: 'Inter', fontSize: 13, fontHeight: 20 / 13,
-              textColor: opencodeInk, hintTextColor: opencodeFaint, backgroundColor: Colors.transparent,
-              cursorColor: opencodeInk, cursorWidth: 1.5, cursorLineColor: Colors.transparent,
+            style: const CodeEditorStyle(fontFamily: 'Inter', fontSize: 14, fontHeight: 1.625,
+              textColor: conversationForeground, hintTextColor: conversationSecondary, backgroundColor: Colors.transparent,
+              cursorColor: conversationForeground, cursorWidth: 1.5, cursorLineColor: Colors.transparent,
               selectionColor: Color(0x332e82d2)),
             shortcutsActivatorsBuilder: _ComposerShortcuts(completing), toolbarController: toolbar,
             shortcutOverrideActions: {
@@ -386,7 +386,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 return null;
               }),
               CodeShortcutIndentIntent: _ComposerAction<CodeShortcutIndentIntent>(_code, enabled: widget.enabled, onInvoke: (_) {
-                if (autocomplete?.completeSelection() != true) _code.applyIndent();
+                if (autocomplete?.completeSelection(completeQuery: true) != true) _code.applyIndent();
                 return null;
               }),
               CodeShortcutDeleteIntent: _ComposerAction<CodeShortcutDeleteIntent>(_code, enabled: widget.enabled, onInvoke: (intent) {

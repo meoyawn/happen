@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
+import '../support/thread_names.dart';
 
 import '../support/thread.dart';
 
@@ -21,7 +22,9 @@ void main() {
       late AgentServer server;
       late AgentClient client;
       peer.listen((request) async {
-        final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join())); requests.add(body);
+        final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        if (await respondToThreadName(request, body)) return;
+        requests.add(body);
         if (requests.length > 1 && blocked) {
           final id = request.headers.value('session-id')!;
           final db = sqlite3.open('${root.path}/tasks/$id/history.sqlite', mode: OpenMode.readOnly);

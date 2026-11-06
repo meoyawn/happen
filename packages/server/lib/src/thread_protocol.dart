@@ -7,7 +7,7 @@ class _RpcError implements Exception {
 }
 
 extension _ThreadProtocol on AgentServer {
-  Future<Json> _threadSnapshot(String id, _Client client, CancellationToken cancellation, {bool includeTurns = true}) async {
+  Future<Json> _threadSnapshot(String id, CancellationToken cancellation, {bool includeTurns = true}) async {
     var task = _tasks[id] ?? _Task(id, null);
     while (task.maintenance || task.finishing || task.busy && task.writer == null) {
       await (task.maintenance ? task.maintenanceDone!.future : task.finishing ? task.running! : task.ready!.future).asCancellable(cancellation);
@@ -51,6 +51,10 @@ extension _ThreadProtocol on AgentServer {
       if (method == 'thread/loaded/list') return {'data': _tasks.values.where((task) => task.loaded).map((task) => task.id).toList(), 'nextCursor': null};
       if (method == 'thread/list') {
         final page = await listThreads(directory, params, cancellation: cancellation);
+        for (final raw in page['data'] as List) {
+          final thread = jsonObject(raw);
+          _queueThreadName(thread['id'] as String, summary: thread);
+        }
         return {...page, 'data': [for (final raw in page['data'] as List) {
           ...jsonObject(raw), 'status': _threadStatus(_tasks[raw['id']]),
         }]};
@@ -72,7 +76,7 @@ extension _ThreadProtocol on AgentServer {
         if (_goalsEnabled(config)) _loadedGoalRuntime(_tasks[id]!);
         _subscribe(client, id);
         if (params['dynamicTools'] != null) _clientTools.register(id, client.id, params['dynamicTools'], client.send);
-        final page = await _threadSnapshot(id, client, cancellation, includeTurns: false);
+        final page = await _threadSnapshot(id, cancellation, includeTurns: false);
         client.event({'method': 'thread/started', 'params': {'thread': page['thread']}});
         return {...page, 'model': config['model'], 'modelProvider': config['provider'], 'cwd': config['cwd'],
           'reasoningEffort': config['provider_settings']?['reasoning']};
@@ -97,9 +101,13 @@ extension _ThreadProtocol on AgentServer {
           throw StateError('Side conversations are ephemeral; close the side chat to discard it');
         }
       }
+      if (method == 'thread/name/set') {
+        await _setThreadName(id, requiredString(params, 'name'), cancellation);
+        return <String, dynamic>{};
+      }
       if (method == 'thread/read' || method == 'thread/resume') {
         if (method == 'thread/resume') await _loadThread(id, cancellation, params: params);
-        final snapshot = await _threadSnapshot(id, client, cancellation, includeTurns: method == 'thread/resume' ? params['excludeTurns'] != true : params['includeTurns'] == true);
+        final snapshot = await _threadSnapshot(id, cancellation, includeTurns: method == 'thread/resume' ? params['excludeTurns'] != true : params['includeTurns'] == true);
         if (method == 'thread/resume') {
           final task = _tasks[id] ?? _Task(id, jsonObject(await _goalStore(id, 'metadata', {'key': 'config'}, cancellation)));
           if (_goalsEnabled(task.config!)) {
@@ -118,7 +126,7 @@ extension _ThreadProtocol on AgentServer {
         return await _threadGoalRequest(method, id, params, client, requestID, cancellation);
       }
       if (method == 'thread/items/list' || method == 'thread/turns/list') {
-        await _threadSnapshot(id, client, cancellation, includeTurns: false);
+        await _threadSnapshot(id, cancellation, includeTurns: false);
         return await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);
       }
       if (method == 'thread/compact/start') {
@@ -136,14 +144,14 @@ extension _ThreadProtocol on AgentServer {
         }) as String;
         _subscribe(client, child);
         await _loadThread(child, cancellation);
-        final page = await _threadSnapshot(child, client, cancellation, includeTurns: params['excludeTurns'] != true);
+        final page = await _threadSnapshot(child, cancellation, includeTurns: params['excludeTurns'] != true);
         client.event({'method': 'thread/started', 'params': {'thread': {...jsonObject(page['thread']), 'turns': <Json>[]}}});
         return page;
       }
       if (method == 'thread/archive' || method == 'thread/unarchive') {
         await _archive(_tasks[id] ?? _Task(id, null), method == 'thread/archive');
         if (method == 'thread/archive') return <String, dynamic>{};
-        return await _threadSnapshot(id, client, cancellation, includeTurns: false);
+        return await _threadSnapshot(id, cancellation, includeTurns: false);
       }
       if (method == 'turn/interrupt') {
         final task = _tasks[id];
@@ -157,7 +165,7 @@ extension _ThreadProtocol on AgentServer {
         final task = _tasks[id];
         if (input.isEmpty) {
           if (task?.busy == true) throw const FormatException('Turn is already active');
-          final snapshot = await _threadSnapshot(id, client, cancellation);
+          final snapshot = await _threadSnapshot(id, cancellation);
           final previous = (snapshot['thread']['turns'] as List).lastOrNull;
           if (previous?['status'] != 'failed' || previous?['id'] != params['expectedTurnId']) throw const FormatException('The failed turn is no longer available to retry');
           final turnId = newUuidV7();

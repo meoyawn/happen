@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
@@ -43,7 +44,9 @@ void main() {
     await File('${root.path}/config.yaml').writeAsString('{"code_mode_only":false}');
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
-      requests.add(jsonObject(jsonDecode(await utf8.decoder.bind(request).join())));
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      requests.add(body);
       final Json call = nested ? {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'cell',
         'input': tool == 'view_image' ? 'image(await tools.view_image(${jsonEncode(arguments)}));' : 'await tools.apply_patch(${jsonEncode(arguments)});'}
         : arguments is String ? {'type': 'custom_tool_call', 'namespace': namespace, 'name': tool, 'call_id': 'native', 'input': arguments}

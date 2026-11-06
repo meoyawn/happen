@@ -13,13 +13,19 @@ import 'window_chrome.dart';
 
 List<(Project, DesktopTask)> _sidebarTasks(DesktopSession session, String? projectKey) {
   final pins = {for (final (index, id) in session.pinnedTaskIds.indexed) id: index};
-  return [
+  final tasks = [
     for (final project in session.projects)
       if (!project.removing && (projectKey == null || project.checkoutKey == projectKey))
         for (final task in project.tasks)
           if (!task.archived) (project, task),
-  ]..sort((a, b) {
+  ];
+  final sentAt = {for (final (_, task) in tasks) if (task.running) task.id: taskLastSentAt(task)};
+  return tasks..sort((a, b) {
     if (a.$2.running != b.$2.running) return a.$2.running ? -1 : 1;
+    if (a.$2.running) {
+      final sent = sentAt[b.$2.id]!.compareTo(sentAt[a.$2.id]!);
+      return sent != 0 ? sent : a.$2.id.compareTo(b.$2.id);
+    }
     final pin = (pins[a.$2.id] ?? double.infinity).compareTo(pins[b.$2.id] ?? double.infinity);
     if (pin != 0) return pin;
     final activity = b.$2.lastActivity.compareTo(a.$2.lastActivity);
@@ -324,6 +330,7 @@ class _ThreadStatus extends StatelessWidget {
       : task.running ? ('Working', null, const Color(0xff5876ff))
       : task.loadError != null || status == 'failed' ? ('Failed', Icons.error_outline, const Color(0xffc44848))
       : interrupted ? ('Interrupted', Icons.pause_circle_outline, const Color(0xffb67a2a))
+      : session.hasUnseenCompletion(task) ? ('Done', Icons.check_circle_outline, const Color(0xff059669))
       : ('Idle', Icons.circle_outlined, opencodeFaint);
     final started = task.runStartedAt;
     final elapsed = started == null ? null : DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(started));

@@ -10,6 +10,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import '../support/thread.dart';
 import 'package:test/test.dart';
+import '../support/thread_names.dart';
 
 void main() {
   test('agent inspection reads its retained buffer and cancellation never stops another read or inference', () async {
@@ -81,6 +82,7 @@ void main() {
     var requestCount = 0;
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
       requestCount++;
       incoming.add((body: body, response: request.response));
     });

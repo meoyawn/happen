@@ -6,6 +6,7 @@ import 'package:fake_async/fake_async.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 
 void main() {
   group('Codex thread/turn protocol with real agent and SQLite owners', () {
@@ -55,7 +56,9 @@ void main() {
       provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       provider.listen((request) async {
         try {
-          final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join())); requests.add(body);
+          final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+          if (await respondToThreadName(request, body)) return;
+          requests.add(body);
           final input = (body['input'] as List).map(jsonObject).toList();
           final index = input.lastIndexWhere((item) => item['role'] == 'user' &&
             !jsonEncode(item['content']).contains('The tool runtime was restarted.'));

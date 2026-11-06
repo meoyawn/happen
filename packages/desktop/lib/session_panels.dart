@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
@@ -18,7 +19,7 @@ import 'session.dart';
 import 'sidebar_resizer.dart';
 import 'window_chrome.dart';
 
-/// OpenCode's side region is a sibling of the entire chat, including its composer.
+/// The side region is a sibling of the entire chat, including its composer.
 /// Hiding a region retains its tabs; closing a tab releases its content and reads.
 class SessionPanelWorkspace extends StatefulWidget {
   const SessionPanelWorkspace({super.key, required this.session, required this.task,
@@ -104,7 +105,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   @override
   Widget build(BuildContext context) => ConversationBrowserScope(onOpen: _openBrowser,
     child: ConversationFileScope(onOpen: _openFile,
-    child: ListenableBuilder(listenable: widget.session,
+    child: ListenableBuilder(listenable: Listenable.merge([widget.session, widget.session.panelSelection]),
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
       final task = widget.task;
       final state = task == null ? null : widget.session.panelsFor(task);
@@ -151,7 +152,9 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                       Offstage(key: ValueKey((task!.id, side.draftKey)), offstage: state.active != tab,
                         child: ExcludeFocus(excluding: !opened || state.active != tab,
                           child: TickerMode(enabled: opened && state.active == tab,
-                            child: _sideChat(side, opened && state.active == tab)))),
+                            child: _SideChatPanel(session: widget.session, task: side,
+                              active: opened && state.active == tab, directory: directory ?? '',
+                              composer: widget.sideComposer)))),
                   if (state.active?.startsWith('new:') == true) _launchers(state),
                 ])),
               ])))))),
@@ -168,59 +171,17 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
       ]);
     }))));
 
-  Widget _sideChat(DesktopTask side, bool active) => Column(children: [
-    const Padding(padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
-      child: Align(alignment: Alignment.centerLeft, child: Text('Temporary side chat',
-        style: TextStyle(fontSize: 12, color: opencodeFaint)))),
-    Expanded(child: side.sidePreparing
-      ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(
-          mainAxisSize: MainAxisSize.min, children: [
-            if (side.sideError == null)
-              const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2))
-            else const Icon(Icons.error_outline_rounded, color: opencodeFaint),
-            const SizedBox(height: 12),
-            Text(side.sideError == null ? 'Preparing side chat…' : 'Couldn’t prepare side chat',
-              style: const TextStyle(fontSize: 14, color: opencodeMuted)),
-            if (side.sideError == null) ...[
-              const SizedBox(height: 6),
-              const Text('You can start typing below.',
-                style: TextStyle(fontSize: 12, color: opencodeFaint)),
-            ],
-          ])))
-      : side.loaded && side.messages.isEmpty && !side.running
-      ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Column(
-          mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.chat_bubble_outline_rounded, size: 24, color: opencodeFaint),
-            SizedBox(height: 12),
-            Text('Ask a side question', style: TextStyle(fontSize: 14, color: opencodeMuted)),
-            SizedBox(height: 6),
-            Text('Uses a snapshot of the main conversation.',
-              textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: opencodeFaint)),
-          ])))
-      : ConversationDataScope(client: widget.session.client, providers: widget.session.providers,
-          child: ConversationTranscript(key: ValueKey(side.id), task: side,
-            directory: widget.session.projects.where((project) =>
-              project.tasks.contains(widget.task)).firstOrNull?.path ?? '',
-            onRetry: () => unawaited(widget.session.loadHistory(side)),
-            onRetryTurn: () => unawaited(widget.session.retry(side).catchError((Object error) =>
-              widget.session.showError(error, target: side))),
-            onLoadEarlier: () => unawaited(widget.session.loadEarlier(side)),
-            onPendingAction: widget.session.changePending))),
-    if (side.sideError case final error?) Padding(padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: SelectableText(error, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
-    widget.sideComposer(side, active),
-  ]);
-
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
     decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: opencodeBorder, width: .5))),
     padding: const EdgeInsets.symmetric(horizontal: 8),
     child: Row(children: [
       Expanded(child: LayoutBuilder(builder: (context, bounds) {
-        final width = (bounds.maxWidth / state.tabs.length).clamp(80.0, 190.0);
+        final width = (bounds.maxWidth / state.tabs.length - 4).clamp(80.0, 144.0);
         return SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
-          for (final tab in state.tabs) SizedBox(width: width, child: _PanelTab(
-            key: ValueKey(tab), title: isSideChatPanel(tab)
+          for (final tab in state.tabs) Padding(key: ValueKey(tab),
+            padding: const EdgeInsets.only(right: 4), child: SizedBox(width: width, child: _PanelTabButton(
+            title: isSideChatPanel(tab)
               ? widget.session.sideChats[sideChatID(tab)]?.title ?? 'Side chat' : _panelTitle(tab, state),
             icon: isFilePanel(tab) ? FileIcon(filePanelPath(tab), size: 14)
               : Icon(tab == contextPanel ? Icons.donut_large_rounded
@@ -230,7 +191,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             active: state.active == tab,
             onSelect: () => widget.session.selectSessionPanel(widget.task!, tab),
             onClose: () => _close(tab),
-            onMenu: (position) => _tabMenu(state, tab, position))),
+            onMenu: (position) => _tabMenu(state, tab, position)))),
         ]));
       })),
       _panelButton('Add tab', Icons.add_rounded, () => widget.session.newSessionPanelTab(widget.task!)),
@@ -298,6 +259,84 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   );
 }
 
+class _SideChatPanel extends StatefulWidget {
+  const _SideChatPanel({required this.session, required this.task, required this.active,
+    required this.directory, required this.composer});
+  final DesktopSession session;
+  final DesktopTask task;
+  final bool active;
+  final String directory;
+  final Widget Function(DesktopTask task, bool active) composer;
+
+  @override
+  State<_SideChatPanel> createState() => _SideChatPanelState();
+}
+
+class _SideChatPanelState extends State<_SideChatPanel> {
+  // Selection changes the composer's focus, but only session data rebuilds the transcript.
+  late Widget _body = _listen();
+
+  Widget _listen() => ListenableBuilder(listenable: widget.session,
+    builder: (context, _) => _content());
+
+  @override
+  void didUpdateWidget(_SideChatPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session != widget.session || oldWidget.task != widget.task ||
+        oldWidget.directory != widget.directory) _body = _listen();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    Expanded(child: _body),
+    widget.composer(widget.task, widget.active),
+  ]);
+
+  Widget _content() {
+    final side = widget.task;
+    return Column(children: [
+      const Padding(padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
+        child: Align(alignment: Alignment.centerLeft, child: Text('Temporary side chat',
+          style: TextStyle(fontSize: 12, color: opencodeFaint)))),
+      Expanded(child: side.sidePreparing
+        ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(
+            mainAxisSize: MainAxisSize.min, children: [
+              if (side.sideError == null)
+                const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2))
+              else const Icon(Icons.error_outline_rounded, color: opencodeFaint),
+              const SizedBox(height: 12),
+              Text(side.sideError == null ? 'Preparing side chat…' : 'Couldn’t prepare side chat',
+                style: const TextStyle(fontSize: 14, color: opencodeMuted)),
+              if (side.sideError == null) ...[
+                const SizedBox(height: 6),
+                const Text('You can start typing below.',
+                  style: TextStyle(fontSize: 12, color: opencodeFaint)),
+              ],
+            ])))
+        : side.loaded && side.messages.isEmpty && !side.running
+        ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Column(
+            mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.chat_bubble_outline_rounded, size: 24, color: opencodeFaint),
+              SizedBox(height: 12),
+              Text('Ask a side question', style: TextStyle(fontSize: 14, color: opencodeMuted)),
+              SizedBox(height: 6),
+              Text('Uses a snapshot of the main conversation.',
+                textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: opencodeFaint)),
+            ])))
+        : ConversationDataScope(client: widget.session.client, providers: widget.session.providers,
+            child: ConversationTranscript(key: ValueKey(side.id), task: side,
+              directory: widget.directory,
+              onRetry: () => unawaited(widget.session.loadHistory(side)),
+              onRetryTurn: () => unawaited(widget.session.retry(side).catchError((Object error) =>
+                widget.session.showError(error, target: side))),
+              onLoadEarlier: () => unawaited(widget.session.loadEarlier(side)),
+              onPendingAction: widget.session.changePending))),
+      if (side.sideError case final error?) Padding(padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: SelectableText(error, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
+    ]);
+  }
+}
+
 class SessionPanelFrame extends StatelessWidget {
   const SessionPanelFrame({super.key, required this.child});
   final Widget child;
@@ -330,26 +369,70 @@ class _SidePanelGlyph extends CustomPainter {
   bool shouldRepaint(_SidePanelGlyph oldDelegate) => opened != oldDelegate.opened;
 }
 
-class _PanelTab extends StatelessWidget {
-  const _PanelTab({super.key, required this.title, required this.icon, required this.active,
+class _PanelTabButton extends StatefulWidget {
+  const _PanelTabButton({required this.title, required this.icon, required this.active,
     required this.onSelect, required this.onClose, required this.onMenu});
   final String title;
   final Widget icon;
   final bool active;
   final VoidCallback onSelect, onClose;
   final ValueChanged<Offset> onMenu;
+
   @override
-  Widget build(BuildContext context) => Semantics(selected: active, button: true, label: title,
-    child: GestureDetector(onTertiaryTapUp: (_) => onClose(), onSecondaryTapUp: (event) => onMenu(event.globalPosition),
-      child: Material(color: active ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(6),
-        child: InkWell(onTap: onSelect, borderRadius: BorderRadius.circular(6), child: SizedBox(height: 32,
-          child: Padding(padding: const EdgeInsets.only(left: 10, right: 4), child: Row(children: [
-            icon,
-            const SizedBox(width: 8),
-            Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, color: active ? opencodeInk : opencodeMuted))),
-            _panelButton('Close tab', Icons.close_rounded, onClose),
-          ])))))));
+  State<_PanelTabButton> createState() => _PanelTabButtonState();
+}
+
+class _PanelTabButtonState extends State<_PanelTabButton> {
+  bool _hovered = false, _focused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _reveal();
+  }
+
+  @override
+  void didUpdateWidget(_PanelTabButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) _reveal();
+  }
+
+  void _reveal() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted || !widget.active) return;
+    final position = Scrollable.maybeOf(context)?.position, target = context.findRenderObject();
+    if (position == null || target == null) return;
+    final leading = RenderAbstractViewport.of(target).getOffsetToReveal(target, 0).offset;
+    unawaited(position.ensureVisible(target, alignmentPolicy: leading < position.pixels
+      ? ScrollPositionAlignmentPolicy.keepVisibleAtStart : ScrollPositionAlignmentPolicy.keepVisibleAtEnd));
+  });
+
+  @override
+  Widget build(BuildContext context) => Semantics(selected: widget.active, button: true, label: widget.title,
+    child: Focus(skipTraversal: true, onFocusChange: (focused) => setState(() => _focused = focused),
+    child: MouseRegion(cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(onTertiaryTapUp: (_) => widget.onClose(),
+        onSecondaryTapUp: (event) => widget.onMenu(event.globalPosition),
+      child: Tooltip(message: widget.title,
+      child: Material(color: widget.active ? conversationSurface : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(onTap: widget.onSelect, borderRadius: BorderRadius.circular(6), child: SizedBox(height: 24,
+          child: Padding(padding: const EdgeInsets.only(left: 6, right: 8), child: Row(children: [
+            SizedBox.square(dimension: 16, child: widget.icon),
+            const SizedBox(width: 2),
+            Expanded(child: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12,
+                color: widget.active ? conversationForeground : conversationSecondary))),
+            const SizedBox(width: 2),
+            SizedBox.square(dimension: 16, child: _hovered || _focused
+              ? IconButton(tooltip: 'Close ${widget.title}',
+                  onPressed: widget.onClose, padding: EdgeInsets.zero,
+                  style: IconButton.styleFrom(minimumSize: const Size.square(16),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap, foregroundColor: conversationSecondary),
+                  icon: const Icon(Icons.close_rounded, size: 12))
+              : null),
+          ]))))))))));
 }
 
 Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => SizedBox.square(dimension: 28,

@@ -75,6 +75,7 @@ Future<void> _storeMain(List<Object?> args) async {
             'append' => store!.append(params['type'] as String, jsonObject(params['data']), metadata: jsonObject(params['metadata'] ?? {})),
             'append_batch' => store!.appendBatch((params['events'] as List).map(jsonObject).toList(), metadata: jsonObject(params['metadata'] ?? {})),
             'metadata' => store!.metadata(params['key'] as String),
+            'thread.name.set' => store!.setThreadName(requiredString(params, 'name'), onlyIfUnnamed: params['onlyIfUnnamed'] == true),
             'mcp.subscription.save' => store!.mcpSubscription('save', params),
             'mcp.subscription.remove' => store!.mcpSubscription('remove', params),
             'mcp.event.admit' => store!.admitMcpEvent(params),

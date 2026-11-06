@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../support/thread_names.dart';
 import '../support/openai_output.dart';
 import '../support/thread.dart';
 
@@ -39,6 +40,7 @@ void main() {
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((http) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(http).join()));
+      if (await respondToThreadName(http, body)) return;
       requests.add(body);
       final input = (body['input'] as List).map(jsonObject).toList();
       final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');

@@ -162,7 +162,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         if (uri == null || !browserLocationAllowed(uri) ||
             uri.scheme == 'file' && _location?.scheme != 'file') {
           if (request.isMainFrame && mounted) {
-            showDesktopToast(context, 'This address cannot open in the browser.');
+            showDesktopToast(context, 'This address cannot open in the browser.', type: DesktopToastType.warning);
           }
           return NavigationDecision.prevent;
         }

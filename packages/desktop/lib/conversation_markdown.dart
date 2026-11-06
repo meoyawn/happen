@@ -17,9 +17,9 @@ import 'conversation_data.dart';
 import 'desktop_toast.dart';
 import 'file_reference.dart';
 
-const conversationInk = Color(0xff1a1c1f);
-const conversationMuted = Color(0xff8b8e95);
-const conversationBorder = Color(0xffe8e9eb);
+const conversationInk = conversationForeground;
+const conversationMuted = conversationSecondary;
+const conversationBorder = conversationOutline;
 
 class ConversationMarkdown extends StatelessWidget {
   const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false,
@@ -30,54 +30,90 @@ class ConversationMarkdown extends StatelessWidget {
   final bool reasoning;
 
   @override
+  Widget build(BuildContext context) => _ConversationMarkdownBody(markdown: this);
+}
+
+class _ConversationMarkdownBody extends StatefulWidget {
+  const _ConversationMarkdownBody({required this.markdown});
+  final ConversationMarkdown markdown;
+
+  @override
+  State<_ConversationMarkdownBody> createState() => _ConversationMarkdownBodyState();
+}
+
+class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
+  Object? _styleState;
+  late MarkdownStyleSheet _styleSheet;
+  var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax()];
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _styleState = null;
+    _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax()];
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final body = TextStyle(fontSize: fontSize, height: reasoning ? 20 / 13 : fitContent ? 1.5 : 1.6,
-      letterSpacing: 0, color: reasoning ? opencodeMuted : opencodeInk);
+    final markdown = widget.markdown;
+    final text = markdown.text, directory = markdown.directory;
+    final fitContent = markdown.fitContent, reasoning = markdown.reasoning;
+    final fontSize = markdown.fontSize;
+    final theme = Theme.of(context);
+    final styleKey = (theme, fontSize, reasoning);
+    // MarkdownBody reparses on style identity changes. Compare themes by value
+    // because Theme.of can return equal localized copies on unrelated rebuilds.
+    if (_styleState != styleKey) {
+      _styleState = styleKey;
+      final body = TextStyle(fontSize: fontSize, height: 1.625,
+        letterSpacing: 0, color: reasoning ? conversationSecondary : conversationForeground);
+      _styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+        p: body,
+        a: body.copyWith(color: conversationAccent, decoration: TextDecoration.none),
+        h1: body.copyWith(fontSize: 20, height: 1.3, fontWeight: FontWeight.w600),
+        h2: body.copyWith(fontSize: 18, height: 1.3, fontWeight: FontWeight.w600),
+        h3: body.copyWith(fontSize: 16, height: 1.3, fontWeight: FontWeight.w600),
+        h4: body.copyWith(fontWeight: FontWeight.w600),
+        h5: body.copyWith(fontWeight: FontWeight.w600),
+        h6: body.copyWith(fontWeight: FontWeight.w600, color: conversationSecondary),
+        h1Padding: const EdgeInsets.only(top: 20, bottom: 8),
+        h2Padding: const EdgeInsets.only(top: 20, bottom: 8),
+        h3Padding: const EdgeInsets.only(top: 20, bottom: 8),
+        code: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: fontSize * .875,
+          // Flutter paints span backgrounds over the selection highlight.
+          color: conversationForeground, backgroundColor: conversationForeground.withValues(alpha: .04)),
+        strong: body.copyWith(fontWeight: FontWeight.w600),
+        blockSpacing: 10.4,
+        listBullet: body,
+        listIndent: 24,
+        blockquote: body.copyWith(color: conversationMuted),
+        blockquotePadding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+        blockquoteDecoration: const BoxDecoration(
+          border: Border(left: BorderSide(color: Color(0xffd4d6db), width: 2)),
+        ),
+        tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
+        tableBody: body.copyWith(fontSize: 13),
+        tableHeadAlign: TextAlign.left,
+        tableColumnWidth: const FlexColumnWidth(),
+        tableBorder: TableBorder.all(color: conversationBorder),
+        tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        tableHeadCellsDecoration: const BoxDecoration(color: Color(0xfff4f4f6)),
+        tableCellsDecoration: const BoxDecoration(color: Colors.white),
+        codeblockDecoration: const BoxDecoration(),
+        horizontalRuleDecoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: conversationBorder)),
+        ),
+      );
+    }
     return ConversationImageGroup(child: SelectionArea(
       child: MarkdownBody(
+        key: ValueKey((directory, fitContent)),
         data: text,
         extensionSet: md.ExtensionSet.gitHubFlavored,
-        inlineSyntaxes: [_SkillInvocationSyntax(), _SkillLinkSyntax()],
+        inlineSyntaxes: _inlineSyntaxes,
         fitContent: fitContent,
         softLineBreak: fitContent,
-        styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-          p: body,
-          a: body.copyWith(color: const Color(0xff3b5cf6), decoration: TextDecoration.none),
-          h1: reasoning ? body : body.copyWith(fontSize: fontSize + 3, height: 20 / 17, fontWeight: FontWeight.w600),
-          h2: reasoning ? body : body.copyWith(fontSize: fontSize + 1, height: 20 / 15, fontWeight: FontWeight.w600),
-          h3: reasoning ? body : body.copyWith(fontSize: fontSize, height: 20 / 14,
-            fontWeight: FontWeight.w600, fontVariations: const [FontVariation('wght', 670)]),
-          h4: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
-          h5: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
-          h6: body.copyWith(fontWeight: FontWeight.w500, color: opencodeMuted),
-          h1Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 28, bottom: 12),
-          h2Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 24, bottom: 10),
-          h3Padding: reasoning ? EdgeInsets.zero : EdgeInsets.only(top: 20, bottom: 8),
-          code: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
-            color: opencodeInk, backgroundColor: opencodeLayer),
-          strong: body.copyWith(fontWeight: FontWeight.w600,
-            fontVariations: const [FontVariation('wght', 670)]),
-          blockSpacing: 12,
-          listBullet: body,
-          listIndent: 24,
-          blockquote: body.copyWith(color: conversationMuted),
-          blockquotePadding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
-          blockquoteDecoration: const BoxDecoration(
-            border: Border(left: BorderSide(color: Color(0xffd4d6db), width: 2)),
-          ),
-          tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
-          tableBody: body.copyWith(fontSize: 13),
-          tableHeadAlign: TextAlign.left,
-          tableColumnWidth: const FlexColumnWidth(),
-          tableBorder: TableBorder.all(color: conversationBorder),
-          tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          tableHeadCellsDecoration: const BoxDecoration(color: Color(0xfff4f4f6)),
-          tableCellsDecoration: const BoxDecoration(color: Colors.white),
-          codeblockDecoration: const BoxDecoration(),
-          horizontalRuleDecoration: const BoxDecoration(
-            border: Border(top: BorderSide(color: conversationBorder)),
-          ),
-        ),
+        styleSheet: _styleSheet,
         builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory)},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
@@ -194,9 +230,9 @@ class _ConversationCodeState extends State<ConversationCode> {
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: opencodeLayer,
-        border: Border.all(color: opencodeBorder, width: .5),
-        borderRadius: BorderRadius.circular(6),
+        color: Colors.white,
+        border: Border.all(color: conversationOutline),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
@@ -224,8 +260,8 @@ class _ConversationCodeState extends State<ConversationCode> {
             // ExpansionTile saves a bool; this text saves its own scroll offset.
             key: const PageStorageKey('code-selection'),
             style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
-              height: 20 / 13, letterSpacing: -.04,
-              color: opencodeInk),
+              height: 1.625, letterSpacing: 0,
+              color: conversationForeground),
           );
           return Scrollbar(
             controller: _scroll,
@@ -275,7 +311,7 @@ class _ConversationCopyButtonState extends State<ConversationCopyButton> {
       });
     } on PlatformException {
       if (mounted) {
-        showDesktopToast(context, 'Could not copy to the clipboard.');
+        showDesktopToast(context, 'Could not copy to the clipboard.', type: DesktopToastType.error);
       }
     }
   }
@@ -324,7 +360,7 @@ Future<void> _openLink(BuildContext context, String href, String directory) asyn
     }
   } catch (_) {
     if (context.mounted) {
-      showDesktopToast(context, 'This link could not be opened.');
+      showDesktopToast(context, 'This link could not be opened.', type: DesktopToastType.error);
     }
   }
 }

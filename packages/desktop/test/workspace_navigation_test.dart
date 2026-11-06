@@ -53,6 +53,61 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('working thread order follows user sends through activity and queued delivery', (tester) async {
+    late DesktopSession session;
+    await tester.runAsync(() async {
+      final root = await Directory.systemTemp.createTemp('workspace-working-order-');
+      addTearDown(() => root.delete(recursive: true));
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      addTearDown(() => tester.runAsync(session.close));
+    });
+    final now = DateTime.now().millisecondsSinceEpoch - 60000;
+    final older = DesktopTask('older', 'Older user message')..running = true..loaded = true..lastActivity = now + 3000;
+    older.messages['first'] = {'id': 'first', 'type': 'userMessage', 'startedAtMs': now + 1000};
+    final newer = DesktopTask('newer', 'Newer user message')..running = true..loaded = true..lastActivity = now + 2000;
+    newer.messages['second'] = {'id': 'second', 'type': 'userMessage', 'startedAtMs': now + 2000};
+    session.projects.add(Project('project', '/project', '/project', [older, newer]));
+    session.pinnedTaskIds.add(older.id);
+    await tester.pumpWidget(ListenableBuilder(listenable: session, builder: (_, _) => sidebar(session)));
+    expect(sidebarThreadIds(session), [newer.id, older.id]);
+
+    void event(DesktopTask task, String method, Json params, int time) =>
+      session.client.events.add({'method': method, 'params': {
+        'threadId': task.id, ...params, 'happen': {'createdAt': now + time},
+      }});
+    event(older, 'turn/started', {'turn': {'id': 'background', 'status': 'inProgress'}}, 5000);
+    await tester.pump();
+    expect(sidebarThreadIds(session), [newer.id, older.id]);
+
+    event(older, 'happen/inbox/enqueued', {'input': {
+      'id': 'queued', 'prompt': 'Follow up', 'created_at': DateTime.fromMillisecondsSinceEpoch(now + 6000).toIso8601String(),
+    }}, 6000);
+    await tester.pump();
+    expect(sidebarThreadIds(session), [older.id, newer.id]);
+    event(newer, 'happen/inbox/enqueued', {'input': {
+      'id': 'latest', 'prompt': 'More recent follow up', 'created_at': DateTime.fromMillisecondsSinceEpoch(now + 7000).toIso8601String(),
+    }}, 7000);
+    await tester.pump();
+    expect(sidebarThreadIds(session), [newer.id, older.id]);
+
+    event(older, 'item/completed', {'item': {
+      'id': 'delivered', 'type': 'userMessage', 'startedAtMs': now + 9000,
+    }}, 9000);
+    event(older, 'happen/inbox/delivered', {'id': 'queued'}, 9000);
+    await tester.pump();
+    expect(sidebarThreadIds(session), [newer.id, older.id]);
+    expect(tester.getTopLeft(find.byKey(const ValueKey('thread:newer'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const ValueKey('thread:older'))).dy));
+
+    session.releaseHistory(newer);
+    event(newer, 'happen/inbox/delivered', {'id': 'latest'}, 10000);
+    event(older, 'turn/started', {'turn': {'id': 'continuation', 'status': 'inProgress'}}, 11000);
+    await tester.pump();
+    expect(sidebarThreadIds(session), [newer.id, older.id]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('failed threads can archive without selecting or loading their broken history', (tester) async {
     final session = DesktopSession(_Client(), _Database());
     addTearDown(session.close);

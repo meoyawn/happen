@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import 'appearance.dart';
 
-/// OpenCode's repeating text-shimmer.css sweep.
 class ThinkingLabel extends StatefulWidget {
   const ThinkingLabel({super.key, this.label = 'Thinking', this.fontSize = 14, this.lineHeight});
   final String label;
@@ -15,7 +14,7 @@ class ThinkingLabel extends StatefulWidget {
 
 class _ThinkingLabelState extends State<ThinkingLabel>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final _sweep = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+  late final _sweep = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
 
   @override
   void initState() {
@@ -56,8 +55,7 @@ class _ThinkingLabelState extends State<ThinkingLabel>
   }
 
   TextStyle _style(Color color) => TextStyle(fontSize: widget.fontSize,
-    height: (widget.lineHeight ?? 16) / widget.fontSize, color: color, letterSpacing: 0,
-    fontVariations: const [FontVariation('wght', 530)]);
+    height: (widget.lineHeight ?? widget.fontSize * 1.625) / widget.fontSize, color: color, letterSpacing: 0);
 
   Widget _text(Color color) => Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: _style(color));
 
@@ -66,16 +64,16 @@ class _ThinkingLabelState extends State<ThinkingLabel>
     final double ch;
     {
       final measure = TextPainter(text: TextSpan(text: '0',
-        style: DefaultTextStyle.of(context).style.merge(_style(opencodeInk))),
+        style: DefaultTextStyle.of(context).style.merge(_style(conversationForeground))),
         textDirection: Directionality.of(context))..layout();
       ch = measure.width;
       measure.dispose();
     }
     return RepaintBoundary(child: Stack(children: [
-    _text(const Color(0xff8f8f8f)),
+    _text(conversationSecondary),
     Positioned.fill(child: ExcludeSemantics(child: IgnorePointer(child: AnimatedBuilder(
       animation: _sweep,
-      child: _text(const Color(0xff171717)),
+      child: _text(conversationForeground),
       builder: (context, child) => !_sweep.isAnimating ? const SizedBox.shrink() : ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (rect) {
@@ -101,17 +99,16 @@ class _ThinkingLabelState extends State<ThinkingLabel>
 /// A text-height disclosure, without ListTile's implicit insets or minimum size.
 class ConversationDisclosure extends StatefulWidget {
   const ConversationDisclosure({super.key, required this.label, required this.builder,
-    this.onExpand, this.icon, this.summary, this.shimmer = false, this.initiallyExpanded = false,
-    this.color, this.fontSize = 14, this.ruled = false, this.maxHeight, this.labelContent, this.action,
-    this.summaryWhenCollapsed = false});
+    this.onExpand, this.icon, this.shimmer = false, this.initiallyExpanded = false,
+    this.color, this.fontSize = 14, this.labelContent, this.timestamp});
   final String label;
   final WidgetBuilder builder;
   final VoidCallback? onExpand;
-  final Widget? icon, summary, labelContent, action;
-  final bool shimmer, initiallyExpanded, ruled, summaryWhenCollapsed;
+  final Widget? icon, labelContent;
+  final bool shimmer, initiallyExpanded;
   final Color? color;
   final double fontSize;
-  final double? maxHeight;
+  final DateTime? timestamp;
 
   @override
   State<ConversationDisclosure> createState() => _ConversationDisclosureState();
@@ -119,6 +116,7 @@ class ConversationDisclosure extends StatefulWidget {
 
 class _ConversationDisclosureState extends State<ConversationDisclosure> {
   bool? _expanded;
+  bool _hovered = false, _focused = false;
   final _header = GlobalKey();
 
   void _toggle() {
@@ -144,38 +142,45 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
     _expanded ??= PageStorage.maybeOf(context)?.readState(context, identifier: ('disclosure', widget.key)) as bool?
       ?? widget.initiallyExpanded;
     final expanded = _expanded!;
-    final summary = !expanded || !widget.summaryWhenCollapsed ? widget.summary : null;
-    final color = widget.color ?? opencodeInk;
+    final color = widget.color ?? conversationSecondary;
     final header = MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
         child: Semantics(button: true, expanded: expanded, child: InkWell(
           key: _header,
           onTap: _toggle,
-          borderRadius: BorderRadius.circular(4),
-          hoverColor: Colors.transparent, highlightColor: Colors.transparent,
+          onFocusChange: (focused) => setState(() => _focused = focused),
+          borderRadius: BorderRadius.circular(6),
+          hoverColor: const Color(0x0871717b), highlightColor: Colors.transparent,
           child: Container(
-            constraints: BoxConstraints(minHeight: 24),
-            padding: widget.ruled ? const EdgeInsets.only(bottom: 6) : EdgeInsets.zero,
-            decoration: widget.ruled ? const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xffe8e9eb)))) : null,
-            child: Row(mainAxisSize: widget.ruled || summary != null ? MainAxisSize.max : MainAxisSize.min, children: [
-              if (widget.icon != null) ...[widget.icon!, const SizedBox(width: 4)],
-              Flexible(child: widget.labelContent ?? (widget.shimmer ? ThinkingLabel(label: widget.label, fontSize: widget.fontSize)
+            constraints: const BoxConstraints(minHeight: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Row(children: [
+              if (widget.icon != null) ...[
+                SizedBox.square(dimension: 24, child: Center(child: widget.icon!)),
+                const SizedBox(width: 6),
+              ],
+              Expanded(
+                child: widget.labelContent ?? (widget.shimmer ? ThinkingLabel(label: widget.label, fontSize: widget.fontSize)
                 : Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: widget.fontSize, height: 16 / 13,
-                      letterSpacing: -.04, color: color)))),
-              if (summary != null) ...[const SizedBox(width: 8), Flexible(flex: 3, child: summary)],
+                    style: TextStyle(fontSize: widget.fontSize, height: 1.625,
+                      letterSpacing: 0, color: color)))),
+              if ((_hovered || _focused) && widget.timestamp != null) Padding(
+                padding: const EdgeInsets.only(left: 6, right: 4),
+                child: Tooltip(message: widget.timestamp!.toLocal().toString(),
+                  child: Text(MaterialLocalizations.of(context).formatTimeOfDay(
+                    TimeOfDay.fromDateTime(widget.timestamp!.toLocal()), alwaysUse24HourFormat: true),
+                    style: const TextStyle(fontSize: 12, color: conversationSecondary,
+                      fontFeatures: [FontFeature.tabularFigures()])))),
               const SizedBox(width: 4),
-              Opacity(opacity: 1,
-                child: Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded, size: 14, color: color)),
+              Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
+                size: 14, color: color),
             ]),
           ),
         )));
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-      if (widget.action == null) header
-      else Row(mainAxisSize: MainAxisSize.min, children: [Flexible(child: header), const SizedBox(width: 2), widget.action!]),
-      if (expanded) Padding(padding: const EdgeInsets.only(top: 4), child: widget.maxHeight == null
-        ? widget.builder(context)
-        : ConstrainedBox(constraints: BoxConstraints(maxHeight: widget.maxHeight!),
-            child: SingleChildScrollView(key: const PageStorageKey('activity-viewport'), child: widget.builder(context)))),
+      header,
+      if (expanded) Padding(padding: const EdgeInsets.only(top: 4), child: widget.builder(context)),
     ]);
   }
 }

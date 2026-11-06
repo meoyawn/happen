@@ -11,6 +11,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 import '../../../test/support/thread.dart';
 
@@ -44,6 +45,7 @@ void main() {
     client = await AgentClient.connect(server.uri); subscription = client.events.stream.listen(events.add);
   }
   List<Json> reply(Json request) {
+    if (threadNameReply(request) case final events?) return events;
     requests.add(request);
     return requests.length <= scripts.length ? scripts[requests.length - 1] : [
       {'type': 'response.failed', 'response': {'error': {'code': 'invalid_prompt', 'message': 'Unexpected inference request'}}},

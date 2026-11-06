@@ -10,6 +10,7 @@ import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 import 'support/thread.dart';
 
 import 'support/openai_output.dart';
@@ -71,6 +72,7 @@ void main() {
           return;
         }
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        if (await respondToThreadName(request, body)) return;
         if (request.uri.path == '/codex/alpha/search' || request.uri.path == '/hosted/search') {
           searchRequests.add(body);
           searches.add(request.uri.path);
@@ -214,6 +216,7 @@ void main() {
       var mode = 'refresh', attempts = 0;
       server.listen((request) async {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        if (await respondToThreadName(request, body)) return;
         if (lab == 'deepseek') {
           expect(request.headers.value('Authorization'), 'Bearer fixture-secret');
           expect(request.headers.value('x-org-id'), 'fixture-org');

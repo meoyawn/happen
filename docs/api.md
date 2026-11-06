@@ -64,22 +64,27 @@ dart build cli --target=packages/cli/bin/happen.dart --output=build/happen
 
 ### Saved sessions
 
-The server's `session.list` RPC discovers durable session databases independently
-of live agent isolates and desktop sidebar references. It returns `{data, cursor}`;
-each entry contains `id`, `title`, `location.directory`, `model`, `time`, and an
-optional `parentID` and last completed `outcome`. `time.busy` and `time.idle` retain
-the most recent execution's start and completion, separately from live activity.
-Supported filters are `directory`, `parentID` (including null
-for root sessions), `archived`, `search`, and `order` (`asc`/`desc`, default `desc`).
-`limit` defaults to 50, with a maximum of 5,000. Opaque `cursor.previous` and
-`cursor.next` retain their original filters and order by updated time and ID.
+The server's `thread/list` RPC discovers durable session databases independently
+of live agent isolates and desktop sidebar references. It returns `{data, nextCursor}`;
+summaries include `id`, `name`, `preview`, `cwd`, timestamps, and current `status`.
+Supported filters include `cwd`, `modelProviders`, `parentThreadId`, `archived`,
+and `searchTerm`. `sortDirection` defaults to `desc`; `sortKey` defaults to updated
+time and also accepts `created_at`. `limit` defaults to 100, with a maximum of 500.
+Opaque cursors retain the original filters and order.
 
-`session.active` separately returns `{data: {SESSION_ID: {type: "running"}}}` for
-live executions only. Listing saved sessions never resumes inference or tools.
-Creation is acknowledged after the session history is durable. Existing histories,
-including interrupted sessions, need no registration or migration: they are the
-inventory's source of truth. The desktop refreshes its local sidebar cache from
-the server at startup, when adding a project, returning to Home, and on resume.
+The server generates and saves a context name in the background when a persistent
+thread starts working. Listing also queues existing unnamed conversations, with
+at most two naming requests at once. Naming uses a separate model request without
+tools or extra conversation turns. It continues after a client disconnects,
+preserves existing names, and does not change activity ordering. All connected
+clients receive `thread/name/updated`; desktop renders `name`, falling back to
+`preview` until a name is available. Ephemeral threads are excluded.
+
+Listing never loads a conversation or runs its tools. Creation is acknowledged
+after the session history is durable. Existing histories, including interrupted
+sessions, need no registration or migration. The desktop refreshes its local
+sidebar cache from the server at startup, when adding a project, returning to
+Home, and on resume.
 
 Keep the resulting `bundle/bin` and `bundle/lib` directories together. For a
 single-file macOS arm64 release, use the Moon target instead:
@@ -431,6 +436,13 @@ so a search after an in-cell config edit sees the current tools. `ALL_TOOLS`
 remains the cell's starting snapshot. Use search to retrieve server guidance
 before calling an MCP tool found through that snapshot.
 
+In OpenAI code mode, MCP calls resolve to the complete `CallToolResult`, including
+tool failures with `isError: true`. Check that flag before consuming the result,
+even after `Promise.allSettled` reports `fulfilled`. Prefer `structuredContent`
+when present; `content` text can be ordinary text or an error message, so only
+use `JSON.parse` when the tool documents JSON output. Host exceptions reject with
+error text, preserving the message when an `allSettled` result is printed.
+
 OpenCode follows its own runtime: inside `execute({code})`, call
 `await search({query, namespace, limit, offset})`. Query and namespace are optional;
 the default page size is 10. Results contain `items` with exact callable `path`,
@@ -599,6 +611,7 @@ or `interrupted` status. Happen extensions use `happen/…` notifications.
 | `thread/read` | `threadId`, optional `includeTurns`. Read-only snapshot; does not load or subscribe. |
 | `thread/loaded/list` | Returns currently loaded IDs, including unsubscribed threads awaiting their idle deadline. |
 | `thread/list` | Pages saved thread summaries. |
+| `thread/name/set` | `threadId`, `name`. Persists a nonempty name and broadcasts `thread/name/updated` to every connected client. Explicit names take precedence over background generation. |
 | `thread/items/list` / `thread/turns/list` | `threadId`, optional opaque `cursor`, `limit`, and view/direction options. Reads native history without loading it. |
 | `thread/unsubscribe` | `threadId`. Removes only this connection's subscription; returns `unsubscribed`, `notSubscribed`, or `notLoaded`. Never cancels a running turn. |
 | `turn/start` | `threadId`, `input`, optional `effort`, `delivery`. Starts or queues input and subscribes this connection. |

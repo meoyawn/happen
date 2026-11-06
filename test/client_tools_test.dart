@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import 'support/thread_names.dart';
 
 import 'support/openai_output.dart';
 
@@ -47,6 +48,7 @@ void main() {
             return;
           }
           final body = jsonObject(jsonDecode(payload));
+          if (await respondToThreadName(request, body)) return;
           requests.add(body);
           final input = (body['input'] as List).map(jsonObject).toList();
           final lastUser = input.lastIndexWhere(

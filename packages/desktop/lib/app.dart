@@ -53,6 +53,7 @@ class _DesktopViewState extends State<DesktopView> {
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
   String? _nativeLayout;
   final _sessionSearchFocus = FocusNode();
+  final _projectMenu = MenuController();
   double? _dragSidebarWidth;
   final _composer = GlobalKey<_ComposerState>();
   final _conversationPaneKey = GlobalKey();
@@ -190,7 +191,7 @@ class _DesktopViewState extends State<DesktopView> {
               if (session.connected && !task.archiving)
                 (title: task.archived ? 'Unarchive current session' : 'Archive current session',
                   keywords: 'archive restore task', icon: task.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
-                  shortcut: null, run: () => unawaited(_run(() => _archiveTask(task, !task.archived)))),
+                  shortcut: null, run: () => unawaited(_run(() => session.setArchived(task, !task.archived)))),
             ],
           ],
           onOpen: (project, task) => unawaited(_run(() async {
@@ -310,7 +311,7 @@ class _DesktopViewState extends State<DesktopView> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Remove ${project.name}?'),
-        content: const Text('Remove this project and its tasks from Happen. Running tasks will be stopped. The folder and saved task history will be kept.'),
+        content: const Text('Remove this project and all its threads from Happen. Running threads will be stopped. The folder and saved thread history will be kept.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Remove project')),
@@ -364,13 +365,15 @@ class _DesktopViewState extends State<DesktopView> {
         event is! KeyDownEvent && event is! KeyRepeatEvent) { return KeyEventResult.ignored; }
     final keyboard = HardwareKeyboard.instance;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
-    if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed)) return KeyEventResult.ignored;
+    if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed) && !keyboard.isAltPressed) return KeyEventResult.ignored;
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
     final panels = task == null ? null : session.panelLayouts[task.id];
     final terminalFocused = terminalHasFocus;
     final bindings = <ShortcutActivator, VoidCallback>{
+      const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true): () => _selectAdjacentTask(-1),
+      const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true): () => _selectAdjacentTask(1),
       shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
@@ -398,6 +401,8 @@ class _DesktopViewState extends State<DesktopView> {
         shortcut(LogicalKeyboardKey.keyO, shift: true): () => unawaited(_run(_newChat)),
         shortcut(LogicalKeyboardKey.keyM, shift: true): () => _openComposerMenu(),
         shortcut(LogicalKeyboardKey.keyE, shift: true): () => _openComposerMenu(effort: true),
+        if (!_homeOpen && task == null && session.currentDraft.submission == null && !_picking && !session.submitting)
+          shortcut(LogicalKeyboardKey.keyP): _projectMenu.open,
         shortcut(LogicalKeyboardKey.keyW): () {
           if (task != null && panels?.opened == true && panels?.active != null) {
             session.closeSessionPanel(task, panels!.active!);
@@ -540,7 +545,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   @override
-  Widget build(BuildContext context) => FocusScope(
+  Widget build(BuildContext context) => DesktopToastListener(notices: session.notices, child: FocusScope(
     autofocus: true,
     child: Scaffold(
       body: LayoutBuilder(builder: (context, constraints) => ListenableBuilder(
@@ -548,7 +553,7 @@ class _DesktopViewState extends State<DesktopView> {
         builder: (context, _) => _workspace(context, constraints),
       )),
     ),
-  );
+  ));
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
@@ -562,7 +567,8 @@ class _DesktopViewState extends State<DesktopView> {
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
       onToggle: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
-      unread: session.openTasks.any((entry) => !entry.$2.running && entry.$2.lastActivity > (session.viewedTasks[entry.$2.id] ?? -1)) ||
+      unread: session.projects.where((project) => !project.removing).expand((project) => project.tasks)
+        .any(session.hasUnseenCompletion) ||
         session.projects.where((project) => !project.removing).expand((project) => project.tasks)
           .any((task) => !task.archived && task.questions.isNotEmpty) ||
         session.sideChats.values.any((task) => task.questions.isNotEmpty),
@@ -576,7 +582,7 @@ class _DesktopViewState extends State<DesktopView> {
             onAddProject: () => unawaited(_addProject()),
             onRefresh: () => unawaited(_run(session.refreshProjects)),
             onSelect: _openTask, onDraft: _activateDraft,
-            onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))))
+            onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))))
         ,
       resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
       child: pane,
@@ -597,17 +603,18 @@ class _DesktopViewState extends State<DesktopView> {
     final home = _homeOpen;
     final transcript = home ? null : session.task ?? session.currentDraft.submission;
     return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
-      child: ConversationTypography(
+      child: Theme(data: conversationTheme(Theme.of(context)),
           child: SessionPanelWorkspace(
             session: session, task: home ? null : session.task,
             sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.draftKey}'),
               session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
-            child: Material(color: const Color(0xfffdfdfd), child: Stack(fit: StackFit.expand, children: [
+            child: Material(color: conversationCanvas, child: Stack(fit: StackFit.expand, children: [
               if (!home) Column(children: [
                 _header(context),
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
+                    projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),
                     onReturnFocus: _focusComposer,
@@ -629,16 +636,6 @@ class _DesktopViewState extends State<DesktopView> {
                       onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
                       onPendingAction: (task, inboxID, action) => _run(() => session.changePending(task, inboxID, action)),
                   ))),
-                  if (session.error case final error?)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
-                      child: SelectableText(
-                        error,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ),
                   if (session.project != null && session.project!.available && session.task?.archived != true)
                     McpConversationAuth(key: ValueKey(session.client), client: session.client),
                   if (session.project?.removing == true)
@@ -662,7 +659,7 @@ class _DesktopViewState extends State<DesktopView> {
                     Padding(
                       padding: const EdgeInsets.all(20),
                       child: FilledButton.icon(
-                        onPressed: () => _run(() => _archiveTask(session.task!, false)),
+                        onPressed: () => _run(() => session.setArchived(session.task!, false)),
                         icon: const Icon(Icons.unarchive_outlined),
                         label: const Text('Restore task to continue'),
                       ),
@@ -673,24 +670,12 @@ class _DesktopViewState extends State<DesktopView> {
               ]),
                if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
-                onArchive: (task, archived) => unawaited(_run(() => _archiveTask(task, archived))),
+                onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
            ),
         ),
     );
-  }
-
-  Future<void> _archiveTask(DesktopTask task, bool archived) async {
-    final project = session.projects.where((project) => project.tasks.contains(task)).firstOrNull;
-    if (project == null || project.removing) return;
-    await session.setArchived(task, archived);
-    if (!mounted) return;
-    if (archived) {
-      showDesktopToast(context, 'Task archived', icon: Icons.check_rounded,
-        duration: const Duration(seconds: 3),
-        actionLabel: 'Undo', onAction: () => unawaited(_run(() => _archiveTask(task, false))));
-    }
   }
 
   Widget _header(BuildContext context) => DesktopWindowDragRegion(child: AnimatedPadding(
@@ -1202,9 +1187,9 @@ class _ComposerState extends State<_Composer> {
       child: Center(
       heightFactor: 1,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: newThread ? newThreadComposerWidth : opencodeSessionWidth),
+        constraints: BoxConstraints(maxWidth: newThread ? newThreadComposerWidth : conversationWidth + 40),
         child: Padding(
-          padding: newThread ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          padding: newThread ? EdgeInsets.zero : const EdgeInsets.fromLTRB(20, 8, 20, 16),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: answer == null ? double.infinity : MediaQuery.sizeOf(context).height * .65),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1241,9 +1226,9 @@ class _ComposerState extends State<_Composer> {
                 key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(newThread ? 18 : 10),
+                  borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary
-                    : const Color(0xffe8e8eb),
+                    : conversationOutline,
                     width: _draggingAttachments ? 2 : 1),
                   boxShadow: const [
                     BoxShadow(color: Color(0x0a000000), blurRadius: 4, offset: Offset(0, 2)),
@@ -1285,15 +1270,15 @@ class _ComposerState extends State<_Composer> {
                             TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
-                      ConstrainedBox(constraints: BoxConstraints(minHeight: newThread ? 72 : 44), child: ComposerEditor(
+                      ConstrainedBox(constraints: BoxConstraints(minHeight: newThread ? 72 : 56), child: ComposerEditor(
                         controller: controller,
                         focusNode: focus,
                         enabled: hasProject && session.connected && (answer?.enabled ?? true),
-                        placeholder: answer?.placeholder ?? r'Ask anything. @ files, $ skills, / commands',
+                        placeholder: answer?.placeholder ?? r'Ask anything, @ for files, $ for skills, / for commands',
                         label: answer == null ? 'Message' : 'Answer',
                         paste: paste, copy: copy,
                       )),
-                      SizedBox(height: 44, child: Row(
+                      SizedBox(height: 40, child: Row(
                         children: [
                           if (answer == null)
                           PopupMenuButton<String>(tooltip: 'Add context or commands', enabled: available && !_dictating,
@@ -1318,7 +1303,7 @@ class _ComposerState extends State<_Composer> {
                                   leading: Icon(Icons.attach_file_rounded, size: 16), title: Text('Attach files'))),
                             ],
                             child: const SizedBox.square(dimension: 32,
-                              child: Icon(Icons.attach_file_rounded, size: 18, color: Color(0xff797986)))),
+                              child: Icon(Icons.add_rounded, size: 20, color: conversationSecondary))),
                           if (answer == null && _dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
@@ -1367,9 +1352,9 @@ class _ComposerState extends State<_Composer> {
                             final dictationCanSend = _dictating && _voice.phase == DictationPhase.recording && !_finishingVoice;
                             return IconButton.filled(
                             style: IconButton.styleFrom(
-                              backgroundColor: const Color(0xff1a1c1f), foregroundColor: Colors.white,
+                              backgroundColor: conversationAccent, foregroundColor: Colors.white,
                               disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
-                              minimumSize: const Size.square(34), maximumSize: const Size.square(34), padding: EdgeInsets.zero,
+                              minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
                               shape: const CircleBorder(),
                             ),
                             tooltip: _target?.sidePreparing == true ? 'Preparing side chat…'

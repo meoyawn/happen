@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
   late Directory root;
@@ -56,6 +57,7 @@ void main() {
     upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     upstream.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
       if (request.uri.path == '/mcp') {
         expect(body['params'], isNot(contains('threadId')), reason: 'Thread ownership is local, not an MCP draft subscription parameter.');
         if (body['method'] == 'events/stream') {

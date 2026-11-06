@@ -142,9 +142,6 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                   key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run),
                 _ => _preferences(),
               },
-              if (widget.session.error case final error?)
-                Padding(padding: const EdgeInsets.only(top: 20), child: SelectableText(error,
-                  style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
             ]));
           if (!wide) {
             return Column(children: [
@@ -325,7 +322,7 @@ class _NotificationPreferencesState extends State<_NotificationPreferences> {
   @override
   Widget build(BuildContext context) => Column(children: [
     _settingsRow('Chat notifications', _message ?? (_requesting ? 'Waiting for notification permission…'
-        : 'System alerts when a chat finishes, fails, or needs input. Applies to this device while Happen is open.'),
+        : 'Sound and system alerts when a chat finishes, fails, or needs input. Applies to this device while Happen is open.'),
       AbsorbPointer(absorbing: _requesting, child: _choice('Chat notifications',
         widget.session.notificationMode, notificationModes, (mode) => unawaited(widget.run(() => _choose(mode)))))),
     _settingsRow('In-app notifications', 'Show an alert for other chats while Happen is in the foreground.',

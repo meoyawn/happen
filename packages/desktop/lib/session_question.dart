@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,8 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
-import 'conversation_activity.dart';
-import 'conversation_data.dart';
 import 'conversation_markdown.dart';
 import 'session.dart';
 
@@ -218,24 +215,33 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
           focusNode: _options[index],
           onTap: available ? () => _pick(index) : null,
           borderRadius: BorderRadius.circular(6),
-          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Padding(padding: const EdgeInsets.only(top: 2), child: Icon(
-                multi ? picked ? Icons.check_box_outlined : Icons.check_box_outline_blank
-                  : picked ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                size: 15, color: picked ? opencodeInk : opencodeFaint)),
+              Padding(padding: const EdgeInsets.only(top: 2), child: Container(
+                width: 16, height: 16,
+                decoration: BoxDecoration(
+                  color: picked ? conversationAccent : Colors.white,
+                  border: Border.all(color: picked ? conversationAccent : const Color(0xffd4d4d8)),
+                  borderRadius: BorderRadius.circular(multi ? 4 : 8)),
+                alignment: Alignment.center,
+                child: !picked ? null : multi ? const Icon(Icons.check, size: 12, color: Colors.white)
+                  : Container(width: 6, height: 6,
+                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle)))),
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(label, style: TextStyle(fontSize: 13, height: 1.5,
-                  fontWeight: FontWeight.w500, color: picked ? opencodeInk : opencodeMuted)),
-                if (description?.isNotEmpty == true && description != label) Text(description!,
-                  style: const TextStyle(fontSize: 12, height: 1.5, color: opencodeMuted)),
+                Text(label, style: TextStyle(fontSize: 14, height: 20 / 14,
+                  fontWeight: FontWeight.w500, color: picked ? conversationForeground : const Color(0xff67676a))),
+                if (description?.isNotEmpty == true && description != label) Padding(
+                  padding: const EdgeInsets.only(top: 2), child: Text(description!,
+                    style: const TextStyle(fontSize: 11, height: 1.5, color: conversationSecondary))),
               ])),
               if (index < 9) ...[
                 const SizedBox(width: 8),
-                Container(padding: const EdgeInsets.symmetric(horizontal: 5),
-                  decoration: BoxDecoration(border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(4)),
-                  child: Text('${index + 1}', style: const TextStyle(fontSize: 11, color: opencodeFaint))),
+                SizedBox(width: 24, height: 20, child: Center(child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(color: conversationSurface, border: Border.all(color: conversationOutline),
+                    borderRadius: BorderRadius.circular(4)),
+                  child: Text('${index + 1}', style: const TextStyle(fontSize: 10, height: 1.5, color: conversationSecondary))))),
               ],
             ])),
         ),
@@ -246,15 +252,15 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   Widget build(BuildContext context) {
     final header = question['header'] as String? ?? 'Question';
     final custom = draft.custom[draft.tab].trim().isNotEmpty;
-    final panel = Padding(padding: const EdgeInsets.symmetric(horizontal: 10),
+    final panel = Padding(padding: const EdgeInsets.symmetric(horizontal: 22),
       child: DecoratedBox(decoration: const BoxDecoration(
-        color: Color(0xfffafafa),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-        border: Border(top: BorderSide(color: opencodeBorder, width: .5),
-          left: BorderSide(color: opencodeBorder, width: .5),
-          right: BorderSide(color: opencodeBorder, width: .5))),
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        border: Border(top: BorderSide(color: conversationOutline),
+          left: BorderSide(color: conversationOutline),
+          right: BorderSide(color: conversationOutline))),
         child: Material(color: Colors.transparent,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
           clipBehavior: Clip.antiAlias,
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Row(children: [
@@ -268,27 +274,27 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
                 child: Padding(padding: const EdgeInsets.fromLTRB(16, 9, 0, 9), child: Row(children: [
                   Expanded(child: Text(draft.minimized ? '$header  ·  ${question['question']}' : header,
                     maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+                    style: const TextStyle(fontSize: 12, color: conversationSecondary))),
                   if (questions.length > 1) Text('${draft.tab + 1}/${questions.length}',
-                    style: const TextStyle(fontSize: 11, color: opencodeMuted)),
+                    style: const TextStyle(fontSize: 12, color: conversationSecondary)),
                   const SizedBox(width: 8),
                   Icon(draft.minimized ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
-                    size: 16, color: opencodeFaint),
+                    size: 16, color: conversationSecondary),
                 ]))))),
               IconButton(tooltip: 'Dismiss question without answering',
                 onPressed: available ? () => unawaited(_finish(dismiss: true)) : null,
                 constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-                padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: opencodeFaint)),
+                padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: conversationSecondary)),
               const SizedBox(width: 6),
             ]),
             if (!draft.minimized) Flexible(fit: FlexFit.loose, child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: (MediaQuery.sizeOf(context).height * .4).clamp(80, 384)),
               child: SingleChildScrollView(controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
+                padding: const EdgeInsets.fromLTRB(22, 2, 16, 8),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                  ConversationMarkdown(text: question['question'] as String, directory: widget.directory, fontSize: 13),
+                  ConversationMarkdown(text: question['question'] as String, directory: widget.directory),
                   if (multi) const Padding(padding: EdgeInsets.only(top: 8),
-                    child: Text('Select all that apply', style: TextStyle(fontSize: 11, color: opencodeFaint))),
+                    child: Text('Select all that apply', style: TextStyle(fontSize: 11, color: conversationSecondary))),
                   if (options.isNotEmpty) const SizedBox(height: 6),
                   for (var i = 0; i < options.length; i++) _option(i,
                     label: options[i]['label'] as String, description: options[i]['description'] as String?,
@@ -310,76 +316,4 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       advance: _next, previous: draft.tab > 0 && available ? () => _jump(draft.tab - 1) : null,
     )));
   }
-}
-
-Object? _decodeQuestionResult(Object? value) {
-  if (value is String) {
-    try { return _decodeQuestionResult(jsonDecode(value)); } on FormatException { return value; }
-  }
-  if (value is List && value.length == 1 && value.first is Map) {
-    return _decodeQuestionResult(value.first['text']);
-  }
-  if (value is Map && value['content'] is List) return _decodeQuestionResult(value['content']);
-  return value;
-}
-
-class QuestionToolResult extends StatelessWidget {
-  const QuestionToolResult({super.key, required this.tool, required this.onExpand});
-  final ToolActivity tool;
-  final VoidCallback onExpand;
-
-  @override
-  Widget build(BuildContext context) => ConversationData(value: tool.rawInput, builder: (context, input) {
-    final decoded = _decodeQuestionResult(input);
-    final rawQuestions = decoded is Map && decoded['questions'] is List ? decoded['questions'] as List : const <Object?>[];
-    final questions = [for (final question in rawQuestions.whereType<Map<Object?, Object?>>())
-      if (question['question'] is String || question['title'] is String) {
-        'id': question['id'],
-        'question': question['question'] is String ? question['question'] : question['title'],
-      },
-    ];
-    return ConversationData(value: tool.rawOutput, builder: (context, output) {
-      final result = _decodeQuestionResult(output);
-      final rawAnswers = result is Map ? result['answers'] : null;
-      final answers = <List<String>>[];
-      for (var i = 0; i < questions.length; i++) {
-        Object? answer;
-        if (rawAnswers is List && i < rawAnswers.length) answer = rawAnswers[i];
-        if (rawAnswers is Map) {
-          final value = rawAnswers[questions[i]['id']];
-          if (value is Map) answer = value['answers'];
-        }
-        answers.add(answer is List ? answer.whereType<String>().toList() : const []);
-      }
-      final running = tool.status == 'running';
-      final asynchronous = tool.name.split('.').last == 'request_user_input_async';
-      final count = questions.length;
-      return ConversationDisclosure(
-        key: PageStorageKey('question:${tool.id}'),
-        label: asynchronous && tool.status == 'done' ? 'Asked $count question${count == 1 ? '' : 's'}'
-          : running ? 'Waiting for your answer' : tool.status == 'done'
-          ? 'Answered $count question${count == 1 ? '' : 's'}'
-          : tool.status == 'failed' ? 'Questions failed' : 'Question dismissed',
-        fontSize: 13, initiallyExpanded: true, onExpand: onExpand,
-        icon: const Icon(Icons.help_outline_rounded, size: 14, color: opencodeMuted),
-        builder: (context) => Padding(padding: const EdgeInsets.only(left: 18, top: 4, bottom: 8),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            if (tool.status == 'failed' && output != null)
-              SelectableText(result is Map ? (result['error'] ?? result['output'] ?? result).toString()
-                : result.toString(), style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error)),
-            for (var i = 0; i < count; i++) Padding(padding: const EdgeInsets.only(bottom: 8),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                SelectableText(questions[i]['question'] as String,
-                  style: const TextStyle(fontSize: 13, color: opencodeMuted)),
-                if (!asynchronous) ...[
-                  const SizedBox(height: 2),
-                  SelectableText(answers[i].isNotEmpty
-                    ? answers[i].join(', ') : running ? 'Waiting for your answer…' : 'Unanswered',
-                    style: const TextStyle(fontSize: 13, color: opencodeInk)),
-                ],
-              ])),
-          ])),
-      );
-    });
-  });
 }

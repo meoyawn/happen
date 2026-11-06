@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
   late Directory root;
@@ -33,7 +34,9 @@ void main() {
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({'code_mode_only': false}));
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
-      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join())); requests.add(body);
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      requests.add(body);
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {'status': 'completed',
         'output': [if (requests.length == 1 && nested) {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',

@@ -114,12 +114,15 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
         await Clipboard.setData(ClipboardData(text: path));
         if (mounted) {
           showDesktopToast(context, trace ? 'End-to-end trace exported' : 'LLM context exported',
-            description: 'Path copied to clipboard: $path', icon: Icons.check_rounded);
+            description: 'Path copied to clipboard: $path', type: DesktopToastType.success);
         }
       }
     } on CancelledException { /* The caller owns the export lifetime. */ }
     catch (error) {
-      if (mounted) showDesktopToast(context, 'Could not export ${trace ? 'session trace' : 'LLM context'}', description: '$error');
+      if (mounted) {
+        showDesktopToast(context, 'Could not export ${trace ? 'session trace' : 'LLM context'}',
+          type: DesktopToastType.error, description: '$error');
+      }
     }
     finally {
       if (attach && !attached && await destination!.exists()) await destination.delete(recursive: true);

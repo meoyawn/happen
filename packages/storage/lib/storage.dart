@@ -136,7 +136,7 @@ class TaskStore {
         }
       }
       next['sourceSeq'] = (next['sourceSeq'] as int? ?? 0) + 1;
-      if (!{'task.archived', 'task.unarchived'}.contains(type)) next['updated'] = now.millisecondsSinceEpoch;
+      if (!{'task.archived', 'task.unarchived', 'thread.name.updated'}.contains(type)) next['updated'] = now.millisecondsSinceEpoch;
       if (type == 'context.compacted') { next['window'] = newId(); next.remove('tokens'); }
       final record = <String, dynamic>{'seq': next['sourceSeq'], 'id': newId(),
         'window_id': next['window'], 'type': type, 'created_at': now.toIso8601String(), 'data': data};

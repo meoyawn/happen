@@ -7,6 +7,15 @@ const _retainedExecutionMetadata = ['current_cwd', 'agents_snapshot', 'skills_st
 /// projections are copied. Archive changes collection membership in-place,
 /// retaining the immutable prefix used by descendants.
 extension ThreadLifecycle on TaskStore {
+  Json setThreadName(String name, {bool onlyIfUnnamed = false}) {
+    if (jsonObject(metadata('config') ?? {})['ephemeral'] == true) throw StateError('Ephemeral threads cannot be named');
+    final current = metadata('name') as String?;
+    if (onlyIfUnnamed && current != null && current.trim().isNotEmpty) return {'name': current};
+    name = name.trim();
+    if (name.isEmpty) throw const FormatException('Thread name must not be empty');
+    return {'name': name, 'event': append('thread.name.updated', {'name': name}, metadata: {'name': name})};
+  }
+
   List<Json> rolloutPage(Json params) => [for (final row in db.select(
     'SELECT line FROM rollout_lines WHERE ordinal >= ? ORDER BY ordinal LIMIT ?',
     [params['after'] ?? 0, (params['limit'] as int? ?? 100).clamp(1, 500)])) jsonObject(jsonDecode(row['line'] as String))];

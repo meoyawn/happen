@@ -9,13 +9,14 @@ import 'project_avatar.dart';
 class NewSessionScreen extends StatelessWidget {
   const NewSessionScreen({super.key, required this.session, required this.composer,
     required this.picking, required this.onSelect, required this.onAddProject,
-    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder});
+    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController});
   final DesktopSession session;
   final Widget composer;
   final bool picking;
   final ValueChanged<Project> onSelect, onRemoveProject;
   final VoidCallback onAddProject, onReturnFocus;
   final VoidCallback? onOpenFolder;
+  final MenuController? projectMenuController;
 
   @override
   Widget build(BuildContext context) {
@@ -26,6 +27,7 @@ class NewSessionScreen extends StatelessWidget {
       final heading = TextStyle(fontSize: narrow ? 24 : 30, height: 1.25,
         fontWeight: FontWeight.w400, letterSpacing: -.9, color: opencodeInk);
       final projectSelector = MenuAnchor(
+        controller: projectMenuController,
         onClose: onReturnFocus,
         style: MenuStyle(padding: const WidgetStatePropertyAll(EdgeInsets.zero),
           backgroundColor: const WidgetStatePropertyAll(Colors.white),
@@ -37,6 +39,7 @@ class NewSessionScreen extends StatelessWidget {
           projects: session.projects.where((project) => !project.removing).toList(), selected: project,
           generated: session.projectAvatarStyle == 'generated',
           onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
+          onRemove: (project) { MenuController.maybeOf(context)?.close(); onRemoveProject(project); },
           onAdd: () { MenuController.maybeOf(context)?.close(); onAddProject(); }))],
         builder: (context, controller, _) => Tooltip(message: 'Select project', child: TextButton(
           onPressed: picking || session.submitting ? null : hasProjects
@@ -98,9 +101,6 @@ class NewSessionScreen extends StatelessWidget {
                     const Text('Project folder is unavailable. Choose another project.', style: TextStyle(fontSize: 13, color: opencodeFaint)),
                     TextButton(onPressed: () => onRemoveProject(project!), child: const Text('Remove project')),
                   ])),
-                if (session.error case final error?)
-                  Padding(padding: const EdgeInsets.all(12), child: SelectableText(error,
-                    style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.error))),
               ])))))),
         if (project != null && bounds.maxWidth >= 1100 && bounds.maxHeight >= 700)
           Positioned(top: 12, right: 12, child: SizedBox(width: 288, child: Material(
@@ -133,10 +133,10 @@ class NewSessionScreen extends StatelessWidget {
 
 class _ProjectPicker extends StatefulWidget {
   const _ProjectPicker({required this.projects, required this.selected, required this.onSelect, required this.onAdd,
-    required this.generated});
+    required this.onRemove, required this.generated});
   final List<Project> projects;
   final Project? selected;
-  final ValueChanged<Project> onSelect;
+  final ValueChanged<Project> onSelect, onRemove;
   final VoidCallback onAdd;
   final bool generated;
 
@@ -175,6 +175,11 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     return SizedBox(width: 360, child: Focus(onKeyEvent: (_, event) {
       if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
       final key = event.logicalKey;
+      if ((key == LogicalKeyboardKey.backspace || key == LogicalKeyboardKey.delete) &&
+          SingleActivator(key, meta: true).accepts(event, HardwareKeyboard.instance)) {
+        if (event is KeyDownEvent && _active < projects.length) widget.onRemove(projects[_active]);
+        return KeyEventResult.handled;
+      }
       if (key == LogicalKeyboardKey.enter) { select(); return KeyEventResult.handled; }
       if (key != LogicalKeyboardKey.arrowDown && key != LogicalKeyboardKey.arrowUp) return KeyEventResult.ignored;
       setState(() {
