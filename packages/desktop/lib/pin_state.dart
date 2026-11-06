@@ -13,7 +13,7 @@ final class PinWritePending extends PinWriteState {
 }
 
 final class PinWriteCommitted extends PinWriteState {
-  const PinWriteCommitted(this.order);
+  PinWriteCommitted(Iterable<String> order) : order = List.unmodifiable(order);
   final List<String> order;
 }
 

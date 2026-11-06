@@ -36,6 +36,7 @@ import 'settings_screen.dart';
 import 'workspace_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
+import 'project_details.dart';
 
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session});
@@ -611,8 +612,9 @@ class _DesktopViewState extends State<DesktopView> {
               session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
             child: Material(color: conversationCanvas, child: Stack(fit: StackFit.expand, children: [
-              if (!home) Column(children: [
-                _header(context),
+              if (!home) ProjectDetailsWorkspace(session: session,
+                header: (opened, toggle) => _header(context, opened, toggle),
+                child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
                     projectMenuController: _projectMenu,
@@ -670,7 +672,7 @@ class _DesktopViewState extends State<DesktopView> {
                   else if (session.project != null)
                     _Composer(key: _composer, session: session),
                 ],
-              ]),
+              ])),
                if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
                 onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))),
@@ -681,7 +683,7 @@ class _DesktopViewState extends State<DesktopView> {
     );
   }
 
-  Widget _header(BuildContext context) => DesktopWindowDragRegion(child: AnimatedPadding(
+  Widget _header(BuildContext context, bool detailsOpen, VoidCallback toggleDetails) => DesktopWindowDragRegion(child: AnimatedPadding(
     duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
     padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
     child: SizedBox(height: 56, child: Row(
@@ -712,23 +714,24 @@ class _DesktopViewState extends State<DesktopView> {
               session.openSessionPanel(session.task!, contextPanel, toggle: true);
               if (!session.panelsFor(session.task!).opened) _composer.currentState?._focus.requestFocus();
             }),
-        if (session.project != null)
-          IconButton(
+        if (session.project != null) ...[
+          WorkspacePanelButton(key: const ValueKey('toggle-project-details'),
+            tooltip: 'Toggle project details', opened: detailsOpen,
+            onPressed: session.project!.available && !session.project!.removing ? toggleDetails : null,
+            icon: const Icon(Icons.article_outlined, size: 18)),
+          const SizedBox(width: 4),
+          ListenableBuilder(listenable: session.terminals, builder: (context, _) => WorkspacePanelButton(
             tooltip: 'Toggle terminal (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘J' : 'Ctrl+J'})',
+            opened: session.terminals.groups[_terminalScope]?.visible == true,
             onPressed: _canOpenTerminal ? _toggleTerminal : null,
-            icon: const Icon(Icons.terminal_outlined, size: 17, color: Color(0xff777b82)),
-          ),
-        if (session.task != null && session.project != null)
-          IconButton(
-            tooltip: 'New task',
-            onPressed: session.project!.available && !session.project!.removing ? () => _run(_newChat) : null,
-            icon: const Icon(Icons.edit_square, size: 17, color: Color(0xff777b82)),
-          ),
-        if (session.task != null && session.panelLayouts[session.task!.id]?.opened != true)
-          IconButton(key: const ValueKey('toggle-side-panel'),
+            icon: const BottomPanelIcon())),
+          const SizedBox(width: 4),
+          WorkspacePanelButton(key: const ValueKey('toggle-side-panel'),
             tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})',
-            onPressed: _toggleSidePanel,
-            icon: const SidePanelIcon(opened: false)),
+            opened: session.task != null && session.panelLayouts[session.task!.id]?.opened == true,
+            onPressed: session.task == null ? null : _toggleSidePanel,
+            icon: SidePanelIcon(opened: session.task != null && session.panelLayouts[session.task!.id]?.opened == true)),
+        ],
       ],
     )),
   ));

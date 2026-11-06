@@ -35,6 +35,7 @@ String _schemaHash(Object? schema) {
 void main() {
   for (final lab in ['openai', 'opencode']) {
     test('$lab uses its own web tools and preserves results after restart', () async {
+      if (lab == 'openai') expect(_schemaHash(webSearchDefinition.parameters), _codexWebSchemaHash);
       final root = await Directory.systemTemp.createTemp('web-search-task-');
       final remote = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final endpoint = 'http://127.0.0.1:${remote.port}';
@@ -44,7 +45,7 @@ void main() {
       final modelRequests = <Json>[], searchRequests = <Json>[];
       final searches = <String>[];
       await config.writeAsString(jsonEncode({'providers': {
-        'openai': {'endpoint': '$endpoint/codex/responses', 'settings': {'standalone_web_search': true}},
+        'openai': {'endpoint': '$endpoint/codex/responses'},
         'opencode': {
           'endpoint': '$endpoint/inference/openai/v1',
           'web_search': {'endpoint': '$endpoint/hosted/search'},
@@ -98,20 +99,10 @@ void main() {
         }
         modelRequests.add(body);
         final input = (body[lab == 'openai' ? 'input' : 'messages'] as List).map(jsonObject).toList();
-        final tools = body['tools'] as List;
+        final tools = lab == 'openai' ? input.where((item) => item['type'] == 'additional_tools')
+          .expand((item) => item['tools'] as List).toList() : body['tools'] as List;
         final web = tools.singleWhere((tool) => lab == 'openai'
-            ? tool['name'] == 'web' : tool['function']['name'] == 'websearch');
-        final parameters = lab == 'openai' ? web['tools'][0]['parameters'] : web['function']['parameters'];
-        if (lab == 'openai' && _schemaHash(parameters) != _codexWebSchemaHash) {
-          request.response.statusCode = 400;
-          request.response.headers.contentType = ContentType.json;
-          request.response.write(jsonEncode({'error': {
-            'message': "Function 'web.run' is reserved for use by this model and must match the configured schema.",
-            'type': 'invalid_request_error', 'param': 'tools', 'code': null,
-          }}));
-          await request.response.close();
-          return;
-        }
+            ? tool['name'] == 'functions' : tool['function']['name'] == 'websearch');
         final lastUser = input.lastIndexWhere((item) => item['role'] == 'user');
         final resumed = openAIMessageText(input[lastUser]) == 'Continue';
         final results = input.skip(lastUser + 1).where((item) => lab == 'openai'
@@ -121,8 +112,8 @@ void main() {
           ? {'query': 'Dart guide'} : {'url': sourceUrl, 'format': 'markdown'}) : results.isEmpty ? jsonEncode({
           'search_query': [{'q': 'Dart guide', 'recency': 7, 'domains': [domain]}],
           'response_length': 'short',
-        }) : 'text(await tools.web__run({open:[{ref_id:${jsonEncode(sourceUrl)},lineno:1}],'
-            'find:[{ref_id:${jsonEncode(sourceUrl)},pattern:"cancel"}],response_length:"short"}));';
+        }) : jsonEncode({'open': [{'ref_id': sourceUrl, 'lineno': 1}],
+            'find': [{'ref_id': sourceUrl, 'pattern': 'cancel'}], 'response_length': 'short'});
         final finished = resumed || results.length >= 2;
         if (finished) {
           expect(jsonEncode(input), contains('Search evidence'));
@@ -130,18 +121,18 @@ void main() {
         }
         request.response.headers.contentType = ContentType('text', 'event-stream');
         if (lab == 'openai') {
-          expect(web['tools'][0]['name'], 'run');
+          expect(web['tools'][0]['description'], contains('declare const tools: { web__run('));
           request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
             'status': 'completed', 'usage': {'input_tokens': 100, 'output_tokens': 10},
             'output': [finished ? {
               'type': 'message', 'role': 'assistant',
               'content': [{'type': 'output_text', 'text': 'Verified source links and page content'}],
             } : {
-              'type': results.isEmpty ? 'function_call' : 'custom_tool_call',
-              'namespace': results.isEmpty ? 'web' : 'functions',
-              'name': results.isEmpty ? 'run' : 'exec',
+              'type': 'custom_tool_call',
+              'namespace': 'functions',
+              'name': 'exec',
               'call_id': 'call-${modelRequests.length}',
-              results.isEmpty ? 'arguments' : 'input': arguments,
+              'input': 'text(await tools.web__run($arguments));',
             }],
           }})}\n\n');
         } else {

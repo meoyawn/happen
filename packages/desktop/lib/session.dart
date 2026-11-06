@@ -20,6 +20,9 @@ import 'panel_state.dart';
 import 'notification_preferences.dart';
 import 'desktop_notice.dart';
 import 'pin_state.dart';
+import 'file_change.dart';
+import 'git_actions_state.dart';
+import 'project_actions_state.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -77,7 +80,19 @@ class DesktopTask {
   List<ChatEntry>? _conversation;
   List<Json>? _conversationEvents, _conversationPending;
   Object? _conversationState;
+  late final _fileChanges = <String, ({Object? input, List<ChangedFile> files})>{};
   CancellationToken? _historyRead;
+}
+
+List<ChangedFile> changesForSource(DesktopTask task, String source) {
+  final turn = source.startsWith('turn:');
+  final input = turn ? (task.turns[source.substring(5)]?['diff'])
+    : (task.messages[source.substring('item:'.length)]?['changes']);
+  final cached = task._fileChanges[source];
+  if (cached != null && identical(cached.input, input)) return cached.files;
+  final files = turn ? turnFileChanges(input as String? ?? '') : nativeFileChanges(input);
+  task._fileChanges[source] = (input: input, files: files);
+  return files;
 }
 
 int taskLastSentAt(DesktopTask task) {
@@ -156,6 +171,13 @@ class DesktopSession extends ChangeNotifier {
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
   final terminals = DesktopTerminals();
+  late final _git = <String, GitActionsController>{};
+  GitActionsController gitForProject(Project project) =>
+    _git.putIfAbsent(project.path, () => GitActionsController(client, project.path));
+  late final _projectActions = <String, ProjectActionsController>{};
+  ProjectActionsController actionsForProject(Project project) =>
+    _projectActions.putIfAbsent(project.checkoutKey, () => ProjectActionsController(database,
+      project.checkoutKey, project.path, local: client.sharedFilesystem));
   final panelLayouts = <String, SessionPanelState>{};
   late final panelSelection = ChangeNotifier();
   final _changedPanelLayouts = <String>{};
@@ -366,11 +388,11 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _setting(String key, String value) async {
+  Future<void> _setting(String key, String value, {CancellationToken? cancellation}) async {
     await callIsolate(database.port, 'settings.set', {
       'key': key,
       'value': value,
-    }, cancellation: _lifetime);
+    }, cancellation: cancellation?.merge(_lifetime) ?? _lifetime);
   }
 
   Future<void> chooseDictationMode(String mode) async {
@@ -734,6 +756,7 @@ class DesktopSession extends ChangeNotifier {
     target._historyRead?.cancel();
     target.lastSentAt ??= taskLastSentAt(target);
     target.messages.clear();
+    target._fileChanges.clear();
     final latestTurn = target.turns.values.lastOrNull;
     target.turns.clear();
     if (latestTurn != null) {
@@ -769,7 +792,8 @@ class DesktopSession extends ChangeNotifier {
     await _pin('sidebar_pinned_tasks', pinnedTaskIds, target.id, pinned);
   }
 
-  Future<void> reorderPinnedTasks(List<String> order) async {
+  Future<void> reorderPinnedTasks(List<String> order, {required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
     final visible = order.toSet();
     if (visible.length != order.length || !visible.every(pinnedTaskIds.contains)) {
       throw ArgumentError('Invalid pinned thread order');
@@ -780,7 +804,7 @@ class DesktopSession extends ChangeNotifier {
       for (final id in pinnedTaskIds)
         if (visible.contains(id)) (sorted..moveNext()).current else id,
     ];
-    await _savePins('sidebar_pinned_tasks', pinnedTaskIds, next);
+    await _savePins('sidebar_pinned_tasks', pinnedTaskIds, next, cancellation: cancellation);
   }
 
   Future<void> pinProject(Project target, bool pinned) async {
@@ -795,14 +819,14 @@ class DesktopSession extends ChangeNotifier {
     await _savePins(setting, ids, next);
   }
 
-  Future<void> _savePins(String setting, List<String> ids, List<String> next) async {
+  Future<void> _savePins(String setting, List<String> ids, List<String> next, {CancellationToken? cancellation}) async {
     if (listEquals(ids, next)) return;
     final pending = PinWritePending(ids, next);
     _pinWrites[setting] = transitionPinWrite(_pinWrites[setting] ?? const PinWriteIdle(), pending);
     ids..clear()..addAll(pending.order);
     notifyListeners();
     try {
-      await _setting(setting, jsonEncode(pending.order));
+      await _setting(setting, jsonEncode(pending.order), cancellation: cancellation);
       if (!identical(_pinWrites[setting], pending)) return;
       _pinWrites[setting] = transitionPinWrite(pending, PinWriteCommitted(pending.order));
       notifyListeners();
@@ -1411,6 +1435,7 @@ class DesktopSession extends ChangeNotifier {
       target.through = page['notificationThrough'] as int? ?? 0;
       if (target.loaded) target.lastSentAt ??= taskLastSentAt(target);
       target.messages.clear();
+      target._fileChanges.clear();
       target.turns.clear();
       target.projectionState
         ..clear()
@@ -1463,6 +1488,13 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _mergeHistory(DesktopTask target, Json page) {
+    for (final raw in page['turns'] as List? ?? []) {
+      final turn = jsonObject(raw), id = turn['id'] as String;
+      target.turns[id] = {...turn, ...?target.turns[id]};
+    }
+    final turns = target.turns.entries.toList()..sort((a, b) =>
+      (a.value['order'] as int? ?? 9223372036854775807).compareTo(b.value['order'] as int? ?? 9223372036854775807));
+    target.turns..clear()..addEntries(turns);
     for (final raw in (page['data'] as List).reversed) {
       final entry = jsonObject(raw), item = jsonObject(entry['item']), id = item['id'] as String;
       target.messages.putIfAbsent(id, () => {...item, 'turnId': entry['turnId'],
@@ -2089,6 +2121,10 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> close() async {
     _draftSave?.cancel();
+    await Future.wait(_git.values.map((controller) => controller.close()));
+    _git.clear();
+    await Future.wait(_projectActions.values.map((controller) => controller.close()));
+    _projectActions.clear();
     if (_draftSave != null || sessionDrafts.isNotEmpty) await _persistDrafts();
     await Future.wait(_releasingThreads.values.toList());
     await terminals.close();
@@ -2266,9 +2302,7 @@ List<ChatEntry> conversation(DesktopTask task) {
           final text = output.where((part) => {'text', 'inputText'}.contains(part['type'])).map((part) => part['text']).join('\n');
           if (text.isNotEmpty) tool.output = text;
         } else if (message['error'] != null || message['aggregatedOutput'] != null) { tool.output = message['error'] ?? message['aggregatedOutput']; }
-        else if (message['type'] == 'fileChange') {
-          tool.output = (message['changes'] as List? ?? []).map((change) => '${change['path']}\n${change['diff'] ?? ''}').join('\n\n');
-        } else if (message['type'] == 'webSearch') { tool.output = message['results']; }
+        else if (message['type'] == 'webSearch') { tool.output = message['results']; }
         else if (message['type'] == 'collabAgentToolCall') { tool.output = message['agentsStates']; }
         tools[id] = tool;
         final parent = tools[message['parentCallId']];

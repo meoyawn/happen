@@ -15,12 +15,13 @@ import 'web_search.dart';
 import 'image_generation.dart';
 import 'goals.dart';
 import 'user_input.dart';
+import 'model_context.dart';
 
 class OpenAIToolInterface extends ToolInterface {
   const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
-    this.standaloneWebSearch = false, this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
+    this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
     this.requestUserInput = false});
-  final bool webSearch, imageGeneration, standaloneWebSearch, sleepTool, goals, codeModeOnly, requestUserInput;
+  final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, requestUserInput;
   @override
   String get id => 'openai';
   @override
@@ -34,11 +35,15 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   List<ToolDefinition> get definitions => definitionsFor(const []);
   @override
+  List<ConversationItem> modelContext(String instructions, List<ToolDefinition> tools,
+    List<ConversationItem> history) => renderModelContext(instructions, tools, history);
+  @override
   List<ToolDefinition> definitionsFor(List<Json> deferred) {
     // Codex prepares its cached search handler while building the tool router.
     prepareToolSearch(deferred);
     return [
-    specs.codeDefinition(deferredTools: deferred.isNotEmpty, imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty, webSearch: webSearch,
+      imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (deferred.isNotEmpty) ...mcpResourceCatalog.map(specs.directDefinition),
@@ -52,7 +57,7 @@ class OpenAIToolInterface extends ToolInterface {
       if (goals) ...goalCatalog.map(specs.directDefinition),
       if (deferred.isNotEmpty) specs.directSearchDefinition,
     ],
-    if (webSearch) standaloneWebSearch ? webSearchDefinition : hostedWebSearchDefinition,
+    if (webSearch && !codeModeOnly) webSearchDefinition,
     ];
   }
   @override
@@ -69,7 +74,7 @@ class OpenAIToolInterface extends ToolInterface {
   Map<String, String> get services => {
     if (requestUserInput) 'request_user_input': 'question.ask',
     if (requestUserInput) 'request_user_input_async': 'question.ask_async',
-    if (webSearch && standaloneWebSearch) 'web__run': 'web.search',
+    if (webSearch) 'web__run': 'web.search',
     if (imageGeneration) 'image_gen__imagegen': 'image.generate',
     if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
     for (final tool in historyCatalog) tool['name'] as String: 'history.${(tool['name'] as String).substring(9)}',
@@ -77,9 +82,10 @@ class OpenAIToolInterface extends ToolInterface {
   };
   @override
   List<Json> get hostCatalog => [
-    ...specs.hostCatalog.where((tool) => webSearch && standaloneWebSearch || tool['name'] != 'web__run'), ...historyCatalog, ...mcpResourceCatalog,
+    ...specs.hostCatalog, ...historyCatalog, ...mcpResourceCatalog,
     if (imageGeneration) imageGenerationCatalog,
     if (goals) ...goalCatalog,
+    if (webSearch) webSearchHost,
   ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList();
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
@@ -88,7 +94,7 @@ class OpenAIToolInterface extends ToolInterface {
   ];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) =>
-    _OpenAITools(cwd, cancellation, webSearch && standaloneWebSearch, sleepTool, codeModeOnly, requestUserInput);
+    _OpenAITools(cwd, cancellation, webSearch, sleepTool, codeModeOnly, requestUserInput);
   @override
   String formatResult(ToolCall call, Json result) {
     if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) {
@@ -240,7 +246,7 @@ class _OpenAITools extends ToolRuntime {
     final String name;
     final builtin = specs.hostCatalog.where((tool) =>
       (tool['namespace'] ?? 'functions') == (call.namespace ?? 'functions') &&
-      (tool['tool_name'] ?? tool['name']) == call.name && (webSearch || tool['name'] != 'web__run')).firstOrNull;
+      (tool['tool_name'] ?? tool['name']) == call.name).firstOrNull;
     if (builtin != null) {
       name = builtin['namespace'] == null ? builtin['name'] as String : '${builtin['namespace']}__${call.name}';
     } else if (call.namespace?.startsWith('mcp__') == true) {

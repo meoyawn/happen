@@ -23,26 +23,33 @@ before either harness starts. Functional replays use real production
 connections; no discovery response or tool result is substituted. Happen's
 in-process server retains its production shared MCP owner between fresh threads;
 Codex starts its own processes for each CLI invocation.
+Happen unloads the thread between replayed user turns to match that cold resume.
 The launcher invokes package:test from source after normal native-hook setup;
 it does not run dependency resolution under the temporary home or rewrite the
 workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The matrix uses `gpt-6.1-terra` with `max` reasoning and `auto` reasoning summaries,
-matching the supplied context exports, in both Code Mode only and mixed tool
-modes. Each pair uses the same base model catalog, explicitly generated
-configs, separate empty data/credential homes, real instruction and skill files,
-tool settings, and Standard Responses. The generated Codex catalog
-explicitly sets `use_responses_lite: false`; Happen has no Responses Lite path.
-Every captured request must have `parallel_tool_calls: true` and omit
-`reasoning.context` (the standard backend currently defaults to `current_turn`).
+The matrix uses `gpt-6.1-terra` and the unchanged
+`packages/openai/catalog/models.json`. Its defaults select `low` reasoning, no
+reasoning summary, Code Mode only, and Responses Lite. The evidence includes the
+catalog's original bytes and SHA-256. Neither harness overrides those settings.
+Each pair uses separate empty data/credential homes, real instruction and skill
+files, and explicitly isolated tool settings. Requests carry tool declarations
+and base instructions in a durable history prefix, omit top-level `tools` and
+`instructions`, set `parallel_tool_calls: false`, and use
+`reasoning.context: "all_turns"`, matching Codex's Responses Lite client.
 Codex's bundled skills,
 plugins, apps, collaboration, account credential storage, and permission prompts
-are disabled explicitly. No user config or ChatGPT account is used. Shell
+are disabled explicitly. Its optional internal content classifications are also
+disabled; generated turn/time metadata is normalized with the other scoped IDs.
+No user config or ChatGPT account is used. Shell
 selection is not overridden: the runtime follows Codex's account-database shell
 selection and platform defaults, not the launching terminal's `SHELL` value.
-Provider-hosted web search is enabled in both configurations (`web_search = "live"`).
+Standalone OpenAI web search is enabled in both configurations
+(`web_search = "live"`). The synthetic provider advertises standalone-search
+support; the catalog's Code Mode only layout exposes it as `tools.web__run`
+inside `functions.exec`.
 The reference keeps the current default `sleep_tool` gate and model-driven mode;
 the matrix model advertises clock support. Goals are explicitly enabled.
 
@@ -54,7 +61,7 @@ production embedding API. The
 fixtures remain separate. Each context must list exactly `catalog_skills`; any
 extra user, bundled, or plugin skill fails the isolation assertion.
 
-**Only the Responses API is synthetic.** `cases.dart` supplies native output
+**OpenAI's Responses and search endpoints are synthetic.** `cases.dart` supplies native output
 arrays. The local HTTP peer emits real Responses SSE and advances a scripted
 step only after the previous call IDs have actual tool results. Completed output
 items arrive through `response.output_item.done`; the terminal completion packet
@@ -67,10 +74,12 @@ commentary with `end_turn: false`. Neither harness may stop there: both must mak
 the next inference, actually read the fixture file through the shell, and return
 its receipt in the final request. The fixture advances past commentary only when
 the next received request retains the commentary item IDs it actually issued.
-The web case supplies deterministic hosted `web_search_call` results and
-URL citations through that same Responses stream, then verifies their retention
-in the next actual inference request. It needs no live internet query or a second
-fake search implementation. Sleep is exercised directly, including invalid zero
+The web case prompts `google youtube to podcast tools`. Both harnesses must
+execute their production standalone-search client against `/alpha/search` with
+the specified query and live-access setting. The endpoint supplies a unique
+receipt; the next inference must retain it and the cited answer. Captures retain
+both search requests and Responses requests. This replay makes no live internet
+query. Sleep is exercised directly, including invalid zero
 duration; goal tools create, inspect, account usage, complete, and inspect again.
 
 The `fermented-beetroot` case preserves the Russian prompt, all fourteen native
@@ -90,10 +99,9 @@ The package-reading MCP case starts independent real `dart mcp-server`
 processes, registers the fixture package, and reads its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
 `+mcp__dart evaluate expression flutter driver runtime errors` and compares the
-ordered results. Code Mode only compares full TypeScript declarations; mixed
-mode emits native `tool_search_call` items and compares the returned
-`tool_search_output` namespaces and function schemas. Native results must retain
-input schemas and deferred loading while omitting output schemas, matching Codex.
+ordered results and full TypeScript declarations in the catalog's Code Mode
+only layout. Native discovery's schema and output-schema omission contracts are
+covered separately by `test/openai_mcp_output_test.dart`.
 It does not execute the discovered tools, connect to an app, or interact with the
 human's desktop. The
 broad query does not select `vm_service` among the default eight in either
@@ -129,6 +137,9 @@ removing explicitly scoped generated protocol/transport IDs and normalizing know
 numeric timing fields:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
+The exec description normalizes only the known embedded-engine name,
+Happen's two settlement-helper declarations, and its MCP-envelope guidance.
+All shared tool declarations and the rest of the description remain strict.
 Tool declarations,
 printed values, roles, message boundaries, dates, settings, and tool results are
 not discarded. Happen deliberately does not send Codex's `client_metadata`;
@@ -164,8 +175,8 @@ prepared contexts, snapshot-based inference reconstructions, or input-only dumps
 
 Identity normalization has independent gates first: thread IDs must be unique,
 monotonically ordered UUIDv7 identifiers; generated item IDs have their Codex
-type prefix and UUIDv7 suffix. The prompt-only base instruction ID must match
-Codex's thread-scoped UUIDv5 derivation. IDs actually emitted by the synthetic
+type prefix and UUIDv7 suffix, including the retained tool/base prefix.
+IDs actually emitted by the synthetic
 upstream are preserved, not regenerated. Six-hex shell chunk IDs and shell
 session IDs in `1000..99999` are checked before chunk normalization. Concurrent
 public Happen turns also exercise its real ID owner's ordering and reach inference.

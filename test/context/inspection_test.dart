@@ -115,8 +115,8 @@ void main() {
       }})}\n\n');
       await response.close();
     }
-    List<Json> wire(Json context) => withGptInstructions(context['instructions'] as String, gptInput((context['input'] as List)
-      .map((item) => ConversationItem.fromJson(jsonObject(item)))), sessionId: context['sessionID'] as String);
+    List<Json> wire(Json context) => gptInput((context['input'] as List)
+      .map((item) => ConversationItem.fromJson(jsonObject(item))));
     final id = await createThread(client, {
       'cwd': work.path, 'dynamicTools': [{
         'name': 'lookup', 'description': 'Deferred lookup', 'inputSchema': {'type': 'object'},
@@ -131,10 +131,12 @@ void main() {
     expect(initial['instructions'], isNotEmpty);
     expect(initial['tools'], isNotEmpty);
     expect(firstRequest.body.containsKey('instructions'), false);
-    expect(gptTools((initial['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool)))), firstRequest.body['tools']);
+    expect(firstRequest.body.containsKey('tools'), false);
+    expect(gptTools((initial['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool)))),
+      (firstRequest.body['input'] as List).first['tools']);
     expect(wire(initial), firstRequest.body['input']);
     expect((initial['input'] as List).map((item) => item['native']?['harness']?['context'] ?? item['role']),
-      ['skills', 'tool_catalog', 'agents_md', 'environment', 'user']);
+      ['model_tools', 'model', 'tool_catalog', 'skills', 'agents_md', 'environment', 'user', null]);
     final paged = await inspect({'limit': 2});
     final fencedInput = <Json>[...(paged['input'] as List).map(jsonObject)];
     final observer = await AgentClient.connect(server.uri);

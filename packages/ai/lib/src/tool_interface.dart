@@ -20,6 +20,8 @@ abstract class ToolInterface {
   List<ToolDefinition> get definitions;
   List<Json> get hostCatalog;
   List<ToolDefinition> definitionsFor(List<Json> deferred) => definitions;
+  List<ConversationItem> modelContext(String instructions, List<ToolDefinition> tools,
+    List<ConversationItem> history) => const [];
   List<Json> hostCatalogFor(List<Json> deferred) => hostCatalog;
   bool get developerContextFirst => false;
   /// Orchestrators retain separate host-call records; native calls already have

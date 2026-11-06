@@ -87,7 +87,7 @@ String toolLabel(ToolActivity tool, {String directory = '', bool active = false}
   if (kind == 'read' || kind == 'edit') {
     final path = input is Map ? input['path'] ?? input['filePath'] ?? input['file_path'] : null;
     final changes = input is Map ? input['changes'] : null;
-    final changedPaths = changes is List ? changes.whereType<Map>().map((change) => change['path']).whereType<String>().toList() : const <String>[];
+    final changedPaths = changes is List ? changes.whereType<Map<Object?, Object?>>().map((change) => change['path']).whereType<String>().toList() : const <String>[];
     final target = path is String ? _relative(path, directory) : changedPaths.length == 1
       ? _relative(changedPaths.single, directory) : changedPaths.length > 1 ? '${changedPaths.length} files' : 'file';
     return '${kind == 'read' ? active ? 'Reading' : 'Read' : active ? 'Editing' : 'Changed'} $target';
@@ -111,7 +111,20 @@ String toolLabel(ToolActivity tool, {String directory = '', bool active = false}
 
 String toolGroupSummary(List<ToolActivity> tools) {
   final groups = <String, int>{};
-  for (final tool in tools) { groups.update(toolKind(tool), (count) => count + 1, ifAbsent: () => 1); }
+  final edited = <String>{};
+  for (final tool in tools) {
+    final kind = toolKind(tool);
+    var count = 1;
+    if (kind == 'edit') {
+      final input = tool.rawInput;
+      final changes = input is Map ? input['changes'] : null;
+      final paths = changes is List ? changes.whereType<Map<Object?, Object?>>()
+        .map((change) => change['path']).whereType<String>().toSet() : <String>{tool.id};
+      count = paths.difference(edited).length;
+      edited.addAll(paths);
+    }
+    groups.update(kind, (previous) => previous + count, ifAbsent: () => count);
+  }
   final labels = <String>[];
   for (final entry in groups.entries.take(2)) {
     final count = entry.value, plural = count == 1 ? '' : 's';
@@ -141,7 +154,7 @@ class ConversationToolCall extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (toolKind(tool) == 'question') return QuestionToolResult(tool: tool, onExpand: onExpand);
-    if (tool.rawInput case {'changes': final List _}) {
+    if (tool.rawInput case {'changes': final List<Object?> _}) {
       return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
     }
     return ConversationDisclosure(

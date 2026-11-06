@@ -318,12 +318,6 @@ class _Agent {
           metadata: {'status': 'running'},
         ),
       );
-      if (selectedEffort != previousEffort) {
-        event(await _append('configuration.updated', {
-          'effort': selectedEffort,
-          'item': ConversationItem(kind: 'configuration', settings: {'reasoning': selectedEffort}).toJson(),
-        }, metadata: {'effective_reasoning': selectedEffort}));
-      }
       var mcpSnapshot = jsonObject(await _metadata('mcp_snapshot') ?? {});
       var clientSnapshot = jsonObject(await _metadata('client_tools_snapshot') ?? {'tools': <Object?>[]});
       var persistedMcp = mcpSnapshot, persistedClient = clientSnapshot;
@@ -443,6 +437,20 @@ class _Agent {
       }
 
       var usageTokens = await _metadata('context_usage') as int? ?? 0;
+      var selectionRecorded = false;
+      Future<void> recordSelection() async {
+        if (selectionRecorded) return;
+        final restoreSelection = settings['reasoningPinned'] != true && !compact && config['reasoning_updates'] == true &&
+          (input.any((item) => item.kind == 'configuration') || !input.any((item) => item.kind == 'compaction')) &&
+          !(input.lastOrNull?.kind == 'configuration' && input.last.settings['reasoning'] == selectedEffort);
+        if (selectedEffort != effort || restoreSelection) {
+          event(await _append('configuration.updated', {
+            'effort': selectedEffort,
+            'item': ConversationItem(kind: 'configuration', settings: {'reasoning': selectedEffort}).toJson(),
+          }, metadata: {'effective_reasoning': selectedEffort}));
+        }
+        selectionRecorded = true;
+      }
       Future<bool> takeSteering() async {
         cancellation.throwIfCancelled();
         if (_steering.isEmpty) return false;
@@ -453,6 +461,7 @@ class _Agent {
           event(await _append('input.committed', data));
           pendingInput = null;
         }
+        await recordSelection();
         final entries = await callIsolate(writer, 'session.inbox.commit', {
           'ids': [for (final message in messages) message['id']],
           'effort': effort, 'reasoningUpdates': config['reasoning_updates'] == true,
@@ -468,12 +477,19 @@ class _Agent {
       List<Json>? declaredCatalog;
       Future<void> refreshTools([List<Json>? loaded]) async {
         final deferred = loaded ?? await currentDeferredCatalog(work);
+        final definitions = interface.definitionsFor(deferred);
+        final modelContext = interface.modelContext(config['instructions'] as String, definitions, input);
         if (!identical(declaredCatalog, deferred)) {
-          final serialized = interface.definitionsFor(deferred).map((tool) => tool.toJson()).toList();
+          final serialized = definitions.map((tool) => tool.toJson()).toList();
           if (_tools == null || contextFingerprint(_tools!.map((tool) => tool.toJson()).toList()) != contextFingerprint(serialized)) {
             event(await _append('tools.updated', {'tools': serialized}, metadata: {'request_tools': serialized}));
           }
           declaredCatalog = deferred;
+        }
+        if (modelContext.isNotEmpty) {
+          for (final entry in await _appendBatch([for (final item in modelContext) {
+            'type': 'context.injected', 'data': {'item': item.toJson()},
+          }], const {})) { event(entry); }
         }
         final mcpChanged = !identical(mcpCatalog, mcpSnapshot) && contextFingerprint(mcpCatalog) != contextFingerprint(mcpSnapshot);
         final clientChanged = !identical(clientCatalog, clientSnapshot) && contextFingerprint(clientCatalog) != contextFingerprint(clientSnapshot);
@@ -511,8 +527,8 @@ class _Agent {
         work.throwIfCancelled();
         if (initialContext) {
           if (interface.developerContextFirst) {
-            await refreshSkills(current[1] as Json);
             await refreshTools(current[2] as List<Json>);
+            await refreshSkills(current[1] as Json);
           }
           final next = current[0] as Json;
           final instructions = instructionUpdate(interface, next, snapshot);
@@ -536,6 +552,7 @@ class _Agent {
           event(await _append('input.committed', data));
           pendingInput = null;
         }
+        await recordSelection();
       }
       String? assistantMessageID;
       final committedOutputIDs = <String>{};
@@ -665,14 +682,14 @@ class _Agent {
           instructionContext: interface.instructionContext,
           environmentContext: interface.environmentContext,
           developerContextFirst: interface.developerContextFirst,
+          prefix: interface.modelContext(config['instructions'] as String, request().tools, const []),
           skills: freshSkills.item,
         );
         final replacementIds = restored.map((item) => item.id).toSet();
         restored.addAll(input.where((item) => isUserGoalInstruction(item) &&
           !inputGoalIds.contains(item.id) && !replacementIds.contains(item.id)));
-        final size =
-            estimateTokens(restored) +
-            request().instructions.length ~/ 3;
+        final size = estimateTokens(restored) +
+          (restored.any((item) => item.native['harness']?['context'] == 'model') ? 0 : request().instructions.length ~/ 3);
         final entry = await _append(
           'context.compacted',
           {
@@ -749,7 +766,7 @@ class _Agent {
           final estimate = usageTokens > 0 && usageItems <= input.length
               ? usageTokens + estimateTokens(input.skip(usageItems))
               : estimateTokens(input) +
-                    request().instructions.length ~/ 3;
+                  (input.any((item) => item.native['harness']?['context'] == 'model') ? 0 : request().instructions.length ~/ 3);
           if (estimate >=
               (baseline['context_limit'] as int) -
                   (baseline['compaction_headroom'] as int)) {

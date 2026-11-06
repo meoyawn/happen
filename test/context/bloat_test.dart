@@ -96,16 +96,18 @@ void main() {
       final completed = requests[before + 1];
       final input = initial['input'] as List;
       if (previousInput == null) {
-        expect(input, hasLength(3));
-        expect(input[0], containsPair('role', 'developer'));
-        expect(openAIMessageText(input[0] as Map), GptModel('gpt-6.1-sol').instructions);
-        expect(openAIMessageText(input[1] as Map), startsWith('<environment_context>\n  <cwd>${work.path}</cwd>\n'));
-        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<shell>(zsh|bash|sh|pwsh|powershell|cmd)</shell>')));
-        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<current_date>\d{4}-\d{2}-\d{2}</current_date>')));
-        expect(openAIMessageText(input[1] as Map), contains(RegExp(r'<timezone>[^<]+</timezone>')));
-        expect(openAIMessageText(input[1] as Map), endsWith('</environment_context>'));
-        expect(input.last, containsPair('role', 'user'));
-        expect(openAIMessageText(input.last as Map), 'turn-0');
+        expect(input, hasLength(5));
+        expect(input[0], containsPair('type', 'additional_tools'));
+        expect(input[1], containsPair('role', 'developer'));
+        expect(openAIMessageText(input[1] as Map), GptModel('gpt-6.1-sol').instructions);
+        expect(openAIMessageText(input[2] as Map), startsWith('<environment_context>\n  <cwd>${work.path}</cwd>\n'));
+        expect(openAIMessageText(input[2] as Map), contains(RegExp(r'<shell>(zsh|bash|sh|pwsh|powershell|cmd)</shell>')));
+        expect(openAIMessageText(input[2] as Map), contains(RegExp(r'<current_date>\d{4}-\d{2}-\d{2}</current_date>')));
+        expect(openAIMessageText(input[2] as Map), contains(RegExp(r'<timezone>[^<]+</timezone>')));
+        expect(openAIMessageText(input[2] as Map), endsWith('</environment_context>'));
+        expect(input[3], containsPair('role', 'user'));
+        expect(openAIMessageText(input[3] as Map), 'turn-0');
+        expect(input.last, {'type': 'configuration_update', 'reasoning': {'effort': 'low'}});
       } else {
         expect(input.take(previousInput.length).toList(), previousInput);
         expect(input.length, previousInput.length + 2 + (i == 1 || i == 2 ? 1 : 0));
@@ -118,14 +120,14 @@ void main() {
       expect(outputs.map((item) => item['call_id']).toList(), calls.map((item) => item['call_id']).toList());
       expect(outputs, everyElement(containsPair('output', contains(containsPair('text', 'visible-tool-result')))));
       expect(jsonEncode(completed['input']), isNot(contains(privateReceipt)));
-      expect(initial['tools'], isNotEmpty);
+      expect(initial.containsKey('tools'), false);
       expect(initial.containsKey('instructions'), false);
       expect(input.take(2).toList(), (requests.first['input'] as List).take(2).toList());
-      expect(input.where((item) => item['type'] == 'additional_tools'), isEmpty);
+      expect(input.where((item) => item['type'] == 'additional_tools'), hasLength(1));
       expect(input.where((item) => openAIMessageText(item as Map) == GptModel('gpt-6.1-sol').instructions), hasLength(1));
       expect(initial['reasoning']['effort'], 'low');
       expect((completed['input'] as List).where((item) => item['type'] == 'configuration_update'),
-        hasLength(i == 0 ? 0 : 1));
+        hasLength(i == 0 ? 1 : 2));
       previousInput = completed['input'] as List;
     }
 
@@ -184,7 +186,8 @@ void main() {
     await turn(id, prompt: 'after restart');
     final resumed = requests[beforeResume]['input'] as List;
     expect(resumed.take(previousInput.length).toList(), previousInput);
-    expect(resumed.length, previousInput.length + 3);
+    expect(resumed.length, previousInput.length + 4);
+    expect(resumed.last, {'type': 'configuration_update', 'reasoning': {'effort': 'high'}});
     expect(jsonEncode(resumed.skip(previousInput.length).toList()), contains('The tool runtime was restarted.'));
 
     for (var i = 0; i < 2; i++) {
@@ -192,9 +195,11 @@ void main() {
       final context = await contextItems(client, id);
       expect(context.where((item) => item['native']?['harness']?['context'] == 'environment'), hasLength(1));
       expect(context.where((item) => ['agents_md', 'mcp', 'client_tools'].contains(item['native']?['harness']?['context'])), isEmpty);
-      expect(context.where((item) => item['role'] == 'developer'), hasLength(1));
-      expect(context.where((item) => item['kind'] == 'tools'), isEmpty);
-      expect(context.where((item) => item['native']?['harness']?['context'] == 'model'), isEmpty);
+      expect(context.where((item) => item['role'] == 'developer'), hasLength(2));
+      expect(context.where((item) => item['kind'] == 'tools'), hasLength(1));
+      expect(context.where((item) => item['native']?['harness']?['context'] == 'model'), hasLength(1));
+      expect(context.first['kind'], 'tools');
+      expect(context[1]['native']?['harness']?['context'], 'model');
       expect(jsonEncode(context), contains('Keep responses short.'));
       expect(context.where((item) => item['kind'] == 'compaction'), hasLength(1));
       expect(context.where((item) => item['kind'] == 'configuration'), hasLength(1));
@@ -202,8 +207,8 @@ void main() {
       expect(jsonEncode(context), isNot(contains(privateReceipt)));
       expect(jsonObject(threadMetadata(root.path, id, 'values'))['unprinted'], privateReceipt);
       await turn(id, prompt: 'after compact-$i');
-      expect((requests.last['input'] as List).first, (requests.first['input'] as List).first);
-      expect(requests.last['tools'], requests.first['tools']);
+      expect((requests.last['input'] as List).first['tools'], (requests.first['input'] as List).first['tools']);
+      expect(requests.last.containsKey('tools'), false);
       expect(jsonEncode(requests.last['input']), isNot(contains(privateReceipt)));
     }
   });

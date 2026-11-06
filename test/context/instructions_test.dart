@@ -123,8 +123,8 @@ void main() {
       expect(input.take(previousInput.length).toList(), previousInput);
       // This fixture adds only the previous assistant reply and the new user input.
       expect(input.length, previousInput.length + 2);
-      expect(requests.last['instructions'], requests.first['instructions']);
-      expect(requests.last['tools'], requests.first['tools']);
+      expect(requests.last.containsKey('instructions'), false);
+      expect(requests.last.containsKey('tools'), false);
       previousInput = input;
     }
     expect((await updates(id)).length, 2);

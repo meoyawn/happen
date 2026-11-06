@@ -22,7 +22,7 @@ void main() {
   group('committed turn diffs', () {
     test('accumulates add then update as a single add with Git blob ids', () async {
       await apply('*** Add File: a.txt\n+foo');
-      await apply('*** Update File: a.txt\n@@\n foo\n+bar');
+      await apply('*** Update File: ./a.txt\n@@\n foo\n+bar');
       expect(tracker.unifiedDiffText, '''
 diff --git a/a.txt b/a.txt
 new file mode 100644
@@ -95,7 +95,7 @@ index 0000000000000000000000000000000000000000..3bd1f0e29744a1f32b08d5650e62e2e6
     test('inexact mutations invalidate previous and future diffs', () async {
       await apply('*** Add File: a.txt\n+first');
       expect(tracker.unifiedDiffText, isNotNull);
-      tracker.trackDelta({'exact': false, 'changes': []});
+      tracker.trackDelta({'exact': false, 'changes': <Json>[]});
       await apply('*** Add File: b.txt\n+second');
       expect(tracker.unifiedDiffText, isNull);
     });
@@ -122,7 +122,8 @@ index 0000000000000000000000000000000000000000..3bd1f0e29744a1f32b08d5650e62e2e6
 
     test('preserves distant context, CRLF and missing final newlines in an applicable diff', () async {
       final before = '${List.generate(24, (i) => 'line $i\r\n').join()}last';
-      final after = before.replaceFirst('line 2\r\n', 'changed 2\r\n').replaceFirst('line 20\r\n', 'changed 20\r\n');
+      final after = before.replaceFirst('line 2\r\n', 'changed 2\r\n').replaceFirst('line 20\r\n', 'changed 20\r\n')
+        .replaceFirst('last', 'last changed');
       await File('${root.path}/a.txt').writeAsString(before);
       tracker.trackDelta({'exact': true, 'changes': [
         {'type': 'M', 'path': '${root.path}/a.txt', 'oldContent': before, 'newContent': after},

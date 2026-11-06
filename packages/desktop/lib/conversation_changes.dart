@@ -9,11 +9,6 @@ import 'file_change.dart';
 import 'file_icon.dart';
 import 'session.dart';
 
-List<ChangedFile> changesForSource(DesktopTask task, String source) {
-  if (source.startsWith('turn:')) return turnFileChanges(task.turns[source.substring(5)]?['diff'] as String? ?? '');
-  return nativeFileChanges(task.messages[source.substring('item:'.length)]?['changes']);
-}
-
 class ConversationDiffScope extends InheritedWidget {
   const ConversationDiffScope({super.key, required this.onOpen, required super.child});
   final void Function(String source, String? path) onOpen;

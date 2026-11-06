@@ -76,23 +76,22 @@ class TaskToolBridge {
         owner = _owner(task, provider, requiredString(params, 'cwd'));
         owner.pending.add(settled.future);
         final runtime = owner;
-        final turnId = params['turn_id'] as String?;
-        if (runtime.turnId != turnId) {
-          runtime.turnId = turnId;
-          runtime.diff = TurnDiffTracker(displayRoots: {'': requiredString(params, 'cwd')});
+        final turnId = requiredString(params, 'turn_id');
+        if (runtime.turnDiff?.id != turnId) {
+          runtime.turnDiff = (id: turnId, tracker: TurnDiffTracker(displayRoots: {'': requiredString(params, 'cwd')}));
         }
-        final tracker = runtime.diff;
+        final tracker = runtime.turnDiff!.tracker;
         var patchChanged = false;
         var foreground = true;
         try {
           result = await runtime.runtime.call(requiredString(params, 'name'), params['arguments'],
             cancellation: cancellation.merge(runtime.lifetime), cwd: requiredString(params, 'cwd'),
             callId: params['call_id'] as String?, onPatch: (delta) async {
-              tracker?.trackDelta(delta);
+              tracker.trackDelta(delta);
               patchChanged = true;
             }, onItem: (phase, item) async {
               final data = <String, dynamic>{'turnId': params['turn_id'], 'item': projectedCodexItem(item),
-                if (phase == 'completed' && patchChanged) 'turnDiff': tracker?.unifiedDiffText ?? '',
+                if (phase == 'completed' && patchChanged) 'turnDiff': tracker.unifiedDiffText ?? '',
                 'canonicalItem': item, if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch};
               if (phase == 'completed' && foreground) {
                 // Admit to the writer's memory queue. Its next ordinary record
@@ -126,8 +125,7 @@ class TaskToolBridge {
     final owner = _tasks[task];
     if (owner != null) {
       await Future.wait(owner.pending.toList());
-      owner.diff = null;
-      owner.turnId = null;
+      owner.turnDiff = null;
     }
   }
 
@@ -157,7 +155,6 @@ class _Tools {
   final lifetime = CancellationToken();
   late final ToolRuntime runtime;
   SendPort? writer;
-  String? turnId;
-  TurnDiffTracker? diff;
+  ({String id, TurnDiffTracker tracker})? turnDiff;
   final pending = <Future<void>>{};
 }

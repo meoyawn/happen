@@ -13,6 +13,7 @@ import 'rename_state.dart';
 import 'session.dart';
 import 'sidebar_hover.dart';
 import 'sidebar_icons.dart';
+import 'thread_reorder_state.dart';
 import 'window_chrome.dart';
 
 List<(Project, DesktopTask)> _sidebarTasks(DesktopSession session, String? projectKey) {
@@ -81,8 +82,75 @@ class ThreadSidebar extends StatefulWidget {
 class _ThreadSidebarState extends State<ThreadSidebar> {
   DesktopSession get session => widget.session;
   Timer? _clock;
-  bool _reordering = false;
+  late ThreadReorderState _reorder = const ThreadReorderIdle();
+  CancellationToken? _reorderCancellation;
   late final _pinnedList = GlobalKey<SliverReorderableListState>();
+  late final _reorderFocus = FocusNode(debugLabel: 'Pinned thread reorder');
+  bool get _reordering => _reorder is ThreadReorderDragging || _reorder is ThreadReorderDropping;
+  bool get _canStartReorder => switch (_reorder) {
+    ThreadReorderIdle() || ThreadReorderSaved() || ThreadReorderFailed() || ThreadReorderCancelled() => !session.savingTaskPins,
+    _ => false,
+  };
+
+  void _transitionReorder(ThreadReorderState next) =>
+    _reorder = transitionThreadReorder(_reorder, next);
+
+  void _startReorder(int index, List<String> order) {
+    if (!_canStartReorder) {
+      _pinnedList.currentState?.cancelReorder();
+      return;
+    }
+    _reorderCancellation = CancellationToken();
+    setState(() => _transitionReorder(ThreadReorderDragging(index, order)));
+    _reorderFocus.requestFocus();
+  }
+
+  void _endReorder(int insertionIndex) {
+    if (_reorder case final ThreadReorderDragging drag) {
+      final target = insertionIndex > drag.sourceIndex ? insertionIndex - 1 : insertionIndex;
+      if (target == drag.sourceIndex) {
+        setState(() => _transitionReorder(const ThreadReorderIdle()));
+        _reorderCancellation?.cancel();
+        _reorderCancellation = null;
+      } else {
+        setState(() => _transitionReorder(ThreadReorderDropping(drag, target)));
+      }
+    }
+  }
+
+  void _dropReorder(int oldIndex, int newIndex) {
+    final drop = _reorder;
+    if (drop is ThreadReorderCancelled) return;
+    if (drop is! ThreadReorderDropping || drop.drag.sourceIndex != oldIndex || drop.targetIndex != newIndex) {
+      throw StateError('Unexpected thread reorder drop');
+    }
+    final pending = ThreadReorderSaving(drop);
+    final cancellation = _reorderCancellation!;
+    setState(() => _transitionReorder(pending));
+    unawaited(_persistReorder(pending, cancellation));
+  }
+
+  Future<void> _persistReorder(ThreadReorderSaving pending, CancellationToken cancellation) async {
+    try {
+      await session.reorderPinnedTasks(pending.drop.order, cancellation: cancellation);
+      if (!mounted || cancellation.isCancelled || !identical(_reorder, pending)) return;
+      setState(() => _transitionReorder(ThreadReorderSaved(pending)));
+    } catch (error) {
+      if (!mounted || cancellation.isCancelled || !identical(_reorder, pending)) return;
+      setState(() => _transitionReorder(ThreadReorderFailed(pending, error)));
+      session.showError(error);
+    } finally {
+      if (identical(_reorderCancellation, cancellation)) _reorderCancellation = null;
+    }
+  }
+
+  void _cancelReorder(ThreadReorderCancelReason reason) {
+    if (_reorder is! ThreadReorderDragging && _reorder is! ThreadReorderDropping && _reorder is! ThreadReorderSaving) return;
+    _transitionReorder(ThreadReorderCancelled(reason));
+    _reorderCancellation?.cancel();
+    _reorderCancellation = null;
+    _pinnedList.currentState?.cancelReorder();
+  }
 
   @override
   void initState() {
@@ -91,7 +159,31 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   }
 
   @override
-  void dispose() { _clock?.cancel(); super.dispose(); }
+  void didUpdateWidget(covariant ThreadSidebar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session != session || oldWidget.projectKey != widget.projectKey) {
+      _cancelReorder(ThreadReorderCancelReason.changed);
+      return;
+    }
+    final order = switch (_reorder) {
+      ThreadReorderDragging(:final order) => order,
+      ThreadReorderDropping(:final drag) => drag.order,
+      _ => null,
+    };
+    if (order != null) {
+      final pins = _sidebarTasks(session, widget.projectKey)
+        .where((entry) => session.pinnedTaskIds.contains(entry.$2.id)).map((entry) => entry.$2.id).toList();
+      if (!listEquals(order, pins)) _cancelReorder(ThreadReorderCancelReason.changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    _cancelReorder(ThreadReorderCancelReason.disposed);
+    _reorderFocus.dispose();
+    _clock?.cancel();
+    super.dispose();
+  }
 
   Widget _button(String tooltip, Widget icon, VoidCallback? onPressed) => IconButton(
     tooltip: tooltip, onPressed: onPressed,
@@ -136,7 +228,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       final selected = !widget.home && session.task == task;
       final pinned = session.pinnedTaskIds.contains(task.id);
       final unread = task.lastActivity > (session.viewedTasks[task.id] ?? -1);
-      final reorderable = reorderIndex != null && renameInput == null && !task.archiving && !session.savingTaskPins;
+      final reorderable = reorderIndex != null && renameInput == null && !task.archiving && _canStartReorder;
       final card = Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Material(
         color: selected ? Colors.white : Colors.transparent,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6),
@@ -151,14 +243,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               SizedBox(height: 20, child: Row(children: [
                 ProjectAvatar(project: project, size: 16, generated: session.projectAvatarStyle == 'generated'),
                 const SizedBox(width: 6),
-                if (pinned) ...[
-                  _pinButton(session, task, compact: true),
-                  const SizedBox(width: 6),
-                ],
+                Visibility(visible: pinned || hovering, maintainSize: true, maintainAnimation: true, maintainState: true,
+                  child: _pinButton(session, task, compact: true)),
+                const SizedBox(width: 6),
                 Expanded(child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: conversationSecondary))),
                 if (hovering) ...[
-                  if (!pinned) _pinButton(session, task),
                   SizedBox.square(dimension: 22, child: IconButton(tooltip: 'Archive session',
                     padding: EdgeInsets.zero, onPressed: session.connected && !task.archiving
                       ? () => widget.onArchive(task, true) : null,
@@ -175,7 +265,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               const SizedBox(height: 2),
               SizedBox(height: 16, child: Row(children: [
                 if (project.branch case final branch?) Expanded(child: Text(branch, maxLines: 1,
-                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: conversationSecondary))))
+                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: conversationSecondary)))
                 else const Spacer(),
                 if (task.provider != null) Tooltip(message: '${task.provider}${task.model == null ? '' : ' · ${task.model}'}',
                   child: providerIcon(task.provider, size: 14, color: const Color(0xffa1a1aa))),
@@ -260,25 +350,22 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           _button('Open project', sidebarIcon(SidebarIcon.folderPlus), widget.onAddProject),
           _button('New thread (${mac ? '⌘N' : 'Ctrl+N'})', sidebarIcon(SidebarIcon.squarePen), widget.onNew),
         ]))),
-        Expanded(child: Focus(onKeyEvent: (_, event) {
+        Expanded(child: Focus(focusNode: _reorderFocus, onKeyEvent: (_, event) {
           if (_reordering && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) {
-            _pinnedList.currentState?.cancelReorder();
-            setState(() => _reordering = false);
+            setState(() => _cancelReorder(ThreadReorderCancelReason.escape));
             return KeyEventResult.handled;
           }
           return KeyEventResult.ignored;
+        }, child: Listener(onPointerCancel: (_) {
+          if (_reordering) setState(() => _cancelReorder(ThreadReorderCancelReason.pointerCancelled));
         }, child: DragBoundary(child: CustomScrollView(key: const PageStorageKey('thread-sidebar'), slivers: [
           SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 8), sliver: SliverMainAxisGroup(slivers: [
             if (pinned.isNotEmpty) ...[
               SliverToBoxAdapter(child: _dragBoundary('Pinned')),
               SliverReorderableList(key: _pinnedList, itemCount: pinned.length,
-                onReorderStart: (_) => setState(() => _reordering = true),
-                onReorderEnd: (_) => setState(() => _reordering = false),
-                onReorderItem: (oldIndex, newIndex) {
-                  final order = pinned.map((entry) => entry.$2.id).toList();
-                  order.insert(newIndex, order.removeAt(oldIndex));
-                  unawaited(_run(session, () => session.reorderPinnedTasks(order)));
-                },
+                onReorderStart: (index) => _startReorder(index, pinned.map((entry) => entry.$2.id).toList()),
+                onReorderEnd: _endReorder,
+                onReorderItem: _dropReorder,
                 proxyDecorator: _dragProxy,
                 itemBuilder: (context, index) {
                   final (project, task) = pinned[index];
@@ -299,7 +386,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               const SizedBox(height: 12),
             ]),
           ])),
-        ])))),
+        ]))))),
         Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 12), child: Row(children: [
           _button('App settings', const Icon(Icons.settings_outlined), widget.onSettings),
           const SizedBox(width: 4),
@@ -356,13 +443,17 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
           return _ThreadRow(key: ValueKey('home-row:${task.id}'),
             session: widget.session, task: task, onArchive: widget.onArchive,
             builder: (renameInput) => SidebarHover(builder: (context, hovering) => ListTile(
-              key: ValueKey('home:${task.id}'), leading: ProjectAvatar(project: project),
+              key: ValueKey('home:${task.id}'), leading: Row(mainAxisSize: MainAxisSize.min, children: [
+                ProjectAvatar(project: project),
+                const SizedBox(width: 6),
+                Visibility(visible: hovering || pins.containsKey(task.id),
+                  maintainSize: true, maintainAnimation: true, maintainState: true,
+                  child: _pinButton(widget.session, task)),
+              ]),
               title: renameInput ?? Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
               subtitle: Text(project.name, style: const TextStyle(fontSize: 11, color: opencodeFaint)),
-              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                _ThreadStatus(session: widget.session, task: task),
-                if (hovering || pins.containsKey(task.id)) _pinButton(widget.session, task),
-              ]), onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
+              trailing: _ThreadStatus(session: widget.session, task: task),
+              onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
         })),
       ]))));
   }

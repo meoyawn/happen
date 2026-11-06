@@ -10,7 +10,6 @@ const fermentedBeetrootCase = <String, dynamic>{
     "польза квашеной свеклы? посмотри в интернете",
     "Сохрани предыдущий ответ с источниками и ответь READY."
   ],
-  "unload_between_turns": true,
   "request_user_input": true,
   "retain_model_items": true,
   "indexless_stream": true,

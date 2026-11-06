@@ -197,7 +197,7 @@ List<Json> _gptItems(ConversationItem item) {
         },
       ];
     case 'tools':
-      throw const ModelFailure('obsolete_context', 'Standard Responses declarations belong to request tools, not model input.');
+      return native['snapshot_only'] == true ? [] : [{'id': 'at_${item.id}', ...native}];
     case 'compaction':
       if (native['type'] != 'compaction' ||
           native['encrypted_content'] is! String) {
@@ -277,7 +277,8 @@ List<Json> _gptItems(ConversationItem item) {
         final images = inlineImages ? const <dynamic>[] : part['images'] as List? ?? [];
         final content = meta.remove('content_items') == true
           ? (jsonDecode(part['output'] as String) as List).map(jsonObject).toList() : null;
-        final singleText = content?.length == 1 && content!.single['type'] == 'input_text' &&
+        final singleText = !(part['namespace'] == 'web' && part['name'] == 'run') &&
+          content?.length == 1 && content!.single['type'] == 'input_text' &&
           images.isEmpty ? content.single['text'] as String : null;
         output.add({
           'id': '${part['format'] == 'text' ? 'ctco' : 'fco'}_${item.id}',
@@ -333,19 +334,16 @@ List<Json> gptTools(Iterable<ToolDefinition> tools) {
         'parameters': tool.parameters,
       if (tool.format != 'text') 'strict': false,
     };
-    if (tool.namespace == null || tool.namespace == 'functions') {
-      result.add(spec);
-    } else {
-      final namespace = namespaces.putIfAbsent(tool.namespace!, () {
-        final namespace = <String, dynamic>{'type': 'namespace', 'name': tool.namespace,
-          'description': '', 'tools': <Json>[]};
-        result.add(namespace);
-        return namespace;
-      });
-      (namespace['tools'] as List).add(spec);
-      if (namespace['description'] == '' && tool.namespaceDescription?.trim().isNotEmpty == true) {
-        namespace['description'] = tool.namespaceDescription!.trim();
-      }
+    final name = tool.namespace ?? 'functions';
+    final namespace = namespaces.putIfAbsent(name, () {
+      final namespace = <String, dynamic>{'type': 'namespace', 'name': name,
+        'description': name == 'functions' ? '' : 'Tools in the $name namespace.', 'tools': <Json>[]};
+      result.add(namespace);
+      return namespace;
+    });
+    (namespace['tools'] as List).add(spec);
+    if (tool.namespaceDescription?.trim().isNotEmpty == true) {
+      namespace['description'] = tool.namespaceDescription!.trim();
     }
   }
   return [...result, ...hosted];

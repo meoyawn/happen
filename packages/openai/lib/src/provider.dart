@@ -63,7 +63,6 @@ class OpenAIProvider implements ModelProvider {
       'reasoning_summary',
       'web_search',
       'image_generation',
-      'standalone_web_search',
       'sleep_tool',
       'goals',
       'code_mode_only',
@@ -84,9 +83,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'http', 'websocket'}.contains(transport)) {
       throw ArgumentError('Unsupported GPT transport');
     }
-    // OpenCode requests visible summaries alongside encrypted replay state.
-    final summary = selected['reasoning_summary'] ??
-        (info.data['supports_reasoning_summaries'] == true ? 'auto' : 'none');
+    final summary = selected['reasoning_summary'] ?? info.data['default_reasoning_summary'] ?? 'none';
     if (!{'none', 'concise', 'detailed', 'auto'}.contains(summary)) {
       throw ArgumentError('Unsupported GPT reasoning summary');
     }
@@ -94,7 +91,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['standalone_web_search', 'sleep_tool', 'goals', 'code_mode_only', 'request_user_input']) {
+    for (final key in ['sleep_tool', 'goals', 'code_mode_only', 'request_user_input']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -118,10 +115,9 @@ class OpenAIProvider implements ModelProvider {
       'reasoning_summary': summary,
       'web_search': webSearch,
       'image_generation': imageGeneration && (info.data['input_modalities'] as List? ?? []).contains('image'),
-      'standalone_web_search': selected['standalone_web_search'] ?? false,
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
-      'code_mode_only': selected['code_mode_only'] ?? true,
+      'code_mode_only': selected['code_mode_only'] ?? info.data['tool_mode'] == 'code_mode_only',
       // Interactive connections enable questions for their subscribed sessions.
       // Headless agents must opt in explicitly.
       'request_user_input': selected['request_user_input'] ?? false,
@@ -129,9 +125,6 @@ class OpenAIProvider implements ModelProvider {
   }
 
   void _validate(ModelRequest request) {
-    if (request.input.any((item) => item.kind == 'tools' || item.native['harness']?['context'] == 'model')) {
-      throw const ModelFailure('obsolete_context', 'This task contains an obsolete incremental-tools prefix. Start a new Standard Responses task.');
-    }
     if (!models.contains(request.model)) {
       throw ArgumentError('Unsupported GPT model');
     }
@@ -150,10 +143,9 @@ class OpenAIProvider implements ModelProvider {
       final item = request.input[i];
       if (item.kind == 'configuration') {
         if (!efforts.contains(item.settings['reasoning']) ||
-            i + 1 == request.input.length ||
-            request.input[i + 1].kind == 'configuration') {
+            i + 1 < request.input.length && request.input[i + 1].kind == 'configuration') {
           throw ArgumentError(
-            'GPT effort updates require a following input item and supported effort',
+            'GPT effort updates require supported effort and distinct input boundaries',
           );
         }
       }

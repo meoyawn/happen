@@ -78,6 +78,9 @@ The sidebar keeps pinned thread cards above **Working**. Drag a pinned card to
 reorder it; **Escape** cancels the drag. The order is saved across launches and
 also used by Home and top/side tabs. Filtering by project reorders that project's
 pins in their existing positions. **Working** remembers its expansion across launches.
+Reordering uses a Dart state machine for pickup, drop animation, pending save,
+commit, failure, and cancellation. Failed saves restore the previous order;
+cancelled drags never change it.
 Closing a tab keeps its session pinned. Archived sessions leave the pinned list
 until restored.
 
@@ -120,6 +123,19 @@ Thinking shows their current heading, and Thought expands the saved summary.
 Skill reads remain named inside JavaScript cells and in collapsed activity.
 Activity groups start collapsed. JavaScript call rows remember their own open
 state as new calls arrive and when the cell is reopened.
+
+File-change activity expands to a compact folder tree with added and removed
+line counts. Finished responses show the net changes for that turn below the
+answer. Click a file or **Open diff** to review it in the side panel, switch
+between unified and split views, copy the diff, or open the current file.
+Saved conversations retain their turn diffs.
+
+The header's Git control offers **Commit**, **Push**, and **Commit & push**.
+The commit dialog shows the branch and lets you select files and enter an
+optional message. Leave the message empty to generate it with the selected
+model. Generation runs on the server without adding a conversation turn.
+Actions show progress, can be cancelled, and retain a successful local commit
+if its push fails. Excluded staged files remain outside the commit.
 
 Composer and user images use OpenCode's cropped 58×46 thumbnails. User images
 sit above the message bubble; composer attachments scroll horizontally and show

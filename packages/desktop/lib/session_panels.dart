@@ -20,6 +20,7 @@ import 'panel_state.dart';
 import 'session.dart';
 import 'sidebar_resizer.dart';
 import 'window_chrome.dart';
+import 'workspace_changes.dart';
 
 /// The side region is a sibling of the entire chat, including its composer.
 /// Hiding a region retains its tabs; closing a tab releases its content and reads.
@@ -143,6 +144,12 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                     Offstage(offstage: state.active != contextPanel,
                       child: SessionContextWindow(key: ValueKey('context:${task!.id}'),
                         session: widget.session, task: task, onAttached: widget.onReturnFocus)),
+                  if (state.tabs.contains(workspaceChangesPanel))
+                    if (widget.session.projects.where((project) => project.tasks.contains(task)).firstOrNull case final owner?)
+                      Offstage(offstage: state.active != workspaceChangesPanel,
+                        child: ExcludeFocus(excluding: !opened || state.active != workspaceChangesPanel,
+                          child: WorkspaceChanges(key: ValueKey('checkout:${task!.id}'),
+                            controller: widget.session.gitForProject(owner)))),
                   for (final tab in state.tabs.where(isFilePanel))
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: state.active != tab,
@@ -202,7 +209,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             icon: isFilePanel(tab) ? FileIcon(filePanelPath(tab), size: 14)
               : Icon(tab == contextPanel ? Icons.donut_large_rounded
                   : isBrowserPanel(tab) ? Icons.language_rounded
-                  : isDiffPanel(tab) ? Icons.difference_outlined
+                  : isDiffPanel(tab) || tab == workspaceChangesPanel ? Icons.difference_outlined
                   : isSideChatPanel(tab) ? Icons.chat_bubble_outline_rounded : Icons.add_rounded,
                   size: 14, color: state.active == tab ? opencodeInk : opencodeFaint),
             active: state.active == tab,
@@ -213,7 +220,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
       })),
       _panelButton('Add tab', Icons.add_rounded, () => widget.session.newSessionPanelTab(widget.task!)),
       const SizedBox(width: 4),
-      SizedBox.square(dimension: 28, child: IconButton(key: const ValueKey('toggle-side-panel'),
+      SizedBox.square(dimension: 28, child: IconButton(key: const ValueKey('hide-side-panel'),
         tooltip: 'Hide side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})', onPressed: _hide,
         padding: EdgeInsets.zero, icon: const SidePanelIcon(opened: true))),
     ]),
@@ -458,6 +465,7 @@ Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => Size
     icon: Icon(icon, size: 16, color: opencodeMuted)));
 
 String _panelTitle(String tab, [SessionPanelState? state]) => tab == contextPanel ? 'Context'
+  : tab == workspaceChangesPanel ? 'Changes'
   : isDiffPanel(tab) ? 'File changes'
   : isFilePanel(tab) ? filePanelPath(tab).split('/').where((part) => part.isNotEmpty).lastOrNull ?? '/'
   : isBrowserPanel(tab) ? _browserTitle(state?.browserPages[tab])

@@ -103,9 +103,13 @@ void main() {
       expect(result['status'], 'completed', reason: result.toString());
       return result;
     }
+    List<Json> declarations(Json request) => [
+      for (final item in request['input'] as List)
+        if (item['type'] == 'additional_tools') ...(item['tools'] as List).map(jsonObject),
+    ];
     List<Json> definitions(Json request) => [
-      for (final namespace in request['tools'] as List)
-        if (namespace['type'] != 'web_search' && !{'exec', 'wait', 'clock', 'web'}.contains(namespace['name']))
+      for (final namespace in declarations(request))
+        if (!{'functions', 'clock', 'web'}.contains(namespace['name']))
           ...((namespace['tools'] as List?) ?? [namespace]).map(jsonObject),
     ];
 
@@ -119,9 +123,9 @@ void main() {
     await turn(id, prompt: 'seed');
     final prefix = requests.single['input'] as List;
     expect(requests.single.containsKey('instructions'), false);
-    final initialTools = requests.single['tools'] as List;
+    final initialTools = declarations(requests.single);
     expect(initialTools.where((tool) => tool['type'] == 'tool_search'), isEmpty);
-    final exec = initialTools.singleWhere((tool) => tool['name'] == 'exec');
+    final exec = initialTools.singleWhere((tool) => tool['name'] == 'functions')['tools'][0];
     final description = exec['description'] as String;
     for (final name in ['exec_command', 'write_stdin']) {
       expect(description, contains('declare const tools: { $name('));
@@ -132,7 +136,7 @@ void main() {
     expect(jsonEncode(prefix), isNot(contains('unused_schema_')));
     expect(jsonEncode(prefix), isNot(contains('client_schema_')));
     expect(jsonEncode(prefix), isNot(contains('Original guidance tail.')));
-    expect(utf8.encode(jsonEncode(prefix.skip(1).toList())).length, lessThan(5000));
+    expect(utf8.encode(jsonEncode(prefix.skip(2).toList())).length, lessThan(5000));
 
     await turn(id, prompt: 'code');
     expect(definitions(requests.last), isEmpty, reason: 'Code-mode discovery must not load native schemas');
@@ -165,7 +169,8 @@ void main() {
       expect(jsonDecode(jsonDecode(output.last)['content'][0]['text'] as String)['pid'], isPositive);
     }
     expect(requests.every((request) => !request.containsKey('instructions')), isTrue);
-    expect(requests.every((request) => jsonEncode(request['tools']) == jsonEncode(initialTools)), isTrue);
+    expect(requests.every((request) => !request.containsKey('tools') &&
+      jsonEncode(declarations(request)) == jsonEncode(initialTools)), isTrue);
 
   });
 }

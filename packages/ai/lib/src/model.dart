@@ -388,7 +388,11 @@ int estimateTokens(Iterable<ConversationItem> items) {
   var images = 0;
   final visible = <Json>[];
   for (final item in items) {
-    visible.add({...item.toJson(), 'content': [
+    // A tools item's catalog is retained comparison state; its native payload
+    // carries the actual declarations, including incremental subsets.
+    final record = item.toJson();
+    if (item.kind == 'tools' && item.native.isNotEmpty) record.remove('tools');
+    visible.add({...record, 'content': [
       for (final part in item.content)
         if (part['type'] != 'image') {
           ...part,

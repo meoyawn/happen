@@ -19,6 +19,7 @@ import 'src/task_tools.dart';
 import 'src/file_search.dart';
 import 'src/attachments.dart';
 import 'src/questions.dart';
+import 'src/git.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
@@ -28,6 +29,7 @@ part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
 part 'src/mcp_input.dart';
 part 'src/goals.dart';
+part 'src/git_requests.dart';
 
 class AgentServer {
   AgentServer._(
@@ -57,6 +59,7 @@ class AgentServer {
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
   late final _namingThreads = <String>{};
+  late final _gitActions = <String, String>{};
   final _sideForks = <String, Future<_Task>>{};
   final _goals = <String, GoalRuntime>{};
   final _goalRequests = ReceivePort();
@@ -334,6 +337,10 @@ class AgentServer {
             }
             return;
           }
+          if (request['method'] == 'git/cancel') {
+            client.gitOperations[request['params']?['requestId']]?.cancel();
+            return;
+          }
           if (request['method'] == 'skills.cancel') {
             if (request['params']?['request_id'] == client.skillSearchId) client.skillSearch?.cancel();
             return;
@@ -455,8 +462,9 @@ class AgentServer {
   }
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
-    final preparation = method == 'session.side.create'
-      ? client.sessionReads.putIfAbsent(requestId, CancellationToken.new) : null;
+    final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
+    final preparation = method == 'session.side.create' || method.startsWith('git/')
+      ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
     try {
       // Export reads must not recursively record their own trace pages.
       if (method.startsWith('session.trace.') || trace == null ||
@@ -483,7 +491,7 @@ class AgentServer {
             if (forking && params['lastTurnId'] != null) 'fork.last_turn_id': params['lastTurnId']});
       });
     } finally {
-      if (preparation != null) { client.sessionReads.remove(requestId); preparation.cancel(); }
+      if (preparation != null) { operations.remove(requestId); preparation.cancel(); }
     }
   }
 
@@ -504,6 +512,7 @@ class AgentServer {
       return {'userAgent': 'happen/0.1.0', 'serverInfo': {'name': 'happen', 'version': '0.1.0'}, 'platformFamily': Platform.operatingSystem};
     }
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
+    if (method.startsWith('git/')) return _gitRequest(method, params, client, requestId);
     if (method.startsWith('thread/') || method.startsWith('turn/')) return _threadRequest(method, params, client, requestId);
     if (method == 'session.read.cancel') {
       await _cancelSessionRead(client, params['request_id']);
@@ -1415,10 +1424,12 @@ class AgentServer {
       final turn = callIsolate(
         task.agent!.port,
         'turn',
-        {'prompt': prompt, 'compact': compact, 'retry': retry, 'settings': settings},
+        {'prompt': prompt, 'compact': compact, 'retry': retry,
+          'settings': {...settings, 'reasoningPinned': task.reasoningPinned}},
         timeout: null,
         cancellation: turnLifetime,
         onEvent: (event) {
+          if (event['type'] == 'configuration.updated') task.reasoningPinned = true;
           if (event['type'] == 'input.committed') {
             final id = event['data']?['message_id'];
             if (task.startingInputID == 'msg_$id') task.startingInputID = null;
@@ -1707,6 +1718,8 @@ class _Task {
   String? streamPartType;
   bool busy = false, maintenance = false, cancelled = false, finishing = false;
   bool loaded = false, systemError = false;
+  // Turn actors are disposable; effort is pinned for this loaded thread.
+  bool reasoningPinned = false;
   int unloadDelaySecs = 60;
   Timer? unloadTimer;
   IsolateOwner? writer, agent;
@@ -1742,6 +1755,7 @@ class _Client {
   final mcpInventories = <Object, CancellationToken>{};
   final mcpLogins = <Object, CancellationToken>{};
   final sessionReads = <Object, CancellationToken>{};
+  late final gitOperations = <Object, CancellationToken>{};
   final sideCreations = <Object, String>{};
   final contextSnapshots = <String, Json>{};
   final requestTraces = <Object, TraceContext>{};
@@ -1943,6 +1957,11 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  Future<Json> gitRequest(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!{'git/status', 'git/run', 'git/branches', 'git/diff'}.contains(method)) throw ArgumentError('Unknown Git operation');
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
   Future<Json> forkThread(String threadID, {required String lastTurnId, required CancellationToken cancellation}) async =>
     jsonObject(await _request('thread/fork', {
       'threadId': threadID, 'lastTurnId': lastTurnId, 'excludeTurns': true, 'threadSource': 'user',
@@ -2079,6 +2098,7 @@ class AgentClient {
       final token = cancellation == null ? deadline : cancellation.merge(deadline);
       final hook = CancellationHook(token, () {
         state.sessionReads[id]?.cancel();
+        state.gitOperations[id]?.cancel();
         if (method == 'session.side.create') {
           if (server._tasks[state.sideCreations[id]] case final side?) unawaited(server._closeSide(side));
         }
@@ -2115,6 +2135,9 @@ class AgentClient {
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
+      if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
+        socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
+      }
       if ({'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
         'session.side.create'}.contains(method) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));

@@ -24,7 +24,7 @@ Future<String> applyPatch(String cwd, String patch, {required CancellationToken 
       <({String path, String? destination, String? content, String kind})>[];
   final nativeChanges = <String, dynamic>{};
   var i = 1;
-  String resolve(String path) => File(path).isAbsolute ? path : '$cwd/$path';
+  String resolve(String path) => File.fromUri(Directory(cwd).absolute.uri.resolveUri(Uri.file(path)).normalizePath()).path;
   while (i < lines.length - 1) {
     cancellation.throwIfCancelled();
     final header = lines[i++];

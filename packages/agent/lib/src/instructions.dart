@@ -100,6 +100,7 @@ List<ConversationItem> restoreContext(
   required ConversationItem Function(Json, Json?) instructionContext,
   required ConversationItem Function(String, {bool replacement}) environmentContext,
   bool developerContextFirst = false,
+  List<ConversationItem> prefix = const [],
   ConversationItem? skills,
 }) {
   final result = compacted
@@ -152,7 +153,7 @@ List<ConversationItem> restoreContext(
       ),
     );
   }
-  return result;
+  return [...prefix, ...result];
 }
 
 // Codex's WorldStateHash sorts JSON objects before comparing tool definitions.

@@ -50,6 +50,14 @@ class DesktopTerminals extends ChangeNotifier {
     notifyListeners();
   }
 
+  void runScript((String, String?) scope, String directory, String name, String command) {
+    if (_closed) return;
+    final group = groups.putIfAbsent(scope, () => TerminalGroup(directory));
+    final shell = TerminalShell(directory, command: command)..title = name;
+    group.sessions.add(shell); group.active = shell; group.visible = true; group.focusRequest++;
+    notifyListeners();
+  }
+
   void hide((String, String?) scope) {
     final group = groups[scope];
     if (group == null || !group.visible) return;
@@ -127,7 +135,7 @@ class TerminalGroup {
 }
 
 class TerminalShell extends ChangeNotifier {
-  TerminalShell(this.directory) {
+  TerminalShell(this.directory, {this.command}) {
     terminal.onOutput = (text) => unawaited(_write(text, _lifetime));
     terminal.onResize = (columns, rows, _, _) {
       if (columns <= 0 || rows <= 0) return;
@@ -140,6 +148,7 @@ class TerminalShell extends ChangeNotifier {
   }
 
   final String directory;
+  final String? command;
   final terminal = Terminal(maxLines: 1000,
     platform: Platform.isMacOS ? TerminalTargetPlatform.macos
       : Platform.isWindows ? TerminalTargetPlatform.windows : TerminalTargetPlatform.linux);
@@ -164,7 +173,8 @@ class TerminalShell extends ChangeNotifier {
       // Do not abandon an in-flight spawn on cancellation: take ownership of
       // its eventual handle and close it before completing this operation.
       final pty = _pty = await Pty.spawn(PtySpawnOptions(executable: shell,
-        arguments: Platform.isWindows ? const ['-NoLogo'] : const ['-il'],
+        arguments: command == null ? (Platform.isWindows ? const ['-NoLogo'] : const ['-il'])
+          : Platform.isWindows ? ['-NoLogo', '-Command', command!] : ['-lc', command!],
         workingDirectory: directory,
         size: _size,
         environment: PtyEnvironment.inherit(overrides: const {'TERM': 'xterm-256color'}, remove: {

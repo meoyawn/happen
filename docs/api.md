@@ -473,13 +473,14 @@ the memory needed by later cells.
 
 ## Web search
 
-OpenAI defaults to Codex's provider-hosted `web_search` tool. The provider handles
-the search inside Responses; native search calls and answer citations are retained
-in durable history and subsequent model input. Set `providers.openai.settings.web_search`
-to `disabled` to omit it; the default is `live`.
+OpenAI defaults to Codex's standalone web search. With the catalog's Code Mode
+only default, call `tools.web__run` inside `functions.exec`; mixed mode also
+exposes `web.run` directly. Search requests go to OpenAI's `/alpha/search`
+endpoint, and their results reach durable history and subsequent model input.
+Set `providers.openai.settings.web_search` to `disabled` to omit it; the default
+is `live`. No separate standalone-search setting is needed.
 
-The optional `providers.openai.settings.standalone_web_search: true` mode exposes
-`web.run` and `tools.web__run` instead, using the OpenAI parameter schema:
+The tool uses OpenAI's parameter schema:
 `search_query`, `image_query`, `open`, `click`, `find`, `screenshot`, `finance`,
 `weather`, `sports`, `time`, and optional `response_length` (`short`, `medium`,
 or `long`). The schema, including field descriptions and required fields, lives
@@ -700,12 +701,13 @@ error and requires a fresh read. Context pagination runs forward, unlike
 transcript pagination. This is normalized model history, not a provider-specific
 HTTP wire-body dump.
 
-OpenAI sessions use Standard Responses: declarations live in request-level
-`tools`; the provider prepends the developer base prompt to native `input`.
-`parallel_tool_calls` is true. `reasoning.context` is omitted, using the standard
-backend's current-turn default. Base instructions and tool declarations are not
-duplicated in durable model history, including after compaction. Incremental-tool
-prefixes are obsolete and rejected for inference, without migration or fallback.
+OpenAI sessions use the model catalog's Responses Lite defaults. Tool declarations
+enter history as `additional_tools`, followed by the developer base prompt.
+Requests omit top-level `tools` and `instructions`, set `parallel_tool_calls` to
+false, and use `reasoning.context: "all_turns"`. Unchanged turns retain that prefix;
+tool changes append only their delta, and compaction restores one current prefix
+at the front. The selected reasoning effort is retained as a configuration update
+and reasserted when a cold runtime begins inference.
 Initial repository, environment, skill and deferred-tool context precedes the
 real user prompt in both the model buffer and durable history.
 Synthetic messages preserve their model role and harness context classification.

@@ -24,11 +24,12 @@ class DiffStat extends StatelessWidget {
 }
 
 class DiffViewer extends StatefulWidget {
-  const DiffViewer({super.key, required this.files, this.selectedPath, this.revealRevision = 0, this.directory = ''});
+  const DiffViewer({super.key, required this.files, this.selectedPath, this.revealRevision = 0, this.directory = '', this.onSelect});
   final List<ChangedFile> files;
   final String? selectedPath;
   final int revealRevision;
   final String directory;
+  final ValueChanged<String>? onSelect;
   @override
   State<DiffViewer> createState() => _DiffViewerState();
 }
@@ -60,6 +61,10 @@ class _DiffViewerState extends State<DiffViewer> {
       if (_horizontal.hasClients) _horizontal.jumpTo(0);
     }
   }
+  void _choose(String path) {
+    setState(() => _select(path));
+    widget.onSelect?.call(path);
+  }
   @override
   void dispose() { _vertical.dispose(); _horizontal.dispose(); super.dispose(); }
 
@@ -76,15 +81,15 @@ class _DiffViewerState extends State<DiffViewer> {
           style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 11, color: conversationForeground),
           items: [for (final item in files) DropdownMenuItem(value: item.path,
             child: Text(item.path, maxLines: 1, overflow: TextOverflow.ellipsis))],
-          onChanged: (path) => setState(() => _select(path))))),
+          onChanged: (path) { if (path != null) _choose(path); }))),
         const SizedBox(width: 12), DiffStat(additions: file.additions, deletions: file.deletions),
       ])),
       Padding(padding: const EdgeInsets.fromLTRB(8, 0, 8, 6), child: Row(children: [
         _button('Previous file', Icons.chevron_left_rounded,
-          index > 0 ? () => setState(() => _select(files[index - 1].path)) : null),
+          index > 0 ? () => _choose(files[index - 1].path) : null),
         Text('${index + 1} / ${files.length}', style: const TextStyle(fontSize: 11, color: conversationSecondary)),
         _button('Next file', Icons.chevron_right_rounded,
-          index + 1 < files.length ? () => setState(() => _select(files[index + 1].path)) : null),
+          index + 1 < files.length ? () => _choose(files[index + 1].path) : null),
         const Spacer(),
         _button(_split ? 'Unified diff' : 'Split diff', _split ? Icons.view_agenda_outlined : Icons.vertical_split_outlined,
           () => setState(() => _split = !_split)),
@@ -110,11 +115,11 @@ class _DiffViewerState extends State<DiffViewer> {
                   itemExtent: 22, itemCount: _split ? _pairs.length : _lines.length,
                   itemBuilder: (context, index) => _split
                     ? Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                        Expanded(child: _line(_pairs[index].left, single: true)),
+                        Expanded(child: _line(_pairs[index].left, oldSide: true)),
                         const VerticalDivider(width: 1),
-                        Expanded(child: _line(_pairs[index].right, single: true)),
+                        Expanded(child: _line(_pairs[index].right, oldSide: false)),
                       ])
-                    : _line(_lines[index], single: false))))));
+                    : _line(_lines[index]))))));
         })),
     ]);
   }
@@ -124,16 +129,16 @@ class _DiffViewerState extends State<DiffViewer> {
       style: IconButton.styleFrom(minimumSize: const Size.square(28), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
       icon: Icon(icon, size: 15, color: action == null ? conversationOutline : conversationSecondary)));
 
-  Widget _line(DiffLine? line, {required bool single}) {
+  Widget _line(DiffLine? line, {bool? oldSide}) {
     final added = line?.kind == '+', removed = line?.kind == '-', hunk = line?.kind == '@';
     final color = added ? const Color(0xffeaf7ee) : removed ? const Color(0xfffcecec)
       : hunk ? const Color(0xffedf2fa) : line == null ? const Color(0xfff8f8f9) : Colors.white;
     const numberStyle = TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 10, color: conversationSecondary,
       fontFeatures: [FontFeature.tabularFigures()]);
     return ColoredBox(color: color, child: Row(children: [
-      SizedBox(width: 48, child: Text('${line == null ? '' : single ? line.newLine ?? line.oldLine ?? '' : line.oldLine ?? ''}',
+      SizedBox(width: 48, child: Text('${(oldSide == false ? line?.newLine : line?.oldLine) ?? ''}',
         textAlign: TextAlign.right, style: numberStyle)),
-      if (!single) SizedBox(width: 48, child: Text('${line?.newLine ?? ''}', textAlign: TextAlign.right, style: numberStyle)),
+      if (oldSide == null) SizedBox(width: 48, child: Text('${line?.newLine ?? ''}', textAlign: TextAlign.right, style: numberStyle)),
       SizedBox(width: 24, child: Text(added ? '+' : removed ? '−' : '', textAlign: TextAlign.center,
         style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, color: added ? diffAdded : diffRemoved))),
       Expanded(child: SelectableText(line?.text ?? '', maxLines: 1,

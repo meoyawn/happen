@@ -18,6 +18,16 @@ String? _turnDiff(TracedDatabase db, String turn, int start, int end) {
   return row?['diff'] as String?;
 }
 
+Json _turnMetadata(TracedDatabase db, Map<String, Object?> row, int end) {
+  final terminal = row['rollout_end_ordinal'] != null && (row['rollout_end_ordinal'] as int) < end;
+  return {'id': row['turn_id'], 'rootTurnId': row['root_turn_id'], 'order': row['rollout_ordinal'],
+    'diff': _turnDiff(db, row['turn_id'] as String, row['rollout_ordinal'] as int, end),
+    'status': terminal ? row['status'] : 'inProgress',
+    'error': !terminal || row['error_json'] == null ? null : jsonDecode(row['error_json'] as String),
+    'startedAt': row['started_at'], 'completedAt': terminal ? row['completed_at'] : null,
+    'durationMs': terminal ? row['duration_ms'] : null};
+}
+
 Object? storedMetadata(TracedDatabase db, String key) {
   final row = db.select('SELECT value FROM metadata WHERE key IS ?', [key]).firstOrNull;
   return row == null ? null : jsonDecode(row['value'] as String);
@@ -163,11 +173,9 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
           [segment.end, if (method == 'thread/boundary') params['lastTurnId'] ?? params['beforeTurnId']])) {
         final previous = turns.where((turn) => turn['id'] == row['turn_id']).firstOrNull;
         turns.remove(previous);
-        final terminalVisible = row['rollout_end_ordinal'] != null && (row['rollout_end_ordinal'] as int) < segment.end;
-        turns.add({'id': row['turn_id'], 'rootTurnId': row['root_turn_id'], 'items': <Json>[], 'itemsView': 'full',
-          'diff': _turnDiff(segment.db, row['turn_id'] as String, row['rollout_ordinal'] as int, segment.end) ?? previous?['diff'],
-          'status': terminalVisible ? row['status'] : 'inProgress', 'error': !terminalVisible || row['error_json'] == null ? null : jsonDecode(row['error_json'] as String),
-          'startedAt': previous?['startedAt'] ?? row['started_at'], 'completedAt': terminalVisible ? row['completed_at'] : null, 'durationMs': terminalVisible ? row['duration_ms'] : null,
+        final metadata = _turnMetadata(segment.db, row, segment.end);
+        turns.add({...metadata, 'items': <Json>[], 'itemsView': 'full',
+          'diff': metadata['diff'] ?? previous?['diff'], 'startedAt': previous?['startedAt'] ?? row['started_at'],
           '_ordinal': row['rollout_ordinal'], '_source': segment.id,
           '_end': row['rollout_end_ordinal'], '_bytes': row['rollout_end_byte_offset'], '_startBytes': row['rollout_byte_offset']});
       }
@@ -245,10 +253,7 @@ Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json
           'SELECT item_json,rollout_ordinal,started_at_ms,completed_at_ms FROM thread_items WHERE turn_id IS ? AND rollout_ordinal < ? '
           '${view == 'summary' ? 'AND item_id IN (?,?)' : ''} ORDER BY rollout_ordinal',
           [row['turn_id'], segment.end, if (view == 'summary') ...[row['first_user_item_id'], row['final_agent_item_id']]]);
-        value = {'id': row['turn_id'], 'rootTurnId': row['root_turn_id'], 'itemsView': view,
-          'diff': _turnDiff(segment.db, row['turn_id'] as String, row['rollout_ordinal'] as int, segment.end),
-          'status': row['status'], 'error': row['error_json'] == null ? null : jsonDecode(row['error_json'] as String),
-          'startedAt': row['started_at'], 'completedAt': row['completed_at'], 'durationMs': row['duration_ms'],
+        value = {..._turnMetadata(segment.db, row, segment.end), 'itemsView': view,
           'items': [for (final item in itemRows) {...jsonObject(jsonDecode(item['item_json'] as String)),
             'order': item['rollout_ordinal'], 'startedAtMs': item['started_at_ms'], 'completedAtMs': item['completed_at_ms']}]};
       }
@@ -262,7 +267,19 @@ Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json
   }
   final page = entries.take(limit).toList();
   if (bytes > maxClientFrameBytes ~/ 2 && page.length > 1) page.removeLast();
+  final turns = <String, Json>{};
+  if (itemPage) {
+    final ids = page.map((entry) => entry.value['turnId'] as String).toSet();
+    for (final segment in segments) {
+      for (final turn in ids) {
+        final row = segment.db.select('SELECT * FROM thread_turns WHERE turn_id IS ? AND rollout_ordinal < ?',
+          [turn, segment.end]).firstOrNull;
+        if (row != null) turns[turn] = _turnMetadata(segment.db, row, segment.end);
+      }
+    }
+  }
   String cursorFor(int ordinal) => base64Url.encode(utf8.encode(jsonEncode({'threadId': id, 'method': method, 'turnId': params['turnId'], 'ordinal': ordinal})));
   return {'data': page.map((entry) => entry.value).toList(), 'nextCursor': page.isNotEmpty && page.length < entries.length ? cursorFor(page.last.ordinal) : null,
+    if (itemPage) 'turns': turns.values.toList(),
     'backwardsCursor': page.isEmpty ? null : cursorFor(page.first.ordinal)};
 }

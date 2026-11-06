@@ -101,6 +101,8 @@ void main() {
           expect(page['thread']['turns'].single['diff'], diff);
           final turns = jsonObject(await client.request('thread/turns/list', {'threadId': id, 'itemsView': 'summary'}));
           expect(turns['data'].single['diff'], diff);
+          final itemPage = jsonObject(await client.request('thread/items/list', {'threadId': id, 'sortDirection': 'desc', 'limit': 1}));
+          expect(itemPage['turns'].single['diff'], diff, reason: 'Loading an older item page must also restore its turn diff.');
         }
         expect(items(page).where((i) => i['type'] == 'dynamicToolCall' && i['tool'] == 'apply_patch'), isEmpty, reason: 'No parallel generic/native item implementation.');
         await coldReplay(id, completed);

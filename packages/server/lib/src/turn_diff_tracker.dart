@@ -1,5 +1,6 @@
 // Port of codex-rs/core/src/turn_diff_tracker.rs, ddd1812a5.
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
@@ -8,20 +9,33 @@ import 'package:tool_runtime/tool_runtime.dart' show unifiedDiff;
 typedef _Path = ({String environment, String path});
 typedef _DiffKey = ({_Path left, String? before, _Path right, String? after});
 
+sealed class _DiffState { const _DiffState(); }
+final class _TrackingDiff extends _DiffState {
+  const _TrackingDiff(this.diff);
+  final String? diff;
+}
+final class _InvalidDiff extends _DiffState { const _InvalidDiff(); }
+
+_DiffState _transition(_DiffState current, _DiffState next) => switch ((current, next)) {
+  (_TrackingDiff(), _TrackingDiff() || _InvalidDiff()) => next,
+  (_InvalidDiff(), _InvalidDiff()) => current,
+  _ => throw StateError('An inexact turn diff cannot resume tracking'),
+};
+
 /// Net changes from committed patch deltas; the tracker never reads the workspace.
 class TurnDiffTracker {
-  TurnDiffTracker({this.displayRoots = const {}});
+  TurnDiffTracker({Map<String, String> displayRoots = const {}}) : displayRoots = Map.unmodifiable(displayRoots);
   final Map<String, String> displayRoots;
   final _baseline = <_Path, String>{}, _current = <_Path, String>{};
   final _origins = <_Path, _Path>{};
   var _rendered = <_DiffKey, String?>{};
-  bool _valid = true;
-  String? unifiedDiffText;
+  _DiffState _state = const _TrackingDiff(null);
+  String? get unifiedDiffText => switch (_state) { _TrackingDiff(:final diff) => diff, _InvalidDiff() => null };
 
-  void invalidate() { _valid = false; _rendered.clear(); unifiedDiffText = null; }
+  void invalidate() { _state = _transition(_state, const _InvalidDiff()); _rendered.clear(); }
 
   void trackDelta(Json delta, {String environment = ''}) {
-    if (!_valid) return;
+    if (_state is _InvalidDiff) return;
     if (delta['exact'] != true) { invalidate(); return; }
     for (final raw in delta['changes'] as List) {
       final change = jsonObject(raw);
@@ -88,14 +102,18 @@ class TurnDiffTracker {
       if (diff != null) output.write(diff);
     }
     _rendered = rendered;
-    unifiedDiffText = output.isEmpty ? null : output.toString();
+    _state = _transition(_state, _TrackingDiff(output.isEmpty ? null : output.toString()));
   }
 
   String? _render(_DiffKey key) {
     if (key.before == key.after) return null;
     final left = _display(key.left), right = _display(key.right);
-    String oid(String? content) => content == null ? '0000000000000000000000000000000000000000'
-      : sha1.convert([...utf8.encode('blob ${utf8.encode(content).length}\u0000'), ...utf8.encode(content)]).toString();
+    String oid(String? content) {
+      if (content == null) return '0000000000000000000000000000000000000000';
+      final bytes = utf8.encode(content);
+      final blob = BytesBuilder(copy: false)..add(utf8.encode('blob ${bytes.length}\u0000'))..add(bytes);
+      return sha1.convert(blob.takeBytes()).toString();
+    }
     return [
       'diff --git a/$left b/$right\n',
       if (key.before == null) 'new file mode 100644\n',

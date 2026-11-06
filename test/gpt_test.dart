@@ -194,14 +194,16 @@ void main() {
         // Request inspection must match the packet received by inference,
         // including the base prompt, tool schemas, native items and settings.
         expect(gptRequest(request(context)), bodies[1]);
-        expect((bodies[1]['input'] as List).sublist(2, 5), native);
-        expect(bodies[1]['reasoning'], {'effort': 'low', 'summary': 'auto'});
+        expect((bodies[1]['input'] as List).sublist(3, 6), native);
+        expect(bodies[1]['reasoning'], {'effort': 'low', 'context': 'all_turns'});
         expect(
           (bodies[1]['input'] as List).reversed.skip(1).first['type'],
           'configuration_update',
         );
-        expect(bodies[1]['tools'][0]['name'], 'exec');
-        expect(bodies[1]['tools'][0]['type'], 'custom');
+        expect(bodies[1].containsKey('tools'), false);
+        final declared = bodies[1]['input'][0]['tools'][0]['tools'][0];
+        expect(declared['name'], 'exec');
+        expect(declared['type'], 'custom');
         if (transport == 'websocket') {
           expect(bodies[1]['type'], 'response.create');
         }

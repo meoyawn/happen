@@ -28,22 +28,27 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'web-search', 'workflow': 'web',
-    'prompt': 'Search the web for the context-contract fixture, cite its source, and record the receipt.',
+    'prompt': 'google youtube to podcast tools',
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
+    'search': {
+      'commands': {'search_query': [{'q': 'youtube to podcast tools'}], 'response_length': 'short'},
+      'output': 'YOUTUBE_PODCAST_SEARCH_RECEIPT\nListenbox converts YouTube videos into podcast feeds.\nSource: https://listenbox.app/',
+    },
     'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_search',
+        'input': 'text(await tools.web__run({search_query:[{q:"youtube to podcast tools"}],response_length:"short"}));'}],
       [
-        {'type': 'web_search_call', 'action': {'type': 'search', 'query': 'context-contract web fixture'}},
         {'type': 'message', 'role': 'assistant', 'phase': 'commentary', 'content': [{
-          'type': 'output_text', 'text': 'The fixture value is mango-47.',
+          'type': 'output_text', 'text': 'Listenbox converts YouTube videos into podcast feeds.',
           'annotations': [{'type': 'url_citation', 'start_index': 0, 'end_index': 28,
-            'url': 'https://example.test/context-contract', 'title': 'Deterministic context-contract source'}],
+            'url': 'https://listenbox.app/', 'title': 'Listenbox'}],
         }]},
         {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'web_receipt',
           'input': 'text("WEB_CONTEXT_RECEIPT");'},
       ],
       [_ready],
     ],
-    'result': 'WEB_CONTEXT_RECEIPT',
+    'result': 'YOUTUBE_PODCAST_SEARCH_RECEIPT',
   },
   fermentedBeetrootCase,
   tldwYoutubeCase,
@@ -64,7 +69,6 @@ const contextCases = <Map<String, dynamic>>[
       'Explicitly create a goal named GOAL_CONTEXT_RECEIPT with a 1000-token budget. Inspect it, mark it complete, then inspect the completed goal.',
       'Read the saved completed goal without creating another goal, then reply READY.',
     ],
-    'unload_between_turns': true,
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'goal_lifecycle',

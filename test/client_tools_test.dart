@@ -193,7 +193,7 @@ void main() {
         expect(answer, contains('first title'));
         expect(answer, contains('second title'));
         expect(answer, isNot(contains('forged')));
-        expect((requests.first['tools'] as List).any((tool) => tool['name'] == 'client'), isFalse);
+        expect(requests.first.containsKey('tools'), false);
         final declarations = (requests.first['input'] as List).where(
           (v) => v['type'] == 'additional_tools' && (v['tools'] as List).any((tool) => tool['name'] == 'client'),
         );

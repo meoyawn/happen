@@ -32,6 +32,8 @@ separator, and environment rendering. The agent adds no shared instruction prose
 
 OpenAI sessions use Codex's default incremental-tools contract:
 
+- The window and standalone-search implementation was checked against
+  `ddd1812a51f4aded35c3ec5446672474d5cb546b`.
 - `core/src/session/{step_context,turn}.rs`: Responses Lite windows put tool
   declarations and base instructions in history, leaving the request's top-level
   `tools` and `instructions` empty.
@@ -69,7 +71,11 @@ declarations retain their registration order and nested-call declarations,
 while exec contains runtime and discovery guidance without duplicating schemas.
 Native `tool_search_call`/`tool_search_output` items retain their client execution,
 schemas and identities through history and resume; nested search still returns
-callable names and TypeScript declarations. Web retains its hosted definition.
+callable names and TypeScript declarations. Standalone web search follows
+`ext/web-search/src/{extension,tool}.rs`; its description is copied unchanged
+from `ext/web-search/web_run_description.md`. Code Mode only exposes
+`tools.web__run` inside exec; mixed mode also declares `web.run` directly.
+There is no hosted-search selection flag. The catalog defaults remain unchanged.
 Runtime helpers and shell options are described only where implemented; the
 runtime stays embedded QuickJS. Exec/wait, exit, notifications, timers, ordered
 media, settlement helpers and PTYs are implemented; their applicable proof

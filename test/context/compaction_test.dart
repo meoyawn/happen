@@ -257,12 +257,11 @@ void main() {
     expect(instructionItems.single, isNot(contains('replace all previously provided AGENTS.md instructions')));
     expect(jsonEncode(continuation['input']), contains('retain the newline'));
     expect(continuation['reasoning']['effort'], 'low');
-    expect(
-      (continuation['input'] as List)
-          .where((v) => v['type'] == 'configuration_update')
-          .single['reasoning']['effort'],
-      'high',
-    );
+    expect((continuation['input'] as List)
+      .where((v) => v['type'] == 'configuration_update')
+      .map((v) => v['reasoning']['effort']), ['high', 'high']);
+    expect((continuation['input'] as List).last,
+      {'type': 'configuration_update', 'reasoning': {'effort': 'high'}});
     Future<Json> recalledItem(String thread, Json turn) async {
       final page = jsonObject(await client.request('thread/items/list', {'threadId': thread, 'turnId': turn['id']}));
       final answer = (page['data'] as List).lastWhere((entry) => entry['item']['type'] == 'agentMessage')['item']['text'] as String;

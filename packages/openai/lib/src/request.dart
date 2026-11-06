@@ -21,23 +21,39 @@ Json responsesRequest({
   if (!{'http', 'websocket'}.contains(transport)) {
     throw ArgumentError('GPT transport must be http or websocket');
   }
-  final modalities = supportedGptModels.contains(model) ? GptModel(model).data['input_modalities'] as List : null;
+  final info = supportedGptModels.contains(model) ? GptModel(model).data : null;
+  final modalities = info?['input_modalities'] as List?;
   Json media(Json part) {
     final kind = switch (part['type']) { 'input_image' => 'image', 'input_audio' => 'audio', _ => null };
-    return kind != null && modalities != null && !modalities.contains(kind)
-      ? {'type': 'input_text', 'text': '$kind content omitted because you do not support $kind input'} : part;
+    if (kind != null && modalities != null && !modalities.contains(kind)) {
+      return {'type': 'input_text', 'text': '$kind content omitted because you do not support $kind input'};
+    }
+    if (kind == 'image') {
+      final image = {...part};
+      // Codex client_common.rs projects image detail for the receiving model.
+      if (info?['use_responses_lite'] == true) {
+        image.remove('detail');
+      } else if (image['detail'] == 'original' && info?['supports_image_detail_original'] != true) {
+        image['detail'] = 'high';
+      }
+      return image;
+    }
+    return part;
   }
+  final context = input.any((item) => item['type'] == 'additional_tools') ? input : [
+    if (tools.isNotEmpty) {'type': 'additional_tools', 'role': 'developer', 'tools': tools},
+    ...withGptInstructions(instructions, input, sessionId: sessionId),
+  ];
   return {
     if (transport == 'websocket') 'type': 'response.create',
     'model': model,
-    'input': [for (final item in withGptInstructions(instructions, input, sessionId: sessionId)) {
+    'input': [for (final item in context) {
       ...item,
       for (final key in ['content', 'output'])
         if (item[key] is List) key: [for (final part in item[key] as List) media(jsonObject(part))],
     }],
-    if (tools.isNotEmpty) 'tools': tools,
     'tool_choice': toolChoice,
-    'parallel_tool_calls': true,
+    'parallel_tool_calls': false,
     'store': false,
     if (transport == 'http') 'stream': true,
     'include': ['reasoning.encrypted_content'],
@@ -45,6 +61,7 @@ Json responsesRequest({
     'reasoning': {
       'effort': reasoning,
       if (reasoningSummary != 'none') 'summary': reasoningSummary,
+      'context': 'all_turns',
     },
     'text': {'verbosity': verbosity},
     'max_output_tokens': ?maxOutputTokens,

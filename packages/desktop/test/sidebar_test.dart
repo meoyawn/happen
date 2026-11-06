@@ -46,24 +46,29 @@ void main() {
       final newest = firstProject.tasks.singleWhere((task) => task.id == 'new');
       await session.pinTask(newest, true);
       await session.pinProject(secondProject, true);
-      await session.chooseSidebarSection('pinned', true);
-      await session.chooseSidebarSection('recents', true);
+      await session.chooseSidebarSection('working', true);
       await session.chooseNotificationMode('sound');
       await session.chooseInAppNotifications(true);
       expect(session.recentTasks.map((entry) => entry.$2.id), ['middle', 'old']);
 
       client.events.add({
-        'task_id': 'old', 'seq': 1, 'type': 'turn.completed',
-        'created_at': '2030-01-02T00:00:00Z', 'data': <String, Object?>{},
+        'method': 'turn/completed', 'params': {
+          'threadId': 'old', 'turn': {'id': 'old-turn', 'status': 'completed', 'items': <Object?>[]},
+          'happen': {'createdAt': DateTime.utc(2030, 1, 2).millisecondsSinceEpoch},
+        },
       });
       // Later arrivals and token deltas must not rewind or reshuffle activity.
       client.events.add({
-        'task_id': 'old', 'seq': 2, 'type': 'turn.completed',
-        'created_at': '2030-01-01T00:00:00Z', 'data': <String, Object?>{},
+        'method': 'turn/completed', 'params': {
+          'threadId': 'old', 'turn': {'id': 'old-turn', 'status': 'completed', 'items': <Object?>[]},
+          'happen': {'createdAt': DateTime.utc(2030, 1, 1).millisecondsSinceEpoch},
+        },
       });
       client.events.add({
-        'task_id': 'middle', 'type': 'text.delta', 'delta': 'Partial reply',
-        'created_at': '2031-01-01T00:00:00Z',
+        'method': 'item/agentMessage/delta', 'params': {
+          'threadId': 'middle', 'turnId': 'middle-turn', 'itemId': 'middle-message', 'delta': 'Partial reply',
+          'happen': {'createdAt': DateTime.utc(2031, 1, 1).millisecondsSinceEpoch},
+        },
       });
       await Future<void>.delayed(Duration.zero);
       await callIsolate(database.port, 'load', {});
@@ -78,7 +83,7 @@ void main() {
       await session.load();
       expect(session.pinnedTaskIds, ['new']);
       expect(session.pinnedProjectKeys, ['beta']);
-      expect(session.collapsedSidebarSections, {'pinned', 'recents'});
+      expect(session.collapsedSidebarSections, {'working'});
       expect(session.notificationMode, 'sound');
       expect(session.inAppNotificationsEnabled, true);
       expect(session.recentTasks.map((entry) => entry.$2.id), ['old', 'middle']);
@@ -86,8 +91,7 @@ void main() {
       await session.pinTask(session.projects.first.tasks.singleWhere((task) => task.id == 'new'), false);
       expect(session.recentTasks.map((entry) => entry.$2.id), ['old', 'new', 'middle']);
       await session.pinProject(session.projects.last, false);
-      await session.chooseSidebarSection('pinned', false);
-      await session.chooseSidebarSection('recents', false);
+      await session.chooseSidebarSection('working', false);
       expect(session.pinnedTaskIds, isEmpty);
       expect(session.pinnedProjectKeys, isEmpty);
       expect(session.collapsedSidebarSections, isEmpty);
@@ -102,8 +106,7 @@ class _Client implements AgentClient {
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'client.capabilities') return null;
-    if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
-    if (method == 'session.active') return {'data': <String, Object?>{}};
+    if (method == 'thread/list') return {'data': <Object?>[], 'nextCursor': null};
     if (method == 'providers.list') return {'providers': <Object?>[]};
     throw StateError('Unexpected request: $method');
   }

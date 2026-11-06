@@ -1,6 +1,7 @@
 import 'package:protocol/protocol.dart';
 
 const contextPanel = 'context:main';
+const workspaceChangesPanel = 'changes:working-tree';
 
 String filePanelPath(String tab) => tab.substring('file:'.length);
 bool isFilePanel(String tab) => tab.startsWith('file:/') && !tab.contains('\x00');
@@ -10,7 +11,7 @@ String diffPanelSource(String tab) => tab.substring('diff:'.length);
 String sideChatPanel(String sessionID) => 'side:$sessionID';
 bool isSideChatPanel(String tab) => tab.startsWith('side:');
 String sideChatID(String tab) => tab.substring('side:'.length);
-bool _knownPanel(String tab) => tab == contextPanel || isFilePanel(tab) || isBrowserPanel(tab) || isDiffPanel(tab);
+bool _knownPanel(String tab) => tab == contextPanel || tab == workspaceChangesPanel || isFilePanel(tab) || isBrowserPanel(tab) || isDiffPanel(tab);
 
 /// OpenCode's per-session side region: stored tabs, selection and chat width.
 /// New tabs are launchers and disappear when the application closes.
