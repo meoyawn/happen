@@ -19,37 +19,20 @@ String _threadNameUserText(Json item) {
 }
 
 extension _ThreadNames on AgentServer {
-  void _queueThreadName(String id, {Json? summary}) {
+  void _startThreadName(String id) {
     if (_closing || _tasks[id]?.sideParentID != null || _tasks[id]?.config?['ephemeral'] == true ||
         _namingThreads.contains(id)) {
       return;
     }
-    if (summary != null) {
-      final name = summary['name'] as String?;
-      if (summary['ephemeral'] == true || name != null && name.trim().isNotEmpty ||
-          (summary['preview'] as String? ?? '').trim().isEmpty) {
-        return;
-      }
-    }
-    _threadNameQueue.add(id);
-    _drainThreadNames();
-  }
-
-  void _drainThreadNames() {
-    while (!_closing && _namingThreads.length < 2 && _threadNameQueue.isNotEmpty) {
-      final id = _threadNameQueue.first;
-      _threadNameQueue.remove(id);
-      _namingThreads.add(id);
-      final generation = _generateThreadName(id, _lifetime);
-      _requests.add(generation);
-      unawaited(generation.catchError((Object error) {
-        if (error is! CancelledException) traceError(error);
-      }).whenComplete(() {
-        _requests.remove(generation);
-        _namingThreads.remove(id);
-        _drainThreadNames();
-      }));
-    }
+    _namingThreads.add(id);
+    final generation = _generateThreadName(id, _lifetime);
+    _requests.add(generation);
+    unawaited(generation.catchError((Object error) {
+      if (error is! CancelledException) traceError(error);
+    }).whenComplete(() {
+      _requests.remove(generation);
+      _namingThreads.remove(id);
+    }));
   }
 
   Future<void> _setThreadName(String id, String name, CancellationToken cancellation, {bool onlyIfUnnamed = false}) async {

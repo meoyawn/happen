@@ -5,8 +5,11 @@ import 'dart:typed_data';
 
 import 'package:desktop/app.dart';
 import 'package:desktop/composer_dictation.dart';
+import 'package:desktop/composer_editor.dart';
 import 'package:desktop/composer_text_controller.dart';
+import 'package:desktop/database.dart';
 import 'package:desktop/dictation.dart';
+import 'package:desktop/dictation_state.dart';
 import 'package:desktop/dictation_controls.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
@@ -20,17 +23,21 @@ void main() {
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   late _Client client;
   late DesktopSession session;
+  late Directory root;
+  bool closed = false;
   final nativeCalls = <MethodCall>[];
   String? captureId;
   bool denyPermission = false;
   Completer<void>? startPending;
   HttpOverrides? previousHttp;
 
-  setUp(() {
+  setUp(() async {
     client = _Client();
     previousHttp = HttpOverrides.current;
     HttpOverrides.global = _TranscriptionHttp(client);
-    session = DesktopSession(client, _Database());
+    root = await Directory.systemTemp.createTemp('desktop-dictation-');
+    session = DesktopSession(client, await openDesktopDatabase(root.path));
+    closed = false;
     session.dictationMode = 'on_stop';
     session.providers = [{'id': 'openai', 'name': 'ChatGPT', 'status': 'signed_in', 'models': [
       {'id': 'gpt-6.1-sol', 'reasoning_levels': ['low'], 'reasoning_updates': true},
@@ -56,13 +63,34 @@ void main() {
     messenger.setMockMethodCallHandler(const MethodChannel('happen/dictation/audio'), (_) async => null);
   });
   tearDown(() async {
-    await session.close();
+    if (!closed) await session.close();
+    await root.delete(recursive: true);
     HttpOverrides.global = previousHttp;
     messenger.setMockMethodCallHandler(DictationService.methods, null);
     messenger.setMockMethodCallHandler(const MethodChannel('happen/dictation/audio'), null);
   });
 
+  TextEditingController editor(WidgetTester tester) =>
+    tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller;
+
+  Future<void> enterText(WidgetTester tester, String text) async {
+    editor(tester).value = TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length));
+    await tester.pump();
+  }
+
+  Future<void> close(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(session.close);
+    closed = true;
+  }
+
   Future<void> open(WidgetTester tester) async {
+    addTearDown(() async {
+      if (!closed) {
+        await tester.runAsync(session.close);
+        closed = true;
+      }
+    });
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -74,7 +102,7 @@ void main() {
   Future<void> record(WidgetTester tester) async {
     await tester.tap(find.byTooltip('Dictate'));
     await tester.pump();
-    expect(session.dictation.phase, DictationPhase.recording);
+    expect(session.dictation.state, isA<DictationRecording>());
     await tester.runAsync(() async {
       await messenger.handlePlatformMessage('happen/dictation/audio', const StandardMethodCodec().encodeSuccessEnvelope({
         'type': 'audio', 'id': captureId, 'pcm': Uint8List.fromList(List.filled(16000, 0)), 'rms': .08,
@@ -102,12 +130,12 @@ void main() {
     else { client.reply.complete(text!); }
     await tester.pump();
     // Cross both event loops until the real HTTP stream's cleanup settles.
-    for (var i = 0; i < 20 && session.dictation.phase == DictationPhase.transcribing; i++) {
+    for (var i = 0; i < 20 && session.dictation.state is DictationTranscribing; i++) {
       await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pump();
     }
     await tester.pump(const Duration(milliseconds: 350));
-    expect(session.dictation.phase, error == null ? DictationPhase.idle : DictationPhase.failed);
+    expect(session.dictation.state, error == null ? isA<DictationIdle>() : isA<DictationFailed>());
   }
 
   Future<void> liveBackend(WidgetTester tester, {bool failStream = false}) async {
@@ -159,13 +187,13 @@ void main() {
     session.dictationMode = 'live';
     await liveBackend(tester);
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'Hello world');
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller!;
+    await enterText(tester, 'Hello world');
+    final controller = editor(tester);
     controller.selection = const TextSelection.collapsed(offset: 5);
     await record(tester);
     expect(controller.text, 'Hello live words world');
     expect(client.recordings, isEmpty, reason: 'Live audio never goes through the on-stop upload');
-    expect(session.dictation.phase, DictationPhase.recording);
+    expect(session.dictation.state, isA<DictationRecording>());
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
     expect(controller.text, 'Hello world');
@@ -179,13 +207,14 @@ void main() {
       await tester.runAsync(() async { await Future<void>.delayed(const Duration(milliseconds: 10)); });
       await tester.pump();
     }
-    expect(session.dictation.phase, DictationPhase.idle);
+    expect(session.dictation.state, isA<DictationIdle>());
     await tester.pump(const Duration(seconds: 6));
     await tester.pump(const Duration(milliseconds: 350));
-    expect(client.sent.single['prompt'], 'Hello live words. world');
+    expect(client.sent.single['input'], [{'type': 'text', 'text': 'Hello live words. world'}]);
     expect(client.recordings, isEmpty, reason: 'A recording keeps the mode it started with');
     expect(controller.text, isEmpty);
     expect(tester.takeException(), isNull);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('a failed live connection retains audio and replaces partial text on stop', (tester) async {
@@ -193,43 +222,45 @@ void main() {
     await liveBackend(tester, failStream: true);
     await open(tester);
     await record(tester);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'live words');
-    expect(find.text('Text will appear when you stop'), findsOneWidget);
+    expect(editor(tester).text, 'live words');
+    expect(session.dictation.liveTranscriptionHint, 'Text will appear when you stop');
     await stop(tester);
     expect(client.recordings, hasLength(1));
     expect(_recording(client.recordings.single).length, 16044);
     await respond(tester, text: 'Recovered complete sentence.');
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Recovered complete sentence.');
+    expect(editor(tester).text, 'Recovered complete sentence.');
     expect(client.sent, isEmpty);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 6));
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('leaving a live recording restores its draft before disposing the editor', (tester) async {
     session.dictationMode = 'live';
     await liveBackend(tester);
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'Keep this');
+    await enterText(tester, 'Keep this');
     await record(tester);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep this live words');
+    expect(editor(tester).text, 'Keep this live words');
     await tester.runAsync(() => session.select(session.project!));
     await tester.pump();
     await tester.pump(const Duration(seconds: 6));
     expect(session.drafts['task'], 'Keep this');
-    expect(session.dictation.phase, DictationPhase.idle);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    expect(session.dictation.state, isA<DictationIdle>());
+    expect(editor(tester).text, isEmpty);
     expect(tester.takeException(), isNull);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('Stop inserts into the selection; Enter transcribes and sends exactly once', (tester) async {
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'Hello world');
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller!;
+    await enterText(tester, 'Hello world');
+    final controller = editor(tester);
     controller.selection = const TextSelection.collapsed(offset: 5);
     await record(tester);
     expect(find.byTooltip('Cancel dictation'), findsOneWidget);
     await stop(tester);
-    expect(session.dictation.phase, DictationPhase.transcribing);
+    expect(session.dictation.state, isA<DictationTranscribing>());
     expect(client.recordings, hasLength(1));
     final wav = _recording(client.recordings.single);
     expect(ByteData.sublistView(wav).getUint32(24, Endian.little), 16000);
@@ -246,14 +277,15 @@ void main() {
     await tester.pump();
     expect(client.recordings, hasLength(2));
     await respond(tester, text: 'again');
-    expect(client.sent.single['prompt'], 'Hello there world again');
+    expect(client.sent.single['input'], [{'type': 'text', 'text': 'Hello there world again'}]);
     expect(controller.text, isEmpty);
     expect(tester.takeException(), isNull);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('Retry keeps the same audio; Escape cancels a pending response without changing the draft', (tester) async {
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'Keep this draft');
+    await enterText(tester, 'Keep this draft');
     await record(tester);
     await stop(tester);
     await respond(tester, error: StateError('Unable to transcribe audio'));
@@ -265,16 +297,19 @@ void main() {
     expect(nativeCalls.where((call) => call.method == 'start'), hasLength(1));
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
+    expect(session.dictation.state, isA<DictationIdle>());
     client.reply.complete('late text');
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Keep this draft');
+    expect(editor(tester).text, 'Keep this draft');
     expect(client.sent, isEmpty);
-    expect(session.dictation.phase, DictationPhase.idle);
+    expect(session.dictation.state, isA<DictationIdle>());
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('navigation cancels the old recording and a late result cannot enter another draft', (tester) async {
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'Original draft');
+    await enterText(tester, 'Original draft');
     await record(tester);
     await stop(tester);
     await tester.runAsync(() => session.select(session.project!));
@@ -282,29 +317,30 @@ void main() {
     client.reply.complete('wrong chat');
     await tester.pumpAndSettle();
     expect(session.drafts['task'], 'Original draft');
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    expect(editor(tester).text, isEmpty);
     expect(client.sent, isEmpty);
     expect(tester.takeException(), isNull);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('startup can be cancelled and permission denial links to microphone settings', (tester) async {
     await open(tester);
-    await tester.enterText(find.byType(TextField), 'typing');
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller!;
+    await enterText(tester, 'typing');
+    final controller = editor(tester);
     controller.value = controller.value.copyWith(composing: const TextRange(start: 0, end: 6));
     startPending = Completer<void>();
     await tester.tap(find.byTooltip('Dictate'));
     await tester.pump();
-    expect(session.dictation.phase, DictationPhase.starting);
+    expect(session.dictation.state, isA<DictationStarting>());
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
-    expect(session.dictation.phase, DictationPhase.starting, reason: 'Escape belongs to the active IME composition');
+    expect(session.dictation.state, isA<DictationStarting>(), reason: 'Escape belongs to the active IME composition');
     controller.clearComposing();
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     startPending!.complete();
     await tester.pumpAndSettle();
-    expect(session.dictation.phase, DictationPhase.idle);
+    expect(session.dictation.state, isA<DictationIdle>());
     expect(client.recordings, isEmpty);
     startPending = null;
     denyPermission = true;
@@ -315,6 +351,7 @@ void main() {
     await tester.pump();
     expect(nativeCalls.last.method, 'openMicrophoneSettings');
     expect(find.text('Dictation stopped'), findsNothing);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('recordings shorter than 250 ms make no transcription request', (tester) async {
@@ -323,9 +360,10 @@ void main() {
     await tester.pump();
     await stop(tester);
     await tester.pumpAndSettle();
-    expect(session.dictation.phase, DictationPhase.idle);
+    expect(session.dictation.state, isA<DictationIdle>());
     expect(client.recordings, isEmpty);
     expect(client.sent, isEmpty);
+    await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   test('final insertion waits for IME and cancellation releases the editor', () async {
@@ -380,7 +418,7 @@ class _Client implements AgentClient {
   @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
     {'access_token': 'fixture', 'account_id': 'account'};
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'task.send') { sent.add(params); return {'task_id': 'task'}; }
+    if (method == 'turn/start') { sent.add(params); return <String, dynamic>{}; }
     throw StateError('Unexpected request: $method');
   }
   @override Future<void> close() => events.close();
@@ -458,9 +496,4 @@ class _Headers implements HttpHeaders {
   @override void set(String name, Object value, {bool preserveHeaderCase = false}) {}
   @override List<String>? operator [](String name) => null;
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-class _Database implements IsolateOwner {
-  @override Future<void> close() async {}
-  @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected database operation');
 }

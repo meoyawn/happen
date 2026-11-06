@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:protocol/protocol.dart';
 import 'package:pty2/pty2.dart';
+
+import 'shell_snapshot_scripts.dart';
+
+part 'shell_snapshot.dart';
 
 String get defaultShell => Platform.environment['AGENT_SHELL'] ??
     Platform.environment['SHELL'] ?? (Platform.isWindows ? 'cmd.exe' : 'fish');
@@ -18,12 +23,27 @@ class CommandRunner {
   CancellationHook? _hook;
   Future<void>? _closing;
   final _starting = <Future<RunningCommand>>{};
+  final _snapshotCancellation = CancellationToken();
+  final _snapshots = <String, _ShellCapture>{};
+  final _captures = <Future<_ShellSnapshot?>>{};
+
+  /// Speculative initialization never blocks the model and belongs to this
+  /// runtime, rather than any individual tool call.
+  Future<void> prewarmShell(String executable, {required String directory,
+    required CancellationToken cancellation}) async {
+    try {
+      cancellation.throwIfCancelled();
+      await _snapshotFor(this, executable, directory, prewarm: true)
+          .asCancellable(cancellation);
+    } on CancelledException { /* Owner shutdown aborts speculative capture. */ }
+  }
 
   Future<RunningCommand> start(String executable, List<String> arguments, {
     required String directory,
     required CancellationToken cancellation,
     Duration? timeout,
     bool tty = false,
+    bool shellSnapshot = false,
   }) {
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
@@ -33,7 +53,7 @@ class CommandRunner {
       throw const FormatException('Process arguments and working directory must not contain NUL');
     }
     if (_closing != null) throw StateError('Command runner is closed');
-    final operation = _start(executable, arguments, directory, cancellation, timeout, tty);
+    final operation = _start(executable, arguments, directory, cancellation, timeout, tty, shellSnapshot);
     _starting.add(operation);
     unawaited(operation.then<void>((_) => _starting.remove(operation),
       onError: (Object _, StackTrace _) { _starting.remove(operation); }));
@@ -41,52 +61,88 @@ class CommandRunner {
   }
 
   Future<RunningCommand> _start(String executable, List<String> arguments,
-    String directory, CancellationToken cancellation, Duration? timeout, bool tty) async {
-    final folder = Directory('${Directory.systemTemp.path}/happen-tool-output');
-    await folder.create(recursive: true);
-    this.cancellation.throwIfCancelled();
-    cancellation.throwIfCancelled();
-    // A supervisor owns a separate POSIX job group. Killing just the requested
-    // shell can otherwise leave curl, git, or a pipeline holding its pipes open.
-    final file = File('${folder.path}/${newId()}.txt');
-    final RunningCommand command;
-    if (tty) {
-      final status = File('${folder.path}/${newId()}.status');
-      final terminal = PseudoTerminal.start(Platform.isWindows ? executable : '/bin/bash',
-        Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _ptySupervisor, 'happen-pty', status.path, executable, ...arguments], workingDirectory: directory,
-        environment: {...Platform.environment, 'TERM': 'xterm-256color'});
-      terminal.resize(80, 24);
-      command = RunningCommand._terminal(terminal, file, Platform.isWindows ? null : status, timeout,
-        cancellation.merge(this.cancellation));
-    } else {
-      final process = await Process.start(
-        Platform.isWindows ? executable : '/bin/bash',
-        Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _supervisor, 'happen-command', executable, ...arguments],
-        workingDirectory: directory,
-      );
-      command = RunningCommand._(process, file, timeout);
+    String directory, CancellationToken cancellation, Duration? timeout, bool tty, bool shellSnapshot) async {
+    Directory? transport;
+    Future<void>? settled;
+    Map<String, String>? environment;
+    if (shellSnapshot && _snapshotShell(executable) != null &&
+        arguments.length == 3 && arguments[0] == '-l' && arguments[1] == '-c') {
+      final snapshot = await _snapshotFor(this, executable, directory)
+          .asCancellable(cancellation.merge(this.cancellation));
+      if (snapshot != null) {
+        try {
+          final replay = await _replayShell(snapshot, _snapshotShell(executable)!, arguments,
+              cancellation: cancellation.merge(this.cancellation));
+          arguments = replay.arguments;
+          environment = replay.environment;
+          transport = replay.transport;
+        } on FileSystemException { /* Preserve ordinary login startup on transport failure. */ }
+        on FormatException { /* Preserve fallback when env-only replay exceeds its launch budget. */ }
+      }
     }
-    _commands.add(command);
-    final hook = CancellationHook(cancellation.merge(this.cancellation), command.kill);
-    unawaited(command.done.then<void>((_) {
-      hook.dispose(); _commands.remove(command);
-    }, onError: (Object _, StackTrace _) {
-      hook.dispose();
-      _commands.remove(command);
-    }));
-    if (cancellation.isCancelled || this.cancellation.isCancelled || _closing != null) {
-      command.kill();
-      await command.done;
+    try {
+      final folder = Directory('${Directory.systemTemp.path}/happen-tool-output');
+      await folder.create(recursive: true);
       this.cancellation.throwIfCancelled();
       cancellation.throwIfCancelled();
-      throw StateError('Command runner is closed');
+      // A supervisor owns a separate POSIX job group. Killing just the requested
+      // shell can otherwise leave curl, git, or a pipeline holding its pipes open.
+      final file = File('${folder.path}/${newId()}.txt');
+      final RunningCommand command;
+      if (tty) {
+        final status = File('${folder.path}/${newId()}.status');
+        final terminal = PseudoTerminal.start(Platform.isWindows ? executable : '/bin/bash',
+          Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _ptySupervisor, 'happen-pty', status.path, transport?.path ?? '', executable, ...arguments], workingDirectory: directory,
+          environment: {...(environment ?? Platform.environment), 'TERM': 'xterm-256color'});
+        terminal.resize(80, 24);
+        command = RunningCommand._terminal(terminal, file, Platform.isWindows ? null : status, timeout,
+          cancellation.merge(this.cancellation));
+      } else {
+        final process = await Process.start(
+          Platform.isWindows ? executable : '/bin/bash',
+          Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _supervisor, 'happen-command', transport?.path ?? '', executable, ...arguments],
+          workingDirectory: directory,
+          environment: environment,
+        );
+        command = RunningCommand._(process, file, timeout);
+      }
+      _commands.add(command);
+      settled = command.done;
+      final hook = CancellationHook(cancellation.merge(this.cancellation), command.kill);
+      unawaited(command.done.then<void>((_) {
+        hook.dispose(); _commands.remove(command);
+      }, onError: (Object _, StackTrace _) {
+        hook.dispose();
+        _commands.remove(command);
+      }));
+      if (cancellation.isCancelled || this.cancellation.isCancelled || _closing != null) {
+        command.kill();
+        await command.done;
+        this.cancellation.throwIfCancelled();
+        cancellation.throwIfCancelled();
+        throw StateError('Command runner is closed');
+      }
+      return command;
+    } finally {
+      if (transport != null) {
+        final owned = transport;
+        if (settled == null) {
+          await _removeShellTransport(owned);
+        } else {
+          unawaited(settled.then<void>((_) => _removeShellTransport(owned),
+              onError: (Object _, StackTrace _) => _removeShellTransport(owned)));
+        }
+      }
     }
-    return command;
   }
 
   Future<void> close() => _closing ??= _close();
   Future<void> _close() async {
     _hook?.dispose(); _hook = null;
+    _snapshotCancellation.cancel();
+    await Future.wait(_captures.toList().map((operation) => operation.then<void>((_) {},
+        onError: (Object _, StackTrace _) {})));
+    _snapshots.clear();
     await Future.wait(_starting.toList().map((operation) => operation.then<void>((_) {},
       onError: (Object _, StackTrace _) {})));
     final commands = _commands.toList();
@@ -96,7 +152,7 @@ class CommandRunner {
   }
 }
 
-const _supervisor = r'''
+const _supervisor = _openSnapshot + r'''
 set -m
 "$@" <&0 &
 child=$!
@@ -112,6 +168,7 @@ exit "$result"
 const _ptySupervisor = r'''
 exec 3>"$1"
 shift
+''' + _openSnapshot + r'''
 trap 'result=$?; printf "%s" "$result" >&3; exec 3>&-' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -202,7 +259,7 @@ class RunningCommand {
     }
   }
   String takeOutput() {
-    final text = '${_output.toString()}${_truncated ? '\n[output truncated]' : ''}';
+    final text = '$_output${_truncated ? '\n[output truncated]' : ''}';
     _output.clear(); _truncated = false; return text;
   }
 

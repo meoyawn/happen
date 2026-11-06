@@ -67,10 +67,23 @@ void main() {
     await provider.close(force: true); await root.delete(recursive: true);
   });
 
-  test('context names persist, reach unsubscribed sidebars and leave the conversation intact', () async {
-    final before = await read();
-    final changed = observer.events.stream.firstWhere((event) => event['method'] == 'thread/name/updated');
+  test('saved threads are named on turn admission, never on listing', () async {
+    hold = true;
+    final saved = await read();
     await client.request('thread/list', {'cwd': root.path});
+    await expectLater(arrived.future.timeout(const Duration(seconds: 1)), throwsA(isA<TimeoutException>()));
+    expect(requests, isEmpty);
+    expect((await read())['thread'], saved['thread']);
+    expect(jsonObject(await client.request('thread/loaded/list'))['data'], isEmpty);
+    final changed = observer.events.stream.firstWhere((event) => event['method'] == 'thread/name/updated');
+    final completed = client.events.stream.firstWhere((event) =>
+      event['method'] == 'turn/completed' && event['params']['threadId'] == 'saved');
+    await client.request('turn/start', {'threadId': 'saved',
+      'input': [{'type': 'text', 'text': 'Make the sidebar refresh the saved thread name'}]});
+    await arrived.future.timeout(const Duration(seconds: 10));
+    await completed.timeout(const Duration(seconds: 10));
+    final before = await read();
+    release.complete();
     final notification = await changed.timeout(const Duration(seconds: 10));
     expect(notification['params']['threadId'], 'saved');
     expect(notification['params']['threadName'], 'Fix sidebar thread names');
@@ -84,7 +97,6 @@ void main() {
     final after = await read();
     expect(after['thread']['turns'], before['thread']['turns']);
     expect(after['thread']['updatedAt'], before['thread']['updatedAt']);
-    expect(jsonObject(await client.request('thread/loaded/list'))['data'], isEmpty);
     await observer.close(); await client.close(); await server.close(); await launch();
     final listing = jsonObject(await client.request('thread/list', {'cwd': root.path}));
     expect(listing['data'], hasLength(1));

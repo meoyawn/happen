@@ -46,7 +46,7 @@ class CodeSession {
           module: true, cellId: id,
           onYield: () { cell.yielded = true; cell.changed(); }, onNotify: notify);
       } catch (error) {
-        result = {'error': error is StateError ? error.message.toString() : error.toString()};
+        result = {'error': error is StateError ? error.message : error.toString()};
       }
       try {
         Json output;
@@ -81,7 +81,7 @@ class CodeSession {
     }
     final cell = _cells[id];
     if (cell == null) return {'error': 'exec cell $id not found', 'output': <String>[]};
-    if (input['terminate'] == true) {
+    if (input['terminate'] == true && cell.result == null) {
       cell.terminated = true;
       cell.cancellation.cancel();
     }

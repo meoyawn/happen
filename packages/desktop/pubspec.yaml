@@ -44,7 +44,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/notifications/
-    - assets/sidebar-new-chat.svg
     - assets/file-types/
   fonts:
     - family: Inter

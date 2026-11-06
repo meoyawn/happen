@@ -20,25 +20,31 @@ void main() {
   late StreamSubscription<Json> subscription;
   final events = <Json>[], requests = <Json>[];
   var tool = 'apply_patch', namespace = 'functions', nested = false;
+  var callSerial = 0;
   Object? arguments;
+  final sequence = <Object?>[];
   Future<void> launch() async {
     server = await AgentServer.start(directory: root.path, port: 0, skillsHome: root.path, configPath: '${root.path}/config.yaml',
       endpoint: 'http://127.0.0.1:${provider.port}/responses');
     client = await AgentClient.connect(server.uri); subscription = client.events.stream.listen(events.add);
   }
   Future<Json> read(String id) async => jsonObject(await client.request('thread/read', {'threadId': id, 'includeTurns': true}));
-  List<Json> items(Json page) => [for (final turn in page['thread']['turns'] as List) for (final item in turn['items'] as List) jsonObject(item)];
+  List<Json> items(Json page) => [for (final turn in page['thread']['turns'] as List) for (final item in turn['items'] as List)
+    {for (final entry in jsonObject(item).entries) if (entry.key != 'order') entry.key: entry.value}];
   Future<String> begin() async {
     final id = jsonObject(await client.request('thread/start', {'cwd': root.path}))['thread']['id'] as String;
     await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Run the selected tool.'}]}); return id;
   }
   Future<void> coldReplay(String id, Json item) async {
+    final diffs = (await read(id))['thread']['turns'].map((turn) => turn['diff']).toList();
     await subscription.cancel(); await client.close(); await server.close(); await launch();
-    expect(items(await read(id)).singleWhere((i) => i['id'] == item['id']), item);
-    expect(requests, hasLength(2), reason: 'Cold read cannot repeat host effects or inference.');
+    final requestsBeforeRead = requests.length, page = await read(id);
+    expect(items(page).singleWhere((i) => i['id'] == item['id']), item);
+    expect((page['thread']['turns'] as List).map((turn) => turn['diff']), diffs);
+    expect(requests, hasLength(requestsBeforeRead), reason: 'Cold read cannot repeat host effects or inference.');
   }
   setUp(() async {
-    root = await Directory.systemTemp.createTemp('native-item-effects-'); events.clear(); requests.clear(); nested = false; tool = 'apply_patch'; namespace = 'functions';
+    root = await Directory.systemTemp.createTemp('native-item-effects-'); events.clear(); requests.clear(); sequence.clear(); callSerial = 0; nested = false; tool = 'apply_patch'; namespace = 'functions';
     await File('${root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture',
       'account_id': 'fixture', 'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     await File('${root.path}/config.yaml').writeAsString('{"code_mode_only":false}');
@@ -47,13 +53,15 @@ void main() {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
       if (await respondToThreadName(request, body)) return;
       requests.add(body);
-      final Json call = nested ? {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'cell',
-        'input': tool == 'view_image' ? 'image(await tools.view_image(${jsonEncode(arguments)}));' : 'await tools.apply_patch(${jsonEncode(arguments)});'}
-        : arguments is String ? {'type': 'custom_tool_call', 'namespace': namespace, 'name': tool, 'call_id': 'native', 'input': arguments}
-        : {'type': 'function_call', 'namespace': namespace, 'name': tool, 'call_id': 'native', 'arguments': jsonEncode(arguments)};
+      final serial = ++callSerial;
+      final selected = sequence.isEmpty ? arguments : sequence[(requests.length - 1).clamp(0, sequence.length - 1)];
+      final Json call = nested ? {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'cell$serial',
+        'input': tool == 'view_image' ? 'image(await tools.view_image(${jsonEncode(selected)}));' : 'await tools.apply_patch(${jsonEncode(selected)});'}
+        : selected is String ? {'type': 'custom_tool_call', 'namespace': namespace, 'name': tool, 'call_id': 'native$serial', 'input': selected}
+        : {'type': 'function_call', 'namespace': namespace, 'name': tool, 'call_id': 'native$serial', 'arguments': jsonEncode(selected)};
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {'status': 'completed', 'output': [
-        if (requests.length == 1) call else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]},
+        if (requests.length <= (sequence.isEmpty ? 1 : sequence.length)) call else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]},
       ]}})}\n\n'); await request.response.close();
     });
     await launch();
@@ -84,6 +92,16 @@ void main() {
         if (action == 'delete' || action == 'move') expect(await File('${root.path}/before.txt').exists(), false);
         if (action == 'write failure') expect(await File('${root.path}/blocked').readAsString(), 'not a directory');
         final page = await read(id); expect(items(page).singleWhere((i) => i['id'] == completed['id']), completed);
+        final diffs = events.where((event) => event['method'] == 'turn/diff/updated').toList();
+        if (action == 'write failure') { expect(diffs, isEmpty); }
+        else {
+          expect(diffs, hasLength(1));
+          final diff = diffs.single['params']['diff'] as String;
+          expect(diff, contains(action == 'delete' ? '-before\n' : '+after\n'));
+          expect(page['thread']['turns'].single['diff'], diff);
+          final turns = jsonObject(await client.request('thread/turns/list', {'threadId': id, 'itemsView': 'summary'}));
+          expect(turns['data'].single['diff'], diff);
+        }
         expect(items(page).where((i) => i['type'] == 'dynamicToolCall' && i['tool'] == 'apply_patch'), isEmpty, reason: 'No parallel generic/native item implementation.');
         await coldReplay(id, completed);
       });
@@ -108,6 +126,32 @@ void main() {
       });
     }
   }
+
+  test('turn diff updates accumulate, clear on reversion, reset next turn and survive cold replay', () async {
+    await File('${root.path}/before.txt').writeAsString('before\n');
+    sequence.addAll([
+      '*** Begin Patch\n*** Update File: before.txt\n@@\n-before\n+middle\n*** End Patch',
+      '*** Begin Patch\n*** Update File: before.txt\n@@\n-middle\n+after\n*** End Patch',
+      '*** Begin Patch\n*** Update File: before.txt\n@@\n-after\n+before\n*** End Patch',
+    ]);
+    final done = client.events.stream.firstWhere((event) => event['method'] == 'turn/completed');
+    final id = await begin(); await done.timeout(const Duration(seconds: 15));
+    final diffs = events.where((event) => event['method'] == 'turn/diff/updated').toList();
+    expect(diffs, hasLength(3));
+    expect(diffs[1]['params']['diff'], contains('-before\n+after\n'));
+    expect(diffs[1]['params']['diff'], isNot(contains('middle')));
+    expect(diffs.last['params']['diff'], '');
+    expect((await read(id))['thread']['turns'].single['diff'], '');
+    requests.clear(); sequence.clear(); events.clear();
+    arguments = '*** Begin Patch\n*** Update File: before.txt\n@@\n-before\n+next turn\n*** End Patch';
+    final nextDone = client.events.stream.firstWhere((event) => event['method'] == 'turn/completed');
+    await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Make another change.'}]});
+    await nextDone.timeout(const Duration(seconds: 15));
+    final page = await read(id);
+    expect(page['thread']['turns'], hasLength(2));
+    expect(page['thread']['turns'].last['diff'], contains('-before\n+next turn\n'));
+    await coldReplay(id, items(page).lastWhere((item) => item['type'] == 'fileChange'));
+  });
 
   for (final mode in ['normal', 'steering', 'Stop']) {
     test('native sleep lifecycle survives $mode without a generic MCP item or leaked timer', () async {

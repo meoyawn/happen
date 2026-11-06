@@ -44,6 +44,7 @@ extension _NativeSession on TaskStore {
               'started_at_ms': item['startedAtMs'], 'completed_at_ms': item['completedAtMs']}));
           }
           if (method == 'thread/tokenUsage/updated') lines.add(event('token_count', {'info': params['tokenUsage']}));
+          if (method == 'turn/diff/updated') lines.add(event('turn_diff', {'unified_diff': params['diff']}));
         }
     return (lines: lines, context: context);
   }
@@ -54,7 +55,7 @@ extension _NativeSession on TaskStore {
       throw StateError('Context has no native rollout record');
     }
     final durableRuntime = records.any((record) => const {
-      'input.pending', 'input.delivery', 'input.discarded', 'task.forked', 'task.archived', 'task.unarchived',
+      'input.pending', 'input.delivery', 'input.discarded', 'task.archived', 'task.unarchived',
     }.contains(record['type']));
     if (!entries.any((entry) => entry.batch.lines.isNotEmpty) && changes.isEmpty && !durableRuntime) return 0;
     final nativeCount = _pendingNativeItems.length;

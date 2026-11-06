@@ -3,6 +3,10 @@
 Target: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6` in
 `/Users/meoyawn/Developer/github/codex`.
 
+Embedded runtime behavior has its own
+[applicability ledger](../code_mode/UPSTREAM.md) at the revision referenced by
+`docs/codex-port.md`. QuickJS remains the embedded engine.
+
 These are outstanding differences and verification gaps. Passing the captured
 search cases does not establish complete Codex compatibility.
 
@@ -10,14 +14,14 @@ search cases does not establish complete Codex compatibility.
 
 | Area | Current difference | Evidence and completion condition |
 | --- | --- | --- |
-| Tool instruction text | Model system prompts are copied verbatim, but the descriptions of `functions.exec`, `exec_command`, `write_stdin`, and `apply_patch` in `lib/src/tool_specs.dart` are Happen summaries. The complete tool interface is not word-for-word upstream. | Compare the descriptions and schemas with Codex `code-mode-protocol/src/description.rs`, `core/src/tools/handlers/shell_spec.rs`, and the patch tool spec. Capture the complete supported tool definitions upstream and assert their model-visible text and schemas. |
-| Execution helpers | The shared bootstrap exposes `text`, `image`, `store`, `load`, `tools`, and `console.log`. It lacks Codex's `exit`, `notify`, timer helpers, audio helpers, and yielded-cell operations. Image output is retained separately from text, so interleaved text/image ordering is not identical to upstream. | Compare `../code_mode/lib/src/quickjs.dart` with Codex `code-mode-protocol/src/description.rs`. Verify each implemented helper against the upstream runtime before exposing it. |
-| Unawaited calls | OpenAI uses the shared runtime's default `awaitPending: true`. Codex ends the isolate after evaluation and discards unawaited promises. Happen can wait for a call that Codex would discard. | `lib/src/tool_interface.dart` and `../code_mode/lib/src/quickjs.dart`; Codex's execution description explicitly specifies this lifetime. Add upstream cases for awaited and unawaited work, errors, and cancellation, then match their results. |
-| Process tools | Commands use pipes. PTYs and interactive permission escalation are missing; the `tty` description now advertises only the supported `false` value. Shell host metadata also omits upstream output schemas. | `lib/src/tool_specs.dart`, `lib/src/tools.dart`, and `../tool_runtime/lib/src/process.dart`; compare Codex `core/src/tools/handlers/shell_spec.rs`. Verify PTY behavior, permission arguments, and complete input/output declarations against upstream. |
+| Tool instruction text | Model system prompts are copied verbatim. Runtime/tool descriptions adapt the upstream contract, including the explicit QuickJS engine name, MCP-envelope guidance and settlement helpers. The complete tool interface is not word-for-word upstream. | Compare supported descriptions and schemas with Codex `code-mode-protocol/src/description.rs`, `core/src/tools/handlers/shell_spec.rs`, and the patch tool spec. Preserve intentional embedded-runtime adaptations. |
+| Execution lifecycle proof | Exec/wait, exit, notifications, timers and ordered image/audio output are implemented. Remaining upstream cases include observer preemption, notification cancellation/draining, callback admission and terminal/mixed-media limits. | Follow `../code_mode/UPSTREAM.md`; focused lifecycle and settlement tests do not establish complete runtime parity. |
+| Conversion and diagnostics | Nested calls now snapshot JSON inputs before dispatch and expose serialization errors at the call site. Full helper/store coercion order and diagnostic byte-cap matrices remain unverified. QuickJS's error wording differs from V8. | `../../test/tool_interfaces_test.dart`, `../code_mode/lib/src/quickjs.dart` and the embedded runtime ledger. Keep MCP errors as complete result envelopes. |
+| Process tools | Pipes, PTYs and command output schemas are implemented. Interactive permission escalation remains unsupported; platform parity is unproven. | `lib/src/tool_specs.dart`, `lib/src/tools.dart`, and `../tool_runtime/lib/src/process.dart`; compare Codex `core/src/tools/handlers/shell_spec.rs`. The provider-interface check exercises pipe/PTY stdin and output on macOS. |
 | Command lifetimes | User-selected behavior: `shell_command({command, ...})` exposes one-shot execution separately, while `exec_command` sessions belong to the active task and survive cells and turns until idle unloading/archive/shutdown. The pinned Codex source selects one-shot or resumable behavior for `exec_command`; it does not advertise this separate one-shot declaration. | Codex `core/src/tools/handlers/unified_exec/exec_command.rs` and `core/src/unified_exec/oneshot.rs`; `../../test/tool_cancellation_test.dart` exercises the Happen contract through the real server. |
 | Instruction discovery | Codex-style wrappers and replacement text are implemented, but file discovery, caching, byte budgets, and environment observation still follow Happen's shared agent policy. | `../agent/lib/src/instructions.dart` and `../agent/lib/agent.dart`. Compare discovered files, their precedence and updates, and resumed-task instructions with an upstream session; wrapper fixtures alone do not cover this. |
 | Equal BM25 scores | Rust HashMap iteration leaves the order of equal scores unspecified. Dart uses registration order. Scores match the captured cases, but identical ordering at a tied result boundary is not established. | `lib/src/search/bm25.dart` and `../../test/provider_search_test.dart`. Exercise tied cutoffs in the actual upstream handler; do not describe tie ordering as proven identical. |
-| Runtime and host policies | QuickJS, its memory/CPU/source/host-call limits, process/history ownership, and transport bounds differ from the complete Codex runtime. Delegated agents and the full upstream tool inventory are absent. | `../code_mode/lib/code_mode.dart`, `../code_mode/lib/src/quickjs.dart`, and this provider's tool catalog. Compare observable behavior for each added capability and boundary. |
+| Runtime and host policies | Happen's embedded QuickJS resource limits, process/history ownership and transport bounds are adaptations. ICU/Intl and exact V8 built-ins are engine differences; delegated agents and remote execution are excluded. | `../code_mode/UPSTREAM.md` classifies applicable behavior and intentional exclusions. Compare observable embedded behavior without replacing QuickJS or inventing excluded capabilities. |
 | Web reader | Direct HTTP recovery after an OpenAI inaccessible-page response is a Happen extension. It recognizes the observed error shape, preserves unfamiliar failures, and uses its own page text and line numbering. Dynamic-only pages and binary/PDF documents are not recovered. | `lib/src/web_pages.dart`, `../../test/openai_web_pages_test.dart`, and `../../docs/evidence/openai-web-pages.json`. The live check covered the reported article and model; other failure shapes and platforms remain unverified. |
 
 ## Verification gaps
@@ -73,8 +77,8 @@ code-mode-only description builder. This makes shell and patch tools visible
 without searching the deferred catalog. Existing tasks receive the current
 definition changes as append-only updates, including after compaction. The context
 discovery regression verifies those declarations, file reads and edits, and the
-reported query's empty deferred result. Complete upstream description text and
-unsupported runtime helpers remain the separate gaps above.
+reported query's empty deferred result. Complete supported description coverage
+and the remaining runtime lifecycle matrices are tracked separately above.
 
 OpenAI sessions use the incremental-tools window layout in the pinned
 Codex source: tool declarations followed by the developer base prompt in history,

@@ -152,7 +152,6 @@ class TaskStore {
       }
       if ({'tool.started', 'host_tool.started'}.contains(type) &&
           {'exec_command', 'write_stdin', 'shell'}.contains(data['name'])) next['runtimeHasHandles'] = true;
-      if (type == 'task.forked') next['forkedFromId'] = data['parent_id'];
       record['notifications'] = threadNotifications(taskId, record, next);
       records.add(record);
     }

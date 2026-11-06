@@ -11,6 +11,7 @@ import 'cancellation.dart';
 import 'content.dart';
 import 'media.dart';
 import 'output.dart';
+import 'settled.dart';
 
 export 'bindings.dart' show nativeThreadId;
 
@@ -303,7 +304,7 @@ String _describeCellError(String error, String source) {
     '$prefix${line.substring(start, end)}$suffix\n$indent^';
 }
 
-const _bootstrap = outputBootstrap + r'''
+const _bootstrap = outputBootstrap + settlementBootstrap + r'''
 var ALL_TOOLS = [];
 var __cell = (() => {
   // Match V8's useful JSON diagnostics while preserving native parsing,
@@ -500,8 +501,12 @@ var __cell = (() => {
   function hostCall(name, args) {
     if (exited) throw exitSignal;
     if (pending.size >= 64) throw new Error("Too many outstanding host calls");
+    // Snapshot at the call site, like Codex's tool callback. Delaying this until
+    // poll() admits later mutations and moves serialization errors outside catch.
+    const encoded = JSON.stringify(args ?? {});
+    const input = encoded === undefined ? {} : parseJson(encoded);
     const id = next++;
-    requests.push({id, name, args: args ?? {}});
+    requests.push({id, name, args: input});
     return new Promise((resolve, reject) => { pending.set(id, {resolve, reject}); });
   }
   const tools = new Proxy({}, {get(_, name) { return args => hostCall(String(name), args); }});

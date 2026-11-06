@@ -8,6 +8,16 @@ import 'package:telemetry/telemetry.dart';
 
 typedef HistorySegment = ({TracedDatabase db, String id, int end});
 
+String? _turnDiff(TracedDatabase db, String turn, int start, int end) {
+  final row = db.select(r'''SELECT json_extract(line,'$.payload.unified_diff') AS diff
+    FROM rollout_lines WHERE ordinal >= ? AND ordinal < ?
+      AND json_extract(line,'$.type') IS 'event_msg'
+      AND json_extract(line,'$.payload.type') IS 'turn_diff'
+      AND json_extract(line,'$.payload.turn_id') IS ?
+    ORDER BY ordinal DESC LIMIT 1''', [start, end, turn]).firstOrNull;
+  return row?['diff'] as String?;
+}
+
 Object? storedMetadata(TracedDatabase db, String key) {
   final row = db.select('SELECT value FROM metadata WHERE key IS ?', [key]).firstOrNull;
   return row == null ? null : jsonDecode(row['value'] as String);
@@ -68,6 +78,9 @@ T withHistoryLineage<T>(String directory, String id, TracedDatabase own, T Funct
       }
       db = openTracedDatabase(path.path, mode: OpenMode.readOnly);
       opened.add(db);
+      // Concurrent cold readers can briefly compete to recover an ancestor's
+      // WAL index. Keep the wait on this read-only connection, never its writer.
+      db.execute('PRAGMA busy_timeout=1000');
       db.execute('PRAGMA query_only=ON'); db.execute('BEGIN');
       final position = db.select('SELECT byte_offset+byte_length AS end FROM rollout_lines WHERE ordinal IS ?', [ordinal - 1]).firstOrNull;
       if (position == null || position['end'] != bytes) throw const FormatException('Invalid paginated history lineage: cutoff outside source rollout');
@@ -152,6 +165,7 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
         turns.remove(previous);
         final terminalVisible = row['rollout_end_ordinal'] != null && (row['rollout_end_ordinal'] as int) < segment.end;
         turns.add({'id': row['turn_id'], 'rootTurnId': row['root_turn_id'], 'items': <Json>[], 'itemsView': 'full',
+          'diff': _turnDiff(segment.db, row['turn_id'] as String, row['rollout_ordinal'] as int, segment.end) ?? previous?['diff'],
           'status': terminalVisible ? row['status'] : 'inProgress', 'error': !terminalVisible || row['error_json'] == null ? null : jsonDecode(row['error_json'] as String),
           'startedAt': previous?['startedAt'] ?? row['started_at'], 'completedAt': terminalVisible ? row['completed_at'] : null, 'durationMs': terminalVisible ? row['duration_ms'] : null,
           '_ordinal': row['rollout_ordinal'], '_source': segment.id,
@@ -162,7 +176,8 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
     turns.sort((a, b) => (a['_ordinal'] as int).compareTo(b['_ordinal'] as int));
     Json publicTurn(Json turn) => {for (final field in turn.entries) if (!field.key.startsWith('_')) field.key: field.value,
       'items': [for (final entry in items.where((entry) => entry['turnId'] == turn['id'])) {
-        ...jsonObject(entry['item']), 'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'],
+        ...jsonObject(entry['item']), 'order': entry['_ordinal'],
+        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'],
       }]};
     if (method == 'thread/boundary') {
       final name = params['lastTurnId'] ?? params['beforeTurnId'];
@@ -222,19 +237,20 @@ Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json
       final Json value;
       if (itemPage) {
         value = {'turnId': row['turn_id'], 'item': jsonDecode(row['item_json'] as String),
-          'startedAtMs': row['started_at_ms'], 'completedAtMs': row['completed_at_ms']};
+          'order': row['rollout_ordinal'], 'startedAtMs': row['started_at_ms'], 'completedAtMs': row['completed_at_ms']};
       } else {
         final view = params['itemsView'] as String? ?? 'summary';
         if (!{'summary', 'full', 'notLoaded'}.contains(view)) throw const FormatException('Invalid itemsView');
         final itemRows = view == 'notLoaded' ? <Map<String, Object?>>[] : segment.db.select(
-          'SELECT item_json,started_at_ms,completed_at_ms FROM thread_items WHERE turn_id IS ? AND rollout_ordinal < ? '
+          'SELECT item_json,rollout_ordinal,started_at_ms,completed_at_ms FROM thread_items WHERE turn_id IS ? AND rollout_ordinal < ? '
           '${view == 'summary' ? 'AND item_id IN (?,?)' : ''} ORDER BY rollout_ordinal',
           [row['turn_id'], segment.end, if (view == 'summary') ...[row['first_user_item_id'], row['final_agent_item_id']]]);
         value = {'id': row['turn_id'], 'rootTurnId': row['root_turn_id'], 'itemsView': view,
+          'diff': _turnDiff(segment.db, row['turn_id'] as String, row['rollout_ordinal'] as int, segment.end),
           'status': row['status'], 'error': row['error_json'] == null ? null : jsonDecode(row['error_json'] as String),
           'startedAt': row['started_at'], 'completedAt': row['completed_at'], 'durationMs': row['duration_ms'],
           'items': [for (final item in itemRows) {...jsonObject(jsonDecode(item['item_json'] as String)),
-            'startedAtMs': item['started_at_ms'], 'completedAtMs': item['completed_at_ms']}]};
+            'order': item['rollout_ordinal'], 'startedAtMs': item['started_at_ms'], 'completedAtMs': item['completed_at_ms']}]};
       }
       final size = utf8.encode(jsonEncode(value)).length;
       if (size > maxClientFrameBytes - 4096) throw const FormatException('History item exceeds frame budget');

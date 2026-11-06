@@ -5,5 +5,7 @@ This project includes code derived from Ratatui (https://github.com/ratatui/rata
 Copyright (c) 2016-2022 Florian Dehau
 Copyright (c) 2023-2025 The Ratatui Developers
 
-Happen contains modified Dart ports of Codex storage, protocol, goal, and side-conversation behavior.
+Happen contains modified Dart ports of Codex storage, protocol, goal, fork, side-conversation, and shell snapshot behavior.
 See ../../../docs/codex-port.md for source revisions and adaptations.
+See ../../tool_runtime/UPSTREAM.md for the shell snapshot port and its applicability ledger.
+See ../../code_mode/UPSTREAM.md for the embedded QuickJS adaptation and settlement combinators.

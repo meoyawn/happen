@@ -147,6 +147,36 @@ text({moduleValue, moduleThis: this === undefined});
     expect(invoked, ['mcp__archive___probe', 'client___probe']);
   });
 
+  test('Codex nested calls snapshot JSON inputs and expose serialization errors at the call site', () async {
+    const interface = OpenAIToolInterface();
+    final runtime = interface.createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    final inputs = <Object?>[];
+    final result = await runtime.execute(ToolCall(id: newId(), name: 'exec', format: 'text', input: r'''
+const input = {nested: {value: "before"}};
+const pending = tools.echo(input);
+input.nested.value = "after";
+text(await pending);
+const circular = {}; circular.self = circular;
+const caught = [];
+for (const value of [1n, circular, {toJSON() { throw new Error("bad arguments"); }}]) {
+  try { tools.echo(value); caught.push(false); }
+  catch (_) { caught.push(true); }
+}
+text(caught);
+text(await tools.echo({toJSON() { return ["ready"]; }}));
+'''), ToolExecution(catalog: (_) async => [{'name': 'echo', 'description': 'Echo input'}],
+      values: const {}, cancellation: cancellation,
+      call: (_, input, {required cancellation}) async { inputs.add(input); return input; }));
+    expect(result['error'], isNull, reason: 'Invalid arguments must be catchable before host dispatch');
+    expect((result['output'] as List).cast<String>().map(jsonDecode).toList(), [
+      {'nested': {'value': 'before'}}, [true, true, true], ['ready'],
+    ]);
+    expect(inputs, [
+      {'nested': {'value': 'before'}}, ['ready'],
+    ]);
+  });
+
   test('Codex code mode preserves MCP result envelopes and printable host failures', () async {
     const interface = OpenAIToolInterface();
     final runtime = interface.createRuntime(root.path, cancellation);
@@ -254,6 +284,22 @@ text(results[1].value.structuredContent);
       final ended = await exec(source);
       expect(ended['error'], isNull, reason: 'exit terminates native execution, including finally blocks and timer callbacks');
       expect(ended['output'], ['before-exit']);
+    }
+
+    for (final failed in [false, true]) {
+      final pending = await exec('yield_control(); await tools.block({}); store("settled", true); '
+        '${failed ? 'throw new Error("settled failure");' : 'text("settled");'}');
+      final deadline = TimeoutCancellationToken(const Duration(seconds: 3));
+      try {
+        while (runtime.hasRunningCells) {
+          await cancellableDelay(Duration.zero, cancellation.merge(deadline));
+        }
+      } finally { deadline.cancel(); }
+      final settled = await runtime.execute(_call('wait', {'cell_id': pending['cell_id'], 'terminate': true}), context);
+      expect(settled['terminated'], isNull, reason: 'A completed result takes precedence over a late termination request');
+      expect(settled['values'], containsPair('settled', true));
+      if (failed) { expect(settled['error'], contains('settled failure')); }
+      else { expect(settled['output'], ['settled']); }
     }
   });
 

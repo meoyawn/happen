@@ -73,9 +73,8 @@ time and also accepts `created_at`. `limit` defaults to 100, with a maximum of 5
 Opaque cursors retain the original filters and order.
 
 The server generates and saves a context name in the background when a persistent
-thread starts working. Listing also queues existing unnamed conversations, with
-at most two naming requests at once. Naming uses a separate model request without
-tools or extra conversation turns. It continues after a client disconnects,
+thread starts working. Naming uses a separate model request without tools or
+extra conversation turns. It continues after a client disconnects,
 preserves existing names, and does not change activity ordering. All connected
 clients receive `thread/name/updated`; desktop renders `name`, falling back to
 `preview` until a name is available. Ephemeral threads are excluded.
@@ -443,6 +442,17 @@ when present; `content` text can be ordinary text or an error message, so only
 use `JSON.parse` when the tool documents JSON output. Host exceptions reject with
 error text, preserving the message when an `allSettled` result is printed.
 
+Nested tool arguments are JSON snapshots taken when the call is made. Later
+mutations do not change the host input. Serialization errors, such as circular
+objects or BigInt arguments, throw at the call site and can be caught there.
+
+OpenAI cells also expose `as_settled(iterable)` and
+`stream_settled(iterable, emit)`. They consume results in settlement order,
+including rejections, with `{index, status, value}` or `{index, status, reason}`
+records. A Map preserves its keys as `index`; other iterables use input positions.
+`stream_settled` awaits each callback. Breaking an `as_settled` loop closes the
+iterator; it does not cancel the input promises.
+
 OpenCode follows its own runtime: inside `execute({code})`, call
 `await search({query, namespace, limit, offset})`. Query and namespace are optional;
 the default page size is 10. Results contain `items` with exact callable `path`,
@@ -453,11 +463,13 @@ It does not load native schemas. The catalog shares a 2,000-token estimate acros
 namespaces and always includes pinned entries. MCP server instructions render
 separately. File/shell/web tools are ordinary native calls outside `execute`.
 
-In OpenAI code mode, `store(key, value)` saves an explicit JSON snapshot for `load(key)` in later
-cells. Successful cells persist these values with the task; model output includes
-only what the cell prints. Stored values have no separate serialized-size cap.
-They still share the cell's default 32 MiB QuickJS memory budget and execution
-limits, so retaining large results increases the memory needed by later cells.
+In OpenAI code mode, `store(key, value)` saves an explicit JSON snapshot for
+`load(key)` in later cells. Completed cells merge their writes into the session,
+including writes made before a script error. Observed values persist with the
+task; model output includes only what the cell prints. Stored values have no
+separate serialized-size cap. OpenAI cells use a 256 MiB QuickJS memory budget;
+the one-shot CodeMode API defaults to 32 MiB. Retaining large results increases
+the memory needed by later cells.
 
 ## Web search
 
@@ -616,9 +628,24 @@ or `interrupted` status. Happen extensions use `happen/…` notifications.
 | `thread/unsubscribe` | `threadId`. Removes only this connection's subscription; returns `unsubscribed`, `notSubscribed`, or `notLoaded`. Never cancels a running turn. |
 | `turn/start` | `threadId`, `input`, optional `effort`, `delivery`. Starts or queues input and subscribes this connection. |
 | `turn/steer` / `turn/interrupt` | `threadId`, `expectedTurnId` and `input` for steering, or `turnId` for interruption. |
-| `thread/fork` | `threadId`, optional `lastTurnId` or `beforeTurnId`. Structurally shares the immutable committed prefix. |
+| `thread/fork` | `threadId`, optional stored SQLite `path`, `lastTurnId` or `beforeTurnId`, `excludeTurns`, `model`, `modelProvider`, `cwd`, `settings`, `reasoning`, `baseInstructions`, `developerInstructions`, `ephemeral`. Structurally shares the selected immutable prefix and subscribes the caller to the new thread. |
 | `thread/archive` / `thread/unarchive` | `threadId`. Archives/restores metadata in place without moving history. Archive drains active work, detaches every client subscription, and releases thread-owned resources. |
 | `thread/goal/get` / `thread/goal/set` / `thread/goal/clear` | `threadId`; set accepts partial objective/status/budget changes. |
+
+Forks inherit the saved name and effective configuration; overrides apply to the
+child. `lastTurnId` includes a terminal turn, while `beforeTurnId` excludes its
+turn and everything after it. Omitting both freezes the latest prefix, marking
+any unfinished turn interrupted only in the child. The response precedes restored
+token usage and the global, metadata-only `thread/started` notification.
+`excludeTurns` skips usage replay and allows history to be paged separately.
+Ephemeral forks require `excludeTurns: true`, remain pathless, and stay out of
+saved thread listings.
+
+History items expose Happen's `order` field from their canonical rollout position,
+including items embedded in full turns and turn summaries. Clients retain that
+order across pages; timestamps do not determine transcript order. Snapshot
+`liveItems` contain unfinished items, and `notificationThrough` is captured before
+the history read so later notifications remain replayable.
 
 Happen's global `idle_unload_seconds` defaults to 60. A full delay must elapse
 after both turn activity and the final subscriber are gone. Resubscription
@@ -751,7 +778,6 @@ shown as interrupted rather than left spinning.
 | `task.cancel` | `task_id`. Cancels the turn and caller-owned tools; task-owned sessions survive. |
 | `task.archive` / `task.unarchive` | `task_id`. Stops work and archives a task, or restores it. History is retained. |
 | `task.subscribe` | `task_id`. Subscribes this connection to future task events and returns `running` and pending inputs. |
-| `task.fork` | `task_id`, optional `through` event sequence. References an immutable committed prefix; returns a new `task_id`. |
 | `history.page` | `task_id`, optional `after` sequence and `limit` (1–500). |
 | `history.export` | `task_id`, `path` on the server. Requires an idle task. |
 | `history.import` | `path` on the server, optional `operation_id` for idempotent retries. Validates the bundle before publishing a task. |

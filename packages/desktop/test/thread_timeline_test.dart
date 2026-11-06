@@ -1,5 +1,6 @@
 // T3Code MessagesTimeline / CodexAdapterV2 item lifecycle contracts, in Flutter.
 import 'package:desktop/conversation.dart';
+import 'package:desktop/conversation_activity.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,7 +34,73 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Inspect the file', findRichText: true), findsOneWidget);
     expect(find.text('The answer is 42', findRichText: true), findsOneWidget);
-    expect(find.textContaining('Used', findRichText: true), findsOneWidget);
+    await tester.tap(find.text('Worked'));
+    await tester.pumpAndSettle();
+    expect(find.text('Read 1 file'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('steering shows Thinking until new reasoning, tools or text take over', (tester) async {
+    final task = DesktopTask('thread', 'Steering')..loaded = true..running = true;
+    addTearDown(task.liveText.dispose);
+    task.turns['turn'] = {'id': 'turn', 'status': 'inProgress'};
+    Finder thinking(String label) => find.byWidgetPredicate((widget) =>
+      widget is ThinkingLabel && widget.label == label);
+    void item(Json value, {bool live = false}) => applyThreadNotification(task.messages, {
+      'method': live ? 'item/started' : 'item/completed',
+      'params': {'turnId': 'turn', 'item': value},
+    });
+    Future<void> render() async {
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: ConversationTranscript(
+        task: task, directory: '/project', onRetry: () {}))));
+      await tester.pump();
+    }
+    item({'id': 'user', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Start'}]});
+    item({'id': 'old', 'type': 'reasoning', 'summary': ['Earlier thought']}, live: true);
+    await render();
+    expect(thinking('Earlier thought'), findsOneWidget);
+
+    for (final id in ['steer', 'second-steer']) {
+      item({'id': id, 'type': 'userMessage', 'content': [{'type': 'text', 'text': id}]});
+      task.lastSentID = id;
+      await render();
+      expect(thinking('Thinking'), findsOneWidget);
+      expect(thinking('Earlier thought'), findsNothing);
+      expect(tester.getTopLeft(thinking('Thinking')).dy,
+        greaterThan(tester.getBottomLeft(find.text(id, findRichText: true)).dy));
+    }
+
+    item({'id': 'next', 'type': 'reasoning', 'summary': ['Checking the follow-up']}, live: true);
+    await render();
+    expect(thinking('Checking the follow-up'), findsOneWidget);
+    expect(thinking('Thinking'), findsNothing);
+
+    item({'id': 'read', 'type': 'dynamicToolCall', 'tool': 'read',
+      'arguments': {'path': 'input.txt'}, 'status': 'inProgress'}, live: true);
+    await render();
+    expect(thinking('Thinking'), findsNothing);
+    expect(thinking('Checking the follow-up'), findsNothing);
+
+    item({'id': 'read', 'type': 'dynamicToolCall', 'tool': 'read',
+      'arguments': {'path': 'input.txt'}, 'status': 'completed'});
+    await render();
+    expect(thinking('Thinking'), findsOneWidget);
+
+    item({'id': 'after-tool', 'type': 'reasoning', 'summary': ['Checking the result']}, live: true);
+    await render();
+    expect(thinking('Checking the result'), findsOneWidget);
+    expect(thinking('Thinking'), findsNothing);
+
+    item({'id': 'answer', 'type': 'agentMessage', 'text': 'Answering the follow-up'}, live: true);
+    await render();
+    expect(thinking('Thinking'), findsNothing);
+
+    item({'id': 'answer', 'type': 'agentMessage', 'text': 'Done', 'phase': 'final_answer'});
+    task.turns['turn'] = {'id': 'turn', 'status': 'completed'};
+    task.running = false;
+    await render();
+    expect(find.byType(ThinkingLabel), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

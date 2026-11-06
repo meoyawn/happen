@@ -93,17 +93,41 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('native context compaction has one disclosure and no duplicate working progress', (tester) async {
-    final current = task()..running = true..messages['compact'] = {
-      'id': 'compact', 'type': 'contextCompaction', 'live': true, 'status': 'inProgress', 'startedAtMs': 1000,
+  testWidgets('context compaction preserves item order despite missing or reordered timestamps', (tester) async {
+    final current = task()..running = true..messages['user'] = {
+      'id': 'user', 'type': 'userMessage', 'order': 0, 'startedAtMs': 9000,
+      'content': [{'type': 'text', 'text': 'Initial prompt'}],
     };
+    final state = <String, dynamic>{'turnID': 'turn'};
+    void compact(String type, int time) {
+      for (final event in threadNotifications(current.id, {
+        'type': type, 'data': <String, dynamic>{},
+        'created_at': DateTime.fromMillisecondsSinceEpoch(time, isUtc: true).toIso8601String(),
+      }, state)) { applyThreadNotification(current.messages, event); }
+    }
+    compact('compaction.started', 2000);
     await open(tester, current); await tester.pump();
     expect(find.text('Compacting context'), findsWidgets); expect(find.text('Working'), findsNothing);
-    current.messages['compact'] = {...current.messages['compact']!, 'live': false, 'status': 'completed', 'completedAtMs': 2000};
+    compact('context.compacted', 3000);
+    current.messages['reply'] = answer('reply', 'Ready to continue', 4);
     current.running = false;
     await open(tester, current); await tester.pumpAndSettle();
     expect(find.text('Context compacted'), findsOneWidget);
     expect(find.text('Compacting context'), findsNothing);
+    void expectOrder() {
+      final prompt = tester.getTopLeft(find.text('Initial prompt', findRichText: true)).dy;
+      final compaction = tester.getTopLeft(find.text('Context compacted')).dy;
+      final reply = tester.getTopLeft(find.text('Ready to continue', findRichText: true)).dy;
+      expect(prompt, lessThan(compaction));
+      expect(compaction, lessThan(reply));
+    }
+    expectOrder();
+    expect(current.messages['turn:compaction']!['startedAtMs'], 2000);
+    // Saved compactions can have only their completion timestamp.
+    current.messages['turn:compaction'] = {...current.messages['turn:compaction']!}..remove('startedAtMs');
+    await open(tester, current); await tester.pumpAndSettle();
+    expectOrder();
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('inline and relative images preview and missing images fail gracefully', (tester) async {

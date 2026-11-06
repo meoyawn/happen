@@ -20,6 +20,7 @@ import 'context_usage.dart';
 import 'panel_state.dart';
 import 'session_panels.dart';
 import 'dictation.dart';
+import 'dictation_state.dart';
 import 'dictation_controls.dart';
 import 'desktop_toast.dart';
 import 'file_autocomplete.dart';
@@ -635,6 +636,8 @@ class _DesktopViewState extends State<DesktopView> {
                       onRetryTurn: (task) => unawaited(_run(() => session.retry(task))),
                       onLoadEarlier: (task) => unawaited(_run(() => session.loadEarlier(task))),
                       onPendingAction: (task, inboxID, action) => _run(() => session.changePending(task, inboxID, action)),
+                      onFork: session.connected && session.project?.available == true && session.project?.removing != true
+                        ? (task, turnId) => _run(() => session.forkFromResponse(task, turnId)) : null,
                   ))),
                   if (session.project != null && session.project!.available && session.task?.archived != true)
                     McpConversationAuth(key: ValueKey(session.client), client: session.client),
@@ -773,12 +776,13 @@ class _ComposerState extends State<_Composer> {
   DictationService get _voice => widget.session.dictation;
   bool get _ownsVoice => identical(_voice.owner, _voiceOwner);
   bool get _dictating => _ownsVoice && (_voice.active || _finishingVoice);
-  DictationUiPhase get _voicePhase => !_ownsVoice ? DictationUiPhase.idle : switch (_voice.phase) {
-    DictationPhase.idle => _finishingVoice ? DictationUiPhase.transcribing : DictationUiPhase.idle,
-    DictationPhase.starting => DictationUiPhase.starting,
-    DictationPhase.recording => DictationUiPhase.recording,
-    DictationPhase.transcribing => DictationUiPhase.transcribing,
-    DictationPhase.failed => _voice.canRetry ? DictationUiPhase.retry : DictationUiPhase.idle,
+  DictationUiPhase get _voicePhase => !_ownsVoice ? DictationUiPhase.idle : switch (_voice.state) {
+    DictationIdle() => _finishingVoice ? DictationUiPhase.transcribing : DictationUiPhase.idle,
+    DictationStarting() => DictationUiPhase.starting,
+    DictationRecording() => DictationUiPhase.recording,
+    DictationTranscribing() => DictationUiPhase.transcribing,
+    DictationFailed(:final canRetry) => canRetry ? DictationUiPhase.retry : DictationUiPhase.idle,
+    DictationDisposed() => DictationUiPhase.idle,
   };
 
   void _bindVoice() {
@@ -831,6 +835,7 @@ class _ComposerState extends State<_Composer> {
   Future<void> _finishVoice(DictationAction action, {bool retry = false}) async {
     if (!_ownsVoice || _finishingVoice) return;
     final owner = _voiceOwner;
+    if (retry && widget.active) _focus.requestFocus();
     setState(() => _finishingVoice = true);
     try {
       final result = retry ? await _voice.retry(action) : await _voice.stop(action);
@@ -1199,7 +1204,7 @@ class _ComposerState extends State<_Composer> {
               if (answer == null)
               const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
                 if (!controller.value.composing.isCollapsed) return;
-                if (_ownsVoice && (_dictating || _voice.phase == DictationPhase.failed)) unawaited(_cancelVoice());
+                if (_ownsVoice && (_dictating || _voice.state is DictationFailed)) unawaited(_cancelVoice());
               },
               const SingleActivator(LogicalKeyboardKey.enter, shift: true): () => _newline(controller),
               const SingleActivator(
@@ -1349,7 +1354,7 @@ class _ComposerState extends State<_Composer> {
                           else ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
                             final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty;
                             final stopWorking = running && !hasContent && !_dictating;
-                            final dictationCanSend = _dictating && _voice.phase == DictationPhase.recording && !_finishingVoice;
+                            final dictationCanSend = _dictating && _voice.state is DictationRecording && !_finishingVoice;
                             return IconButton.filled(
                             style: IconButton.styleFrom(
                               backgroundColor: conversationAccent, foregroundColor: Colors.white,

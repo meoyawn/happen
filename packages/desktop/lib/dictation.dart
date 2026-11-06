@@ -9,7 +9,8 @@ import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
-enum DictationPhase { idle, starting, recording, transcribing, failed }
+import 'dictation_state.dart';
+
 enum DictationAction { insert, send }
 
 class DictationResult {
@@ -29,8 +30,9 @@ class DictationService extends ChangeNotifier {
   static const _audioEvents = EventChannel('happen/dictation/audio');
   static const _maximumAudioBytes = 16000 * 2 * 600;
   final amplitude = ValueNotifier<double>(0);
-  DictationPhase phase = DictationPhase.idle;
-  String? error;
+  DictationState _state = const DictationIdle();
+  DictationState get state => _state;
+  String? get error => switch (_state) { DictationFailed(:final error) => error, _ => null };
   String transcript = '';
   bool liveTranscription = false;
   String? _liveStatus;
@@ -41,10 +43,15 @@ class DictationService extends ChangeNotifier {
     _ => null,
   };
   Object? owner;
-  bool microphonePermissionDenied = false;
-  bool get active => phase == DictationPhase.starting || phase == DictationPhase.recording || phase == DictationPhase.transcribing;
-  bool get canRetry => phase == DictationPhase.failed && _audioBytes > 0;
-  bool _disposed = false;
+  bool get microphonePermissionDenied => switch (_state) {
+    DictationFailed(microphonePermissionDenied: true) => true, _ => false,
+  };
+  bool get active => switch (_state) {
+    DictationStarting() || DictationRecording() || DictationTranscribing() => true,
+    DictationIdle() || DictationFailed() || DictationDisposed() => false,
+  };
+  bool get canRetry => switch (_state) { DictationFailed(canRetry: true) => true, _ => false };
+  bool get _disposed => _state is DictationDisposed;
   int _generation = 0, _audioBytes = 0;
   String? _accountId, _captureId;
   final _audio = <Uint8List>[];
@@ -64,15 +71,12 @@ class DictationService extends ChangeNotifier {
     _clearAudio();
     _accountId = null;
     this.owner = owner;
-    error = null;
     transcript = '';
     this.liveTranscription = liveTranscription;
     _liveStatus = liveTranscription ? 'connecting' : null;
-    microphonePermissionDenied = false;
-    phase = DictationPhase.starting;
     final id = newId();
     final cancellation = _operation = CancellationToken();
-    _publish();
+    _transition(const DictationStarting());
     try {
       if (!Platform.isMacOS) throw StateError('Dictation is not available on this device');
       // A rebuilt native runner is required before authorizing or asking for mic access.
@@ -90,10 +94,9 @@ class DictationService extends ChangeNotifier {
       _clock = Stopwatch()..start();
       _onRecordingLimit = onRecordingLimit;
       _limit = Timer(const Duration(seconds: 595), () {
-        if (_current(generation) && phase == DictationPhase.recording) _onRecordingLimit?.call();
+        if (_current(generation) && _state is DictationRecording) _onRecordingLimit?.call();
       });
-      phase = DictationPhase.recording;
-      _publish();
+      _transition(const DictationRecording());
       if (liveTranscription) _streamOpening = _openStream(generation, authorization, cancellation);
     } catch (failure) {
       if (!_current(generation)) return;
@@ -101,19 +104,16 @@ class DictationService extends ChangeNotifier {
       if (!_current(generation)) return;
       cancellation.cancel();
       _clearAudio();
-      microphonePermissionDenied = failure is PlatformException && failure.code == 'microphone_permission';
-      error = _userError(failure, starting: true);
-      phase = DictationPhase.failed;
-      _publish();
+      _transition(DictationFailed(_userError(failure, starting: true),
+        microphonePermissionDenied: failure is PlatformException && failure.code == 'microphone_permission'));
     }
   }
 
   Future<DictationResult?> stop(DictationAction action) async {
-    if (_disposed || phase != DictationPhase.recording) return null;
+    if (_state is! DictationRecording) return null;
     final generation = _generation;
-    phase = DictationPhase.transcribing;
     _limit?.cancel();
-    _publish();
+    _transition(const DictationTranscribing());
     await _releaseCapture();
     if (!_current(generation)) return null;
     if ((_clock?.elapsedMilliseconds ?? 0) < 250 || _audioBytes == 0) {
@@ -128,9 +128,7 @@ class DictationService extends ChangeNotifier {
     final generation = ++_generation;
     _operation?.cancel();
     _operation = CancellationToken();
-    error = null;
-    phase = DictationPhase.transcribing;
-    _publish();
+    _transition(const DictationTranscribing());
     return _finish(generation, action, useStreaming: false);
   }
 
@@ -192,16 +190,12 @@ class DictationService extends ChangeNotifier {
       _closeStream();
       _clearAudio();
       _accountId = null;
-      phase = DictationPhase.idle;
-      error = null;
-      _publish();
+      _transition(const DictationIdle());
       return result;
     } catch (failure) {
       if (!_current(generation)) return null;
       _closeStream();
-      error = _userError(failure);
-      phase = DictationPhase.failed;
-      _publish();
+      _transition(DictationFailed(_userError(failure), canRetry: _audioBytes > 0));
       return null;
     }
   }
@@ -217,11 +211,9 @@ class DictationService extends ChangeNotifier {
     _captureId = null;
     _clearAudio();
     owner = null;
-    error = null;
     transcript = '';
     _liveStatus = null;
-    microphonePermissionDenied = false;
-    phase = DictationPhase.idle;
+    _transition(const DictationIdle(), notify: false);
     await release;
     if (_current(generation)) _publish();
   }
@@ -250,9 +242,7 @@ class DictationService extends ChangeNotifier {
     _closeStream();
     unawaited(_releaseCapture().then((_) {
       if (!_current(generation)) return;
-      error = _userError(failure, starting: true);
-      phase = DictationPhase.failed;
-      _publish();
+      _transition(DictationFailed(_userError(failure, starting: true), canRetry: _audioBytes > 0));
     }));
   }
 
@@ -288,6 +278,10 @@ class DictationService extends ChangeNotifier {
   }
 
   bool _current(int generation) => !_disposed && _generation == generation;
+  void _transition(DictationState next, {bool notify = true}) {
+    _state = transitionDictation(_state, next);
+    if (notify) _publish();
+  }
   void _publish() { if (!_disposed) notifyListeners(); }
 
   @override
@@ -297,7 +291,7 @@ class DictationService extends ChangeNotifier {
     _operation?.cancel();
     _closeStream();
     unawaited(_releaseCapture());
-    _disposed = true;
+    _transition(const DictationDisposed());
     owner = null;
     unawaited(_subscription?.cancel());
     _clearAudio();

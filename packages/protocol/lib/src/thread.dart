@@ -78,6 +78,9 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
     emit(started ? 'item/started' : 'item/completed', {'turnId': data['turnId'], 'item': {
       ...value, 'startedAtMs': start, if (!started) 'completedAtMs': data['completedAtMs'] ?? now,
     }});
+    if (!started && data.containsKey('turnDiff')) {
+      emit('turn/diff/updated', {'turnId': data['turnId'], 'diff': data['turnDiff']});
+    }
   }
   for (final completion in (data['nativeCompletions'] as List? ?? []).map(jsonObject)) { nativeItem(completion); }
   switch (record['type']) {
@@ -168,11 +171,13 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
       }
     case 'compaction.started':
       state['compactionID'] = '${state['turnID'] ?? turn}:compaction';
+      state['compactionStarted'] = now;
       item({'id': state['compactionID'], 'type': 'contextCompaction', 'summary': '', 'status': 'inProgress', 'startedAtMs': now}, started: true);
     case 'context.compacted':
     case 'compaction.cancelled':
       item({'id': state.remove('compactionID') ?? '$turn:compaction', 'type': 'contextCompaction',
-        'summary': data['summary'] ?? '', 'status': record['type'] == 'context.compacted' ? 'completed' : 'interrupted', 'completedAtMs': now});
+        'summary': data['summary'] ?? '', 'status': record['type'] == 'context.compacted' ? 'completed' : 'interrupted',
+        'startedAtMs': state.remove('compactionStarted') ?? now, 'completedAtMs': now});
     case 'model.retrying':
       state['ordinal'] = state['completedOrdinal'] ?? 0;
       state.remove('streamType');
@@ -209,7 +214,8 @@ void applyThreadNotification(Map<String, Json> items, Json notification) {
     final value = jsonObject(params['item']), id = requiredString(value, 'id');
     if (method == 'item/started' && items[id]?['completedAtMs'] != null) return;
     items[id] = {...value, 'turnId': params['turnId'], 'live': method == 'item/started',
-      'order': items[id]?['order'] ?? items.length};
+      'order': items[id]?['order'] ?? items.values.fold<int>(0, (next, item) =>
+        (item['order'] as int? ?? -1) >= next ? (item['order'] as int) + 1 : next)};
   } else if (method == 'item/agentMessage/delta' || method == 'item/reasoning/summaryTextDelta') {
     final id = requiredString(params, 'itemId'), previous = items[id];
     if (previous == null || previous['live'] != true) return;

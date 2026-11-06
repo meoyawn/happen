@@ -10,7 +10,6 @@ Copyright 2025 OpenAI, licensed under Apache-2.0; see
 [CODEX-NOTICE](../packages/openai/tools/CODEX-NOTICE).
 
 Only unfinished work is tracked here. **Final-source verification is pending.**
-Desktop work and Flutter tests remain paused.
 
 ## Remaining gaps — handoff priority
 
@@ -69,18 +68,23 @@ counts, inferred Codex budgets or a Happen-only fixture for that comparison.
   cases in `core/tests/suite/client.rs`, `core/tests/suite/compact.rs`,
   `core/tests/suite/token_usage_rollout.rs` and `core/src/state/session.rs`.
   Focused family coverage is not blanket agent-loop or usage-replay coverage.
-- **Storage/import/replay:** complete the per-case ledger for partial/truncated
-  JSONL, corrupt/compressed imports, split storage homes, relocation/migration
-  and projection lifecycle. Distinguish existing ports from remaining cases and
-  explicitly classify failure modes eliminated by SQLite atomic rows.
+- **Storage/import/replay:** finish the remaining per-case applicability ledger:
+  live JSONL partial tails and malformed-record recovery, split config/SQLite
+  homes, recovery of compressed ancestors from another copy, legacy rollout
+  migration, and projection shutdown/delete coordination. Classify failure modes
+  eliminated by SQLite atomic rows.
 - **Native items:** finish the broader live-item inventory and integrated
   lifecycle/replay verification without reopening retired generic item paths.
-- **Shell snapshots:** port the applicable local capture/replay matrix from
-  `ddd1812a51f4aded35c3ec5446672474d5cb546b`, implement the Dart runtime owner,
-  and verify the final source before removing this entry.
 - **MCP:** finish applicability classification for any remaining ordinary
   transport/OAuth/stdio/config cases. Mark each case as ported, adapted or
   excluded with its reason; do not infer universal parity from focused families.
+- **Embedded code mode:** use the
+  [QuickJS applicability ledger](../packages/code_mode/UPSTREAM.md). Remaining
+  applicable work includes observer preemption and notification cleanup,
+  conversion/store coercion cases, terminal diagnostics and mixed-media limits,
+  timer/media input matrices, and whole-workflow comparison with installed Codex.
+  Retain the embedded engine; V8/ICU identity, Serde-specific failures and remote
+  pending-frontier features are not targets for this port.
 
 For future in-scope repairs, port the applicable matrix before changing behavior,
 retain qualified baseline failures and do not weaken inconvenient cases.
@@ -99,8 +103,8 @@ retain qualified baseline failures and do not weaken inconvenient cases.
 
 ### 5. Keep deferred presentation work separate
 
-Desktop `/goal` controls, bounded goal-file loading, MCP input presentation and
-the queued T3Code workspace presentation remain deferred. Backend caller-input
+Desktop `/goal` controls, bounded goal-file loading and MCP input presentation
+remain deferred. Backend caller-input
 RPC proof is not desktop elicitation UX acceptance; do not fabricate answers,
 device proofs or automatic URL handling.
 

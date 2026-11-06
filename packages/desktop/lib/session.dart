@@ -19,6 +19,7 @@ import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
 import 'desktop_notice.dart';
+import 'pin_state.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -211,6 +212,8 @@ class DesktopSession extends ChangeNotifier {
   final collapsedSidebarSections = <String>{};
   final pinnedTaskIds = <String>[];
   final pinnedProjectKeys = <String>[];
+  late final _pinWrites = <String, PinWriteState>{};
+  bool get savingTaskPins => _pinWrites['sidebar_pinned_tasks'] is PinWritePending;
   Project? project;
   DesktopTask? task;
   String? error;
@@ -333,6 +336,25 @@ class DesktopSession extends ChangeNotifier {
       if (failure is! CancelledException) { showError(failure); }
       return null;
     }));
+  }
+
+  Future<void> renameTask(DesktopTask target, String name, {required CancellationToken cancellation}) async {
+    final operation = cancellation.merge(_lifetime);
+    operation.throwIfCancelled();
+    if (!connected || target.archiving || target.sideParentID != null) return;
+    final title = name.trim();
+    if (title.isEmpty) {
+      _notice('Thread title cannot be empty', type: DesktopToastType.warning);
+      return;
+    }
+    if (title == target.title) return;
+    await client.request('thread/name/set', {'threadId': target.id, 'name': title}).asCancellable(operation);
+    operation.throwIfCancelled();
+    _updateThreadTitle(target, {
+      ...jsonObject(target.projectionState['summary'] ?? {'preview': target.title}),
+      'name': title,
+    });
+    notifyListeners();
   }
 
   Future<void> chooseDeliveryMode(String mode) async {
@@ -747,6 +769,20 @@ class DesktopSession extends ChangeNotifier {
     await _pin('sidebar_pinned_tasks', pinnedTaskIds, target.id, pinned);
   }
 
+  Future<void> reorderPinnedTasks(List<String> order) async {
+    final visible = order.toSet();
+    if (visible.length != order.length || !visible.every(pinnedTaskIds.contains)) {
+      throw ArgumentError('Invalid pinned thread order');
+    }
+    // A project filter reorders its visible pins in their existing slots.
+    final sorted = order.iterator;
+    final next = [
+      for (final id in pinnedTaskIds)
+        if (visible.contains(id)) (sorted..moveNext()).current else id,
+    ];
+    await _savePins('sidebar_pinned_tasks', pinnedTaskIds, next);
+  }
+
   Future<void> pinProject(Project target, bool pinned) async {
     if (target.removing || !projects.contains(target)) return;
     await _pin('sidebar_pinned_projects', pinnedProjectKeys, target.checkoutKey, pinned);
@@ -754,18 +790,27 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _pin(String setting, List<String> ids, String id, bool pinned) async {
     if (ids.contains(id) == pinned) return;
-    final previous = ids.toList();
     final next = ids.where((value) => value != id).toList();
     if (pinned) next.add(id);
-    ids..clear()..addAll(next);
+    await _savePins(setting, ids, next);
+  }
+
+  Future<void> _savePins(String setting, List<String> ids, List<String> next) async {
+    if (listEquals(ids, next)) return;
+    final pending = PinWritePending(ids, next);
+    _pinWrites[setting] = transitionPinWrite(_pinWrites[setting] ?? const PinWriteIdle(), pending);
+    ids..clear()..addAll(pending.order);
     notifyListeners();
     try {
-      await _setting(setting, jsonEncode(next));
-    } catch (_) {
-      if (listEquals(ids, next)) {
-        ids..clear()..addAll(previous);
-        notifyListeners();
-      }
+      await _setting(setting, jsonEncode(pending.order));
+      if (!identical(_pinWrites[setting], pending)) return;
+      _pinWrites[setting] = transitionPinWrite(pending, PinWriteCommitted(pending.order));
+      notifyListeners();
+    } catch (error) {
+      if (!identical(_pinWrites[setting], pending)) return;
+      ids..clear()..addAll(pending.previous);
+      _pinWrites[setting] = transitionPinWrite(pending, PinWriteFailed(pending, error));
+      notifyListeners();
       rethrow;
     }
   }
@@ -1021,8 +1066,8 @@ class DesktopSession extends ChangeNotifier {
       final target = sideChats[params['task_id']] ?? projects.expand((p) => p.tasks).where((t) => t.id == params['task_id']).firstOrNull;
       return await client.request('turn/interrupt', {'threadId': params['task_id'], 'turnId': target?.turns.values.lastOrNull?['id']}).asCancellable(_lifetime);
     }
-    if ({'task.archive', 'task.unarchive', 'task.fork'}.contains(method)) {
-      return await client.request(method == 'task.archive' ? 'thread/archive' : method == 'task.unarchive' ? 'thread/unarchive' : 'thread/fork',
+    if ({'task.archive', 'task.unarchive'}.contains(method)) {
+      return await client.request(method == 'task.archive' ? 'thread/archive' : 'thread/unarchive',
         {'threadId': params['task_id']}).asCancellable(_lifetime);
     }
     if (method == 'task.compact') return await client.request('thread/compact/start', {'threadId': params['task_id']}).asCancellable(_lifetime);
@@ -1375,15 +1420,18 @@ class DesktopSession extends ChangeNotifier {
         final turn = jsonObject(raw);
         target.turns[turn['id'] as String] = turn;
         for (final item in turn['items'] as List) {
-          target.messages[item['id'] as String] = {...jsonObject(item), 'turnId': turn['id'], 'order': target.messages.length};
+          target.messages[item['id'] as String] = {...jsonObject(item), 'turnId': turn['id']};
         }
       }
       _mergeHistory(target, history);
-      if (page['liveTurn'] case final Map<String, Object?> turn) target.turns[turn['id'] as String] = jsonObject(turn);
+      if (page['liveTurn'] case final Map<String, Object?> turn) {
+        final id = turn['id'] as String;
+        target.turns[id] = {...?target.turns[id], ...turn};
+      }
       for (final raw in page['liveItems'] as List? ?? []) {
-        final item = jsonObject(raw), id = item['id'] as String;
-        if (target.messages[id]?['completedAtMs'] != null) continue;
-        target.messages[id] = {...item, 'order': target.messages[id]?['order'] ?? target.messages.length};
+        final item = jsonObject(raw);
+        applyThreadNotification(target.messages, {'method': 'item/started',
+          'params': {'turnId': item['turnId'], 'item': item}});
       }
       if (page['tokens'] != null && target.messages.isNotEmpty) {
         final last = target.messages.keys.last;
@@ -1415,11 +1463,10 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _mergeHistory(DesktopTask target, Json page) {
-    var order = target.messages.values.map((item) => item['order'] as int? ?? 0).fold<int>(0, (a, b) => a < b ? a : b) - (page['data'] as List).length;
     for (final raw in (page['data'] as List).reversed) {
       final entry = jsonObject(raw), item = jsonObject(entry['item']), id = item['id'] as String;
       target.messages.putIfAbsent(id, () => {...item, 'turnId': entry['turnId'],
-        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'], 'order': order++});
+        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'], 'order': entry['order']});
     }
     target.historyBefore = page['nextCursor'] as String?;
   }
@@ -1663,6 +1710,37 @@ class DesktopSession extends ChangeNotifier {
       }
       if (!_lifetime.isCancelled) notifyListeners();
     }
+  }
+
+  Future<void> forkFromResponse(DesktopTask source, String turnId) async {
+    final owner = projects.where((project) => project.tasks.contains(source)).firstOrNull;
+    if (!connected || owner == null || !owner.available || owner.removing || source.archiving ||
+        source.sideParentID != null || source.turns[turnId]?['status'] == 'inProgress') return;
+    final page = await client.forkThread(source.id, lastTurnId: turnId, cancellation: _lifetime);
+    _lifetime.throwIfCancelled();
+    final info = jsonObject(page['thread']), id = requiredString(info, 'id');
+    final created = owner.tasks.where((task) => task.id == id).firstOrNull ?? DesktopTask(id, _threadTitle(info));
+    created.lastActivity = (info['updatedAt'] as int? ?? 0) * 1000;
+    if (!owner.tasks.contains(created)) owner.tasks.add(created);
+    try {
+      final title = '${source.title} fork';
+      await client.request('thread/name/set', {'threadId': id, 'name': title}).asCancellable(_lifetime);
+      created.title = title;
+    } on CancelledException {
+      rethrow;
+    } catch (failure) {
+      _notice('Fork created, but could not be renamed', type: DesktopToastType.warning, description: '$failure');
+    }
+    try {
+      await callIsolate(database.port, 'task.add', {
+        'id': id, 'checkout_key': owner.checkoutKey, 'title': created.title, 'last_activity': created.lastActivity,
+      }, cancellation: _lifetime);
+    } on CancelledException {
+      rethrow;
+    } catch (failure) {
+      _notice('Fork created, but could not be saved in the sidebar', type: DesktopToastType.warning, description: '$failure');
+    }
+    await select(owner, created);
   }
 
   Future<void> retry(DesktopTask target) async {
@@ -1954,6 +2032,9 @@ class DesktopSession extends ChangeNotifier {
         target.running = true; target._stopRequested = false;
         target.runStartedAt = data['happen']?['createdAt'] as int?;
         target.streamingText = ''; target.retryStatus = null;
+      case 'turn/diff/updated':
+        final id = data['turnId'] as String;
+        target.turns[id] = {...?target.turns[id], 'id': id, 'diff': data['diff']};
       case 'item/agentMessage/delta':
         target.streamingText = target.messages[data['itemId']]?['text'] as String? ?? '';
         target.retryStatus = null;
@@ -1997,7 +2078,8 @@ class DesktopSession extends ChangeNotifier {
         final last = target.messages.entries.lastOrNull;
         if (last != null) target.messages[last.key] = {...last.value, 'tokens': sessionTokens(jsonObject(data['tokenUsage']))};
       case 'turn/completed':
-        target.turns[data['turn']['id'] as String] = jsonObject(data['turn']);
+        final id = data['turn']['id'] as String;
+        target.turns[id] = {...?target.turns[id], ...jsonObject(data['turn'])};
         target.running = false; target.runStartedAt = null; target.streamingText = ''; target.retryStatus = null;
         target.questions.clear(); target.questionDrafts.clear();
     }
@@ -2119,9 +2201,7 @@ List<ChatEntry> conversation(DesktopTask task) {
       _sameRecords(task.pending.values, task._conversationPending)) return task._conversation!;
   final result = <ChatEntry>[];
   final messages = task.messages.values.toList()..sort((a, b) =>
-    (a['startedAtMs'] as int? ?? 0) != (b['startedAtMs'] as int? ?? 0)
-      ? (a['startedAtMs'] as int? ?? 0).compareTo(b['startedAtMs'] as int? ?? 0)
-      : (a['order'] as int? ?? 0).compareTo(b['order'] as int? ?? 0));
+    (a['order'] as int? ?? 0).compareTo(b['order'] as int? ?? 0));
   DateTime? at(Object? value) => value is int ? DateTime.fromMillisecondsSinceEpoch(value) : null;
   final tools = <String, ToolActivity>{};
   for (final message in messages) {

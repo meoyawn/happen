@@ -63,43 +63,7 @@ Future<void> _storeMain(List<Object?> args) async {
       await traceIncoming(request, () async {
         try {
           cancellation.throwIfCancelled();
-          if (store != null && request['method'] == 'session.prepare') await store.prepareSession(cancellation: cancellation);
-          final Object? result = switch (request['method']) {
-            'session.prepare' => null,
-            'tool_runtime.start' => store!.startToolRuntime(requiredString(params, 'id')),
-            'native.item.queue' => store!.queueNativeCompletion(params),
-            'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
-            'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
-            'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),
-              effort: requiredString(params, 'effort'), reasoningUpdates: params['reasoningUpdates'] == true),
-            'append' => store!.append(params['type'] as String, jsonObject(params['data']), metadata: jsonObject(params['metadata'] ?? {})),
-            'append_batch' => store!.appendBatch((params['events'] as List).map(jsonObject).toList(), metadata: jsonObject(params['metadata'] ?? {})),
-            'metadata' => store!.metadata(params['key'] as String),
-            'thread.name.set' => store!.setThreadName(requiredString(params, 'name'), onlyIfUnnamed: params['onlyIfUnnamed'] == true),
-            'mcp.subscription.save' => store!.mcpSubscription('save', params),
-            'mcp.subscription.remove' => store!.mcpSubscription('remove', params),
-            'mcp.event.admit' => store!.admitMcpEvent(params),
-            final String method when method.startsWith('goal.') => store!.goal(method.substring(5), params),
-            'kv.get' || 'kv.set' || 'kv.remove' || 'kv.scan' => store!.keyValue((request['method'] as String).substring(3), params),
-            'archive' => store!.archive(params['archived'] as bool),
-            'maintain' => store!.maintain(),
-            'context' => store!.modelSnapshot(),
-            'fork.snapshot' => store!.forkSnapshot(),
-            'thread/read' || 'thread/items/list' || 'thread/turns/list' || 'thread/boundary' || 'session.inbox' =>
-              readStoredSession(store!.db, request['method'] as String, params, directory: store.directory, id: store.taskId),
-            'history' => store!.rolloutPage(params),
-            'history.list_windows' || 'history.list_items' || 'history.read_item' || 'history.search_contents' =>
-              await store!.recall(request['method'] as String, params, cancellation: cancellation),
-            'fork' => await store!.fork(params['id'] as String, through: params['through'] as int?, lastTurnId: params['lastTurnId'] as String?,
-              beforeTurnId: params['beforeTurnId'] as String?, cancellation: cancellation).then((_) => null),
-            'export' => await store!.exportTo(params['path'] as String, cancellation: cancellation).then((_) => null),
-            'import' => await TaskStore.importFrom(requiredString(params, 'directory'), requiredString(params, 'path'),
-              operationId: params['operation_id'] as String?, newTaskId: (config) async => await callIsolate(
-                params['task_ids'] as SendPort, 'task.new_id', {'provider': config['provider']}, cancellation: cancellation) as String,
-              cancellation: cancellation),
-            'close' => null,
-            _ => throw StateError('Unknown persistence operation'),
-          };
+          final result = await _storeRequest(store, requiredString(request, 'method'), params, cancellation);
           reply?.send({'result': result}); stopped = request['method'] == 'close';
         } catch (error) {
           traceError(error); reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
@@ -108,4 +72,48 @@ Future<void> _storeMain(List<Object?> args) async {
       if (stopped) break;
     }
   } finally { store?.close(); await listener.cancel(); port.close(); unawaited(queue.close()); }
+}
+
+// Enter a fresh handler for every request. The owner's suspended mailbox loop
+// survives hot reload, so it must not retain calls to changed storage methods.
+Future<Object?> _storeRequest(TaskStore? store, String method, Json params, CancellationToken cancellation) async {
+  if (store != null && method == 'session.prepare') await store.prepareSession(cancellation: cancellation);
+  return switch (method) {
+    'session.prepare' => null,
+    'tool_runtime.start' => store!.startToolRuntime(requiredString(params, 'id')),
+    'native.item.queue' => store!.queueNativeCompletion(params),
+    'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
+    'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
+    'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),
+      effort: requiredString(params, 'effort'), reasoningUpdates: params['reasoningUpdates'] == true),
+    'append' => store!.append(params['type'] as String, jsonObject(params['data']), metadata: jsonObject(params['metadata'] ?? {})),
+    'append_batch' => store!.appendBatch((params['events'] as List).map(jsonObject).toList(), metadata: jsonObject(params['metadata'] ?? {})),
+    'metadata' => store!.metadata(params['key'] as String),
+    'thread.name.set' => store!.setThreadName(requiredString(params, 'name'), onlyIfUnnamed: params['onlyIfUnnamed'] == true),
+    'mcp.subscription.save' => store!.mcpSubscription('save', params),
+    'mcp.subscription.remove' => store!.mcpSubscription('remove', params),
+    'mcp.event.admit' => store!.admitMcpEvent(params),
+    final String method when method.startsWith('goal.') => store!.goal(method.substring(5), params),
+    'kv.get' || 'kv.set' || 'kv.remove' || 'kv.scan' => store!.keyValue(method.substring(3), params),
+    'archive' => store!.archive(params['archived'] as bool),
+    'maintain' => store!.maintain(),
+    'context' => store!.modelSnapshot(),
+    'fork.snapshot' => store!.forkSnapshot(lastTurnId: params['lastTurnId'] as String?, beforeTurnId: params['beforeTurnId'] as String?),
+    'session.usage' => store!.forkUsage(),
+    'thread/read' || 'thread/items/list' || 'thread/turns/list' || 'thread/boundary' || 'session.inbox' =>
+      readStoredSession(store!.db, method, params, directory: store.directory, id: store.taskId),
+    'history' => store!.rolloutPage(params),
+    'history.list_windows' || 'history.list_items' || 'history.read_item' || 'history.search_contents' =>
+      await store!.recall(method, params, cancellation: cancellation),
+    'fork' => await store!.fork(params['id'] as String, lastTurnId: params['lastTurnId'] as String?,
+      beforeTurnId: params['beforeTurnId'] as String?, configuration: params['configuration'] as Json?,
+      cancellation: cancellation).then((_) => null),
+    'export' => await store!.exportTo(params['path'] as String, cancellation: cancellation).then((_) => null),
+    'import' => await TaskStore.importFrom(requiredString(params, 'directory'), requiredString(params, 'path'),
+      operationId: params['operation_id'] as String?, newTaskId: (config) async => await callIsolate(
+        params['task_ids'] as SendPort, 'task.new_id', {'provider': config['provider']}, cancellation: cancellation) as String,
+      cancellation: cancellation),
+    'close' => null,
+    _ => throw StateError('Unknown persistence operation'),
+  };
 }

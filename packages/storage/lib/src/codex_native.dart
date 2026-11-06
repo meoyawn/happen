@@ -221,7 +221,7 @@ class CodexSqlite {
 
 bool retainedCodexItem(Json item) {
   if (item['type'] == 'event_msg') return const {
-    'item_completed', 'token_count', 'thread_goal_updated', 'thread_rolled_back', 'turn_aborted', 'task_started', 'task_complete', 'thread_settings_applied',
+    'item_completed', 'token_count', 'turn_diff', 'thread_goal_updated', 'thread_rolled_back', 'turn_aborted', 'task_started', 'task_complete', 'thread_settings_applied',
   }.contains(item['payload']?['type']);
   if (item['type'] == 'response_item') return const {
     'additional_tools', 'message', 'agent_message', 'reasoning', 'local_shell_call', 'function_call', 'tool_search_call',

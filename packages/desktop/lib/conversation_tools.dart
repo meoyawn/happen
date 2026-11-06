@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'appearance.dart';
 import 'code_highlight.dart';
 import 'conversation_activity.dart';
+import 'conversation_changes.dart';
 import 'conversation_data.dart';
 import 'conversation_markdown.dart' show ConversationCopyButton;
 import 'session.dart';
@@ -140,6 +141,9 @@ class ConversationToolCall extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (toolKind(tool) == 'question') return QuestionToolResult(tool: tool, onExpand: onExpand);
+    if (tool.rawInput case {'changes': final List _}) {
+      return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
+    }
     return ConversationDisclosure(
     key: PageStorageKey('tool:${tool.id}'),
     label: toolLabel(tool, directory: directory, active: tool.status == 'running'),

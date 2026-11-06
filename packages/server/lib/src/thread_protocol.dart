@@ -13,6 +13,11 @@ extension _ThreadProtocol on AgentServer {
       await (task.maintenance ? task.maintenanceDone!.future : task.finishing ? task.running! : task.ready!.future).asCancellable(cancellation);
       task = _tasks[id] ?? task;
     }
+    // Notifications after this capture remain replayable if they commit while
+    // the read snapshot is opening.
+    final through = task.notificationSeq, liveTurn = task.liveTurn;
+    final liveItems = task.liveItems.values.where((item) => item['live'] == true).toList();
+    final running = task.busy, questions = _questions.list(id), status = task.retryStatus;
     var page = await _readSession(task, 'thread/read', {'includeTurns': includeTurns}, cancellation);
     if (page['needsProjection'] is String) {
       final source = _tasks[page['needsProjection']] ?? _Task(page['needsProjection'] as String, null);
@@ -23,24 +28,26 @@ extension _ThreadProtocol on AgentServer {
     thread['status'] = _threadStatus(task);
     if (includeTurns) {
       final turns = (thread['turns'] as List).map(jsonObject).toList();
-      if (task.liveTurn case final live?) {
+      if (liveTurn case final live?) {
         final index = turns.indexWhere((turn) => turn['id'] == live['id']);
         if (index >= 0) { turns[index] = {...turns[index], ...live, 'items': turns[index]['items']}; }
         else { turns.add({...live, 'items': <Json>[]}); }
       }
-      for (final raw in task.liveItems.values) {
+      var order = turns.expand((turn) => (turn['items'] as List).map(jsonObject))
+        .fold<int>(0, (next, item) => (item['order'] as int? ?? -1) >= next ? (item['order'] as int) + 1 : next);
+      for (final raw in liveItems) {
         final turnId = raw['turnId'];
         final turn = turns.where((turn) => turn['id'] == turnId).firstOrNull;
         if (turn == null) continue;
         final items = (turn['items'] as List).map(jsonObject).toList();
-        if (!items.any((item) => item['id'] == raw['id'])) items.add({...raw}..remove('order')..remove('turnId'));
+        if (!items.any((item) => item['id'] == raw['id'])) items.add({...raw, 'order': order++}..remove('turnId'));
         turn['items'] = items;
       }
       thread['turns'] = turns;
     }
-    return {...page, 'thread': thread, 'notificationThrough': task.notificationSeq,
-      'liveTurn': task.liveTurn, 'liveItems': task.liveItems.values.toList(),
-      'running': task.busy, 'questions': _questions.list(id), 'status': task.retryStatus};
+    return {...page, 'thread': thread, 'notificationThrough': through,
+      'liveTurn': liveTurn, 'liveItems': liveItems,
+      'running': running, 'questions': questions, 'status': status};
   }
 
   Future<Object?> _threadRequest(String method, Json params, _Client client, Object requestID) async {
@@ -51,10 +58,6 @@ extension _ThreadProtocol on AgentServer {
       if (method == 'thread/loaded/list') return {'data': _tasks.values.where((task) => task.loaded).map((task) => task.id).toList(), 'nextCursor': null};
       if (method == 'thread/list') {
         final page = await listThreads(directory, params, cancellation: cancellation);
-        for (final raw in page['data'] as List) {
-          final thread = jsonObject(raw);
-          _queueThreadName(thread['id'] as String, summary: thread);
-        }
         return {...page, 'data': [for (final raw in page['data'] as List) {
           ...jsonObject(raw), 'status': _threadStatus(_tasks[raw['id']]),
         }]};
@@ -81,6 +84,7 @@ extension _ThreadProtocol on AgentServer {
         return {...page, 'model': config['model'], 'modelProvider': config['provider'], 'cwd': config['cwd'],
           'reasoningEffort': config['provider_settings']?['reasoning']};
       }
+      if (method == 'thread/fork') params = _forkSource(params);
       final id = requiredString(params, 'threadId'); validateTaskId(id);
       if (method == 'thread/unsubscribe') {
         final subscribed = client.subscriptions.remove(id), task = _tasks[id];
@@ -134,19 +138,7 @@ extension _ThreadProtocol on AgentServer {
         return <String, dynamic>{};
       }
       if (method == 'thread/fork') {
-        await _goals[id]?.call('prepare', {}, cancellation: cancellation);
-        final task = _tasks[id] ?? _Task(id, null);
-        final child = await _withWriter(task, (writer) async {
-          final config = jsonObject(await callIsolate(writer.port, 'metadata', {'key': 'config'}, cancellation: cancellation));
-          final child = await _newTaskId(config, cancellation);
-          await callIsolate(writer.port, 'fork', {'id': child, 'lastTurnId': params['lastTurnId'], 'beforeTurnId': params['beforeTurnId']}, cancellation: cancellation);
-          return child;
-        }) as String;
-        _subscribe(client, child);
-        await _loadThread(child, cancellation);
-        final page = await _threadSnapshot(child, cancellation, includeTurns: params['excludeTurns'] != true);
-        client.event({'method': 'thread/started', 'params': {'thread': {...jsonObject(page['thread']), 'turns': <Json>[]}}});
-        return page;
+        return await _forkThread(id, params, client, requestID, cancellation);
       }
       if (method == 'thread/archive' || method == 'thread/unarchive') {
         await _archive(_tasks[id] ?? _Task(id, null), method == 'thread/archive');
@@ -183,8 +175,9 @@ extension _ThreadProtocol on AgentServer {
           if (params['developerInstructions'] != null) 'instructions': params['developerInstructions'],
           if (attachments.isNotEmpty) 'attachments': attachments,
           if (params['effort'] != null) 'reasoning': params['effort']}, client, requestID);
-        return method == 'turn/steer' ? {'turnId': task!.protocolState['turnID']} : {
-          'turn': {'id': turnId, 'status': 'inProgress', 'items': <Json>[], 'error': null},
+        final admittedTurnId = reply is Map ? reply['turnId'] as String? ?? turnId : turnId;
+        return method == 'turn/steer' ? {'turnId': admittedTurnId} : {
+          'turn': {'id': admittedTurnId, 'status': 'inProgress', 'items': <Json>[], 'error': null},
           'happen': reply,
         };
       }

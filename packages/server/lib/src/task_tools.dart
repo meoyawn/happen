@@ -8,6 +8,8 @@ import 'package:protocol/protocol.dart';
 import 'package:storage/src/codex_native.dart' show projectedCodexItem;
 import 'package:telemetry/telemetry.dart';
 
+import 'turn_diff_tracker.dart';
+
 /// Task-owned native tool state survives the short-lived agent/SQLite owners.
 /// Each invocation still has its own cancellation; only explicitly persistent
 /// processes use the task lifetime inside the provider's runtime.
@@ -74,12 +76,23 @@ class TaskToolBridge {
         owner = _owner(task, provider, requiredString(params, 'cwd'));
         owner.pending.add(settled.future);
         final runtime = owner;
+        final turnId = params['turn_id'] as String?;
+        if (runtime.turnId != turnId) {
+          runtime.turnId = turnId;
+          runtime.diff = TurnDiffTracker(displayRoots: {'': requiredString(params, 'cwd')});
+        }
+        final tracker = runtime.diff;
+        var patchChanged = false;
         var foreground = true;
         try {
           result = await runtime.runtime.call(requiredString(params, 'name'), params['arguments'],
             cancellation: cancellation.merge(runtime.lifetime), cwd: requiredString(params, 'cwd'),
-            callId: params['call_id'] as String?, onItem: (phase, item) async {
+            callId: params['call_id'] as String?, onPatch: (delta) async {
+              tracker?.trackDelta(delta);
+              patchChanged = true;
+            }, onItem: (phase, item) async {
               final data = <String, dynamic>{'turnId': params['turn_id'], 'item': projectedCodexItem(item),
+                if (phase == 'completed' && patchChanged) 'turnDiff': tracker?.unifiedDiffText ?? '',
                 'canonicalItem': item, if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch};
               if (phase == 'completed' && foreground) {
                 // Admit to the writer's memory queue. Its next ordinary record
@@ -111,7 +124,11 @@ class TaskToolBridge {
 
   Future<void> settle(String task) async {
     final owner = _tasks[task];
-    if (owner != null) await Future.wait(owner.pending.toList());
+    if (owner != null) {
+      await Future.wait(owner.pending.toList());
+      owner.diff = null;
+      owner.turnId = null;
+    }
   }
 
   Future<void> release(String task) => _releasing[task] ??= _release(task).whenComplete(() { unawaited(_releasing.remove(task)); });
@@ -140,5 +157,7 @@ class _Tools {
   final lifetime = CancellationToken();
   late final ToolRuntime runtime;
   SendPort? writer;
+  String? turnId;
+  TurnDiffTracker? diff;
   final pending = <Future<void>>{};
 }

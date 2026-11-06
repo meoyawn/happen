@@ -12,10 +12,11 @@ import 'conversation_activity.dart';
 import 'conversation_streaming.dart';
 import 'conversation_tools.dart';
 import 'conversation_response.dart';
+import 'conversation_changes.dart';
 
 typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, String? label});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
-
+typedef ForkResponseAction = Future<void> Function(DesktopTask task, String turnId);
 
 List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
   final rows = <_TranscriptRow>[];
@@ -76,6 +77,9 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       } else {
         rows.addAll(_workRows(response));
       }
+      if (turn?['diff'] case final String diff when diff.isNotEmpty) {
+        rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
+      }
     }
     response = [];
   }
@@ -91,6 +95,11 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   }
   flush(latest: true);
   if (task.running && !hasWorking) rows.add((id: 'working', kind: 'working', entries: const [], label: null));
+  final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
+  if (task.running && latest?.streaming != true && latest?.tool?.status != 'running' &&
+      latest?.compaction?.status != 'running') {
+    rows.add((id: 'thinking', kind: 'thinking', entries: const [], label: null));
+  }
   rows.addAll(_workRows(queued));
   return rows;
 }
@@ -98,7 +107,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
 /// Task data is cached by the session; only the selected transcript is mounted.
 class ConversationDeck extends StatefulWidget {
   const ConversationDeck({super.key, required this.task, required this.tasks,
-    required this.directory, required this.empty, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction});
+    required this.directory, required this.empty, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction, this.onFork});
   final DesktopTask? task;
   final Set<DesktopTask> tasks;
   final String directory;
@@ -107,6 +116,7 @@ class ConversationDeck extends StatefulWidget {
   final ValueChanged<DesktopTask>? onRetryTurn;
   final ValueChanged<DesktopTask>? onLoadEarlier;
   final PendingMessageAction? onPendingAction;
+  final ForkResponseAction? onFork;
 
   @override
   State<ConversationDeck> createState() => _ConversationDeckState();
@@ -124,18 +134,20 @@ class _ConversationDeckState extends State<ConversationDeck> {
       onRetryTurn: widget.onRetryTurn == null ? null : () => widget.onRetryTurn!(selected),
       onLoadEarlier: widget.onLoadEarlier == null ? null : () => widget.onLoadEarlier!(selected),
       onPendingAction: widget.onPendingAction,
+      onFork: widget.onFork,
     );
   }
 }
 
 class ConversationTranscript extends StatefulWidget {
-  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction});
+  const ConversationTranscript({super.key, required this.task, required this.directory, required this.onRetry, this.onRetryTurn, this.onLoadEarlier, this.onPendingAction, this.onFork});
   final DesktopTask task;
   final String directory;
   final VoidCallback onRetry;
   final VoidCallback? onRetryTurn;
   final VoidCallback? onLoadEarlier;
   final PendingMessageAction? onPendingAction;
+  final ForkResponseAction? onFork;
 
   @override
   State<ConversationTranscript> createState() => _ConversationTranscriptState();
@@ -308,9 +320,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final entries = conversation(task);
     // Session notifications include activity in other threads. Preserve the
     // mounted list when its data has not changed, including during scrolling.
-    final contentState = (entries, widget.directory, task, task.running, task.archived, task.retryStatus, task.runStartedAt,
+    final contentState = (entries, widget.directory, task, task.running, task.archived, task.archiving, task.retryStatus, task.runStartedAt,
       task.historyBefore, task.loadingEarlier, task.loadError, task.lastSentID,
-      widget.onLoadEarlier != null, widget.onRetryTurn != null, widget.onPendingAction != null,
+      widget.onLoadEarlier != null, widget.onRetryTurn != null, widget.onPendingAction != null, widget.onFork != null,
       _expansionRevision);
     if (_contentState != contentState) {
       _contentState = contentState;
@@ -384,17 +396,26 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                     final row = rows[index];
                     if (row.kind == 'working') {
                       if (compacting) return const SizedBox(key: ValueKey('working'));
-                      if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
-                        return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
-                      }
                       return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
                         status: task.retryStatus?['message'] as String?);
+                    }
+                    if (row.kind == 'thinking') {
+                      if (compacting) return const SizedBox(key: ValueKey('thinking'));
+                      if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
+                        return _ProviderRetryNotice(key: const ValueKey('thinking'), status: task.retryStatus!);
+                      }
+                      return Padding(key: const ValueKey('thinking'), padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Semantics(liveRegion: true, child: const ThinkingLabel()));
                     }
                     if (row.kind == 'turn') return Padding(
                       key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 6),
                       child: Builder(builder: (context) => _TurnFold(
                         label: row.label!, expanded: _expandedTurns.contains(row.id),
                         onToggle: () => _toggleTurn(context, row.id))));
+                    if (row.kind == 'changes') return Padding(
+                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
+                      child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
+                        files: changesForSource(task, 'turn:${row.label}'), directory: widget.directory));
                     final entry = row.kind == 'message' ? row.entries.single : null;
                     return Padding(
                       key: ValueKey(row.id),
@@ -403,8 +424,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         bottom: entry == null ? 8 : entry.role == 'You' || entry.response != null ? 16 : 8),
                       child: entry == null ? _ActivityGroup(
                         key: PageStorageKey(row.id), entries: row.entries,
-                        active: task.running && (identical(row.entries.last, latest) ||
-                          row.entries.any((entry) => entry.streaming || entry.tool?.status == 'running')),
+                        active: task.running && identical(row.entries.last, latest) &&
+                          (row.entries.last.streaming || row.entries.last.tool?.status == 'running'),
                         directory: widget.directory, onExpand: () => _following = false,
                       ) : switch (entry.role) {
                         'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),
@@ -412,7 +433,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                           entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
                           onExpand: () => _following = false,
                         ),
-                        'Reasoning' => _ReasoningRow(entry: entry, directory: widget.directory, onExpand: () => _following = false),
+                        'Reasoning' => _ReasoningRow(entry: entry, active: entry.streaming && identical(entry, latest),
+                          directory: widget.directory, onExpand: () => _following = false),
                         'Status' => _TurnStatus(entry: entry),
                         'Answer' => QuestionAnswerRow(id: entry.id, answers: entry.questionAnswers,
                           onExpand: () => _following = false),
@@ -421,6 +443,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         _ => Padding(padding: EdgeInsets.symmetric(horizontal: entry.role == 'You' || entry.role == 'Queued' ? 0 : 4),
                           child: _Message(entry: entry, directory: widget.directory,
                           running: task.running,
+                          onFork: widget.onFork == null || task.archiving || task.sideParentID != null ||
+                              entry.response == null || entry.turnId == null || task.turns[entry.turnId]?['status'] == 'inProgress'
+                            ? null : () => widget.onFork!(task, entry.turnId!),
                           onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
                               task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
                             : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
@@ -448,12 +473,13 @@ class _ActivityGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final tools = [for (final entry in entries) if (entry.tool != null) entry.tool!];
     final running = tools.where((tool) => tool.status == 'running').lastOrNull;
-    final thinking = active && tools.isEmpty;
+    final thinking = active && entries.last.role == 'Reasoning';
     if (entries.length == 1 && tools.length == 1) {
       return _ToolRow(tool: tools.single, directory: directory, onExpand: onExpand);
     }
     if (entries.length == 1 && tools.isEmpty) {
-      return _ReasoningRow(entry: entries.single, directory: directory, onExpand: onExpand);
+      return _ReasoningRow(entry: entries.single, active: active && entries.single.streaming,
+        directory: directory, onExpand: onExpand);
     }
     final thought = entries.where((entry) => entry.role == 'Reasoning').lastOrNull;
     final current = running ?? tools.lastOrNull;
@@ -465,7 +491,7 @@ class _ActivityGroup extends StatelessWidget {
       key: PageStorageKey('disclosure:${entries.first.id}'),
       label: label, shimmer: active, timestamp: entries.first.timestamp,
       color: failed ? const Color(0xffc10007) : conversationSecondary,
-      icon: ConversationWorkIcon(kind: tools.isEmpty ? 'reasoning'
+      icon: ConversationWorkIcon(kind: thinking || tools.isEmpty ? 'reasoning'
         : tools.map(toolKind).toSet().length == 1 ? toolKind(tools.first) : 'tool', failed: failed),
       fontSize: 14,
       onExpand: onExpand,
@@ -477,7 +503,8 @@ class _ActivityGroup extends StatelessWidget {
               for (final entry in entries)
                 if (entry.tool != null) _ToolRow(key: ValueKey(entry.id),
                   tool: entry.tool!, directory: directory, onExpand: onExpand)
-                else _ReasoningRow(entry: entry, directory: directory, onExpand: onExpand),
+                else _ReasoningRow(entry: entry, active: active && entry.streaming && identical(entry, entries.last),
+                  directory: directory, onExpand: onExpand),
             ]))),
       ),
     );
@@ -485,8 +512,9 @@ class _ActivityGroup extends StatelessWidget {
 }
 
 class _ReasoningRow extends StatelessWidget {
-  const _ReasoningRow({required this.entry, required this.directory, required this.onExpand, this.initiallyExpanded = false});
+  const _ReasoningRow({required this.entry, required this.active, required this.directory, required this.onExpand, this.initiallyExpanded = false});
   final ChatEntry entry;
+  final bool active;
   final String directory;
   final VoidCallback onExpand;
   final bool initiallyExpanded;
@@ -494,9 +522,9 @@ class _ReasoningRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConversationDisclosure(
     key: PageStorageKey('reasoning:${entry.id}'),
-    label: _thoughtPreview(entry.text, active: entry.streaming), fontSize: 14, timestamp: entry.timestamp,
+    label: _thoughtPreview(entry.text, active: active), fontSize: 14, timestamp: entry.timestamp,
     icon: const ConversationWorkIcon(kind: 'reasoning'),
-    shimmer: entry.streaming, initiallyExpanded: initiallyExpanded,
+    shimmer: active, initiallyExpanded: initiallyExpanded,
     onExpand: onExpand,
     builder: (context) => Padding(padding: const EdgeInsets.fromLTRB(30, 4, 2, 8),
       child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 384),
@@ -532,11 +560,12 @@ class _TurnFold extends StatelessWidget {
 }
 
 class _Message extends StatefulWidget {
-  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.running = false});
+  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork, this.running = false});
   final ChatEntry entry;
   final String directory;
   final ValueListenable<String>? liveText;
   final Future<void> Function(String action)? onPendingAction;
+  final Future<void> Function()? onFork;
   final bool running;
 
   @override
@@ -545,7 +574,17 @@ class _Message extends StatefulWidget {
 
 class _MessageState extends State<_Message> {
   bool _hovered = false, _focused = false;
-  bool _changing = false;
+  bool _changing = false, _forking = false;
+
+  Future<void> _fork() async {
+    if (_forking || widget.onFork == null) return;
+    setState(() => _forking = true);
+    try {
+      await widget.onFork!();
+    } finally {
+      if (mounted) setState(() => _forking = false);
+    }
+  }
 
   Future<void> _change(String action) async {
     if (_changing || widget.onPendingAction == null) return;
@@ -605,7 +644,8 @@ class _MessageState extends State<_Message> {
         if (!user && entry.attachments.isNotEmpty)
           ConversationImageParts(parts: entry.attachments, directory: widget.directory),
         if (!user) ...[
-          if (entry.response != null) ConversationResponseFooter(entry: entry, visible: _hovered || _focused),
+          if (entry.response != null) ConversationResponseFooter(entry: entry, visible: _hovered || _focused,
+            onFork: widget.onFork == null ? null : _fork, forking: _forking),
         ] else ...[
         const SizedBox(height: 4),
         Opacity(opacity: _hovered || _focused || pending ? 1 : 0,

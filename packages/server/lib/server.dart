@@ -22,6 +22,7 @@ import 'src/questions.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
+part 'src/thread_fork.dart';
 part 'src/thread_names.dart';
 part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
@@ -55,7 +56,6 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
-  late final _threadNameQueue = <String>{};
   late final _namingThreads = <String>{};
   final _sideForks = <String, Future<_Task>>{};
   final _goals = <String, GoalRuntime>{};
@@ -464,7 +464,7 @@ class AgentServer {
         return await withTrace(null, () => _dispatchUntraced(method, params, client, requestId));
       }
       final store = await traces;
-      final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
+      final forking = {'session.side.create', 'thread/fork'}.contains(method);
       final incoming = traceContextFrom(trace, sink: store.sink, service: 'server');
       if (incoming == null) return await withTrace(null, () => _dispatchUntraced(method, params, client, requestId));
       final context = forking && incoming.session != null
@@ -479,8 +479,8 @@ class AgentServer {
           return _dispatchUntraced(method, params, client, requestId);
         },
           category: 'rpc', attributes: {'rpc.id': requestId, 'connection.id': client.id,
-            if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
-            if (forking && params['through'] != null) 'fork.through': params['through']});
+            if (forking) 'parent.session_id': params['threadId'] ?? params['sessionID'],
+            if (forking && params['lastTurnId'] != null) 'fork.last_turn_id': params['lastTurnId']});
       });
     } finally {
       if (preparation != null) { client.sessionReads.remove(requestId); preparation.cancel(); }
@@ -783,7 +783,7 @@ class AgentServer {
           return null;
         }
         if (task.sideParentID != null &&
-            {'task.archive', 'task.unarchive', 'task.fork', 'history.export'}.contains(method)) {
+            {'task.archive', 'task.unarchive', 'history.export'}.contains(method)) {
           throw StateError('Side chats are ephemeral; close the side chat to discard it');
         }
         if (task.disposing) throw StateError('Side chat is closing');
@@ -934,6 +934,7 @@ class AgentServer {
             if (utf8.encode(jsonEncode([...task.pending, message])).length > maxClientFrameBytes - 1024) {
               throw StateError('Pending messages exceed the 64 MiB transport budget');
             }
+            final activeTurnId = task.protocolState['turnID'];
             await _withWriter(task, (writer) async {
               final admitted = jsonObject(await callIsolate(writer.port, 'append', {
                 'type': 'input.pending', 'data': message,
@@ -948,6 +949,7 @@ class AgentServer {
               identityKey: id,
               if (identityKey == 'sessionID') 'inboxID': 'msg_${message['id']}' else 'message_id': message['id'],
               'delivery': mode,
+              if (mode == 'steer') 'turnId': activeTurnId,
             };
           }
           _begin(
@@ -975,27 +977,6 @@ class AgentServer {
               'path': requiredString(params, 'path'),
             }, cancellation: client.cancellation),
           );
-        }
-        if (method == 'task.fork') {
-          _transfers++;
-          try {
-            final child = await _withWriter(
-              task,
-              (writer) async {
-                final config = jsonObject(await callIsolate(writer.port, 'metadata',
-                  {'key': 'config'}, cancellation: client.cancellation) ?? {});
-                final child = await _newTaskId(config, client.cancellation);
-                bindTraceSession(child);
-                await callIsolate(writer.port, 'fork', {
-                  'id': child, 'through': params['through'],
-                }, cancellation: client.cancellation);
-                return child;
-              },
-            );
-            return {identityKey: child};
-          } finally {
-            _transfers--;
-          }
         }
         throw StateError('Unknown method: $method');
     }
@@ -1284,13 +1265,13 @@ class AgentServer {
       await callIsolate(network.port, 'task.new_id', {'provider': config['provider']},
         cancellation: cancellation) as String;
 
-  Future<Json> _config(Json input) async {
+  Future<Json> _config(Json input, {CancellationToken? cancellation}) async {
     final cwd = p.normalize(Directory(input['cwd'] as String? ?? Directory.current.path).absolute.path);
     if (!Directory(cwd).existsSync()) {
       throw ArgumentError('Working directory does not exist');
     }
     final provider = jsonObject(
-      await callIsolate(network.port, 'configure', input),
+      await callIsolate(network.port, 'configure', input, cancellation: cancellation),
     );
     return initialConfiguration(
       {...input, ...provider, 'global_directory': directory},
@@ -1321,6 +1302,7 @@ class AgentServer {
       throw StateError('Active agent limit reached');
     }
     final effective = {...settings};
+    effective['turnId'] ??= newUuidV7();
     if (!compact && !retry && settings['goalContinuation'] != true) effective['message_id'] ??= newId();
     if (effective['cwd'] != null) {
       final cwd = Directory(effective['cwd'] as String).absolute;
@@ -1330,6 +1312,7 @@ class AgentServer {
       effective['cwd'] = p.normalize(cwd.path);
     }
     task.busy = true;
+    task.protocolState['turnID'] = effective['turnId'];
     if (!task.loaded) { task.loaded = true; task.unloadDelaySecs = _threadUnloadDelaySecs; }
     task.unloadTimer?.cancel(); task.unloadTimer = null;
     task.systemError = false;
@@ -1406,7 +1389,7 @@ class AgentServer {
         task.pending.add(message);
         _broadcast(task.id, admitted);
       }
-      if (!compact) _queueThreadName(task.id);
+      if (!compact) _startThreadName(task.id);
       for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
         settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
         cancellation: turnLifetime)) {
@@ -1960,6 +1943,11 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  Future<Json> forkThread(String threadID, {required String lastTurnId, required CancellationToken cancellation}) async =>
+    jsonObject(await _request('thread/fork', {
+      'threadId': threadID, 'lastTurnId': lastTurnId, 'excludeTurns': true, 'threadSource': 'user',
+    }, cancellation: cancellation));
+
   Future<Json> createSideChat(String parentID, {String prompt = '', List<Json> attachments = const [],
     required CancellationToken cancellation}) async => jsonObject(await _request('session.side.create', {
       'sessionID': parentID, 'prompt': prompt,
@@ -2058,8 +2046,8 @@ class AgentClient {
     Duration timeout = const Duration(minutes: 5),
   }) {
     final store = _traceStore;
-    final forking = {'session.side.create', 'session.fork', 'task.fork'}.contains(method);
-    final session = (params['sessionID'] ?? params['task_id']) as String?;
+    final forking = {'session.side.create', 'thread/fork'}.contains(method);
+    final session = (params['threadId'] ?? params['sessionID'] ?? params['task_id']) as String?;
     final parent = currentTrace;
     final inherited = session == null || parent?.session == null || parent?.session == session ? parent : null;
     final context = {'session.create', 'task.start'}.contains(method) && params['tracing'] != true ? null
@@ -2070,7 +2058,7 @@ class AgentClient {
     return withTrace(context, () => traceAsync('desktop.$method',
       () => _requestUntraced(method, params, cancellation: cancellation, timeout: timeout),
       category: 'websocket', attributes: {
-        if (forking) 'parent.session_id': params['sessionID'] ?? params['task_id'],
+        if (forking) 'parent.session_id': session,
       }));
   }
 

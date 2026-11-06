@@ -18,5 +18,6 @@ dependencies:
   code_mode: any
   storage: any
   telemetry: any
+  tool_runtime: any
 dev_dependencies:
   test: ^1.26.3

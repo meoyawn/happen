@@ -3,8 +3,11 @@ import 'dart:convert';
 
 import 'package:protocol/protocol.dart';
 
+import 'diff.dart';
+
 Future<String> applyPatch(String cwd, String patch, {required CancellationToken cancellation,
-  String? callId, Future<void> Function(String phase, Json item)? onItem}) async {
+  String? callId, Future<void> Function(String phase, Json item)? onItem,
+  Future<void> Function(Json delta)? onPatch}) async {
   cancellation.throwIfCancelled();
   if (patch.length > 1024 * 1024) {
     throw const FormatException('Patch exceeds 1 MiB');
@@ -124,48 +127,47 @@ Future<String> applyPatch(String cwd, String patch, {required CancellationToken 
         kind: 'M',
       ));
       nativeChanges[path] = {'type': 'update', 'move_path': destination,
-        'unified_diff': _patchDiff(original, changes.last.content!)};
+        'unified_diff': unifiedDiff(original, changes.last.content!)};
     } else {
       throw FormatException('Unknown patch header: $header');
     }
   }
   final item = <String, dynamic>{'type': 'FileChange', 'id': callId, 'changes': nativeChanges, 'status': null};
   await onItem?.call('started', item);
-  var completed = false;
+  final committed = <Json>[];
+  var completed = false, exact = true, mutating = false;
+  Future<String?> read(String path) async => await File(path).exists()
+    ? await File(path).readAsString().asCancellable(cancellation) : null;
   try {
   for (final change in changes) {
     cancellation.throwIfCancelled();
+    final before = await read(change.path);
+    final overwritten = change.destination == null ? null : await read(change.destination!);
     if (change.content == null) {
+      mutating = true;
       await File(change.path).delete();
     } else {
       final destination = File(change.destination ?? change.path);
       await destination.parent.create(recursive: true);
       cancellation.throwIfCancelled();
+      mutating = true;
       await destination.writeAsString(change.content!, flush: true);
       if (change.destination != null && change.destination != change.path) {
         cancellation.throwIfCancelled();
         await File(change.path).delete();
       }
     }
+    committed.add({'path': change.path, 'type': change.kind,
+      'oldContent': before, 'newContent': change.content, 'movePath': change.destination,
+      'overwrittenMoveContent': overwritten});
+    mutating = false;
   }
   completed = true;
   return 'Success. Updated the following files:\n${changes.map((change) => '${change.kind} ${change.destination ?? change.path}').join('\n')}';
-  } finally { await onItem?.call('completed', {...item, 'status': completed ? 'completed' : 'failed'}); }
-}
-
-// FileChange carries a unified preview of the actual prepared before/after
-// snapshots, not the caller's patch syntax or guessed headers.
-String _patchDiff(String before, String after) {
-  List<String> lines(String text) { final values = text.replaceAll('\r\n', '\n').split('\n'); if (values.last.isEmpty) values.removeLast(); return values; }
-  final old = lines(before), next = lines(after);
-  var prefix = 0, suffix = 0;
-  while (prefix < old.length && prefix < next.length && old[prefix] == next[prefix]) { prefix++; }
-  while (suffix < old.length - prefix && suffix < next.length - prefix && old[old.length - suffix - 1] == next[next.length - suffix - 1]) { suffix++; }
-  final start = (prefix - 3).clamp(0, prefix), oldEnd = (old.length - suffix + 3).clamp(start, old.length), nextEnd = (next.length - suffix + 3).clamp(start, next.length);
-  return ['@@ -${start + 1},${oldEnd - start} +${start + 1},${nextEnd - start} @@',
-    for (var i = start; i < prefix; i++) ' ${old[i]}',
-    for (var i = prefix; i < old.length - suffix; i++) '-${old[i]}',
-    for (var i = prefix; i < next.length - suffix; i++) '+${next[i]}',
-    for (var i = old.length - suffix; i < oldEnd; i++) ' ${old[i]}', '',
-  ].join('\n');
+  } finally {
+    if (mutating) exact = false;
+    try {
+      if (committed.isNotEmpty || !exact) await onPatch?.call({'exact': exact, 'changes': committed});
+    } finally { await onItem?.call('completed', {...item, 'status': completed ? 'completed' : 'failed'}); }
+  }
 }

@@ -21,7 +21,7 @@ Future<void> main(List<String> args) async {
       if (!oneShot) 'yield_time_ms': 1000,
       ...input,
     }, cancellation: lifetime));
-    final output = StringBuffer(result['output'] ?? '');
+    final output = StringBuffer('${result['output'] ?? ''}');
     var sent = false;
     while (result['session_id'] != null) {
       result = jsonObject(await runtime.call('write_stdin', {

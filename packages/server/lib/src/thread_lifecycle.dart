@@ -20,7 +20,7 @@ extension _ThreadLifecycle on AgentServer {
     return delay;
   }
 
-  Future<_Task> _loadThread(String id, CancellationToken cancellation, {Json params = const {}}) async {
+  Future<_Task> _loadThread(String id, CancellationToken cancellation, {Json params = const {}, bool notifyStatus = true}) async {
     while (true) {
       cancellation.throwIfCancelled();
       final task = _tasks[id] ?? _Task(id, null);
@@ -42,7 +42,7 @@ extension _ThreadLifecycle on AgentServer {
         task.loaded = true;
         task.unloadDelaySecs = delay;
         if (_goalsEnabled(task.config!)) _loadedGoalRuntime(task);
-        _notifyThreadStatus(task);
+        if (notifyStatus) _notifyThreadStatus(task);
         return task;
       } finally {
         if (!task.loaded) { await task.writer?.close(); task.writer = null; }

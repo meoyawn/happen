@@ -157,6 +157,33 @@ void main() {
       await expectLater(client.request('session.inbox.cancel', {'sessionID': id, 'inboxID': 'msg_$steering'}), throwsStateError);
     });
 
+    test('steering receipt identifies the active turn and committed input', () async {
+      final events = <Json>[];
+      final subscription = client.events.stream.listen(events.add);
+      addTearDown(subscription.cancel);
+      final created = jsonObject(await client.request('thread/start', {'cwd': work.path}));
+      final id = created['thread']['id'] as String;
+      final initial = jsonObject(await client.request('turn/start', {
+        'threadId': id, 'input': [{'type': 'text', 'text': 'stream'}],
+      }));
+      final turnId = initial['turn']['id'];
+      for (final method in ['turn/start', 'turn/steer']) {
+        final messageId = newId();
+        final delivered = client.events.stream.firstWhere((event) => event['method'] == 'item/completed' &&
+          event['params']?['item']?['clientId'] == messageId);
+        final reply = jsonObject(await client.request(method, {
+          'threadId': id, 'clientUserMessageId': messageId,
+          'input': [{'type': 'text', 'text': 'stream'}],
+          if (method == 'turn/steer') 'expectedTurnId': turnId else 'delivery': 'steer',
+        }));
+        final committed = await delivered.timeout(const Duration(seconds: 10));
+        expect(method == 'turn/steer' ? reply['turnId'] : reply['turn']['id'], turnId);
+        expect(committed['params']['turnId'], turnId);
+      }
+      expect(events.where((event) => event['method'] == 'turn/started'), hasLength(1));
+      expect(users(await read(id)), ['stream', 'stream', 'stream']);
+    });
+
     test('turns have no model-step limit, including resumed threads', () async {
       final first = await finish('long'); final id = first['params']['threadId'] as String;
       expect(first['params']['turn']['status'], 'completed');
@@ -181,7 +208,7 @@ void main() {
       final first = await finish('calculate'), id = first['params']['threadId'] as String;
       final fork = jsonObject(await client.request('thread/fork', {'threadId': id, 'lastTurnId': first['params']['turn']['id']}));
       final child = fork['thread']['id'] as String;
-      expect(fork['thread']['forkedFromId'], id); expect(fork['thread']['name'], isNull);
+      expect(fork['thread']['forkedFromId'], id); expect(fork['thread']['name'], 'Fixture conversation');
       final path = '${root.path}/portable.jsonl';
       await client.request('history.export', {'task_id': child, 'path': path});
       await finish('continue', id: id);

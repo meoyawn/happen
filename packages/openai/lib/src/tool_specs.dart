@@ -117,7 +117,9 @@ String _codeDescription(bool deferredTools, bool imageGeneration, bool goals, bo
   final guidance = r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`.
 
-Tool availability can change between calls.''';
+Tool availability can change between calls.
+
+MCP tools return the full CallToolResult envelope. Check `isError` before using its content, even when `Promise.allSettled` reports `fulfilled`. Prefer `structuredContent` when present. Text blocks can contain ordinary text or error messages; only use `JSON.parse` when the tool documents JSON output. Print an error result to inspect it before retrying.''';
   if (!codeModeOnly) return [_codeRuntimeDescription, guidance, if (deferredTools) _searchGuidance].join('\n\n');
   final enabled = [
     // Happen-only extensions remain callable and discoverable in ALL_TOOLS,
@@ -141,11 +143,9 @@ Tool availability can change between calls.''';
   ].join('\n\n');
 }
 
-// Upstream model-facing compatibility payload (including upstream engine naming),
-// just like the Codex base instructions. Execution remains QuickJS, implementing
-// the async-module/helper contract; this is not a V8 dependency or backend claim.
+// Codex's async-module/helper contract adapted to the embedded QuickJS engine.
 const _codeRuntimeDescription = r'''Run JavaScript code to orchestrate/compose tool calls
-- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
+- Evaluates the provided JavaScript code in a fresh embedded QuickJS runtime as an async module.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return either an object or a string, based on the description.
@@ -168,6 +168,8 @@ const _codeRuntimeDescription = r'''Run JavaScript code to orchestrate/compose t
 - `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id. Pending timeouts do not keep `exec` alive by themselves; await an explicit promise if you need to wait for one.
 - `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
+- `as_settled(promises: Iterable<any> | Map<any, any>)`: returns an async iterator of `{ index, status, value?, reason? }` results in settlement order. `index` is the input position or Map key.
+- `stream_settled(promises: Iterable<any> | Map<any, any>, emit: (result: any) => any)`: processes results in settlement order, awaiting each callback before the next.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running.''';
 
 const hostCatalog = <Json>[

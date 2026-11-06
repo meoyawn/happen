@@ -33,6 +33,10 @@ appear inline; **View code** opens the JavaScript source.
 Hover a finished OpenCode response to copy it or see its model, reasoning level,
 and turn duration, rounded to seconds (or minutes and seconds for longer turns).
 
+Hover a finished response and choose **Fork from this response** to open a new
+conversation containing history through that turn. The new chat is named with a
+“fork” suffix; the original conversation and its unsent draft are preserved.
+
 Questions appear above the composer. Choose an option, select several when
 allowed, or type your own answer. **Back** and **Next** move between questions;
 draft answers survive switching tabs. Use number keys to choose, **⌘Enter**
@@ -62,10 +66,18 @@ selection also refresh the list. Closing a tab does not remove a saved session.
 Inbox keeps interrupted sessions under **Needs attention** even though their
 agents are no longer running; opening their history does not resume execution.
 
+Double-click a thread in the sidebar or Home, press **F2** on its focused row,
+or choose **Rename thread** from its right-click menu to edit the title inline.
+The input immediately receives focus and selects the current title. **Enter**
+saves it; **Escape** or moving focus away cancels. Empty titles are rejected.
+
 Right-click an Inbox session to archive or restore it, or use its hover action.
 Hover a session to pin or unpin it with the pin button, or choose **Pin session**
 or **Unpin session** from its right-click menu. Pins are saved across launches.
-Inbox keeps them in a **Pinned** section; Home and top/side tabs show them first.
+The sidebar keeps pinned thread cards above **Working**. Drag a pinned card to
+reorder it; **Escape** cancels the drag. The order is saved across launches and
+also used by Home and top/side tabs. Filtering by project reorders that project's
+pins in their existing positions. **Working** remembers its expansion across launches.
 Closing a tab keeps its session pinned. Archived sessions leave the pinned list
 until restored.
 

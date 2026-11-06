@@ -12,6 +12,7 @@ import 'package:tool_runtime/tool_runtime.dart';
 class HostTools {
   HostTools(this.cwd, this.cancellation) {
     _runner = CommandRunner(cancellation);
+    unawaited(_runner.prewarmShell(codexShell(), directory: cwd, cancellation: cancellation));
   }
   final String cwd;
   final CancellationToken cancellation;
@@ -21,7 +22,7 @@ class HostTools {
   late final CommandRunner _runner;
 
   Future<Object?> call(String name, Object? raw, {required CancellationToken cancellation, String? cwd,
-    String? callId, ToolItemEvent? onItem}) async {
+    String? callId, ToolItemEvent? onItem, ToolPatchEvent? onPatch}) async {
     this.cancellation.throwIfCancelled();
     cancellation.throwIfCancelled();
     final directory = cwd ?? this.cwd;
@@ -29,7 +30,7 @@ class HostTools {
       if (raw is! String) {
         throw const FormatException('apply_patch expects a raw patch string');
       }
-      return applyPatch(directory, raw, cancellation: cancellation, callId: callId, onItem: onItem);
+      return applyPatch(directory, raw, cancellation: cancellation, callId: callId, onItem: onItem, onPatch: onPatch);
     }
     final input = jsonObject(raw);
     switch (name) {
@@ -68,6 +69,7 @@ class HostTools {
           directory: input['workdir'] as String? ?? directory,
           cancellation: cancellation,
           timeout: Duration(milliseconds: timeout),
+          shellSnapshot: Directory(input['workdir'] as String? ?? directory).absolute.uri == Directory(directory).absolute.uri,
         );
         try {
           await command.done.asCancellable(cancellation);
@@ -103,7 +105,8 @@ class HostTools {
         final _Command command;
         try {
           command = _Command(await _runner.start(shell, args, directory: workdir,
-            cancellation: this.cancellation, tty: input['tty'] == true));
+            cancellation: this.cancellation, tty: input['tty'] == true,
+            shellSnapshot: Directory(workdir).absolute.uri == Directory(directory).absolute.uri));
         } catch (error) {
           cancellation.throwIfCancelled();
           final message = 'Failed to create unified exec process: $error';

@@ -4,13 +4,15 @@ import 'dart:io';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/workspace_navigation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
-  testWidgets('sidebar replaces cached titles on refresh and live renames without selecting the thread', (tester) async {
+  testWidgets('thread titles refresh, edit with focus and selection, and save only on Enter', (tester) async {
     late Directory root;
     late IsolateOwner database;
     late DesktopSession session;
@@ -76,7 +78,100 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.descendant(of: row, matching: find.text('Original prompt')), findsOneWidget);
     expect(session.error, isNull);
+
+    final input = find.byKey(const ValueKey('thread-title:background'));
+    void expectReady(String title) {
+      final field = tester.widget<TextField>(input);
+      expect(field.focusNode!.hasPrimaryFocus, isTrue);
+      expect(field.controller!.text, title);
+      expect(field.controller!.selection, TextSelection(baseOffset: 0, extentOffset: title.length));
+    }
+
+    await tester.tap(row, buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rename thread'));
+    await tester.pumpAndSettle();
+    expectReady('Original prompt');
+    await tester.enterText(input, 'Canceled with Escape');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(input, findsNothing);
+    expect(background.title, 'Original prompt');
+    expect(client.renames, isEmpty);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pump();
+    expectReady('Original prompt');
+    await tester.enterText(input, 'Canceled on blur');
+    await tester.tap(find.text('Happen'));
+    await tester.pumpAndSettle();
+    expect(input, findsNothing);
+    expect(background.title, 'Original prompt');
+    expect(client.renames, isEmpty);
+
+    await tester.tap(row);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expectReady('Original prompt');
+    await tester.enterText(input, '  A title chosen by the user  ');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(input, findsNothing);
+    expect(background.title, 'A title chosen by the user');
+    expect(client.renames, [{'threadId': background.id, 'name': 'A title chosen by the user'}]);
+    expect(session.task, same(active));
+    await tester.runAsync(() async {
+      final cache = jsonObject(await callIsolate(database.port, 'load', {}));
+      expect((cache['tasks'] as List).singleWhere((task) => task['id'] == background.id)['title'], 'A title chosen by the user');
+    });
+    expect(session.error, isNull);
+
+    client.renamePending = Completer<void>();
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pump();
+    expectReady('A title chosen by the user');
+    await tester.enterText(input, 'Keep this name for retry');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pump();
+    expect(input, findsNothing, reason: 'A pending save cannot start another edit');
+    expect(client.renames, hasLength(2));
+    expect(background.title, 'A title chosen by the user');
+
+    client.renamePending!.completeError(StateError('Offline'));
+    await tester.pumpAndSettle();
+    client.renamePending = null;
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pump();
+    expectReady('Keep this name for retry');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(background.title, 'Keep this name for retry');
+    expect(client.renames, hasLength(3));
+    await tester.runAsync(() async {
+      final cache = jsonObject(await callIsolate(database.port, 'load', {}));
+      expect((cache['tasks'] as List).singleWhere((task) => task['id'] == background.id)['title'], 'Keep this name for retry');
+    });
+
+    final cancelled = CancellationToken()..cancel();
+    await expectLater(session.renameTask(background, 'Never sent', cancellation: cancelled),
+      throwsA(isA<CancelledException>()));
+    expect(client.renames, hasLength(3));
+
+    client.renamePending = Completer<void>();
+    await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+    await tester.pump();
+    await tester.enterText(input, 'Late acknowledgement');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(client.renames, hasLength(4));
     await tester.pumpWidget(const SizedBox.shrink());
+    client.renamePending!.complete();
+    await tester.pump();
+    expect(background.title, 'Keep this name for retry', reason: 'An abandoned editor ignores a late acknowledgement');
+    expect(tester.takeException(), isNull);
   });
 }
 
@@ -84,6 +179,14 @@ class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override bool get sharedFilesystem => true;
   List<Json> threads = [];
+  final renames = <Json>[];
+  Completer<void>? renamePending;
+  @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method != 'thread/name/set') throw StateError('Unexpected request: $method');
+    renames.add(params);
+    await renamePending?.future;
+    return <String, dynamic>{};
+  }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
     if (method != 'thread/list') throw StateError('Unexpected session read: $method');
     return {'data': params['archived'] == true ? <Json>[] : threads, 'nextCursor': null};

@@ -86,13 +86,42 @@ extension ThreadLifecycle on TaskStore {
     if (metadata('archived_at') == null) return {'archived': false};
     return {'archived': true, 'checkpointed': db.select('PRAGMA wal_checkpoint(TRUNCATE)').single.values.first == 0};
   }
-  Json forkSnapshot() => {'history_base': _forkPosition(), 'config': metadata('config'),
-    'has_user_message': withHistoryLineage(directory, taskId, db, (segments) => segments.any((segment) => segment.db.select(
-      "SELECT 1 FROM thread_items WHERE item_type IS 'userMessage' AND rollout_ordinal < ? LIMIT 1", [segment.end]).isNotEmpty)),
-    'archived': metadata('archived_at') != null, 'metadata': {
-      for (final key in _retainedExecutionMetadata)
-        if (metadata(key) case final value?) key: value,
-    }};
+  Json? forkUsage([Json? position]) => withHistoryLineage(directory, taskId, db, (segments) {
+    var visible = position == null;
+    for (final segment in segments.reversed) {
+      if (!visible && segment.id != position!['thread_id']) continue;
+      visible = true;
+      final end = segment.id == position?['thread_id'] ? position!['end_ordinal_exclusive'] as int : segment.end;
+      final row = segment.db.select("SELECT line FROM rollout_lines WHERE ordinal < ? AND "
+        "(json_extract(line,'\$.type') IS 'compacted' OR "
+        "(json_extract(line,'\$.type') IS 'event_msg' AND json_extract(line,'\$.payload.type') IS 'token_count')) "
+        'ORDER BY ordinal DESC LIMIT 1', [end]).firstOrNull;
+      if (row == null) continue;
+      final line = jsonObject(jsonDecode(row['line'] as String)), payload = jsonObject(line['payload']);
+      if (line['type'] == 'compacted' || payload['info'] == null) return null;
+      final info = jsonObject(payload['info']);
+      final usage = info['last_token_usage'] == null ? info : <String, dynamic>{
+        ...jsonObject(info['last_token_usage']),
+        'reasoning_tokens': info['last_token_usage']['reasoning_output_tokens'] ?? 0,
+      }..remove('reasoning_output_tokens');
+      return {'turnId': payload['turn_id'], 'tokenUsage': usage};
+    }
+    return null;
+  });
+
+  Json forkSnapshot({String? lastTurnId, String? beforeTurnId}) {
+    final base = _forkPosition(lastTurnId: lastTurnId, beforeTurnId: beforeTurnId);
+    return {'history_base': base, 'config': metadata('config'), 'name': metadata('name'), 'usage': forkUsage(base),
+      'has_user_message': withHistoryLineage(directory, taskId, db, (segments) => segments.any((segment) => segment.db.select(
+        "SELECT 1 FROM thread_items WHERE item_type IS 'userMessage' AND rollout_ordinal < ? LIMIT 1", [segment.end]).isNotEmpty)),
+      if (lastTurnId == null && beforeTurnId == null)
+        'active_turn': db.select("SELECT turn_id,started_at FROM thread_turns WHERE status IS 'inProgress' ORDER BY rollout_ordinal DESC LIMIT 1").firstOrNull,
+      'kv': [for (final row in db.select('SELECT * FROM kv')) {...row}],
+      'archived': metadata('archived_at') != null, 'metadata': {
+        for (final key in _retainedExecutionMetadata)
+          if (metadata(key) case final value?) key: value,
+      }};
+  }
   void initializeFork(Json snapshot) {
     final base = jsonObject(snapshot['history_base']);
     final config = {...jsonObject(snapshot['config']), 'task_id': taskId, 'history_base': base};
@@ -102,7 +131,26 @@ extension ThreadLifecycle on TaskStore {
     try {
       _metadata({...jsonObject(snapshot['metadata'] ?? {}), 'config': config,
         'history_base': base, 'title': snapshot['title'] ?? 'Side chat'});
+      if (config['forked_from_id'] != null) {
+        _metadata({'forked_from_id': config['forked_from_id'], 'name': snapshot['name'],
+          'effective_reasoning': config['provider_settings']?['reasoning']});
+        for (final raw in snapshot['kv'] as List? ?? []) {
+          final row = jsonObject(raw);
+          db.execute('INSERT INTO kv VALUES (?,?,?,?)', [row['key'], row['value'], row['time_created'], row['time_updated']]);
+        }
+        if (snapshot['usage'] case final Map<String, Object?> usage) {
+          state['tokens'] = sessionTokens(jsonObject(usage['tokenUsage']));
+        }
+      }
       append('task.created', config);
+      if (config['forked_from_id'] != null) {
+        _restoreObservedUsage();
+        _runtime(state);
+        if (snapshot['active_turn'] case final Map<String, Object?> active) {
+          native.append([{'type': 'event_msg', 'payload': {'type': 'turn_aborted', 'turn_id': active['turn_id'],
+            'started_at': active['started_at'], 'completed_at': DateTime.now().millisecondsSinceEpoch ~/ 1000}}]);
+        }
+      }
       final suffix = (snapshot['items'] as List? ?? []).map(jsonObject).toList();
       if (suffix.isNotEmpty) {
         final input = modelContext().map(ConversationItem.fromJson).toList();
@@ -130,26 +178,36 @@ extension ThreadLifecycle on TaskStore {
     return {'thread_id': taskId, 'end_ordinal_exclusive': (last['ordinal'] as int) + 1, 'end_byte_offset': last['end']};
   }
 
-  Future<void> fork(String childId, {int? through, String? lastTurnId, String? beforeTurnId, CancellationToken? cancellation}) async {
+  Future<void> fork(String childId, {String? lastTurnId, String? beforeTurnId, Json? configuration,
+      CancellationToken? cancellation}) async {
     cancellation?.throwIfCancelled(); validateTaskId(childId);
     final base = _forkPosition(lastTurnId: lastTurnId, beforeTurnId: beforeTurnId);
+    final usage = forkUsage(base);
     final target = Directory('$directory/tasks/$childId');
     if (target.existsSync()) throw StateError('Destination exists');
     final stage = Directory('$directory/staging/${newId()}')..createSync(recursive: true);
     final child = TaskStore(stage.path, childId);
     try {
       child.db.execute('BEGIN');
-      final config = {...jsonObject(metadata('config') ?? {}), 'task_id': childId,
+      final source = jsonObject(metadata('config') ?? {});
+      final config = {...configuration ?? source, 'task_id': childId,
         'history_base': base, 'forked_from_id': taskId};
       child._metadata({'history_base': base, 'forked_from_id': taskId, 'config': config,
+        'name': metadata('name'),
         for (final key in _retainedExecutionMetadata)
-          if (metadata(key) case final value?) key: value});
+          if (metadata(key) case final value?) key: value,
+        if (configuration != null) 'effective_reasoning': config['provider_settings']?['reasoning'],
+        if (config['cwd'] != source['cwd']) 'current_cwd': config['cwd']});
       for (final row in db.select('SELECT * FROM kv')) {
         child.db.execute('INSERT INTO kv VALUES (?,?,?,?)', [row['key'], row['value'], row['time_created'], row['time_updated']]);
       }
-      child.state = {...child.state, 'window': state['window'], if (state['tokens'] != null) 'tokens': state['tokens']};
+      child.state = {...child.state, 'window': state['window'],
+        if (usage != null) 'tokens': sessionTokens(jsonObject(usage['tokenUsage']))};
       child._runtime(child.state);
       child.append('task.created', config);
+      if (config['developer_instructions'] != source['developer_instructions']) {
+        child.append('instructions.updated', {'item': ConversationItem.text('developer', config['developer_instructions'] as String).toJson()});
+      }
       if (_getGoal() case final sourceGoal?) child.goal('snapshot', {'goal': sourceGoal});
       if (lastTurnId == null && beforeTurnId == null) {
         final active = db.select("SELECT turn_id,started_at FROM thread_turns WHERE status IS 'inProgress' ORDER BY rollout_ordinal DESC LIMIT 1").firstOrNull;

@@ -85,7 +85,7 @@ class _OpenCodeTools extends ToolRuntime {
   final NativeTools native;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd,
-    String? callId, ToolItemEvent? onItem}) =>
+    String? callId, ToolItemEvent? onItem, ToolPatchEvent? onPatch}) =>
       native.execute(name, jsonObject(arguments), cancellation: cancellation, cwd: cwd);
   @override
   Future<void> close() => native.close();

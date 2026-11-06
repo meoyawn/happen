@@ -71,4 +71,7 @@ Native `tool_search_call`/`tool_search_output` items retain their client executi
 schemas and identities through history and resume; nested search still returns
 callable names and TypeScript declarations. Web retains its hosted definition.
 Runtime helpers and shell options are described only where implemented; the
-upstream V8, yield/wait, media, and PTY capabilities are not claimed.
+runtime stays embedded QuickJS. Exec/wait, exit, notifications, timers, ordered
+media, settlement helpers and PTYs are implemented; their applicable proof
+boundaries and engine differences are tracked in
+[`../../code_mode/UPSTREAM.md`](../../code_mode/UPSTREAM.md).

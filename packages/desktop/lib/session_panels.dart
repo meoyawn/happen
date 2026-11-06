@@ -11,6 +11,8 @@ import 'browser.dart';
 import 'context_window.dart';
 import 'conversation.dart';
 import 'conversation_data.dart';
+import 'conversation_changes.dart';
+import 'diff_viewer.dart';
 import 'file_icon.dart';
 import 'file_reference.dart';
 import 'file_viewer.dart';
@@ -102,9 +104,17 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     }
   }
 
+  void _openDiff(String source, String? path) {
+    final task = widget.task;
+    if (task == null) return;
+    final tab = 'diff:$source', state = widget.session.panelsFor(task);
+    state.diffReveals[tab] = (path: path, revision: (state.diffReveals[tab]?.revision ?? 0) + 1);
+    widget.session.openSessionPanel(task, tab);
+  }
+
   @override
   Widget build(BuildContext context) => ConversationBrowserScope(onOpen: _openBrowser,
-    child: ConversationFileScope(onOpen: _openFile,
+    child: ConversationDiffScope(onOpen: _openDiff, child: ConversationFileScope(onOpen: _openFile,
     child: ListenableBuilder(listenable: Listenable.merge([widget.session, widget.session.panelSelection]),
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
       final task = widget.task;
@@ -140,6 +150,12 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                         directory: directory,
                         active: opened && state.active == tab, line: state.fileReveals[tab]?.line,
                         revealRequest: state.fileReveals[tab]?.revision ?? 0))),
+                  for (final tab in state.tabs.where(isDiffPanel))
+                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                      child: ExcludeFocus(excluding: !opened || state.active != tab,
+                        child: DiffViewer(files: changesForSource(task, diffPanelSource(tab)),
+                          directory: directory ?? '', selectedPath: state.diffReveals[tab]?.path,
+                          revealRevision: state.diffReveals[tab]?.revision ?? 0))),
                   for (final tab in state.tabs.where(isBrowserPanel))
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: !opened || state.active != tab,
@@ -169,7 +185,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             },
             onCancel: () => setState(() => _dragWidth = null))),
       ]);
-    }))));
+    })))));
 
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
@@ -186,6 +202,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             icon: isFilePanel(tab) ? FileIcon(filePanelPath(tab), size: 14)
               : Icon(tab == contextPanel ? Icons.donut_large_rounded
                   : isBrowserPanel(tab) ? Icons.language_rounded
+                  : isDiffPanel(tab) ? Icons.difference_outlined
                   : isSideChatPanel(tab) ? Icons.chat_bubble_outline_rounded : Icons.add_rounded,
                   size: 14, color: state.active == tab ? opencodeInk : opencodeFaint),
             active: state.active == tab,
@@ -441,6 +458,7 @@ Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => Size
     icon: Icon(icon, size: 16, color: opencodeMuted)));
 
 String _panelTitle(String tab, [SessionPanelState? state]) => tab == contextPanel ? 'Context'
+  : isDiffPanel(tab) ? 'File changes'
   : isFilePanel(tab) ? filePanelPath(tab).split('/').where((part) => part.isNotEmpty).lastOrNull ?? '/'
   : isBrowserPanel(tab) ? _browserTitle(state?.browserPages[tab])
   : 'New tab';
