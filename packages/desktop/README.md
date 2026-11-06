@@ -130,12 +130,26 @@ answer. Click a file or **Open diff** to review it in the side panel, switch
 between unified and split views, copy the diff, or open the current file.
 Saved conversations retain their turn diffs.
 
-The header's Git control offers **Commit**, **Push**, and **Commit & push**.
+The top-right toolbar toggles project details, the terminal, and the side panel.
+Project details sits beside the conversation in wide windows and opens as a
+floating card in smaller windows. It shows the host and project folder,
+**Open in Finder** (or an installed editor), saved project scripts, the branch,
+Git actions, and **Changes** with added and removed line counts.
+Scripts can be added, edited, and deleted; running one opens its own terminal
+tab in the project folder. The preferred application and scripts survive relaunch.
+The branch picker switches local branches, tracks remote branches, and creates
+new branches. **Changes** opens the checkout's staged, working, and untracked
+changes compared with HEAD in the diff viewer.
+
+The details card's Git control offers **Commit**, **Push**, and **Commit & push**.
 The commit dialog shows the branch and lets you select files and enter an
 optional message. Leave the message empty to generate it with the selected
 model. Generation runs on the server without adding a conversation turn.
 Actions show progress, can be cancelled, and retain a successful local commit
 if its push fails. Excluded staged files remain outside the commit.
+Commit and push use sealed Dart states on both desktop and server. Pending
+writes, cancellation, successful commits, push failures, and the final status
+refresh are explicit; a push retry uses the existing commit.
 
 Composer and user images use OpenCode's cropped 58×46 thumbnails. User images
 sit above the message bubble; composer attachments scroll horizontally and show
@@ -363,6 +377,12 @@ Update the fork by incorporating upstream stable and rerunning its mouse tracker
 tests, then update the submodule commit. Use the vendored `bin/flutter` for direct
 development commands. An already-running supervisor switches SDKs on the next
 development launch; an already-frozen process needs a restart to reset its state.
+
+Debug builds use the amber app icon and bundle ID `com.adelnz.happen.debug`.
+Release and Profile use the teal icon and `com.adelnz.happen`. Separate IDs keep
+macOS from reusing the installed release's Dock icon for development. Changes
+to native icons or bundle IDs require quitting and rerunning `moonx dev`;
+Flutter hot reload and hot restart do not update the macOS app bundle.
 
 ### Release builds
 

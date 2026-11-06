@@ -66,10 +66,13 @@ class OpenAIProvider implements ModelProvider {
       'sleep_tool',
       'goals',
       'code_mode_only',
+      'code_mode_tool_search',
       'request_user_input',
+      'default_mode_request_user_input',
     };
-    if (selected.keys.any((key) => !allowed.contains(key))) {
-      throw ArgumentError('Unsupported GPT setting');
+    final unsupported = selected.keys.where((key) => !allowed.contains(key)).toList()..sort();
+    if (unsupported.isNotEmpty) {
+      throw ArgumentError('Unsupported GPT setting${unsupported.length == 1 ? '' : 's'}: ${unsupported.join(', ')}');
     }
     final reasoning = selected['reasoning'] ?? info.defaultReasoning;
     if (!info.reasoningLevels.contains(reasoning)) {
@@ -91,7 +94,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['sleep_tool', 'goals', 'code_mode_only', 'request_user_input']) {
+    for (final key in ['sleep_tool', 'goals', 'code_mode_only', 'code_mode_tool_search', 'request_user_input', 'default_mode_request_user_input']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -118,9 +121,9 @@ class OpenAIProvider implements ModelProvider {
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
       'code_mode_only': selected['code_mode_only'] ?? info.data['tool_mode'] == 'code_mode_only',
-      // Interactive connections enable questions for their subscribed sessions.
-      // Headless agents must opt in explicitly.
-      'request_user_input': selected['request_user_input'] ?? false,
+      'code_mode_tool_search': selected['code_mode_tool_search'] ?? false,
+      'request_user_input': selected['request_user_input'] ?? true,
+      'default_mode_request_user_input': selected['default_mode_request_user_input'] ?? false,
     };
   }
 
@@ -183,8 +186,11 @@ class OpenAIProvider implements ModelProvider {
       },
       onRecovery: (wire) async {
         final item = gptItemFromNative(wire);
-        if (onRecovery != null) await onRecovery(item);
-        else onEvent?.call({'type': 'model.recovery', 'item': item.toJson()});
+        if (onRecovery != null) {
+          await onRecovery(item);
+        } else {
+          onEvent?.call({'type': 'model.recovery', 'item': item.toJson()});
+        }
       },
     );
   }

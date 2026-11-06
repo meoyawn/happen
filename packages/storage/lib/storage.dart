@@ -44,6 +44,11 @@ class TaskStore {
       db.execute('''CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
         CREATE TABLE IF NOT EXISTS happen_runtime(singleton INTEGER PRIMARY KEY CHECK(singleton IS 1),data TEXT NOT NULL) STRICT;
         CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT NOT NULL,time_created INTEGER NOT NULL,time_updated INTEGER NOT NULL) STRICT;''');
+      // Web search now has one route. Delete the retired switch from saved
+      // settings before the server restores them; keep the conversation intact.
+      db.execute(r'''UPDATE metadata SET value = json_remove(value, '$.provider_settings.standalone_web_search')
+        WHERE key IS 'config' AND json_extract(value, '$.provider') IN ('openai', 'gpt')
+          AND json_type(value, '$.provider_settings.standalone_web_search') IS NOT NULL''');
       final row = db.select('SELECT data FROM happen_runtime').firstOrNull;
       state = row == null ? {'sourceSeq': 0, 'window': '$taskId:0', 'pendingInputs': <String, dynamic>{}} :
         jsonObject(jsonDecode(row['data'] as String));
@@ -151,7 +156,9 @@ class TaskStore {
         next['runtimeID'] = data['id']; next['runtimeHasHandles'] = false;
       }
       if ({'tool.started', 'host_tool.started'}.contains(type) &&
-          {'exec_command', 'write_stdin', 'shell'}.contains(data['name'])) next['runtimeHasHandles'] = true;
+          {'exec_command', 'write_stdin', 'shell'}.contains(data['name'])) {
+        next['runtimeHasHandles'] = true;
+      }
       record['notifications'] = threadNotifications(taskId, record, next);
       records.add(record);
     }

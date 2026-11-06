@@ -20,8 +20,8 @@ import 'model_context.dart';
 class OpenAIToolInterface extends ToolInterface {
   const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
     this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
-    this.requestUserInput = false});
-  final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, requestUserInput;
+    this.codeModeToolSearch = false, this.requestUserInput = true, this.defaultModeRequestUserInput = false});
+  final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, codeModeToolSearch, requestUserInput, defaultModeRequestUserInput;
   @override
   String get id => 'openai';
   @override
@@ -42,21 +42,21 @@ class OpenAIToolInterface extends ToolInterface {
     // Codex prepares its cached search handler while building the tool router.
     prepareToolSearch(deferred);
     return [
-    specs.codeDefinition(deferredTools: deferred.isNotEmpty, webSearch: webSearch,
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty && codeModeToolSearch, webSearch: webSearch,
       imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (deferred.isNotEmpty) ...mcpResourceCatalog.map(specs.directDefinition),
     ],
-    if (requestUserInput) ...[requestUserInputDefinition, requestUserInputAsyncDefinition],
+    if (requestUserInput) ...[requestUserInputForMode(defaultMode: defaultModeRequestUserInput), requestUserInputAsyncDefinition],
     if (!codeModeOnly) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == 'curr_time')),
     if (sleepTool) specs.sleepDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['apply_patch', 'view_image']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (imageGeneration) specs.directDefinition(imageGenerationCatalog),
       if (goals) ...goalCatalog.map(specs.directDefinition),
-      if (deferred.isNotEmpty) specs.directSearchDefinition,
     ],
+    if (deferred.isNotEmpty && !codeModeOnly) specs.directSearchDefinition,
     if (webSearch && !codeModeOnly) webSearchDefinition,
     ];
   }
@@ -90,15 +90,15 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
     ...hostCatalog.where((tool) => codeModeOnly || deferred.isNotEmpty || !mcpResourceMethods.containsKey(tool['name'])),
-    if (deferred.isNotEmpty) describeTool(specs.toolSearchCatalog),
+    if (deferred.isNotEmpty && codeModeToolSearch) describeTool(specs.toolSearchCatalog),
   ];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) =>
-    _OpenAITools(cwd, cancellation, webSearch, sleepTool, codeModeOnly, requestUserInput);
+    _OpenAITools(cwd, cancellation, webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput);
   @override
   String formatResult(ToolCall call, Json result) {
     if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) {
-      return jsonEncode([{'type': 'input_text', 'text': jsonEncode(result)}]);
+      return jsonEncode([{'type': 'input_text', 'text': result['error'] ?? jsonEncode(result)}]);
     }
     if (call.format == 'search') { return jsonEncode(result['tools'] ?? []); }
     return jsonEncode([
@@ -151,13 +151,13 @@ class OpenAIToolInterface extends ToolInterface {
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly, this.requestUserInput)
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly, this.requestUserInput, this.defaultModeRequestUserInput)
     : host = HostTools(cwd, cancellation), cells = CodeSession(cancellation);
   final HostTools host;
   final CodeSession cells;
   @override
   bool get hasRunningCells => cells.hasRunningCells;
-  final bool webSearch, sleepTool, codeModeOnly, requestUserInput;
+  final bool webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd,
     String? callId, ToolItemEvent? onItem, ToolPatchEvent? onPatch}) =>
@@ -175,6 +175,7 @@ class _OpenAITools extends ToolRuntime {
     }
     if (requestUserInput && call.name == 'request_user_input' &&
         (call.namespace == null || call.namespace == 'functions')) {
+      if (!defaultModeRequestUserInput) return {'error': 'request_user_input is unavailable in Default mode'};
       final questions = requestUserInputQuestions(jsonDecode(call.input));
       final result = jsonObject(await context.call('request_user_input', {
         'questions': [for (final question in questions) {

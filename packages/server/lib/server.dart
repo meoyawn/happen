@@ -1042,6 +1042,7 @@ class AgentServer {
         client.questions && client.subscriptions.contains(id))) return config;
     return {...config, 'provider_settings': {
       ...jsonObject(config['provider_settings']), 'request_user_input': true,
+      'default_mode_request_user_input': true,
     }};
   }
 

@@ -115,6 +115,7 @@ void main() {
 
     final id = await createThread(client, {
       'cwd': root.path,
+      'settings': {'code_mode_tool_search': true},
       'dynamicTools': [for (var i = 0; i < 120; i++) {
         'name': 'client_unused_$i', 'description': 'Another unrelated operation',
         'inputSchema': {'type': 'object', 'properties': {'client_schema_$i': {'type': 'boolean'}}},

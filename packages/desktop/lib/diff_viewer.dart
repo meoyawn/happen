@@ -15,10 +15,10 @@ class DiffStat extends StatelessWidget {
   final int additions, deletions;
   @override
   Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
-    if (additions > 0) Text('+$additions', style: const TextStyle(fontFamily: 'IBM Plex Mono',
+    if (additions > 0) Text('+${MaterialLocalizations.of(context).formatDecimal(additions)}', style: const TextStyle(fontFamily: 'IBM Plex Mono',
       fontSize: 11, color: diffAdded, fontFeatures: [FontFeature.tabularFigures()])),
     if (additions > 0 && deletions > 0) const SizedBox(width: 7),
-    if (deletions > 0) Text('−$deletions', style: const TextStyle(fontFamily: 'IBM Plex Mono',
+    if (deletions > 0) Text('−${MaterialLocalizations.of(context).formatDecimal(deletions)}', style: const TextStyle(fontFamily: 'IBM Plex Mono',
       fontSize: 11, color: diffRemoved, fontFeatures: [FontFeature.tabularFigures()])),
   ]);
 }

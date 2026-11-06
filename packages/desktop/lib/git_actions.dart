@@ -24,7 +24,7 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(controller.refresh());
+    _refreshAfterBuild();
     _refresh = Timer.periodic(const Duration(seconds: 5), (_) {
       if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.paused) unawaited(controller.refresh());
     });
@@ -32,7 +32,15 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
   @override
   void didUpdateWidget(GitActionsControl oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != controller) unawaited(controller.refresh());
+    if (oldWidget.controller != controller) _refreshAfterBuild();
+  }
+
+  void _refreshAfterBuild() {
+    final target = controller;
+    // The checkout controller also notifies widgets outside this subtree.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(controller, target)) unawaited(target.refresh());
+    });
   }
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -91,7 +99,8 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
     final enabled = canCommit || canPush && (repo.ahead > 0 || repo.upstream == null);
     final label = canCommit ? canPublish ? 'Commit & push' : 'Commit'
       : enabled ? 'Push' : repo.behind > 0 ? 'Behind upstream' : 'Up to date';
-    final hint = state is GitCompleted ? state.message : state is GitCancelled ? 'Git action cancelled. Status refreshed.'
+    final hint = state is GitCompleted ? state.message : state is GitCancelled
+      ? '${state.commit == null ? '' : 'Committed ${state.commit!.sha.substring(0, 7)}. '}Git action cancelled. Status refreshed.'
       : repo.files.any((file) => file.conflicted) ? 'Resolve merge conflicts before committing'
       : '${repo.branch ?? 'Detached HEAD'} · ${repo.files.length} changed files'
         '${repo.ahead > 0 ? ' · ${repo.ahead} ahead' : ''}${repo.behind > 0 ? ' · ${repo.behind} behind' : ''}';
@@ -116,7 +125,7 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
       if (state is GitFailed) TextButton.icon(
         onPressed: () => unawaited(showDialog<void>(context: context, builder: (context) => AlertDialog(
           title: const Text('Git action failed'), content: SizedBox(width: 480, child: SelectableText(state.message)),
-          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))]))),
+          actions: [TextButton(onPressed: () { controller.acknowledge(); Navigator.pop(context); }, child: const Text('Close'))]))),
         icon: const Icon(Icons.error_outline_rounded, size: 14, color: Color(0xffc23838)),
         label: const Text('Git action failed · View details', style: TextStyle(fontSize: 11, color: Color(0xffc23838)))),
     ]);

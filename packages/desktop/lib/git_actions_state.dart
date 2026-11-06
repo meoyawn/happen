@@ -80,7 +80,10 @@ final class GitRejected extends GitOutcome {
   final String message;
   final GitCommit? commit;
 }
-final class GitStopped extends GitOutcome { const GitStopped(); }
+final class GitStopped extends GitOutcome {
+  const GitStopped(this.commit);
+  final GitCommit? commit;
+}
 final class GitRefreshing extends GitState {
   const GitRefreshing(GitRepository super.repository, this.operation, this.outcome);
   final GitOperation operation;
@@ -103,18 +106,24 @@ final class GitFailed extends GitState {
   final GitCommit? commit;
 }
 final class GitCancelled extends GitState {
-  const GitCancelled(super.repository, this.operation);
+  const GitCancelled(super.repository, this.operation, this.commit);
   final GitOperation operation;
+  final GitCommit? commit;
 }
 
 GitState _transition(GitState current, GitState next) => switch ((current, next)) {
-  (GitLoading(), GitLoading() || GitReady() || GitFailed() || GitStarting()) => next,
-  (GitReady() || GitCompleted() || GitFailed() || GitCancelled(), GitLoading() || GitStarting()) => next,
-  (GitRunning(:final id), GitRunning(id: final nextId)) when id != nextId =>
+  (GitLoading(), GitLoading() || GitReady() || GitFailed() || GitCompleted() || GitCancelled() || GitStarting()) => next,
+  (GitReady() || GitCompleted() || GitFailed() || GitCancelled(), GitLoading() || GitStarting() || GitReady()) => next,
+  (GitRunning(:final operation), GitRunning(operation: final nextOperation)) when operation != nextOperation =>
     throw StateError('A stale Git operation cannot transition the current operation'),
-  (GitStarting(), GitGenerating() || GitCommitting() || GitPushing() || GitSwitching()) => next,
+  (GitStarting(operation: (:final action, id: _)), GitGenerating() || GitCommitting())
+    when action == GitAction.commit || action == GitAction.commitPush => next,
+  (GitStarting(operation: (action: GitAction.push, id: _)), GitPushing()) => next,
+  (GitStarting(operation: (:final action, id: _)), GitSwitching())
+    when action == GitAction.switchBranch || action == GitAction.createBranch => next,
   (GitGenerating(), GitCommitting()) => next,
-  (GitCommitting(), GitCommitting() || GitPushing()) => next,
+  (GitCommitting(), GitCommitting()) => next,
+  (GitCommitting(operation: (action: GitAction.commitPush, id: _)), GitPushing()) => next,
   (GitPushing(), GitPushing()) => next,
   (GitSwitching(), GitSwitching()) => next,
   (GitRunning(), GitCancelling() || GitRefreshing()) => next,
@@ -166,17 +175,26 @@ class GitActionsController extends ChangeNotifier {
     if (!force && _refreshed != null && DateTime.now().difference(_refreshed!) < const Duration(seconds: 5)) return;
     final token = CancellationToken();
     _read = token;
-    final previous = _state.repository;
-    _set(GitLoading(previous));
+    final previous = _state, repository = _state.repository;
+    _set(GitLoading(repository));
     try {
       final result = await client.gitRequest('git/status', {'cwd': cwd}, cancellation: token.merge(_lifetime));
       if (!identical(_read, token) || _lifetime.isCancelled) return;
       _refreshed = DateTime.now();
-      _set(GitReady(_repository(result)));
+      final updated = _repository(result);
+      _set(switch (previous) {
+        GitCompleted(:final operation, :final result) => GitCompleted(updated, operation, result),
+        GitFailed(:final message, :final operation, :final commit) when operation != null =>
+          GitFailed(updated, message, operation: operation, commit: commit),
+        GitCancelled(:final operation, :final commit) => GitCancelled(updated, operation, commit),
+        _ => GitReady(updated),
+      });
     } on CancelledException {
       // A new action or owner shutdown supersedes this read.
     } catch (error) {
-      if (identical(_read, token)) _set(GitFailed(previous, error.toString()));
+      if (identical(_read, token)) {
+        _set(previous is GitFailed && previous.operation != null ? previous : GitFailed(repository, error.toString()));
+      }
     } finally {
       if (identical(_read, token)) _read = null;
       token.cancel();
@@ -216,7 +234,8 @@ class GitActionsController extends ChangeNotifier {
       outcome = result['status'] == 'failed' ? GitRejected(
         '${commit == null ? '' : 'Committed ${commit.sha.substring(0, 7)}. '}${result['message']}', commit) : GitSucceeded(commit);
     } on CancelledException {
-      outcome = const GitStopped();
+      final active = _state is GitCancelling ? (_state as GitCancelling).operation : _state;
+      outcome = GitStopped(active is GitPushing ? active.commit : null);
     } catch (error) {
       outcome = GitRejected(error.toString(), null);
     } finally {
@@ -232,7 +251,7 @@ class GitActionsController extends ChangeNotifier {
     if (_lifetime.isCancelled) return;
     _refreshed = DateTime.now();
     _set(switch (outcome) {
-      GitStopped() => GitCancelled(updated, operation),
+      GitStopped(:final commit) => GitCancelled(updated, operation, commit),
       GitRejected(:final message, :final commit) => GitFailed(updated, message, operation: operation, commit: commit),
       GitSucceeded() => GitCompleted(updated, operation, outcome),
     });
@@ -243,6 +262,13 @@ class GitActionsController extends ChangeNotifier {
       if (_operation == null) return;
       _set(GitCancelling(current));
       _operation?.token.cancel();
+    }
+  }
+
+  void acknowledge() {
+    final repository = _state.repository;
+    if (repository != null && (_state is GitCompleted || _state is GitFailed || _state is GitCancelled)) {
+      _set(GitReady(repository));
     }
   }
 

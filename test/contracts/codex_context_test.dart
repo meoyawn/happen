@@ -246,6 +246,13 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
   final modelIds = <String, Map<String, String>>{};
   final continuationIds = <String, Map<int, Set<String>>>{};
   server.listen((http) async {
+    // This peer implements HTTP Responses. Exercise the built-in provider's
+    // ordinary HTTP fallback instead of changing its WebSocket capability.
+    if (WebSocketTransformer.isUpgradeRequest(http)) {
+      http.response.statusCode = HttpStatus.upgradeRequired;
+      await http.response.close();
+      return;
+    }
     try {
       final chunks = await http.fold<BytesBuilder>(BytesBuilder(copy: false), (buffer, chunk) => buffer..add(chunk));
       final bytes = chunks.takeBytes();
@@ -347,7 +354,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
 
 Future<Json> scenario(Json scenario, String model, String codex, String output,
   CancellationToken cancellation, String catalog, {required bool codeModeOnly,
-    required String reasoning, required String reasoningSummary}) async {
+    required bool codeModeToolSearch, required String reasoning, required String reasoningSummary}) async {
   final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
   await Directory(output).create(recursive: true);
   final home = (await Directory(output).createTemp('home-')).path;
@@ -387,49 +394,38 @@ Future<Json> scenario(Json scenario, String model, String codex, String output,
   final peer = await responsesPeer(scenario, output, cancellation);
   final endpoint = 'http://127.0.0.1:${peer.server.port}';
   final config = StringBuffer('''
-model = "$model"
 model_catalog_json = ${jsonEncode(catalog)}
-model_provider = "context_contract"
+openai_base_url = "$endpoint/codex"
+${scenario['selected_model'] == true ? 'model = "$model"' : ''}
+${scenario['selected_reasoning'] == true ? 'model_reasoning_effort = "$reasoning"' : ''}
 web_search = "live"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 cli_auth_credentials_store = "file"
-mcp_oauth_credentials_store = "file"
 include_permissions_instructions = false
 include_apps_instructions = false
 include_collaboration_mode_instructions = false
-mcp_optional_startup_grace_ms = 0
 [agents]
 enabled = false
 [skills.bundled]
 enabled = false
-[tools.experimental_request_user_input]
-enabled = ${scenario['request_user_input'] == true}
 [features]
 default_mode_request_user_input = ${scenario['request_user_input'] == true}
-code_mode_tool_search = true
+code_mode_tool_search = $codeModeToolSearch
 deferred_tool_world_state = true
-content_item_kinds = false
 multi_agent = false
 multi_agent_v2 = false
 memories = false
 goals = true
 plugins = false
 apps = false
-shell_snapshot = false
-[model_providers.context_contract]
-name = "OpenAI"
-base_url = "$endpoint/codex"
-wire_api = "responses"
-env_key = "CONTEXT_CONTRACT_KEY"
-requires_openai_auth = false
-supports_standalone_web_search = true
-[model_providers.context_contract.capabilities]
-remote_compaction = "v2"
 ''');
-  final happenConfig = <String, dynamic>{'idle_unload_seconds': 0, 'providers': {'openai': {'model': model,
+  final happenConfig = <String, dynamic>{'idle_unload_seconds': 0, 'providers': {'openai': {
+    if (scenario['selected_model'] == true) 'model': model,
     'settings': <String, dynamic>{'web_search': 'live',
-      'request_user_input': scenario['request_user_input'] == true}}}};
+      if (scenario['selected_reasoning'] == true) 'reasoning': reasoning,
+      'code_mode_tool_search': codeModeToolSearch,
+      'default_mode_request_user_input': scenario['request_user_input'] == true}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
     config.clear();
@@ -437,20 +433,24 @@ remote_compaction = "v2"
     happenConfig['providers']['openai']['settings'].addAll({'context_limit': 100000, 'compaction_headroom': 80000});
   }
   if (scenario['mcp'] == true) {
-    final mcp = {'command': 'dart', 'args': ['mcp-server'], 'env': env};
-    config.writeln('[mcp_servers.dart]\ncommand = ${jsonEncode(mcp['command'])}\nargs = ${jsonEncode(mcp['args'])}\nrequired = true\ndefault_tools_approval_mode = "approve"');
+    await run(['dart', 'pub', 'get', '--offline'], env, '$output/pub-get.log', cancellation, cwd: work);
+    // Install the SDK's real server once, then launch its installed executable
+    // directly. The Dart command dispatcher otherwise consumes the optional
+    // server's default startup grace before the server itself can initialize.
+    await run(['dart', 'mcp-server', '--help'], env, '$output/mcp-prepare.log', cancellation, cwd: work);
+    final executables = await Directory(home).list(recursive: true, followLinks: false)
+      .where((entry) => entry is File && entry.path.replaceAll('\\', '/').endsWith(
+        '/bundle/bin/dart_mcp_server${Platform.isWindows ? '.exe' : ''}')).toList().asCancellable(cancellation);
+    final mcp = {'command': executables.single.path,
+      'args': ['--dart-sdk', File(Platform.resolvedExecutable).parent.parent.path], 'env': env};
+    config.writeln('[mcp_servers.dart]\ncommand = ${jsonEncode(mcp['command'])}\nargs = ${jsonEncode(mcp['args'])}');
     config.writeln('[mcp_servers.dart.env]');
     for (final entry in env.entries) { config.writeln('${entry.key} = ${jsonEncode(entry.value)}'); }
     happenConfig['mcp_servers'] = {'dart': mcp};
-    await run(['dart', 'pub', 'get', '--offline'], env, '$output/pub-get.log', cancellation, cwd: work);
-    // This SDK delegates mcp-server to a remote package. Prepare its real
-    // executable before either harness starts, avoiding simultaneous first-use
-    // installs in the shared isolated cache. Both harnesses use real processes.
-    await run(['dart', 'mcp-server', '--help'], env, '$output/mcp-prepare.log', cancellation, cwd: work);
   }
   await File('$codexHome/config.toml').writeAsString(config.toString());
   await save('$data/config.yaml', happenConfig);
-  final codexEnv = {...env, 'CONTEXT_CONTRACT_KEY': 'synthetic-context-contract'};
+  final codexEnv = {...env, 'OPENAI_API_KEY': 'synthetic-context-contract'};
   final prompt = scenario['prompt'] as String;
   final command = [codex, '-C', cwd];
   final checks = <String, bool>{};
@@ -466,7 +466,7 @@ remote_compaction = "v2"
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
       String? taskID;
       Future<void> turn(String prompt) async {
-        taskID ??= jsonObject(await client.request('thread/start', {'cwd': cwd, 'provider': 'openai', 'model': model})
+        taskID ??= jsonObject(await client.request('thread/start', {'cwd': cwd})
           .asCancellable(cancellation))['thread']['id'] as String;
         final input = StreamIterator(client.events.stream);
         try {
@@ -576,7 +576,11 @@ remote_compaction = "v2"
         }
         if (scenario['mcp'] == true) {
           for (final entry in {'codex': a[i], 'happen': b[i]}.entries) {
-            checks['${entry.key}:discovery_declared:$i:run-$iteration'] = jsonEncode(declarations(entry.value)).contains('tools.tool_search');
+            final definitions = declarations(entry.value);
+            checks['${entry.key}:discovery_declared:$i:run-$iteration'] = codeModeToolSearch
+              ? jsonEncode(definitions).contains('tools.tool_search')
+              : !jsonEncode(definitions).contains('tools.tool_search') &&
+                !definitions.any((tool) => tool['type'] == 'tool_search');
           }
         }
       }
@@ -588,15 +592,22 @@ remote_compaction = "v2"
             .any((item) => jsonEncode(item).contains(marker));
         }
       }
-      if (!codeModeOnly && scenario['id'] == 'tool-search') {
+      if (scenario['workflow'] == 'parallel') {
         for (final pair in [('codex', a), ('happen', b)]) {
-          final input = (pair.$2.last['input'] as List).map(jsonObject).toList();
-          checks['${pair.$1}:native_discovery_delivers_callable_schema:run-$iteration'] = input.any((item) =>
-            item['type'] == 'tool_search_output' && item['call_id'] == 'search_dart' &&
-            (item['tools'] as List).any((tool) => tool['type'] == 'namespace' && tool['name'] == 'mcp__dart' &&
-              (tool['tools'] as List).any((tool) => tool['name'] == 'roots' && tool['parameters'] is Map)));
-          checks['${pair.$1}:discovered_mcp_called_directly:run-$iteration'] = input.any((item) =>
-            item['type'] == 'function_call' && item['namespace'] == 'mcp__dart' && item['name'] == 'roots');
+          final outputs = (pair.$2.last['input'] as List).map(jsonObject)
+            .where((item) => item['call_id'] == 'parallel_shells' && item['type'] == 'custom_tool_call_output');
+          checks['${pair.$1}:both_parallel_tools_completed:run-$iteration'] = outputs.any((output) {
+            final printed = <Json>[];
+            for (final part in (output['output'] as List).map(jsonObject)) {
+              try {
+                final value = jsonDecode(part['text'] as String? ?? '');
+                if (value is Map) printed.add(jsonObject(value));
+              } on FormatException { /* The script status is ordinary prose. */ }
+            }
+            final results = printed.where((item) => item['status'] == 'fulfilled').toList();
+            return printed.any((item) => item['both_succeeded'] == true) && results.length == 2 &&
+              results.every((item) => item['value']?['exit_code'] == 0);
+          });
         }
       }
       if (scenario['workflow'] == 'image') {
@@ -719,40 +730,22 @@ remote_compaction = "v2"
         final expected = jsonObject(discovery.value);
         for (final pair in [('codex', a), ('happen', b)]) {
           final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
-            .where((item) => item['type'] == (codeModeOnly ? 'custom_tool_call_output' : 'tool_search_output') &&
+            .where((item) => item['type'] == 'custom_tool_call_output' &&
               item['call_id'] == discovery.key).toList();
           final found = <Json>[];
           for (final output in outputs) {
-            if (codeModeOnly) {
-              for (final part in output['output'] is List ? (output['output'] as List).map(jsonObject) : <Json>[]) {
+            for (final part in output['output'] is List ? (output['output'] as List).map(jsonObject) : <Json>[]) {
                 try {
                   final value = jsonDecode(part['text'] as String? ?? '');
                   if (value is Map && value['tools'] is List) found.addAll((value['tools'] as List).map(jsonObject));
                 } on FormatException { /* The separate script status is ordinary prose. */ }
-              }
-            } else {
-              for (final namespace in (output['tools'] as List).map(jsonObject)) {
-                for (final tool in (namespace['tools'] as List).map(jsonObject)) {
-                  found.add({...tool, 'name': '${namespace['name']}__${tool['name']}'});
-                }
-              }
             }
           }
           checks['${pair.$1}:${discovery.key}:nonempty:run-$iteration'] = found.isNotEmpty && found.length <= (expected['limit'] as int);
           checks['${pair.$1}:${discovery.key}:dart_names:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
             (tool['name'] as String).startsWith('mcp__dart__'));
-          if (codeModeOnly) {
-            checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
-              (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
-          } else {
-            checks['${pair.$1}:${discovery.key}:native_result_shape:run-$iteration'] = outputs.length == 1 &&
-              outputs.single['status'] == 'completed' && outputs.single['execution'] == 'client' &&
-              (outputs.single['tools'] as List).isNotEmpty && (outputs.single['tools'] as List).every((namespace) =>
-                namespace['type'] == 'namespace' && namespace['name'] == 'mcp__dart');
-            checks['${pair.$1}:${discovery.key}:native_callable_schemas:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
-              tool['type'] == 'function' && tool['parameters'] is Map && tool['strict'] == false &&
-              tool['defer_loading'] == true && !tool.containsKey('output_schema'));
-          }
+          checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
+            (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
           if (expected['names'] case final List<Object?> names) {
             checks['${pair.$1}:${discovery.key}:selected_tools:run-$iteration'] = jsonEncode(found.map((tool) => tool['name']).toList()) == jsonEncode(names);
           }
@@ -821,11 +814,19 @@ remote_compaction = "v2"
 }
 
 void main() {
-  const models = ['gpt-6.1-terra'];
   const codex = 'codex';
   final catalog = File('${root.path}/packages/openai/catalog/models.json');
   final catalogBytes = catalog.readAsBytesSync();
   final modelDefaults = (jsonObject(jsonDecode(utf8.decode(catalogBytes)))['models'] as List).map(jsonObject).toList();
+  final available = modelDefaults.where((entry) => entry['visibility'] == 'list' && entry['supported_in_api'] == true).toList()
+    ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int));
+  final defaultModel = available.first['slug'] as String;
+  final selections = [
+    (model: defaultModel, effort: null),
+    (model: 'gpt-6.1-sol', effort: 'xhigh'),
+    (model: 'gpt-6.1-terra', effort: null),
+  ];
+  final models = selections.map((selection) => selection.model).toSet().toList();
   var output = '';
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
@@ -850,22 +851,27 @@ void main() {
     cancellation.cancel();
     for (final signal in signals) { await signal.cancel(); }
     if (output.isEmpty) return;
-    report['passed'] = (report['results'] as List).length == models.length * contextCases.length &&
+    report['passed'] = (report['results'] as List).length == selections.length * 2 * contextCases.length &&
       (report['results'] as List).every((item) => item['passed'] == true);
     await save('$output/report.json', report);
     print('Context contract evidence: $output/report.json');
   });
-  for (final model in models) {
+  for (final selection in selections) {
+    final model = selection.model;
     final defaults = modelDefaults.singleWhere((entry) => entry['slug'] == model);
-    final reasoning = defaults['default_reasoning_level'] as String;
+    final reasoning = selection.effort ?? defaults['default_reasoning_level'] as String;
     final reasoningSummary = defaults['default_reasoning_summary'] as String? ?? 'none';
     final codeModeOnly = defaults['tool_mode'] == 'code_mode_only';
-    group('$model catalog defaults', () {
+    for (final codeModeToolSearch in [false, true]) {
+    group('$model reasoning=$reasoning code_mode_tool_search=$codeModeToolSearch', () {
       for (final fixture in contextCases) {
         final value = {...fixture,
-          if (!codeModeOnly && fixture['mixed_responses'] is List) 'responses': fixture['mixed_responses']};
+          'selected_model': model != defaultModel,
+          'selected_reasoning': selection.effort != null,
+          if (!codeModeToolSearch && fixture['catalog_responses'] is List) 'responses': fixture['catalog_responses'],
+        };
         test(fixture['id'] as String, () async {
-          final path = '$output/$model/${value['id']}';
+          final path = '$output/$model/$reasoning/code-mode-tool-search-$codeModeToolSearch/${value['id']}';
           final deadline = TimeoutCancellationToken(const Duration(minutes: 2));
           final lifetime = CancellationToken();
           addTearDown(lifetime.cancel);
@@ -873,7 +879,8 @@ void main() {
           try {
             result = await scenario(value, model, codex, path,
               cancellation.merge(deadline).merge(lifetime), catalog.absolute.path,
-              codeModeOnly: codeModeOnly, reasoning: reasoning, reasoningSummary: reasoningSummary);
+              codeModeOnly: codeModeOnly, codeModeToolSearch: codeModeToolSearch,
+              reasoning: reasoning, reasoningSummary: reasoningSummary);
           } catch (error) {
             result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
           } finally { deadline.cancel(); }
@@ -882,6 +889,7 @@ void main() {
           result['reasoning_summary'] = reasoningSummary;
           result['code_mode'] = true;
           result['code_mode_only'] = codeModeOnly;
+          result['code_mode_tool_search'] = codeModeToolSearch;
           result['use_responses_lite'] = defaults['use_responses_lite'];
           (report['results'] as List).add(result);
           await save('$path/result.json', result);
@@ -890,5 +898,6 @@ void main() {
         });
       }
     });
+    }
   }
 }

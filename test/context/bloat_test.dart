@@ -83,7 +83,7 @@ void main() {
       return result;
     }
 
-    final id = await createThread(client, {'cwd': work.path});
+    final id = await createThread(client, {'cwd': work.path, 'settings': {'code_mode_tool_search': true}});
     List<Object?>? previousInput;
     for (var i = 0; i < 5; i++) {
       final before = requests.length;
@@ -96,7 +96,7 @@ void main() {
       final completed = requests[before + 1];
       final input = initial['input'] as List;
       if (previousInput == null) {
-        expect(input, hasLength(5));
+        expect(input, hasLength(4));
         expect(input[0], containsPair('type', 'additional_tools'));
         expect(input[1], containsPair('role', 'developer'));
         expect(openAIMessageText(input[1] as Map), GptModel('gpt-6.1-sol').instructions);
@@ -107,7 +107,7 @@ void main() {
         expect(openAIMessageText(input[2] as Map), endsWith('</environment_context>'));
         expect(input[3], containsPair('role', 'user'));
         expect(openAIMessageText(input[3] as Map), 'turn-0');
-        expect(input.last, {'type': 'configuration_update', 'reasoning': {'effort': 'low'}});
+        expect(input.where((item) => item['type'] == 'configuration_update'), isEmpty);
       } else {
         expect(input.take(previousInput.length).toList(), previousInput);
         expect(input.length, previousInput.length + 2 + (i == 1 || i == 2 ? 1 : 0));
@@ -127,7 +127,7 @@ void main() {
       expect(input.where((item) => openAIMessageText(item as Map) == GptModel('gpt-6.1-sol').instructions), hasLength(1));
       expect(initial['reasoning']['effort'], 'low');
       expect((completed['input'] as List).where((item) => item['type'] == 'configuration_update'),
-        hasLength(i == 0 ? 1 : 2));
+        hasLength(i == 0 ? 0 : 1));
       previousInput = completed['input'] as List;
     }
 

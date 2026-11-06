@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('conversation file changes', () {
-    testWidgets('finished turn exposes file tree outside folded work and opens the selected unified or split diff', (tester) async {
+    testWidgets('finished steered turn exposes one file tree after its last response and opens the selected diff', (tester) async {
       tester.view.physicalSize = const Size(1000, 1000); tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
       const diff = '''diff --git a/lib/app.dart b/lib/app.dart
@@ -30,12 +30,16 @@ deleted file mode 100644
       final task = DesktopTask('thread', 'File changes')..loaded = true;
       task.turns['turn'] = {'id': 'turn', 'status': 'completed', 'diff': diff};
       task.messages.addAll({
-        'patch': {'id': 'patch', 'type': 'fileChange', 'turnId': 'turn', 'status': 'completed',
+        'progress': {'id': 'progress', 'type': 'agentMessage', 'turnId': 'turn', 'phase': 'commentary', 'order': 0,
+          'text': 'Updating the application.'},
+        'steer': {'id': 'steer', 'type': 'userMessage', 'turnId': 'turn', 'order': 1,
+          'content': [{'type': 'text', 'text': 'Also remove the old file.'}]},
+        'patch': {'id': 'patch', 'type': 'fileChange', 'turnId': 'turn', 'status': 'completed', 'order': 2,
           'changes': [
             {'path': '/project/lib/app.dart', 'kind': {'type': 'update'}, 'diff': '@@ -1,2 +1,3 @@\n-old value\n+new value\n+++ header-looking content\n unchanged value\n'},
             {'path': '/project/lib/old.dart', 'kind': {'type': 'delete'}, 'diff': 'deleted value\n'},
           ]},
-        'answer': {'id': 'answer', 'type': 'agentMessage', 'turnId': 'turn', 'phase': 'final_answer', 'order': 1,
+        'answer': {'id': 'answer', 'type': 'agentMessage', 'turnId': 'turn', 'phase': 'final_answer', 'order': 3,
           'text': 'Updated the application.'},
       });
       String? openedSource, openedPath;
@@ -44,7 +48,12 @@ deleted file mode 100644
           child: ConversationTranscript(task: task, directory: '/project', onRetry: () {})))));
       await tester.pumpAndSettle();
       expect(find.text('2 changed files'), findsOneWidget);
-      expect(find.text('Worked'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('2 changed files')).dy,
+        greaterThan(tester.getBottomLeft(find.text('Updated the application.', findRichText: true)).dy));
+      expect(find.text('Worked'), findsNWidgets(2));
+      await tester.tap(find.text('Worked').first); await tester.pumpAndSettle();
+      expect(find.text('Updating the application.', findRichText: true), findsOneWidget);
+      expect(find.text('2 changed files'), findsOneWidget);
       expect(find.text('app.dart'), findsNothing);
       expect(find.text('+2'), findsWidgets);
       expect(find.text('−2'), findsWidgets);

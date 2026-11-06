@@ -9,7 +9,10 @@ Json _context(String text, String source, String kind) {
   final id = newUuidV7(), content = '<codex_internal_context source="$source">$text</codex_internal_context>';
   final item = gptItemFromRollout({'type': 'message', 'id': id, 'role': 'user',
     'content': [{'type': 'input_text', 'text': content}],
-    'internal_chat_message_metadata_passthrough': {'content_item_kinds': [kind]},
+    'internal_chat_message_metadata_passthrough': {
+      'content_item_kinds': [kind],
+      'content_item_metadata': [{'provenance': {'type': 'harness', 'hook': false}}],
+    },
   }, id: id, calls: <String, ToolCall>{});
   return ConversationItem(id: id, role: item.role, content: item.content,
     native: {...item.native, 'harness': {'context': source}}).toJson();

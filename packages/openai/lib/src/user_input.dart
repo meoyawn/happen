@@ -41,6 +41,13 @@ const requestUserInputDefinition = ToolDefinition(
   },
 );
 
+ToolDefinition requestUserInputForMode({required bool defaultMode}) => defaultMode ? requestUserInputDefinition : ToolDefinition(
+  name: requestUserInputDefinition.name,
+  description: 'Request user input for one to three short questions and wait for the response. '
+    'This tool is only available in Plan mode.',
+  parameters: requestUserInputDefinition.parameters,
+);
+
 const requestUserInputAsyncDefinition = ToolDefinition(
   name: 'request_user_input_async',
   description: 'Ask the user one or more questions during ongoing work. Use this tool only to request missing information, '

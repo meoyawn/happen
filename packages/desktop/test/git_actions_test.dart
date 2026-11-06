@@ -42,12 +42,14 @@ void main() {
       await session.addProject(repo.path);
       controller = session.gitForProject(session.project!);
       actions = session.actionsForProject(session.project!);
-      await controller.refresh();
       await actions.load();
     });
-    addTearDown(() => tester.runAsync(() async {
-      await session.close(); await server.close(); await root.delete(recursive: true);
-    }));
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        await session.close(); await server.close(); await root.delete(recursive: true);
+      });
+    });
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
     Future<void> until(bool Function(GitState) predicate) {
@@ -66,8 +68,17 @@ void main() {
     }
     final phases = <Type>[];
     controller.addListener(() => phases.add(controller.state.runtimeType));
-    await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: DesktopView(session: session)));
+    await tester.runAsync(() async {
+      await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: DesktopView(session: session)));
+      await until((state) => state is! GitLoading);
+    });
+    expect(tester.takeException(), isNull);
     await tester.pumpAndSettle();
+    final notice = find.byTooltip('Dismiss notification');
+    if (notice.evaluate().isNotEmpty) {
+      await tester.tap(notice);
+      await tester.pumpAndSettle();
+    }
     expect(find.byKey(const ValueKey('project-details-card')), findsOneWidget);
     expect(find.text('main'), findsWidgets);
     expect(find.text('+2'), findsOneWidget);
@@ -89,6 +100,21 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Fixture script'), findsOneWidget);
     await tester.runAsync(() async {
+      await tester.tap(find.text('Fixture script'));
+      final shell = session.terminals.groups[(session.project!.checkoutKey, session.draftKey)]!.active!;
+      final exited = Completer<void>();
+      void changed() {
+        if ((shell.exitCode != null || shell.error != null) && !exited.isCompleted) exited.complete();
+      }
+      shell.addListener(changed); changed();
+      try { await exited.future.timeout(const Duration(seconds: 10)); }
+      finally { shell.removeListener(changed); }
+      expect(shell.error, isNull); expect(shell.exitCode, 0);
+      expect(await File('${root.path}/script.marker').readAsString(), 'script ran');
+      session.terminals.hide((session.project!.checkoutKey, session.draftKey));
+    });
+    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
       final restored = ProjectActionsController(session.database, session.project!.checkoutKey, repo.path, local: true);
       try {
         await restored.load();
@@ -100,9 +126,12 @@ void main() {
     expect(find.byKey(const ValueKey('project-details-card')), findsNothing);
     await tester.tap(find.byKey(const ValueKey('toggle-project-details')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Changes'));
-    await tester.pump();
     await tester.runAsync(() async {
+      await tester.tap(find.text('Changes'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.byTooltip('Next file'));
+      await tester.pump();
       // Wait for the real per-file read; later assertions check the rendered patch.
       await controller.diff('selected.txt', CancellationToken());
     });
@@ -113,7 +142,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.runAsync(() async {
       await tester.tap(find.text('Commit'));
-      await until((state) => state is GitReady);
+      await until((state) => state is! GitLoading);
     });
     await tester.pumpAndSettle();
     expect(find.text('Commit message (optional)'), findsOneWidget);
@@ -134,17 +163,67 @@ void main() {
       expect(await git(['ls-tree', '--name-only', 'HEAD']), 'selected.txt');
       expect(await git(['log', '-1', '--format=%B']), 'Save the selected file');
     });
-    await tester.runAsync(() => tester.tap(find.byTooltip('Choose branch')));
+    await tester.runAsync(() async {
+      await tester.tap(find.byTooltip('Choose branch'));
+      await tester.pump();
+      await controller.branches(CancellationToken());
+    });
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'New branch name'), 'feature/details');
+    await tester.pump();
     await tester.runAsync(() async {
       await tester.tap(find.text('Create branch'));
-      await until((state) => state is GitCompleted || state is GitFailed);
+      await until((state) => state is GitCompleted && state.repository?.branch == 'feature/details' || state is GitFailed);
     });
     await tester.pumpAndSettle();
     expect(controller.state.repository!.branch, 'feature/details');
     expect(find.text('feature/details'), findsOneWidget);
+    final remote = '${root.path}/remote.git';
+    late File reject;
+    await tester.runAsync(() async {
+      await git(['init', '--bare', remote]); await git(['remote', 'add', 'origin', remote]);
+      reject = await File('$remote/hooks/pre-receive').writeAsString('#!/bin/sh\nexit 1\n');
+      final chmod = await Process.run('chmod', ['+x', reject.path]);
+      expect(chmod.exitCode, 0);
+      await controller.refresh(force: true);
+    });
+    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Commit & push'));
+      await until((state) => state is! GitLoading);
+    });
+    await tester.pumpAndSettle();
+    await tester.enterText(find.descendant(of: find.byType(Dialog), matching: find.byType(TextField)), 'Publish remaining file');
+    phases.clear();
+    await tester.runAsync(() async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Commit & push'));
+      await until((state) => state is GitCompleted || state is GitFailed);
+    });
+    await tester.pumpAndSettle();
+    expect(controller.state, isA<GitFailed>());
+    final failed = controller.state as GitFailed;
+    expect(phases, containsAllInOrder([GitStarting, GitCommitting, GitPushing, GitRefreshing, GitFailed]));
+    await tester.runAsync(() async {
+      expect(failed.commit!.sha, await git(['rev-parse', 'HEAD']));
+      expect(await git(['log', '-1', '--format=%B']), 'Publish remaining file');
+      await controller.refresh(force: true);
+      expect(controller.state, isA<GitFailed>(), reason: 'Status polling must retain the failed push until acknowledgement or retry');
+      expect((controller.state as GitFailed).commit, failed.commit);
+      await reject.delete();
+    });
+    expect(find.text('Git action failed · View details'), findsOneWidget);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Push'));
+      await until((state) => state is GitCompleted || state is GitFailed);
+    });
+    await tester.pumpAndSettle();
+    expect(controller.state, isA<GitCompleted>());
+    expect(controller.state.repository!.upstream, 'origin/feature/details');
+    await tester.runAsync(() async {
+      final pushed = await Process.run('git', ['rev-parse', 'refs/heads/feature/details'], workingDirectory: remote);
+      expect(pushed.exitCode, 0); expect('${pushed.stdout}'.trim(), failed.commit!.sha);
+      expect(await git(['rev-parse', 'HEAD']), failed.commit!.sha, reason: 'Retrying push must reuse the committed changes');
+    });
     expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
   });
 }

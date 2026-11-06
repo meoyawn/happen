@@ -663,6 +663,23 @@ import Codex's global configuration schema.
 | `session.context` | `sessionID`, optional opaque `cursor`, `limit` (1–200). Reads the agent's actual normalized model buffer and request envelope. Returns chronological `input`, `instructions`, `tools`, frozen `settings`, `effectiveReasoning`, `inputCount`, counts, token/cache usage, context limit, `through`, `sourceThrough`, `windowID`, and `snapshotID`. `cursor.next` appends the next input page from the same immutable snapshot, even if execution or compaction changes the live context. |
 | `session.read.cancel` | `request_id` of a pending session read on this connection. Cancels snapshot/replay work without interrupting the session writer or execution. |
 
+| Git operation | Parameters and behavior |
+| --- | --- |
+| `git/status` | `cwd`. Discovers the checkout and returns `isRepo`, `host`, `root`, `branch`, `head`, `upstream`, `remote`, `ahead`, `behind`, changed `files`, and total `additions`/`deletions`. Each file includes `path`, optional `previousPath`, porcelain `status`, conflict/binary flags, and line counts compared with HEAD, including untracked files. |
+| `git/branches` | `cwd`. Returns local and remote branches as `{ref, name, remote}` records. |
+| `git/diff` | `cwd`, `path` from the changed-file list. Returns that file's metadata, unified `diff`, and `truncated` flag. Reads one file at a time without changing the index. |
+| `git/run` | `cwd`, unique `actionId`, and `action`: `commit`, `push`, `commit_push`, `switch`, or `create_branch`. Commits accept optional `commitMessage`, `filePaths`, `provider`, and `model`; empty messages are generated without a conversation turn. Switching accepts a full `branch` ref from `git/branches`; creation accepts a new branch name. One write runs per checkout. |
+| `git/cancel` | Notification with `requestId` of the pending Git request on this connection. Cancels its subprocesses and model request without interrupting an agent turn. |
+
+`git/progress` notifications contain `actionId`, `cwd`, workflow `phase`
+(`generating`, `committing`, `pushing`, or `switching`), a display `label`,
+and optional subprocess `output`. After a successful commit, push progress and
+the final action result include its `{sha, subject}` receipt. A push failure
+returns `status: "failed"` and `message` while retaining that commit receipt;
+retrying `push` does not create another commit. Successful writes return
+`status: "completed"` after Git confirms completion. Cancellation does not undo
+a completed commit; refresh `git/status` to reconcile the checkout.
+
 | Inbox operation | Parameters and behavior |
 | --- | --- |
 | `session.inbox` | `sessionID`. Reads durable pending inputs in admission order. |

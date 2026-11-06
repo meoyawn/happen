@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import 'package:storage/storage.dart';
 import 'package:test/test.dart';
 import '../../../test/support/thread_names.dart';
 
@@ -75,6 +76,35 @@ void main() {
     await subscription.cancel(); await client.close(); await server.close();
     await Future.wait(sockets.map((socket) => socket.close()));
     await provider.close(force: true); await root.delete(recursive: true);
+  });
+
+  test('retry removes a retired saved setting and retains the failed turn context across restart', () async {
+    scripts.addAll([
+      [incomplete('failed', reported)],
+      [message('recovered', 'Resumed the saved conversation.'), completed('recovered', reported)],
+    ]);
+    await launch();
+    final id = await createThread(client, {'cwd': root.path});
+    final failed = await runTurn(client, id, prompt: 'Keep this request when retrying.');
+    expect(failed['status'], 'failed');
+    final before = await contextItems(client, id);
+    final original = jsonObject(threadMetadata(root.path, id, 'config'));
+    await subscription.cancel(); await client.close(); await server.close();
+    // Model a thread written before this provider option was removed. No live
+    // writer exists while seeding its original on-disk configuration.
+    final stored = TaskStore(root.path, id, create: false);
+    try {
+      stored.db.execute('UPDATE metadata SET value = ? WHERE key IS ?', [jsonEncode({
+        ...original, 'provider_settings': {...jsonObject(original['provider_settings']), 'standalone_web_search': false},
+      }), 'config']);
+    } finally { stored.close(); }
+    await launch();
+    final resumed = await runTurn(client, id, settings: {'input': <Json>[], 'expectedTurnId': failed['id']});
+    expect(resumed['status'], 'completed', reason: '${resumed['error']}');
+    expect(requests, hasLength(2));
+    expect(jsonEncode(requests.last['input']), contains('Keep this request when retrying.'));
+    expect((await contextItems(client, id)).take(before.length), before);
+    expect(threadMetadata(root.path, id, 'config'), original);
   });
 
   // Complete ordinary token_usage_rollout.rs matrix; a pure cell replaces

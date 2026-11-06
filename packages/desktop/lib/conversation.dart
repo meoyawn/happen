@@ -43,6 +43,11 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
 
 List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, Set<String> expandedTurns) {
   final rows = <_TranscriptRow>[];
+  // Steering and question replies can split one turn into several segments.
+  final lastResponses = {
+    for (final entry in entries)
+      if (entry.turnId != null && !{'You', 'Answer', 'Queued'}.contains(entry.role)) entry.turnId!: entry,
+  };
   final queued = <ChatEntry>[];
   var response = <ChatEntry>[];
   var segment = 'initial';
@@ -77,7 +82,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       } else {
         rows.addAll(_workRows(response));
       }
-      if (turn?['diff'] case final String diff when diff.isNotEmpty) {
+      if (turn?['diff'] case final String diff when diff.isNotEmpty && response.contains(lastResponses[turnId])) {
         rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
       }
     }

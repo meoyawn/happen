@@ -38,10 +38,12 @@ class _GitBranchDialogState extends State<GitBranchDialog> {
           decoration: const InputDecoration(hintText: 'Search branches', prefixIcon: Icon(Icons.search_rounded, size: 18))),
         const SizedBox(height: 12),
         Flexible(child: SizedBox(height: 260, child: FutureBuilder<List<GitBranch>>(future: _branches, builder: (context, snapshot) {
-          if (snapshot.hasError) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: opencodeMuted)),
-            TextButton(onPressed: () => setState(() => _branches = widget.controller.branches(_lifetime)), child: const Text('Retry')),
-          ]));
+          if (snapshot.hasError) {
+            return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: opencodeMuted)),
+              TextButton(onPressed: () => setState(() => _branches = widget.controller.branches(_lifetime)), child: const Text('Retry')),
+            ]));
+          }
           if (!snapshot.hasData) { return const Center(child: CircularProgressIndicator(strokeWidth: 2)); }
           final query = _search.text.toLowerCase();
           final branches = snapshot.data!.where((branch) => branch.name.toLowerCase().contains(query)).toList();

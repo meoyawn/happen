@@ -30,26 +30,33 @@ workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The matrix uses `gpt-6.1-terra` and the unchanged
-`packages/openai/catalog/models.json`. Its defaults select `low` reasoning, no
-reasoning summary, Code Mode only, and Responses Lite. The evidence includes the
-catalog's original bytes and SHA-256. Neither harness overrides those settings.
+The matrix uses the catalog-selected default model (`gpt-6.1-sol`), Sol with an
+explicit `xhigh` selection, and Terra with its catalog reasoning default. Every
+selection runs with `code_mode_tool_search` both disabled (the Codex default) and
+enabled. The unchanged `packages/openai/catalog/models.json` selects no reasoning
+summary, low verbosity, Code Mode only, and Responses Lite. The evidence includes
+the catalog's original bytes and SHA-256. The default-model branch omits model
+and effort overrides in both harnesses; other branches select only the named
+model or effort.
 Each pair uses separate empty data/credential homes, real instruction and skill
 files, and explicitly isolated tool settings. Requests carry tool declarations
 and base instructions in a durable history prefix, omit top-level `tools` and
 `instructions`, set `parallel_tool_calls: false`, and use
 `reasoning.context: "all_turns"`, matching Codex's Responses Lite client.
-Codex's bundled skills,
-plugins, apps, collaboration, account credential storage, and permission prompts
-are disabled explicitly. Its optional internal content classifications are also
-disabled; generated turn/time metadata is normalized with the other scoped IDs.
+Codex's bundled skills, plugins, apps, collaboration and permission prompts are
+disabled explicitly. Content classifications and source attribution remain
+enabled and are compared strictly; generated turn/time metadata is normalized
+with the other scoped IDs. Shell snapshots, MCP credential storage, optional
+startup grace, server optionality and tool approval use Codex's defaults.
 No user config or ChatGPT account is used. Shell
 selection is not overridden: the runtime follows Codex's account-database shell
 selection and platform defaults, not the launching terminal's `SHELL` value.
 Standalone OpenAI web search is enabled in both configurations
-(`web_search = "live"`). The synthetic provider advertises standalone-search
-support; the catalog's Code Mode only layout exposes it as `tools.web__run`
-inside `functions.exec`.
+(`web_search = "live"`). Codex uses its built-in OpenAI provider with a local
+base URL and a synthetic API key. The HTTP-only peer rejects WebSocket upgrades
+with 426, exercising Codex's production HTTP fallback. The catalog's Code Mode
+only layout exposes search as `tools.web__run` inside `functions.exec`. App usage
+instructions remain disabled by the unchanged model catalog.
 The reference keeps the current default `sleep_tool` gate and model-driven mode;
 the matrix model advertises clock support. Goals are explicitly enabled.
 
@@ -95,12 +102,17 @@ The goal case also cold-resumes the completed goal: Codex launches a new CLI
 process, and Happen unsubscribes and waits for idle thread unloading before the
 next prompt. Goal state uses dedicated tables in the same session SQLite;
 host-owned goal accounting survives inference turns and restores on cold resume.
-The package-reading MCP case starts independent real `dart mcp-server`
-processes, registers the fixture package, and reads its package URI. The separate
+The package-reading MCP case installs the real server through `dart mcp-server`
+and starts its installed app-bundle executable directly in each harness. This
+keeps command-dispatcher startup outside Codex's default one-second optional
+server grace. Both processes use the same Dart SDK, register the fixture package,
+and read its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
 `+mcp__dart evaluate expression flutter driver runtime errors` and compares the
 ordered results and full TypeScript declarations in the catalog's Code Mode
-only layout. Native discovery's schema and output-schema omission contracts are
+only layout when ranked search is enabled. With search disabled, both scenarios
+inspect the real deferred catalog through `ALL_TOOLS` and invoke its advertised
+tools. Native discovery's schema and output-schema omission contracts are
 covered separately by `test/openai_mcp_output_test.dart`.
 It does not execute the discovered tools, connect to an app, or interact with the
 human's desktop. The
@@ -145,13 +157,17 @@ printed values, roles, message boundaries, dates, settings, and tool results are
 not discarded. Happen deliberately does not send Codex's `client_metadata`;
 every case independently asserts its absence in Happen's received requests before
 the shared comparison excludes it. Raw captures retain Codex's telemetry unchanged.
-The `interactive-user-input` case enables Codex's direct `request_user_input`
-tool and Default-mode availability, matching desktop sessions in Happen. Its
+Question tools retain Codex's default registration. The `default-mode-user-input`
+case verifies that blocking questions return the native unavailable-in-Default
+error. The `interactive-user-input` case enables Default-mode availability,
+matching desktop sessions in Happen. Its
 name, description, schema, registration order, and exclusion from Code Mode's
 nested declarations are part of the same strict request comparison. The case
 also invokes `request_user_input_async` and retains its immediate accepted
-receipt in the next inference without a human reply. Other cases
-keep interactive questions disabled in both harnesses.
+receipt in the next inference without a human reply. Other cases keep the
+Default-mode gate disabled in both harnesses. The `parallel-tool-calls` case runs
+two real shell commands that wait for each other's receipt file; both must exit
+successfully. This catches serialized execution without a performance verdict.
 Desktop connection capabilities, resuming sessions created without questions,
 and delivering user answers are exercised by
 `packages/desktop/test/session_question_test.dart`.

@@ -136,7 +136,7 @@ void main() {
       (firstRequest.body['input'] as List).first['tools']);
     expect(wire(initial), firstRequest.body['input']);
     expect((initial['input'] as List).map((item) => item['native']?['harness']?['context'] ?? item['role']),
-      ['model_tools', 'model', 'tool_catalog', 'skills', 'agents_md', 'environment', 'user', null]);
+      ['model_tools', 'model', 'tool_catalog', 'skills', 'agents_md', 'environment', 'user']);
     final paged = await inspect({'limit': 2});
     final fencedInput = <Json>[...(paged['input'] as List).map(jsonObject)];
     final observer = await AgentClient.connect(server.uri);

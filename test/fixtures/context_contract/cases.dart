@@ -3,6 +3,29 @@ import 'tldw.dart';
 
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[]},
+  {'id': 'default-mode-user-input', 'prompt': 'Check whether blocking questions are available, then reply READY.',
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
+    'responses': [
+      [{'type': 'function_call', 'name': 'request_user_input', 'call_id': 'default_question',
+        'arguments': '{"questions":[{"id":"approach","header":"Approach","question":"Which approach?","options":[{"label":"Safe","description":"Use the safe approach."},{"label":"Fast","description":"Use the fast approach."}]}]}'}],
+      [_ready],
+    ],
+    'result': 'request_user_input is unavailable in Default mode',
+  },
+  {'id': 'parallel-tool-calls', 'workflow': 'parallel', 'prompt': 'Run both shell operations concurrently and return their receipts.',
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'parallel_shells',
+        'input': 'const prefix = "parallel-" + Date.now() + "-" + Math.random().toString(16).slice(2); '
+          'const results = await Promise.all([ '
+          'tools.exec_command({cmd:"touch " + prefix + "-left; for n in {1..500}; do if [ -f " + prefix + "-right ]; then printf PARALLEL_TOOL_RECEIPT_LEFT; exit 0; fi; sleep 0.01; done; exit 41",login:false}), '
+          'tools.exec_command({cmd:"touch " + prefix + "-right; for n in {1..500}; do if [ -f " + prefix + "-left ]; then printf PARALLEL_TOOL_RECEIPT_RIGHT; exit 0; fi; sleep 0.01; done; exit 42",login:false})]); '
+          'text({both_succeeded:results.every(result => result.exit_code === 0)}); '
+          'results.forEach((value,i) => text({i,status:"fulfilled",value}));'}],
+      [_ready],
+    ],
+    'result': 'PARALLEL_TOOL_RECEIPT',
+  },
   {'id': 'interactive-user-input', 'prompt': 'Reply READY.', 'request_user_input': true,
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
@@ -131,6 +154,7 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'tool-search', 'workflow': 'search', 'mcp': true,
+    'discovery_calls': {'search_dart': {'limit': 2, 'names': ['mcp__dart__read_package_uris', 'mcp__dart__roots']}},
     'prompt': 'Use Dart MCP to read package:context_contract/fixture.dart. Discover its package-reading and project-roots tools first. '
       'Register this project with the MCP server, read the package URI, then reply READY. Do not change project files.',
     'responses': [
@@ -143,15 +167,13 @@ const contextCases = <Map<String, dynamic>>[
         'input': 'text(await tools.mcp__dart__read_package_uris({root:"{{WORK_URI}}",uris:["package:context_contract/fixture.dart"]}));'}],
       [_ready],
     ],
-    'mixed_responses': [
-      [{'type': 'tool_search_call', 'execution': 'client', 'call_id': 'search_dart',
-        'arguments': {'query': 'dart roots manage project roots', 'limit': 1}}],
-      [{'type': 'function_call', 'namespace': 'mcp__dart', 'name': 'roots', 'call_id': 'register_root',
-        'arguments': '{"command":"add","uris":["{{WORK_URI}}"]}'}],
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_package',
-        'input': 'text(await tools.tool_search({query:"dart read_package_uris",limit:1}));'}],
-      [{'type': 'function_call', 'namespace': 'mcp__dart', 'name': 'read_package_uris', 'call_id': 'read_package',
-        'arguments': '{"root":"{{WORK_URI}}","uris":["package:context_contract/fixture.dart"]}'}],
+    'catalog_responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_dart',
+        'input': 'text({tools:ALL_TOOLS.filter(tool => ["mcp__dart__roots","mcp__dart__read_package_uris"].includes(tool.name))});'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'register_root',
+        'input': 'text(await tools.mcp__dart__roots({command:"add",uris:["{{WORK_URI}}"]}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_package',
+        'input': 'text(await tools.mcp__dart__read_package_uris({root:"{{WORK_URI}}",uris:["package:context_contract/fixture.dart"]}));'}],
       [_ready],
     ],
     'files': _dartProject,
@@ -173,11 +195,12 @@ const contextCases = <Map<String, dynamic>>[
         'input': 'text(await tools.tool_search({query:"dart vm_service evaluate expression",limit:1}));'}],
       [_ready],
     ],
-    'mixed_responses': [
-      [{'type': 'tool_search_call', 'execution': 'client', 'call_id': 'search_dart_evaluation',
-        'arguments': {'query': '+mcp__dart evaluate expression flutter driver runtime errors', 'limit': 8}}],
-      [{'type': 'tool_search_call', 'execution': 'client', 'call_id': 'search_vm_service',
-        'arguments': {'query': 'dart vm_service evaluate expression', 'limit': 1}}],
+    'catalog_responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_dart_evaluation',
+        'input': '// @exec: {"max_output_tokens": 20000}\n'
+          'text({tools:ALL_TOOLS.filter(tool => tool.name.startsWith("mcp__dart__") && /eval|driver|runtime.errors|vm_service/.test(tool.name + " " + tool.description)).slice(0,8)});'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_vm_service',
+        'input': 'text({tools:ALL_TOOLS.filter(tool => tool.name === "mcp__dart__vm_service")});'}],
       [_ready],
     ],
     'files': _dartProject,

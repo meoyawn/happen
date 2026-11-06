@@ -441,7 +441,7 @@ class _Agent {
       Future<void> recordSelection() async {
         if (selectionRecorded) return;
         final restoreSelection = settings['reasoningPinned'] != true && !compact && config['reasoning_updates'] == true &&
-          (input.any((item) => item.kind == 'configuration') || !input.any((item) => item.kind == 'compaction')) &&
+          input.any((item) => item.kind == 'configuration') &&
           !(input.lastOrNull?.kind == 'configuration' && input.last.settings['reasoning'] == selectedEffort);
         if (selectedEffort != effort || restoreSelection) {
           event(await _append('configuration.updated', {

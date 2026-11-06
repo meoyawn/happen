@@ -162,7 +162,12 @@ List<Json> gptInput(Iterable<ConversationItem> items) {
   List<Json> parts(Json item) => item['content'] is String
     ? [{'type': 'input_text', 'text': item['content']}] : (item['content'] as List).map(jsonObject).toList();
   for (final item in items) {
-    for (final wire in _gptItems(item)) {
+    for (var wire in _gptItems(item)) {
+      if (wire['type'] == 'message' && wire['role'] == 'assistant' && wire['content'] is List) {
+        final metadata = jsonObject(wire['internal_chat_message_metadata_passthrough'] ?? {});
+        metadata.putIfAbsent('content_item_kinds', () => [for (final _ in wire['content'] as List) 'unknown']);
+        wire = {...wire, 'internal_chat_message_metadata_passthrough': metadata};
+      }
       // notify() is delivered durably as it arrives. Codex admits its queued
       // injection after the observing exec result, before the next inference.
       final call = wire['call_id'] as String?;
@@ -173,6 +178,12 @@ List<Json> gptInput(Iterable<ConversationItem> items) {
       if (context(item) && context(previous) && output.isNotEmpty &&
           output.last['role'] == wire['role'] && output.last.containsKey('content') && wire.containsKey('content')) {
         output.last['content'] = [...parts(output.last), ...parts(wire)];
+        final before = jsonObject(output.last['internal_chat_message_metadata_passthrough'] ?? {});
+        final next = jsonObject(wire['internal_chat_message_metadata_passthrough'] ?? {});
+        for (final key in ['content_item_kinds', 'content_item_metadata']) {
+          if (next[key] is List) before[key] = [...before[key] as List? ?? [], ...next[key] as List];
+        }
+        if (before.isNotEmpty) output.last['internal_chat_message_metadata_passthrough'] = before;
       } else { output.add(wire); }
       if (call != null && {'custom_tool_call_output', 'function_call_output'}.contains(wire['type'])) {
         completedCalls.add(call);
@@ -302,12 +313,37 @@ List<Json> _gptItems(ConversationItem item) {
     }
   }
   if (textParts.isNotEmpty) {
+    final context = item.native['harness']?['context'];
+    final kind = switch (context) {
+      'model' => 'model.base_instructions',
+      'agents_md' => 'agents_md.instructions',
+      'environment' => 'environments.environment_context',
+      'skills' => 'host_skills.instructions',
+      'tool_catalog' => 'tools.deferred_namespaces',
+      'tools_update' => 'tools.incremental_update',
+      'tools_removed' => 'tools.removed_definition',
+      'tools_namespace' => 'tools.namespace_description',
+      _ => null,
+    };
+    final source = switch (context) {
+      'agents_md' => {'type': 'agents_md'},
+      'skills' => {'type': 'skills'},
+      'tool_catalog' => {'type': 'tool', 'namespace': 'tool_search'},
+      _ => kind != null ? {'type': 'harness', 'hook': false} : null,
+    };
+    final metadata = jsonObject(native['internal_chat_message_metadata_passthrough'] ?? {});
+    if (kind != null || item.role == 'user' && context == null) {
+      metadata.putIfAbsent('content_item_kinds', () => [for (final part in textParts)
+        kind ?? switch (part['type']) { 'input_image' => 'user.image', 'input_audio' => 'user.audio', _ => 'user.text' }]);
+      metadata.putIfAbsent('content_item_metadata', () => [for (final _ in textParts) {'provenance': source ?? {'type': 'user'}}]);
+    }
     output.insert(0, {
       'id': 'msg_${item.id}',
       ...native,
       'type': 'message',
       'role': item.role,
       'content': textParts,
+      if (metadata.isNotEmpty) 'internal_chat_message_metadata_passthrough': metadata,
     });
   }
   return output;
