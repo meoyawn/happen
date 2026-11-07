@@ -154,9 +154,6 @@ void main() {
       await root.delete(recursive: true);
     });
     final expires = DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch;
-    await File('${root.path}/config.yaml').writeAsString(jsonEncode({
-      'providers': {'opencode': {'endpoint': 'http://127.0.0.1:${provider.port}/v1'}},
-    }));
     await File('${root.path}/auth.json').writeAsString(jsonEncode({
       'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture',
       'account_id': 'fixture', 'expires_at': expires,
@@ -223,7 +220,8 @@ void main() {
       await request.response.close();
     });
     server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml',
-      port: 0, endpoint: 'http://127.0.0.1:${provider.port}/responses');
+      port: 0, endpoint: 'http://127.0.0.1:${provider.port}/responses',
+      openCodeEndpoint: 'http://127.0.0.1:${provider.port}/v1');
     final headless = await AgentClient.connect(server.uri);
     addTearDown(headless.close);
     asking = false;

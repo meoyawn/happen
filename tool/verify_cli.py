@@ -96,10 +96,10 @@ def verify(executable):
                 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
                 'expires_at': int((time.time() + 3600) * 1000)}))
             config = root / 'config.yaml'
-            config.write_text(json.dumps({'mcp_servers': {}, 'providers': {'openai': {
-                'endpoint': f'http://127.0.0.1:{peer.server_port}/responses'}}}))
+            config.write_text(json.dumps({'mcp_servers': {}}))
             task = subprocess.run([str(binary), '--data-dir', str(data), '--config', str(config),
-                'exec', '--json', '--model', 'gpt-6.1-sol', '--reasoning', 'low', '--cwd', str(root),
+                'exec', '--json', '--endpoint', f'http://127.0.0.1:{peer.server_port}/responses',
+                '--model', 'gpt-6.1-sol', '--reasoning', 'low', '--cwd', str(root),
                 'Verify native code mode.'], cwd=root, env=env, capture_output=True, text=True, timeout=45)
             if task.returncode or 'NATIVE_OK' not in task.stdout or not Model.saw_code_output:
                 failures = [json.loads(line).get('data', {}).get('error') for line in task.stdout.splitlines()

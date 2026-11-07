@@ -50,7 +50,7 @@ void main() {
         expect(peer.responses, hasLength(2), reason: 'A transport-local empty seen set is not a durable deduplication receipt.');
         await peer.deliver(server, subscription, mode, peer.event(2), registration: savedRegistration);
         await peer.until(() => peer.responses.length == 3);
-        await peer.until(() async => ((await server.request('thread/loaded/list'))['data'] as List).isEmpty);
+        await peer.until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false);
         final message = (peer.responses.last['input'] as List).map(jsonObject).where((item) => jsonEncode(item).contains('evt-2')).single;
         expect(message['role'], 'user'); expect(jsonEncode(message), contains('untrusted external event data'));
         expect(jsonEncode(peer.responses.last), isNot(contains('whsec_')));
@@ -261,7 +261,6 @@ class _Events {
     await Directory('${peer.cwd}/.git').create(recursive: true);
     await Directory('${peer.cwd}/.happen').create();
     await File('${peer.cwd}/.happen/config.yaml').writeAsString('mcp_servers:\n  comments:\n    url: ${peer.origin}/mcp\n    oauth: false\n    legacy_fallback: false\n');
-    await File('${peer.root.path}/config.json').writeAsString(jsonEncode({'idle_unload_seconds': 0, 'public_url': 'https://callback.example'}));
     await File('${peer.root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
       'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     return peer;
@@ -299,7 +298,8 @@ class _Events {
     finally { deadline.cancel(); }
   }
   Future<String> thread(_Server server) async {
-    final started = await server.request('thread/start', {'cwd': cwd}); final id = started['thread']['id'] as String;
+    final started = await server.request('thread/start', {'cwd': cwd, 'config': {'thread_unload_delay_secs': 0}});
+    final id = started['thread']['id'] as String;
     await server.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Watch doc-123 for new comments.'}]});
     await until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false && responses.isNotEmpty);
     return id;

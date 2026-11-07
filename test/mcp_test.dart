@@ -274,7 +274,6 @@ void main() {
     });
     await File('${root.path}/config.json').writeAsString(
       jsonEncode({
-        'public_url': 'https://callback.example',
         'mcp_servers': {
           'remote': {
             'url': 'http://127.0.0.1:${upstream.port}/mcp',
@@ -286,6 +285,7 @@ void main() {
     final server = await AgentServer.startEmbedded(
       directory: root.path,
       configPath: '${root.path}/config.yaml',
+      publicUrl: 'https://callback.example',
     );
     final client = await AgentClient.connect(server.uri);
     final received = <Json>[];

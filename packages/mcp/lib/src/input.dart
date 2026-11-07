@@ -1,7 +1,9 @@
 part of 'transport.dart';
 
 class _InputClock {
-  _InputClock(this.remaining) { _resume(); }
+  _InputClock(this.method, this.duration) : remaining = duration { _resume(); }
+  final String method;
+  final Duration? duration;
   Duration? remaining;
   final cancellation = CancellationToken(), active = Stopwatch();
   Timer? timer;
@@ -15,8 +17,10 @@ class _InputClock {
   void resume() { if (--paused == 0 && !closed) _resume(); }
   void _resume() {
     active.start();
-    if (remaining case final duration?) timer = Timer(duration.isNegative ? Duration.zero : duration,
-      () => cancellation.cancel(TimeoutException('MCP operation timed out')));
+    if (remaining case final remaining?) {
+      timer = Timer(remaining.isNegative ? Duration.zero : remaining,
+        () => cancellation.cancel(mcpOperationTimeout(method, duration!)));
+    }
   }
   void close() { closed = true; timer?.cancel(); active.stop(); }
 }
@@ -107,48 +111,46 @@ Future<Json> _askMcpInput(McpConnection connection, Json request, McpInputHandle
 }
 
 Future<Json> _driveMcpInputs(McpConnection connection, String method, Json params, CancellationToken cancellation, {
-  Duration? timeout, void Function(Json)? onNotification, Json? inputSchema, bool retrySafe = false, McpInputHandler? onInput, bool readOnly = false,
+  required _InputClock clock, required _McpAuthorization access, void Function(Json)? onNotification, Json? inputSchema,
+  bool retrySafe = false, McpInputHandler? onInput, bool readOnly = false,
 }) async {
-  final clock = _InputClock(timeout), token = cancellation.merge(connection.lifetime);
-  final bounded = token.merge(clock.cancellation), base = {...params}..remove('inputResponses')..remove('requestState');
+  final base = {...params}..remove('inputResponses')..remove('requestState');
   var next = params, answered = params['inputResponses'] is Map && (params['inputResponses'] as Map).isNotEmpty, stateOnly = 0;
-  try {
-    for (var round = 0; round < 10; round++) {
-      Json result;
-      try {
-        result = await connection._request(method, next, cancellation: bounded, timeout: null, onNotification: onNotification,
-          inputSchema: inputSchema, retrySafe: retrySafe && !answered, onInput: onInput, clock: clock,
-          allowReplay: !answered, readOnly: readOnly);
-      } on McpFailure catch (failure) {
-        if (answered && failure.status != null && failure.status != 401 && failure.status != 403) {
-          throw McpFailure('MCP continuation failed; the operation was not restarted', code: failure.code, status: failure.status);
-        }
-        rethrow;
+  for (var round = 0; round < 10; round++) {
+    Json result;
+    try {
+      result = await connection._request(method, next, cancellation: cancellation, access: access, onNotification: onNotification,
+        inputSchema: inputSchema, retrySafe: retrySafe && !answered, onInput: onInput, clock: clock,
+        allowReplay: !answered, readOnly: readOnly);
+    } on McpFailure catch (failure) {
+      if (answered && failure.status != null && failure.status != 401 && failure.status != 403) {
+        throw McpFailure('MCP continuation failed; the operation was not restarted', code: failure.code, status: failure.status);
       }
-      if (result['resultType'] != 'input_required') return result;
-      if (round == 9) break;
-      final state = result['requestState'], raw = result['inputRequests'];
-      if (state != null && state is! String || raw != null && raw is! Map) throw _invalidInput('Invalid MCP input request');
-      final requests = jsonObject(raw ?? {});
-      if (requests.isEmpty && state == null) throw _invalidInput('MCP input request has neither inputs nor continuation state');
-      final parsed = <String, Json>{};
-      for (final key in requests.keys.toList()..sort()) { parsed[key] = _parseMcpInput(requests[key], connection.clientCapabilities); }
-      final responses = <String, Json>{};
-      if (parsed.isEmpty) {
-        await cancellableDelay(Duration(milliseconds: (50 << stateOnly.clamp(0, 3)).clamp(0, 250)), bounded); stateOnly++;
-      } else {
-        stateOnly = 0; final roundLifetime = CancellationToken(), inputToken = bounded.merge(roundLifetime);
-        try {
-          await Future.wait(parsed.entries.map((entry) async {
-            responses[entry.key] = await _askMcpInput(connection, entry.value, onInput, clock, inputToken);
-          }), eagerError: true);
-        } finally { roundLifetime.cancel(); }
-        answered = true;
-      }
-      next = {...base, if (state != null) 'requestState': state, if (responses.isNotEmpty) 'inputResponses': responses};
+      rethrow;
     }
-    throw _invalidInput('MCP MRTR exceeded its 10-round input budget');
-  } finally { clock.close(); }
+    if (result['resultType'] != 'input_required') return result;
+    if (round == 9) break;
+    final state = result['requestState'], raw = result['inputRequests'];
+    if (state != null && state is! String || raw != null && raw is! Map) throw _invalidInput('Invalid MCP input request');
+    final requests = jsonObject(raw ?? {});
+    if (requests.isEmpty && state == null) throw _invalidInput('MCP input request has neither inputs nor continuation state');
+    final parsed = <String, Json>{};
+    for (final key in requests.keys.toList()..sort()) { parsed[key] = _parseMcpInput(requests[key], connection.clientCapabilities); }
+    final responses = <String, Json>{};
+    if (parsed.isEmpty) {
+      await cancellableDelay(Duration(milliseconds: (50 << stateOnly.clamp(0, 3)).clamp(0, 250)), cancellation); stateOnly++;
+    } else {
+      stateOnly = 0; final roundLifetime = CancellationToken(), inputToken = cancellation.merge(roundLifetime);
+      try {
+        await Future.wait(parsed.entries.map((entry) async {
+          responses[entry.key] = await _askMcpInput(connection, entry.value, onInput, clock, inputToken);
+        }), eagerError: true);
+      } finally { roundLifetime.cancel(); }
+      answered = true;
+    }
+    next = {...base, 'requestState': ?state, if (responses.isNotEmpty) 'inputResponses': responses};
+  }
+  throw _invalidInput('MCP MRTR exceeded its 10-round input budget');
 }
 
 Future<void> _serveMcpInput(McpConnection connection, Json message) async {

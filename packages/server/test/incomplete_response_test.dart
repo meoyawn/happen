@@ -34,13 +34,15 @@ void main() {
   late AgentClient client;
   late StreamSubscription<Json> subscription;
   final sockets = <WebSocket>[], requests = <Json>[], events = <Json>[], scripts = <List<Json>>[];
+  Json threadSettings = {};
+  Future<String> startThread() => createThread(client, {'cwd': root.path, 'settings': threadSettings});
   Future<Json> context(String id) async => jsonObject(await client.request('session.context', {'sessionID': id}));
   Future<List<Json>> usageRecords(String id) async => [for (final line in await rolloutLines(client, id))
     if (line['type'] == 'token_usage_record') jsonObject(line['payload'])];
   Future<void> launch({String transport = 'http', int? limit, int? headroom}) async {
-    await File('${root.path}/config.yaml').writeAsString(jsonEncode({'providers': {'openai': {'settings': {
+    threadSettings = {
       'transport': transport, 'context_limit': ?limit, 'compaction_headroom': ?headroom,
-    }}}}));
+    };
     server = await AgentServer.start(directory: root.path, port: 0, skillsHome: root.path,
       configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${provider.port}/responses');
     client = await AgentClient.connect(server.uri); subscription = client.events.stream.listen(events.add);
@@ -84,7 +86,7 @@ void main() {
       [message('recovered', 'Resumed the saved conversation.'), completed('recovered', reported)],
     ]);
     await launch();
-    final id = await createThread(client, {'cwd': root.path});
+    final id = await startThread();
     final failed = await runTurn(client, id, prompt: 'Keep this request when retrying.');
     expect(failed['status'], 'failed');
     final before = await contextItems(client, id);
@@ -121,7 +123,7 @@ void main() {
         [message('message-d', 'no usage'), {'type': 'response.completed', 'response': {'id': 'response-without-usage', 'status': 'completed'}}],
       ]);
       await launch(transport: transport);
-      final id = await createThread(client, {'cwd': root.path}), first = await runTurn(client, id, prompt: 'first');
+      final id = await startThread(), first = await runTurn(client, id, prompt: 'first');
       expect(first['status'], 'completed');
       await subscription.cancel(); await client.close(); await server.close(); await launch(transport: transport);
       final second = await runTurn(client, id, prompt: 'second'); await runTurn(client, id, prompt: 'third');
@@ -144,7 +146,7 @@ void main() {
           [message('after', 'After compaction'), completed('after', {'input_tokens': 9, 'output_tokens': 1, 'total_tokens': 10})],
         ]);
         await launch(transport: transport);
-        final id = await createThread(client, {'cwd': root.path}); await runTurn(client, id, prompt: 'Keep the fact.');
+        final id = await startThread(); await runTurn(client, id, prompt: 'Keep the fact.');
         expect((await runTurn(client, id, compact: true))['status'], 'completed');
         final before = await usageRecords(id), rollout = await rolloutLines(client, id);
         expect(before.map((r) => r['usage']['total_tokens']), [1000, total]);
@@ -164,7 +166,7 @@ void main() {
       test('incomplete_response_is_terminal: ${transport}_$name', () async {
         scripts.add([{'type': 'response.created'}, message('partial', 'Partial reply.'), incomplete('resp-incomplete', usage)]);
         await launch(transport: transport);
-        final id = await createThread(client, {'cwd': root.path}), turn = await runTurn(client, id, prompt: 'trigger output limit');
+        final id = await startThread(), turn = await runTurn(client, id, prompt: 'trigger output limit');
         expect(turn['status'], 'failed'); expect(requests, hasLength(1));
         expect(events.where((event) => event['method'] == 'happen/turn/retrying'), isEmpty);
         final records = await usageRecords(id);
@@ -195,7 +197,7 @@ void main() {
         [message('answer', 'The second result is ready.'), completed('answer', {'input_tokens': 10, 'output_tokens': 1, 'total_tokens': 11})],
       ]);
       await launch(transport: transport);
-      final id = await createThread(client, {'cwd': root.path}), turn = await runTurn(client, id, prompt: 'Give me both results.');
+      final id = await startThread(), turn = await runTurn(client, id, prompt: 'Give me both results.');
       expect(turn['status'], 'completed'); expect(turn['error'], isNull); expect(requests, hasLength(2));
       expect(jsonEncode(requests.last['input']), contains('The first result is ready.'));
       expect(events.where((event) => event['method'] == 'turn/started'), hasLength(1));
@@ -219,7 +221,7 @@ void main() {
         for (var i = 0; i < 2; i++) [message('discarded', 'DISCARDED_INCOMPLETE_SUMMARY'), incomplete('incomplete-compaction-$i', usage)],
       ]);
       await launch();
-      final id = await createThread(client, {'cwd': root.path});
+      final id = await startThread();
       expect((await runTurn(client, id, prompt: 'x' * 440000))['status'], 'completed');
       final before = await context(id);
       for (var i = 0; i < 2; i++) {
@@ -249,7 +251,7 @@ void main() {
       [message('continued', 'Continued.'), completed('continued', {})],
     ]);
     await launch(limit: 148000, headroom: 20000);
-    final id = await createThread(client, {'cwd': root.path});
+    final id = await startThread();
     expect((await runTurn(client, id, prompt: 'hello'))['status'], 'completed');
     expect((await runTurn(client, id, prompt: 'x' * 240000))['status'], 'failed');
     final records = await usageRecords(id);
@@ -273,7 +275,7 @@ void main() {
           'output_tokens': 8, 'output_tokens_details': {'reasoning_tokens': 5}, 'total_tokens': 20})],
       ]);
       await launch();
-      final id = await createThread(client, {'cwd': root.path});
+      final id = await startThread();
       final stopped = client.events.stream.firstWhere((event) => event['method'] == 'turn/completed' &&
         event['params']['threadId'] == id && event['params']['turn']['status'] == 'failed');
       await client.request('thread/goal/set', {'threadId': id, 'objective': 'Finish the work', 'tokenBudget': budget, 'origin': 'user'});

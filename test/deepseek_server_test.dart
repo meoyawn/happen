@@ -10,7 +10,7 @@ import 'support/thread_names.dart';
 import 'support/thread.dart';
 
 void main() {
-  for (final providerId in ['deepseek', 'opencode']) {
+  const providerId = 'opencode';
   test('$providerId Console backend executes code mode through UDS and reports hosted denials', () async {
     final root = await Directory.systemTemp.createTemp('console-agent-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -24,18 +24,6 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    await File('${root.path}/config.json').writeAsString(
-      jsonEncode({
-        'default_provider': providerId,
-        'providers': {
-          providerId: {
-            if (providerId == 'deepseek') 'backend': 'opencode',
-            'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1',
-            'settings': {'reasoning': 'low'},
-          },
-        },
-      }),
-    );
     await File('${root.path}/opencode-auth.json').writeAsString(
       jsonEncode({
         'version': 1,
@@ -142,9 +130,10 @@ void main() {
       directory: root.path,
       configPath: '${root.path}/config.yaml',
       skillsHome: root.path,
+      openCodeEndpoint: 'http://127.0.0.1:${provider.port}/inference/openai/v1',
     );
     client = await AgentClient.connect(server.uri);
-    final id = await createThread(client, {'cwd': root.path});
+    final id = await createThread(client, {'cwd': root.path, 'provider': providerId, 'reasoning': 'low'});
     Future<Json> turn(String prompt) => runTurn(client!, id, prompt: prompt);
     final first = await turn('Write 42.');
     expect(first['status'], 'completed', reason: first.toString());
@@ -180,7 +169,6 @@ void main() {
     expect(imported['task_id'], isNot(operationId));
     expect(threadMetadata(root.path, imported['task_id'] as String, 'import_operation'), operationId);
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({
-      ...jsonObject(jsonDecode(await File('${root.path}/config.json').readAsString())),
       'mcp_servers': {'archive': {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
@@ -205,7 +193,8 @@ void main() {
     expect(jsonDecode(probe['content'] as String)['pid'], isPositive);
     await client.close();
     await server.close();
-    server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml', skillsHome: root.path);
+    server = await AgentServer.startEmbedded(directory: root.path, configPath: '${root.path}/config.yaml', skillsHome: root.path,
+      openCodeEndpoint: 'http://127.0.0.1:${provider.port}/inference/openai/v1');
     client = await AgentClient.connect(server.uri);
     expect(await client.request('history.import', {'path': bundle, 'operation_id': operationId}), imported);
     final beforeDenial = requests.length;
@@ -242,5 +231,4 @@ void main() {
     expect((catalog['providers'] as List).singleWhere((provider) => provider['id'] == 'opencode')['status'], 'signed_out');
     expect(await File('${root.path}/opencode-auth.json').exists(), isFalse);
   });
-  }
 }

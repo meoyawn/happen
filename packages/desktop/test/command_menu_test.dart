@@ -20,11 +20,12 @@ void main() {
   testWidgets('new thread waits for a project and cancellation preserves the current conversation', (tester) async {
     late DesktopSession session;
     late Directory root;
+    Future<void>? closing;
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('desktop-new-thread-');
       addTearDown(() => root.delete(recursive: true));
       session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
-      addTearDown(() => tester.runAsync(session.close));
+      addTearDown(() => tester.runAsync(() => closing ??= session.close()));
     });
     final active = DesktopTask('active', 'Current conversation')..loaded = true;
     final original = Project('original', 'original', '${root.path}/original', [active]);
@@ -99,6 +100,8 @@ void main() {
     expect(session.error, isNull);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() => closing ??= session.close());
+    await tester.pump();
   }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
 
   testWidgets('command menu opens full-height archive previews without suggesting archived chats', (tester) async {
@@ -219,18 +222,22 @@ class _Client implements AgentClient {
     {'servers': <Object?>[]};
   final restored = <String>[];
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
-    if (method == 'session.message.list') return {
-      'through': 1, 'archived': true,
-      'data': [{
-        'id': 'message', 'type': 'user', 'metadata': {'seq': 1}, 'time': {'created': 1},
-        'text': 'Read-only archived preview',
-      }],
+    if (method == 'thread/read') return {
+      'notificationThrough': 1, 'archived': !restored.contains(params['threadId']),
+      'thread': {'id': params['threadId'], 'preview': 'Archived-only conversation ${(params['threadId'] as String).split('-').last}'},
+    };
+    if (method == 'thread/turns/list') return {'data': <Object?>[], 'nextCursor': null};
+    if (method == 'thread/items/list') return {
+      'data': [{'turnId': 'turn', 'order': 1, 'startedAtMs': 1,
+        'item': {'id': 'message', 'type': 'userMessage',
+          'content': [{'type': 'text', 'text': 'Read-only archived preview'}]},
+      }], 'nextCursor': null,
     };
     throw StateError('Unexpected read: $method');
   }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'session.unarchive') {
-      restored.add(params['sessionID'] as String);
+    if (method == 'thread/unarchive') {
+      restored.add(params['threadId'] as String);
       return null;
     }
     throw StateError('Unexpected request: $method');

@@ -6,7 +6,7 @@ import 'package:path/path.dart' as p;
 
 /// Watches parent directories so editor renames do not detach the watch.
 /// Periodic reconciliation also handles missing/recreated directories and
-/// filesystems that drop notifications. The owner reloads and validates data.
+/// filesystems that drop notifications. ConfigReader reloads and validates data.
 class ConfigWatcher with Cancellable {
   ConfigWatcher(
     Iterable<String> paths, {

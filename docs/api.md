@@ -212,12 +212,10 @@ and SSH forwarding management remain future client work.
 
 ## Global configuration
 
-If you used the previous `~/.happen/config.yaml` default, move that file to the
-new location and restart the server.
-
 Create `~/.config/happen/config.yaml` with local commands, remote URLs, or both:
 
 ```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json
 mcp_servers:
   dart:
     command: dart
@@ -227,15 +225,6 @@ mcp_servers:
     header_env:
       Authorization: MCP_AUTHORIZATION
 
-# Optional provider defaults.
-default_provider: openai
-providers:
-  openai:
-    model: gpt-6.1-sol
-    settings: {reasoning: low, transport: http}
-  opencode:
-    model: deepseek-v4.1-flash-free
-    settings: {reasoning: low}
 ```
 
 Use the global `--config PATH` option to select another YAML file, for example
@@ -368,17 +357,24 @@ and atomic replacement, with refresh coalescing and file locks for local process
 sharing that directory. CLI login/logout is observed by an already running desktop
 at its next catalog/inventory read. Logout clears Happen's locally saved login.
 
-`packages/config` owns YAML parsing, the embedded JSON Schema, and file watching
-in Dart. Startup and reload validate types, supported fields, transport options,
-and server-name collisions before changing connections. Diagnostics omit config
-values. Export the schema for a YAML editor with
+`packages/config` parses YAML/JSON, validates it against the embedded JSON
+Schema, loads files, watches for changes, and merges project layers. Files support
+`mcp_servers` only. The server monitors executables and applies validated changes
+through its MCP manager, which owns connections and process restarts.
+Diagnostics omit config values. Use the
+[public schema](https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json)
+in a YAML editor, or export the embedded copy with
 `dart run packages/cli/bin/happen.dart config-schema > /path/happen.schema.json`.
-Provider-specific settings and model limits remain validated by their providers.
-Provider configuration and `public_url` take effect at server startup; resolved
-provider settings remain saved with each task.
+Models and reasoning come from the catalog unless explicitly selected through
+the CLI, desktop, or thread API. Providers validate thread settings and save the
+resolved selection with each thread. Embedders can pass model endpoint URLs
+and the public MCP webhook callback URL to `AgentServer.start` or `startEmbedded`.
 
 GPT supports `http` and `websocket` model transports. Its catalog supplies the
-model prompt, effort defaults, and context limits. DeepSeek supports the native
+model prompt, effort defaults, and context limits. Like Codex, GPT compacts at
+90% of the selected context window (or a lower explicit limit), and reports 95%
+as usable context unless the catalog specifies another percentage.
+DeepSeek supports the native
 Messages route and an explicitly configured `chat` adapter. Messages represents
 ordered tool additions natively; Chat rebuilds its request catalog and retains a
 textual notice at each update's position. Model aliases for third-party services
@@ -583,23 +579,12 @@ and refreshes its own tokens. It does not require the OpenCode executable or use
 the CLI's refresh token.
 
 Select an OpenCode model in the desktop composer, or use `--provider opencode` with the CLI.
-Optional defaults in `~/.config/happen/config.yaml`:
-
-```yaml
-providers:
-  opencode:
-    model: deepseek-v4.1-flash-free
-    settings: {reasoning: low}
-```
-
-Then run `dart run packages/cli/bin/happen.dart exec --provider opencode "Complete this task"`.
+Run `dart run packages/cli/bin/happen.dart exec --provider opencode "Complete this task"`.
 The route uses Chat Completions, with a 200,000-token context and a maximum output
 of 32,000 tokens from the recorded OpenCode catalog. The exact free model is required;
 there is no automatic paid fallback. Native DeepSeek remains available with
-`backend: native` (the default), `deepseek-flash`, and `DEEPSEEK_API_KEY`.
-The earlier `providers.deepseek.backend: opencode` configuration remains valid
-for existing tasks and clients. The desktop offers the `opencode` subscription
-account directly.
+`deepseek-flash` and `DEEPSEEK_API_KEY`. The desktop offers the `opencode`
+subscription account directly.
 
 Login and model availability are separate. In the recorded live check, Happen's
 device authorization succeeded, but its authenticated inference request received
@@ -647,7 +632,7 @@ order across pages; timestamps do not determine transcript order. Snapshot
 `liveItems` contain unfinished items, and `notificationThrough` is captured before
 the history read so later notifications remain replayable.
 
-Happen's global `idle_unload_seconds` defaults to 60. A full delay must elapse
+Happen uses Codex's default 60-second idle unload delay. A full delay must elapse
 after both turn activity and the final subscriber are gone. Resubscription
 cancels the countdown; turn completion starts a fresh countdown when nobody is
 subscribed. Disconnect removes that connection's subscriptions. Unloading emits
@@ -1066,8 +1051,9 @@ private host state, excluded from inventory, model history and portable exports.
 An expired provider registration may receive a fresh remote ID on restoration;
 the new authenticated grant then pins that identity.
 
-Webhook delivery requires an HTTPS `public_url` in global configuration, routed
-to this server's `/mcp-events/...` callback paths. The server verifies webhook
+Webhook delivery requires the embedding host to pass an HTTPS `publicUrl` to
+`AgentServer.start` or `startEmbedded`, routed to this server's `/mcp-events/...`
+callback paths. The server verifies webhook
 signatures and timestamps before delivery; signing secrets remain in private
 host state. The ordinary SSH port-forward setup supports push and polling without a
 public webhook endpoint.

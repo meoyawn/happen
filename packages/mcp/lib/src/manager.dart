@@ -7,6 +7,7 @@ import 'package:protocol/protocol.dart';
 import 'events.dart';
 import 'oauth.dart';
 import 'transport.dart';
+import 'timeouts.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
@@ -342,7 +343,7 @@ class McpManager {
     String name,
     Object? arguments,
     CancellationToken cancellation, {String? scope, McpInputHandler? onInput, Json? meta,
-      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
+      Duration? timeout = mcpToolTimeout, bool readOnly = false}
   ) async {
     for (final server in _visible(scope).values) {
       final tool = server.tools[name];
@@ -352,7 +353,7 @@ class McpManager {
         {'name': tool['name'], 'arguments': jsonObject(arguments), '_meta': ?meta},
         cancellation,
         inputSchema: jsonObject(tool['inputSchema']),
-        onInput: onInput, timeout: timeout, readOnly: readOnly,
+        onInput: onInput, timeout: mcpRequestedToolTimeout(timeout), readOnly: readOnly,
         retrySafe: tool['annotations']?['readOnlyHint'] == true ||
             tool['annotations']?['idempotentHint'] == true,
       );
@@ -370,7 +371,7 @@ class McpManager {
     String method,
     Json params,
     CancellationToken cancellation, {String? scope, McpInputHandler? onInput,
-      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
+      Duration? timeout = mcpToolTimeout, bool readOnly = false}
   ) async {
     final target = _visible(scope)[server];
     if (target == null) throw ArgumentError('Unknown MCP server in this scope');
@@ -381,7 +382,7 @@ class McpManager {
     String method,
     Json params,
     CancellationToken cancellation, {String? scope, McpInputHandler? onInput,
-      Duration? timeout = const Duration(seconds: 60), bool readOnly = false}
+      Duration? timeout = mcpToolTimeout, bool readOnly = false}
   ) async {
     if (method == 'resources/read') {
       return request(requiredString(params, 'server'), method, {
@@ -634,7 +635,7 @@ class _Server {
     return connection;
   }
   Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false,
-    McpInputHandler? onInput, Duration? timeout = const Duration(seconds: 60), bool readOnly = false}) async {
+    McpInputHandler? onInput, Duration? timeout = mcpToolTimeout, bool readOnly = false}) async {
     await ready(cancellation);
     return shared.request(method, params, cancellation.merge(lifetime), inputSchema: inputSchema, retrySafe: retrySafe,
       onInput: onInput, timeout: timeout, readOnly: readOnly);
@@ -745,7 +746,7 @@ class _Connection {
     Json? inputSchema,
     bool retrySafe = false,
     McpInputHandler? onInput,
-    Duration? timeout = const Duration(seconds: 60),
+    Duration? timeout = mcpToolTimeout,
     bool readOnly = false,
   }) async {
     final current = await ready(cancellation);
@@ -802,27 +803,34 @@ class _Connection {
     CancellationToken cancellation, {
     bool connecting = false,
   }) async {
-    final result = <Json>[];
-    final seen = <String>{};
-    String? cursor;
-    for (var page = 0; page < 20; page++) {
-      final value = connecting
-          ? await connection!.request(method, {
-              'cursor': ?cursor,
-            }, cancellation: cancellation)
-          : await request(method, {'cursor': ?cursor}, cancellation);
-      result.addAll((value[key] as List? ?? []).map(jsonObject));
-      if (result.length > 1000 ||
-          utf8.encode(jsonEncode(result)).length > maxFrameBytes) {
-        throw const McpFailure('MCP catalog exceeds the configured bound');
+    // Bound the whole catalog, including each request's retries and backoff.
+    // A fresh per-page deadline lets an individually timely server run forever.
+    final deadline = TimeoutCancellationToken(mcpCatalogTimeout,
+      timeoutException: TimeoutException('$method pagination timed out after 30s', mcpCatalogTimeout));
+    final token = cancellation.merge(lifetime).merge(deadline);
+    try {
+      final result = <Json>[];
+      final seen = <String>{};
+      String? cursor;
+      for (var page = 0; page < 20; page++) {
+        final value = connecting
+            ? await connection!.request(method, {
+                'cursor': ?cursor,
+              }, cancellation: token, timeout: null)
+            : await request(method, {'cursor': ?cursor}, token, timeout: null);
+        result.addAll((value[key] as List? ?? []).map(jsonObject));
+        if (result.length > 1000 ||
+            utf8.encode(jsonEncode(result)).length > maxFrameBytes) {
+          throw const McpFailure('MCP catalog exceeds the configured bound');
+        }
+        cursor = value['nextCursor'] as String?;
+        if (cursor == null) return result;
+        if (!seen.add(cursor)) {
+          throw const McpFailure('MCP catalog cursor repeated');
+        }
       }
-      cursor = value['nextCursor'] as String?;
-      if (cursor == null) return result;
-      if (!seen.add(cursor)) {
-        throw const McpFailure('MCP catalog cursor repeated');
-      }
-    }
-    throw const McpFailure('MCP catalog exceeds 20 pages');
+      throw const McpFailure('MCP catalog exceeds 20 pages');
+    } finally { deadline.cancel(); }
   }
 
   Future<void> _refresh() =>

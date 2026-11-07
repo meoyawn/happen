@@ -153,7 +153,7 @@ class _Agent {
     return {
       ..._contextState,
       'sessionID': taskId, 'model': {'providerID': config['provider'], 'id': current.model},
-      'limit': current.settings['context_limit'],
+      'limit': config['context_window'] ?? current.settings['context_limit'],
       'instructions': current.instructions, 'tools': current.tools.map((tool) => tool.toJson()).toList(),
       'settings': current.settings, 'effectiveReasoning': current.effectiveReasoning,
       'input': current.input.map((item) => item.toJson()).toList(),

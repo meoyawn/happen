@@ -10,6 +10,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
+import '../../../test/support/thread_names.dart';
+
 void main() {
   for (final transport in ['http', 'websocket']) {
     testWidgets('$transport tracing is opt-in per session across sockets, isolates, and queued turns', (tester) async {
@@ -24,20 +26,31 @@ void main() {
       final observed = <Json>[];
       var turns = 0;
       StreamSubscription<Json>? events;
+      // A headless client may select WebSocket for a thread that the desktop
+      // then opens. New desktop drafts use the provider's default transport.
+      Future<void> selectConfiguredThread() async {
+        if (transport == 'http') return;
+        final created = jsonObject(await session.client.request('thread/start', {
+          'cwd': root.path, 'model': session.modelId, 'tracing': session.currentDraft.tracing,
+          'settings': {'transport': transport},
+        }));
+        final project = session.projects.single;
+        final task = DesktopTask(created['thread']['id'] as String, 'Configured thread');
+        project.tasks.add(task);
+        await session.select(project, task);
+      }
       await tester.runAsync(() => HttpOverrides.runWithHttpOverrides(() async {
         arrived = Completer<void>();
         release = Completer<void>();
         completed = List.generate(4, (_) => Completer<void>());
         root = await Directory.systemTemp.createTemp('session-trace-');
         provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        await File('${root.path}/config.yaml').writeAsString(jsonEncode({
-          'providers': {'openai': {'settings': {'transport': transport}}},
-        }));
         await File('${root.path}/auth.json').writeAsString(jsonEncode({
           'type': 'chatgpt', 'access_token': 'fixture-access-secret', 'refresh_token': 'fixture-refresh-secret',
           'account_id': 'fixture', 'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
         }));
         Future<String> reply(Json body) async {
+          if (threadNameReply(body) case final events?) return jsonEncode(events.single);
           requests.add(body);
           if (requests.length == 2) {
             arrived.complete();
@@ -74,22 +87,23 @@ void main() {
         void watch() {
           events = session.client.events.stream.listen((event) {
             observed.add(event);
-            if (event['type'] == 'session.execution.succeeded') {
+            if (event['method'] == 'turn/completed' && event['params']['turn']['status'] == 'completed') {
               completed[turns++].complete();
-            } else if (event['type'] == 'session.execution.failed') {
+            } else if (event['method'] == 'turn/completed' && event['params']['turn']['status'] == 'failed') {
               completed[turns].completeError(StateError('$event'));
             }
           });
         }
         watch();
         expect(session.currentDraft.tracing, isFalse);
+        await selectConfiguredThread();
         expect(await session.send('Private untraced prompt'), isTrue, reason: session.error);
         await completed[0].future.timeout(const Duration(seconds: 20));
         final untracedID = session.task!.id;
         expect(await session.send('/side'), isTrue, reason: session.error);
         final side = session.sideChats.values.single;
         expect(side.tracing, isFalse);
-        expect((await session.client.sessionRead('session.message.list', {'sessionID': side.id},
+        expect((await session.client.sessionRead('thread/read', {'threadId': side.id},
           cancellation: CancellationToken()))['configuration']['tracing'], isFalse);
         await session.client.request('session.side.close', {'sessionID': side.id});
         expect((await session.client.traceStatus(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
@@ -98,7 +112,7 @@ void main() {
           expect(await File('${root.path}/$file').exists(), isFalse,
             reason: 'An unchecked session and its trace reads must not create a recorder');
         }
-        expect(observed.where((event) => event['data']?['sessionID'] == untracedID)
+        expect(observed.where((event) => event['params']?['threadId'] == untracedID)
           .any((event) => event.containsKey('_trace')), isFalse);
         session.newSession();
         session.chooseTracing(true);
@@ -124,6 +138,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(home: ListenableBuilder(listenable: session,
         builder: (context, _) => Text(session.task?.streamingText ?? 'Ready'))));
       await tester.runAsync(() async {
+        await selectConfiguredThread();
         expect(await session.send('Private first prompt'), isTrue, reason: session.error);
         await arrived.future.timeout(const Duration(seconds: 15));
         expect(await session.send('Private queued prompt'), isTrue, reason: session.error);
@@ -141,7 +156,7 @@ void main() {
         expect(await session.send('/side'), isTrue, reason: session.error);
         final side = session.sideChats.values.single;
         expect(side.tracing, isTrue);
-        expect((await session.client.sessionRead('session.message.list', {'sessionID': side.id},
+        expect((await session.client.sessionRead('thread/read', {'threadId': side.id},
           cancellation: CancellationToken()))['configuration']['tracing'], isTrue);
         await session.client.request('session.side.close', {'sessionID': side.id});
       });
@@ -170,8 +185,10 @@ void main() {
         expect(trace.any((event) => event['name'] == 'openai.responses'), isTrue);
         if (transport == 'http') {
           expect(trace.any((event) => event['name'] == 'http.POST'), isTrue);
-          final body = trace.singleWhere((event) => event['name'] == 'http.body' && event['ph'] == 'e');
-          expect(body['args']['status'], 'ok', reason: 'Consuming a completed response is successful even before EOF');
+          final bodies = trace.where((event) => event['name'] == 'http.body' && event['ph'] == 'e').toList();
+          expect(bodies, isNotEmpty);
+          expect(bodies.map((body) => body['args']['status']), everyElement('ok'),
+            reason: 'Consuming a completed response is successful even before EOF');
         } else {
           expect(trace.any((event) => event['name'] == 'openai.websocket.receive'), isTrue);
         }
@@ -195,12 +212,13 @@ void main() {
       await tester.runAsync(() => HttpOverrides.runWithHttpOverrides(() async {
         session.newSession();
         expect(session.currentDraft.tracing, isFalse, reason: 'Tracing is not a sticky preference');
+        await selectConfiguredThread();
         expect(await session.send('Private untraced prompt after recording'), isTrue, reason: session.error);
         await completed[3].future.timeout(const Duration(seconds: 20));
         final untracedID = session.task!.id;
         expect((await session.client.traceStatus(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
         expect((await (await session.tracing).status(untracedID, cancellation: CancellationToken()))['categories'], isEmpty);
-        expect(observed.where((event) => event['data']?['sessionID'] == untracedID)
+        expect(observed.where((event) => event['params']?['threadId'] == untracedID)
           .any((event) => event.containsKey('_trace')), isFalse);
         await events!.cancel();
         await session.close();

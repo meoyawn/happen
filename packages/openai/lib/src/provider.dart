@@ -44,18 +44,12 @@ class OpenAIProvider implements ModelProvider {
   }
 
   // Pinned Codex model catalog; ultra requires delegation this runtime lacks.
-  static const models = {
-    'gpt-6.1-sol',
-    'gpt-6-astra',
-    'gpt-6.1-terra',
-    'gpt-6-sol',
-    'gpt-6-luna',
-  };
+  static const models = supportedGptModels;
   static const efforts = {'low', 'medium', 'high', 'xhigh', 'max'};
 
   @override
   Json resolveSettings(Json selected, {String? model}) {
-    final info = GptModel(model ?? 'gpt-6.1-sol');
+    final info = GptModel(model ?? defaultGptModel);
     const allowed = {
       'reasoning',
       'verbosity',
@@ -98,13 +92,15 @@ class OpenAIProvider implements ModelProvider {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
-    final headroom = selected['compaction_headroom'] ?? 32000;
-    if (context is! int ||
-        headroom is! int ||
-        context <= 0 ||
+    if (context is! int || context <= 1 || context > info.maxContextWindow) {
+      throw ArgumentError('Context limit must be positive and within the model context cap');
+    }
+    final autoCompactLimit = context * 9 ~/ 10;
+    final headroom = selected['compaction_headroom'] ?? context -
+      (info.data['auto_compact_token_limit'] as int? ?? autoCompactLimit).clamp(1, autoCompactLimit);
+    if (headroom is! int ||
         headroom <= 0 ||
-        headroom >= context ||
-        context > info.maxContextWindow) {
+        headroom >= context) {
       throw ArgumentError(
         'Compaction headroom must be positive and below the context limit',
       );
@@ -114,7 +110,7 @@ class OpenAIProvider implements ModelProvider {
       'verbosity': verbosity,
       'transport': transport,
       'context_limit': context,
-      'compaction_headroom': headroom,
+      'compaction_headroom': headroom.clamp(context - autoCompactLimit, context - 1),
       'reasoning_summary': summary,
       'web_search': webSearch,
       'image_generation': imageGeneration && (info.data['input_modalities'] as List? ?? []).contains('image'),

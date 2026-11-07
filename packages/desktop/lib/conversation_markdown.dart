@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
-import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl;
+import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, CancellationToken;
 
 import 'code_highlight.dart';
 import 'appearance.dart';
@@ -15,7 +15,6 @@ import 'image_preview.dart';
 import 'inline_image.dart';
 import 'conversation_data.dart';
 import 'desktop_toast.dart';
-import 'file_reference.dart';
 
 const conversationInk = conversationForeground;
 const conversationMuted = conversationSecondary;
@@ -42,9 +41,13 @@ class _ConversationMarkdownBody extends StatefulWidget {
 }
 
 class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
+  final _lifetime = CancellationToken();
   Object? _styleState;
   late MarkdownStyleSheet _styleSheet;
   var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax()];
+
+  @override
+  void dispose() { _lifetime.cancel(); super.dispose(); }
 
   @override
   void reassemble() {
@@ -114,7 +117,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         fitContent: fitContent,
         softLineBreak: fitContent,
         styleSheet: _styleSheet,
-        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory)},
+        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory, _lifetime)},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
           label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory, markdown: true,
@@ -125,7 +128,9 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
             size: 17, color: checked ? conversationInk : conversationMuted),
         ),
         onTapLink: (_, href, _) {
-          if (href != null) unawaited(_openLink(context, href, directory));
+          if (href != null) {
+            unawaited(openDesktopLink(context, href, directory: directory, cancellation: _lifetime));
+          }
         },
       ),
     ));
@@ -172,15 +177,17 @@ class _SkillLinkSyntax extends md.LinkSyntax {
 }
 
 class _SkillLinkBuilder extends MarkdownElementBuilder {
-  _SkillLinkBuilder(this.directory);
+  _SkillLinkBuilder(this.directory, this.cancellation);
   final String directory;
+  final CancellationToken cancellation;
 
   @override
   Widget visitElementAfterWithContext(BuildContext context, md.Element element,
       TextStyle? preferredStyle, TextStyle? parentStyle) {
     final href = element.attributes['href']!;
     return Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
-      child: GestureDetector(onTap: () => unawaited(_openLink(context, href, directory)),
+      child: GestureDetector(onTap: () => unawaited(openDesktopLink(context, href,
+        directory: directory, cancellation: cancellation)),
         child: Text.rich(TextSpan(children: [
           const WidgetSpan(alignment: PlaceholderAlignment.middle,
             child: Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())),
@@ -335,34 +342,6 @@ Uri? _contentUri(String source, String directory) {
   if (uri.scheme.isEmpty) return Directory(directory.isEmpty ? Directory.current.path : directory).absolute.uri.resolveUri(uri);
   if (uri.scheme == 'file' && uri.host.isNotEmpty && uri.host != 'localhost') return null;
   return uri;
-}
-
-Future<void> _openLink(BuildContext context, String href, String directory) async {
-  try {
-    final file = conversationFileLocation(href, directory);
-    if (file != null) {
-      ConversationFileScope.open(context, file);
-      return;
-    }
-    final uri = _contentUri(href, directory);
-    if (uri == null || !{'http', 'https', 'mailto'}.contains(uri.scheme)) {
-      throw const FormatException('Unsupported link');
-    }
-    final target = uri.toString();
-    if ({'http', 'https'}.contains(uri.scheme) && browserHostIsLocal(uri.host) &&
-        ConversationBrowserScope.open(context, uri)) return;
-    if (Platform.isMacOS) {
-      await Process.start('/usr/bin/open', [target], mode: ProcessStartMode.detached);
-    } else if (Platform.isLinux) {
-      await Process.start('xdg-open', [target], mode: ProcessStartMode.detached);
-    } else {
-      throw const FormatException('Unsupported platform');
-    }
-  } catch (_) {
-    if (context.mounted) {
-      showDesktopToast(context, 'This link could not be opened.', type: DesktopToastType.error);
-    }
-  }
 }
 
 /// The outermost group is one message (or the composer's attachment rail).

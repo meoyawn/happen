@@ -42,7 +42,6 @@ void main() {
     await File('${data.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture',
       'refresh_token': 'fixture', 'account_id': 'fixture',
       'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
-    await File('${data.path}/config.yaml').writeAsString('providers:\n  openai:\n    settings:\n      transport: http\n');
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => provider.close(force: true));
     provider.listen((request) async {

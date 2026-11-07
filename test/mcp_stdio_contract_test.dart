@@ -42,10 +42,18 @@ void main() {
     });
   }
 
-  test('a discovery timeout alone never authorizes legacy initialization on the same stdio process', () async {
+  test('a caller deadline during discovery never authorizes legacy initialization on the same stdio process', () async {
     final log = File('${root.path}/requests');
     final connection = connect({'MCP_DISCOVERY_DELAY_MS': '11000', 'MCP_REQUESTS_FILE': log.path});
-    await expectLater(connection.connect(lifetime), throwsA(isA<TimeoutException>()));
+    final caller = CancellationToken();
+    final result = expectLater(connection.connect(lifetime.merge(caller)), throwsA(isA<TimeoutException>()));
+    try {
+      while (!await log.exists() || !(await log.readAsLines()).contains('server/discover')) {
+        await cancellableDelay(const Duration(milliseconds: 10), lifetime);
+      }
+      caller.cancel(TimeoutException('Caller deadline expired'));
+      await result;
+    } finally { caller.cancel(); }
     await connection.close();
     expect(await log.readAsLines(), isNot(contains('initialize')),
       reason: 'A deadline supplies no correlated protocol-version or method-not-found evidence.');

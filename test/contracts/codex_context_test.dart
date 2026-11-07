@@ -8,6 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:openai/openai.dart' show GptModel, supportedGptModels;
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -342,8 +343,12 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       if (continuing.contains(step)) {
         (continuationIds[threadKey] ??= {})[step] = output.map((item) => item['id'] as String).toSet();
       }
-      final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored &&
-        output.any((item) => item['name'] == 'wait') ? 21000 : 100;
+      final compactLimit = scenario['auto_compact_limit'] as int? ?? 20000;
+      final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored
+        ? output.any((item) => item['name'] == 'wait') ? compactLimit - 10
+          : scenario['catalog_compaction'] == true && output.any((item) => item['name'] == 'exec')
+            ? compactLimit - 1010 : 100
+        : 100;
       final response = {'id': 'resp_fixture_${captured.length}', 'object': 'response', 'status': 'completed',
         if (continuing.isNotEmpty) 'end_turn': !continuing.contains(step),
         'output': output, 'usage': {'input_tokens': inputTokens, 'output_tokens': 10, 'total_tokens': inputTokens + 10}};
@@ -418,7 +423,6 @@ ${scenario['selected_reasoning'] == true ? 'model_reasoning_effort = "$reasoning
 web_search = "live"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-cli_auth_credentials_store = "file"
 include_permissions_instructions = false
 include_apps_instructions = false
 include_collaboration_mode_instructions = false
@@ -427,26 +431,23 @@ enabled = false
 [skills.bundled]
 enabled = false
 [features]
-default_mode_request_user_input = ${scenario['request_user_input'] == true}
+${scenario['request_user_input'] == true ? 'default_mode_request_user_input = true' : ''}
 code_mode_tool_search = true
+# codex-cli 0.166 predates the checkout's default for deferred tool context.
 deferred_tool_world_state = true
 multi_agent = false
-multi_agent_v2 = false
-memories = false
-goals = true
 plugins = false
 apps = false
 ''');
-  final happenConfig = <String, dynamic>{'idle_unload_seconds': 0, 'providers': {'openai': {
-    if (scenario['selected_model'] == true) 'model': model,
-    'settings': <String, dynamic>{'web_search': 'live',
-      if (scenario['selected_reasoning'] == true) 'reasoning': reasoning,
-      'default_mode_request_user_input': scenario['request_user_input'] == true}}}};
-  if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
+  final happenConfig = <String, dynamic>{};
+  final settings = <String, dynamic>{
+    if (scenario['request_user_input'] == true) 'default_mode_request_user_input': true,
+  };
+  if ({'compaction', 'audio'}.contains(scenario['workflow']) && scenario['catalog_compaction'] != true) {
     final text = config.toString();
     config.clear();
     config.write('model_context_window = 100000\nmodel_auto_compact_token_limit = 20000\n$text');
-    happenConfig['providers']['openai']['settings'].addAll({'context_limit': 100000, 'compaction_headroom': 80000});
+    settings.addAll({'context_limit': 100000, 'compaction_headroom': 80000});
   }
   if (scenario['mcp'] == true) {
     await run(['dart', 'pub', 'get', '--offline'], env, '$output/pub-get.log', cancellation, cwd: work);
@@ -482,8 +483,24 @@ apps = false
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
       String? taskID;
       Future<void> turn(String prompt) async {
-        taskID ??= jsonObject(await client.request('thread/start', {'cwd': cwd})
-          .asCancellable(cancellation))['thread']['id'] as String;
+        if (taskID == null) {
+          final started = jsonObject(await client.request('thread/start', {'cwd': cwd,
+            'config': {'thread_unload_delay_secs': 0},
+            if (scenario['selected_model'] == true) 'model': model,
+            if (scenario['selected_reasoning'] == true) 'reasoning': reasoning,
+            if (settings.isNotEmpty) 'settings': settings,
+          }).asCancellable(cancellation));
+          taskID = started['thread']['id'] as String;
+          final config = jsonObject(started['configuration']);
+          final resolved = jsonObject(config['provider_settings']);
+          final defaults = GptModel(model).data;
+          final window = settings['context_limit'] ?? defaults['context_window'];
+          checks['happen:resolved_model:run-$iteration'] = config['model'] == model;
+          checks['happen:resolved_effort:run-$iteration'] = resolved['reasoning'] == reasoning;
+          checks['happen:raw_context_window:run-$iteration'] = resolved['context_limit'] == window;
+          checks['happen:usable_context_window:run-$iteration'] = config['context_window'] ==
+            (window as int) * (defaults['effective_context_window_percent'] as int? ?? 95) ~/ 100;
+        }
         final input = StreamIterator(client.events.stream);
         try {
           await client.request('turn/start', {'threadId': taskID, 'input': [{'type': 'text', 'text': prompt}]}).asCancellable(cancellation);
@@ -509,6 +526,8 @@ apps = false
             // Each reference turn starts a new Codex process, including resume.
             if (message > 0) {
               await unloadThread(client, taskID!, cancellation: cancellation);
+              await client.request('thread/resume', {'threadId': taskID,
+                'config': {'thread_unload_delay_secs': 0}}).asCancellable(cancellation);
             }
             await turn(messages[message]);
           }
@@ -868,12 +887,17 @@ void main() {
     await Directory(env['CODEX_HOME']!).create(recursive: true);
     report['codexVersion'] = (await run([codex, '--version'], env, '$output/version.log', cancellation)).trim();
     await File('$output/models.json').writeAsBytes(catalogBytes, flush: true);
+    report['embeddedCatalogEqual'] = supportedGptModels.every((model) =>
+      equals(modelDefaults.singleWhere((entry) => entry['slug'] == model)).matches(GptModel(model).data, {}));
+    expect(report['embeddedCatalogEqual'], isTrue,
+      reason: 'The embedded runtime catalog must match models.json, including fields not exercised by the request matrix.');
   });
   tearDownAll(() async {
     cancellation.cancel();
     for (final signal in signals) { await signal.cancel(); }
     if (output.isEmpty) return;
-    report['passed'] = (report['results'] as List).length == selections.length * contextCases.length &&
+    report['passed'] = report['embeddedCatalogEqual'] == true &&
+      (report['results'] as List).length == selections.length * contextCases.length &&
       (report['results'] as List).every((item) => item['passed'] == true);
     await save('$output/report.json', report);
     print('Context contract evidence: $output/report.json');
@@ -889,6 +913,12 @@ void main() {
         final value = terminalShells({...fixture,
           'selected_model': model != defaultModel,
           'selected_reasoning': selection.effort != null,
+          if (fixture['id'] == 'compaction') ...{
+            'catalog_compaction': true,
+            'auto_compact_limit': (defaults['auto_compact_token_limit'] as int? ??
+              (defaults['context_window'] as int) * 9 ~/ 10)
+              .clamp(1, (defaults['context_window'] as int) * 9 ~/ 10),
+          },
         });
         test(fixture['id'] as String, () async {
           final path = '$output/$model/$reasoning/${value['id']}';

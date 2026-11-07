@@ -54,7 +54,6 @@ void main() {
       }
     });
     final config = File('${root.path}/config.yaml');
-    await config.writeAsString(jsonEncode({'providers': {'openai': {'settings': {'image_generation': true, 'web_search': 'disabled'}}}}));
     final server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path,
       endpoint: 'http://127.0.0.1:${peer.port}/responses');
     final client = await AgentClient.connect(server.uri);
@@ -67,7 +66,8 @@ void main() {
       await peer.close(force: true); await root.delete(recursive: true);
     });
     Future<String> run(String prompt) async {
-      final id = await createThread(client, {'cwd': root.path});
+      final id = await createThread(client, {'cwd': root.path,
+        'settings': {'image_generation': true, 'web_search': 'disabled'}});
       final completed = await runTurn(client, id, prompt: prompt, settings: {'input': [
         {'type': 'text', 'text': prompt},
         if (prompt == 'edit-recent') {'type': 'image', 'name': 'reference', 'path': reference.path},
@@ -101,7 +101,8 @@ void main() {
       expect((record['contentItems'] as List).where((part) => part['type'] == 'inputImage'), hasLength(1),
         reason: 'The UI receives a real inline image, not base64 prose');
     }
-    final id = await createThread(client, {'cwd': root.path});
+    final id = await createThread(client, {'cwd': root.path,
+      'settings': {'image_generation': true, 'web_search': 'disabled'}});
     final done = runTurn(client, id, prompt: 'cancel');
     await imageStarted.future.timeout(const Duration(seconds: 10));
     final snapshot = jsonObject(await client.request('thread/read', {'threadId': id, 'includeTurns': true}));

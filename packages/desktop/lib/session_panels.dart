@@ -74,8 +74,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     if (task != null) {
       widget.session.openSessionPanel(task, 'file:${location.path}', line: location.line);
     } else {
-      unawaited(showDialog<void>(context: context, builder: (context) => ConversationFileScope(
-        onOpen: _openFile, child: Dialog(
+      unawaited(showDialog<void>(context: context, builder: (context) => ConversationBrowserScope(
+        onOpen: _openBrowser, child: ConversationFileScope(onOpen: _openFile, child: Dialog(
         clipBehavior: Clip.antiAlias, child: SizedBox(width: 900, height: 700,
           child: Column(children: [
             Row(children: [
@@ -86,7 +86,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                 onPressed: () => Navigator.of(context).pop()),
             ]),
             Expanded(child: FileViewer(path: location.path, line: location.line)),
-          ]))))));
+          ])))))));
     }
   }
 
@@ -94,14 +94,15 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     if (widget.task case final task?) {
       widget.session.openBrowserPanel(task, url: uri.toString());
     } else {
-      unawaited(showDialog<void>(context: context, builder: (context) => Dialog(
+      unawaited(showDialog<void>(context: context, builder: (context) => ConversationBrowserScope(
+        onOpen: _openBrowser, child: ConversationFileScope(onOpen: _openFile, child: Dialog(
         clipBehavior: Clip.antiAlias, child: SizedBox(width: 1000, height: 700,
           child: Column(children: [
             Align(alignment: Alignment.centerRight, child: IconButton(
               tooltip: 'Close browser', icon: const Icon(Icons.close_rounded, size: 18),
               onPressed: () => Navigator.of(context).pop())),
             Expanded(child: DesktopBrowser(initialUrl: uri.toString())),
-          ])))));
+          ])))))));
     }
   }
 

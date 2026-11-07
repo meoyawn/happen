@@ -30,12 +30,6 @@ void main() {
         '*** Add File: ${nested.path}\n+Nested addition.\n*** End Patch';
       final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final endpoint = 'http://127.0.0.1:${provider.port}';
-      await File('${data.path}/config.yaml').writeAsString(jsonEncode({
-        'default_provider': lab,
-        'providers': {if (lab == 'opencode') lab: {
-          'endpoint': '$endpoint/inference/openai/v1', 'settings': {'reasoning': 'low'},
-        }},
-      }));
       await File('${data.path}/${lab == 'openai' ? 'auth' : 'opencode-auth'}.json').writeAsString(jsonEncode({
         'type': lab == 'openai' ? 'chatgpt' : 'opencode',
         'access_token': 'fixture', 'refresh_token': 'fixture',
@@ -82,7 +76,7 @@ void main() {
       });
       final server = await AgentServer.startEmbedded(
         directory: data.path, configPath: '${data.path}/config.yaml',
-        endpoint: '$endpoint/responses', skillsHome: root.path,
+        endpoint: '$endpoint/responses', openCodeEndpoint: '$endpoint/inference/openai/v1', skillsHome: root.path,
       );
       final client = await AgentClient.connect(server.uri);
       addTearDown(() async {
@@ -101,7 +95,7 @@ void main() {
         text.startsWith('# AGENTS.md instructions') || text.contains('Instructions from: ') ||
         text.startsWith('The instructions from ') || text == 'Previously loaded instructions no longer apply.').toList();
 
-      final id = await createThread(client, {'cwd': work.path});
+      final id = await createThread(client, {'cwd': work.path, 'provider': lab, 'reasoning': 'low'});
       await turn(id, prompt: 'Update the instructions.');
       Future<List<Json>> updates() async => (await rolloutLines(client, id)).where((line) =>
         line['type'] == 'response_item' && instructions({'input': [line['payload']], 'messages': [line['payload']]}).isNotEmpty).toList();

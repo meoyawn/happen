@@ -44,9 +44,6 @@ wait
         'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
       }));
       await File('${root.path}/config.yaml').writeAsString(jsonEncode({
-        'default_provider': lab,
-        'idle_unload_seconds': 0,
-        'providers': {'opencode': {'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1'}},
         'mcp_servers': {'local': {'command': Platform.resolvedExecutable,
           'args': [File('test/fixtures/mcp_stdio.dart').absolute.path], 'legacy_fallback': false}},
       }));
@@ -115,9 +112,10 @@ wait
         await request.response.close();
       });
       server = await AgentServer.startEmbedded(directory: root.path,
-        configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${provider.port}/responses');
+        configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${provider.port}/responses',
+        openCodeEndpoint: 'http://127.0.0.1:${provider.port}/inference/openai/v1');
       client = await AgentClient.connect(server.uri);
-      final id = await createThread(client, {'cwd': '${root.path}/a'});
+      final id = await createThread(client, {'cwd': '${root.path}/a', 'provider': lab, 'config': {'thread_unload_delay_secs': 0}});
       Future<Json> terminal() async => jsonObject((await client!.events.stream.firstWhere((event) =>
         event['method'] == 'turn/completed' && event['params']['threadId'] == id)
           .timeout(const Duration(seconds: 10)))['params']['turn']);
@@ -153,7 +151,7 @@ wait
       if (lab == 'openai') {
         expect((await hostResults('write_stdin')).last['output'], 'received:hello\n');
       }
-      final second = await createThread(client, {'cwd': '${root.path}/b'});
+      final second = await createThread(client, {'cwd': '${root.path}/b', 'provider': lab, 'config': {'thread_unload_delay_secs': 0}});
       expect((await runTurn(client, second, prompt: 'start'))['status'], 'completed');
       await _until(() => b.exists());
       final probeToken = CancellationToken(), siblingToken = CancellationToken();

@@ -165,6 +165,7 @@ class _CommandMenuState extends State<CommandMenu> {
   }
 
   void _activate() {
+    if (!_search.value.composing.isCollapsed) return;
     final entries = _entries;
     if (entries.isEmpty) return;
     final index = _activeIndex(entries);
@@ -177,12 +178,11 @@ class _CommandMenuState extends State<CommandMenu> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final keyboard = HardwareKeyboard.instance;
     if (keyboard.isMetaPressed || keyboard.isControlPressed ||
-        keyboard.isAltPressed || keyboard.isShiftPressed) return KeyEventResult.ignored;
+        keyboard.isAltPressed || keyboard.isShiftPressed) { return KeyEventResult.ignored; }
     switch (event.logicalKey) {
       case LogicalKeyboardKey.arrowDown: _move(1);
       case LogicalKeyboardKey.arrowUp: _move(-1);
       case LogicalKeyboardKey.enter:
-        if (!_search.value.composing.isCollapsed) { return KeyEventResult.ignored; }
         if (event is KeyDownEvent) _activate();
       case LogicalKeyboardKey.backspace:
         if (!_projectsOpen || _search.text.isNotEmpty) return KeyEventResult.ignored;
@@ -206,15 +206,15 @@ class _CommandMenuState extends State<CommandMenu> {
       child: Dialog(
         key: const ValueKey('command-menu'),
         alignment: Alignment.topCenter,
-        insetPadding: EdgeInsets.fromLTRB(12,
-          ((MediaQuery.sizeOf(context).height - 480) / 2).clamp(48.0, double.infinity), 12, 24),
+        insetPadding: EdgeInsets.fromLTRB(16,
+          (MediaQuery.sizeOf(context).height * .1).clamp(48.0, double.infinity), 16, 24),
         backgroundColor: Colors.white, surfaceTintColor: Colors.transparent,
         elevation: 16, shadowColor: const Color(0x33000000),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12),
           side: const BorderSide(color: opencodeBorder, width: .5)),
         clipBehavior: Clip.antiAlias,
-        child: SizedBox(width: 480, child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 480),
+        child: SizedBox(width: 576, child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 420),
           child: ListenableBuilder(
             listenable: Listenable.merge([widget.session, _search]),
             builder: (context, _) {

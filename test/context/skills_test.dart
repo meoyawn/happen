@@ -43,12 +43,6 @@ void main() {
         await root.delete(recursive: true);
       });
       final openCode = providerId == 'opencode';
-      await File('${data.path}/config.yaml').writeAsString(jsonEncode({
-        'default_provider': openCode ? 'openai' : 'opencode',
-        'providers': {providerId: {
-          if (openCode) 'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1',
-        }},
-      }));
       await File('${data.path}/${openCode ? 'opencode-auth' : 'auth'}.json').writeAsString(jsonEncode({
         'version': 1, 'type': openCode ? 'opencode' : 'chatgpt',
         'server': 'https://opencode.ai/console',
@@ -105,6 +99,7 @@ void main() {
         server = await AgentServer.startEmbedded(
           directory: data.path, configPath: '${data.path}/config.yaml', skillsHome: home.path,
           endpoint: openCode ? null : 'http://127.0.0.1:${provider.port}/responses',
+          openCodeEndpoint: openCode ? 'http://127.0.0.1:${provider.port}/inference/openai/v1' : null,
         );
         client = await AgentClient.connect(server!.uri);
       }

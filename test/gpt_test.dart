@@ -21,6 +21,23 @@ void main() {
     }
   });
 
+  test('GPT context overrides preserve the Codex compaction ceiling', () {
+    final client = ResponsesClient(credentials: ({bool refresh = false}) async => {});
+    addTearDown(client.close);
+    final provider = OpenAIProvider(client);
+    for (final value in [
+      (selected: <String, dynamic>{}, context: 272000, headroom: 27200),
+      (selected: <String, dynamic>{'context_limit': 100000}, context: 100000, headroom: 10000),
+      (selected: <String, dynamic>{'context_limit': 100000, 'compaction_headroom': 1}, context: 100000, headroom: 10000),
+      (selected: <String, dynamic>{'context_limit': 100000, 'compaction_headroom': 80000}, context: 100000, headroom: 80000),
+    ]) {
+      final settings = provider.resolveSettings(value.selected, model: 'gpt-6.1-sol');
+      expect(settings['context_limit'], value.context);
+      expect(settings['compaction_headroom'], value.headroom);
+    }
+    expect(() => provider.resolveSettings({'context_limit': 872001}), throwsArgumentError);
+  });
+
   for (final transport in ['http', 'websocket']) {
     test(
       'GPT $transport preserves native state and ordered updates across requests',

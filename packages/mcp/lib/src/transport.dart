@@ -10,6 +10,7 @@ import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'challenges.dart';
+import 'timeouts.dart';
 
 part 'stdio.dart';
 part 'input.dart';
@@ -76,6 +77,13 @@ const Json mcpInputCapabilities = {
   }},
 };
 
+// One logical operation keeps the credential prepared before its clock starts.
+// Session recovery replaces it for all subsequent continuation rounds.
+class _McpAuthorization {
+  _McpAuthorization(this.value);
+  String? value;
+}
+
 /// One shared transport generation. Requests have independent cancellation.
 class McpConnection {
   McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge, this.onRecover, this.clientCapabilities = const {}, this.requestMetadata});
@@ -107,12 +115,20 @@ class McpConnection {
   int? get processId => _process?.pid;
 
   Future<void> connect(CancellationToken cancellation) async {
-    final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
-    try { await _connect(cancellation.merge(lifetime).merge(deadline)); }
+    final token = cancellation.merge(lifetime);
+    final access = _McpAuthorization(await _authorize(token));
+    final deadline = TimeoutCancellationToken(mcpStartupTimeout,
+      timeoutException: TimeoutException('timed out handshaking with MCP server after 30s', mcpStartupTimeout));
+    try { await _connect(token.merge(deadline), access); }
     finally { deadline.cancel(); }
   }
 
-  Future<void> _connect(CancellationToken cancellation) async {
+  Future<String?> _authorize(CancellationToken cancellation) async {
+    cancellation.throwIfCancelled();
+    return await authorization?.call(cancellation).asCancellable(cancellation);
+  }
+
+  Future<void> _connect(CancellationToken cancellation, _McpAuthorization access) async {
     cancellation.throwIfCancelled();
     if (config['command'] != null) {
       final process = await _startStdio(config, cancellation);
@@ -143,11 +159,11 @@ class McpConnection {
     for (var attempt = 0; ; attempt++) {
     try {
       try {
-      discovery = await request(
+      discovery = await _request(
         'server/discover',
         {},
         cancellation: cancellation,
-        timeout: const Duration(seconds: 10),
+        access: access,
       );
       if (!(discovery['supportedVersions'] as List? ?? []).contains(
         mcpProtocolVersion,
@@ -162,7 +178,7 @@ class McpConnection {
       if (!error.legacyFallback || error.status == 401 || error.status == 403 || config['legacy_fallback'] == false) {
         rethrow;
       }
-      await _legacy(cancellation);
+      await _legacy(cancellation, access);
       }
       _generation++;
       return;
@@ -176,13 +192,13 @@ class McpConnection {
     }
   }
 
-  Future<void> _legacy(CancellationToken cancellation) async {
+  Future<void> _legacy(CancellationToken cancellation, _McpAuthorization access) async {
     version = '2025-06-18';
-    final result = await request('initialize', {
+    final result = await _request('initialize', {
       'protocolVersion': version,
       'capabilities': clientCapabilities,
       'clientInfo': {'name': 'happen', 'version': '0.1.0'},
-    }, cancellation: cancellation);
+    }, cancellation: cancellation, access: access);
     final selected = result['protocolVersion'];
     if (!_legacyVersions.contains(selected)) {
       throw const McpFailure(
@@ -191,31 +207,46 @@ class McpConnection {
     }
     version = selected as String;
     discovery = result;
-    await _notify('notifications/initialized', {}, cancellation);
+    await _notify('notifications/initialized', {}, cancellation, access.value);
   }
 
   Future<Json> request(
     String method,
     Json params, {
     required CancellationToken cancellation,
-    Duration? timeout = const Duration(seconds: 60),
+    Duration? timeout = mcpToolTimeout,
     void Function(Json)? onNotification,
     Json? inputSchema,
     bool retrySafe = false,
     McpInputHandler? onInput,
     bool readOnly = false,
-  }) => onInput == null
-    ? _request(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification, inputSchema: inputSchema, retrySafe: retrySafe, readOnly: readOnly)
-    : requestWithInput(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification,
-        inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly);
+  }) => _operation(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification,
+    inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly, driveInputs: onInput != null);
 
   Future<Json> requestWithInput(String method, Json params, {required CancellationToken cancellation,
-    Duration? timeout = const Duration(seconds: 60), void Function(Json)? onNotification, Json? inputSchema,
+    Duration? timeout = mcpToolTimeout, void Function(Json)? onNotification, Json? inputSchema,
     bool retrySafe = false, McpInputHandler? onInput, bool readOnly = false}) =>
-      _driveMcpInputs(this, method, params, cancellation, timeout: timeout, onNotification: onNotification,
-        inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly);
+      _operation(method, params, cancellation: cancellation, timeout: timeout, onNotification: onNotification,
+        inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly, driveInputs: true);
 
-  Future<Json> _request(String method, Json params, {required CancellationToken cancellation, Duration? timeout,
+  Future<Json> _operation(String method, Json params, {required CancellationToken cancellation,
+    required Duration? timeout, required bool driveInputs, void Function(Json)? onNotification, Json? inputSchema,
+    bool retrySafe = false, McpInputHandler? onInput, bool readOnly = false}) async {
+    final token = cancellation.merge(lifetime);
+    // The credential owner bounds refresh independently. It must not consume
+    // this operation's active budget or repeat on every wire retry/input round.
+    final access = _McpAuthorization(await _authorize(token));
+    final clock = _InputClock(method, timeout), bounded = token.merge(clock.cancellation);
+    try {
+      return driveInputs
+        ? await _driveMcpInputs(this, method, params, bounded, clock: clock, access: access, onNotification: onNotification,
+            inputSchema: inputSchema, retrySafe: retrySafe, onInput: onInput, readOnly: readOnly)
+        : await _request(method, params, cancellation: bounded, access: access, clock: clock, onNotification: onNotification,
+            inputSchema: inputSchema, retrySafe: retrySafe, readOnly: readOnly);
+    } finally { clock.close(); }
+  }
+
+  Future<Json> _request(String method, Json params, {required CancellationToken cancellation, required _McpAuthorization access,
     void Function(Json)? onNotification, Json? inputSchema, bool retrySafe = false, bool recovered = false,
     bool allowReplay = true, bool readOnly = false, McpInputHandler? onInput, _InputClock? clock}) async {
     cancellation.throwIfCancelled();
@@ -223,10 +254,7 @@ class McpConnection {
     if (_pending.length >= 256) {
       throw const McpFailure('MCP pending request limit reached');
     }
-    final deadline = timeout == null
-        ? CancellationToken()
-        : TimeoutCancellationToken(timeout);
-    final token = cancellation.merge(lifetime).merge(deadline);
+    final token = cancellation.merge(lifetime);
     final id = newId();
     final protocolVersion = version;
     final generation = _generation, stateful = !modern && _session != null;
@@ -285,7 +313,7 @@ class McpConnection {
         }
       }
       return await _http(body, token, onNotification, inputSchema,
-        retrySafe: retrySafe, allowReplay: allowReplay, protocolVersion: protocolVersion);
+        retrySafe: retrySafe, allowReplay: allowReplay, protocolVersion: protocolVersion, access: access.value);
     } on McpFailure catch (error) {
       if (!allowReplay || recovered || _process != null || !stateful || error.status != 404 ||
           const {'initialize', 'notifications/initialized', 'server/discover'}.contains(method)) rethrow;
@@ -298,11 +326,10 @@ class McpConnection {
           await connect(lifetime);
         }().whenComplete(() => _recovering = null)).asCancellable(token);
       }
-      return await _request(method, params, cancellation: token, onNotification: onNotification,
+      access.value = await _authorize(token);
+      return await _request(method, params, cancellation: token, access: access, onNotification: onNotification,
         inputSchema: inputSchema, retrySafe: retrySafe, recovered: true, allowReplay: allowReplay,
         readOnly: readOnly, onInput: onInput, clock: clock);
-    } finally {
-      deadline.cancel();
     }
   }
 
@@ -404,6 +431,7 @@ class McpConnection {
     bool retrySafe = false,
     bool allowReplay = true,
     required String protocolVersion,
+    required String? access,
   }) async {
     final canRetry = allowReplay && (retrySafe || const {
       'tools/list',
@@ -417,7 +445,7 @@ class McpConnection {
     for (var retries = 0; ; retries++) {
       token.throwIfCancelled();
       try {
-        return await _httpOnce(body, token, notify, schema, protocolVersion: protocolVersion);
+        return await _httpOnce(body, token, notify, schema, protocolVersion: protocolVersion, access: access);
       } catch (error) {
         token.throwIfCancelled();
         if (!canRetry || retries >= _httpRetryDelays.length ||
@@ -441,14 +469,13 @@ class McpConnection {
     Json body,
     CancellationToken token,
     void Function(Json)? notify,
-    Json? schema, {required String protocolVersion}
+    Json? schema, {required String protocolVersion, required String? access}
   ) async {
     HttpClientRequest? outgoing;
     StreamIterator<Json>? messages;
     Future<void> Function()? closeBody;
     final hook = CancellationHook(token, () => outgoing?.abort(token.exception));
     try {
-      final access = await authorization?.call(token);
       var uri = Uri.parse(requiredString(config, 'url')), verb = 'POST';
       Uri? referer;
       var sendBody = true;
@@ -623,12 +650,13 @@ class McpConnection {
     String method,
     Json params,
     CancellationToken token,
+    String? access,
   ) async {
     final body = {'jsonrpc': '2.0', 'method': method, 'params': params};
     if (_process != null) {
       _write(body);
     } else {
-      await _http(body, token, null, null, protocolVersion: version);
+      await _http(body, token, null, null, protocolVersion: version, access: access);
     }
   }
 

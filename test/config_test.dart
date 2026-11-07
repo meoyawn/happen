@@ -8,7 +8,9 @@ import 'package:test/test.dart';
 
 void main() {
   test('YAML preserves command arguments and strings in immutable data', () {
-    final config = parseConfig('''
+    expect(globalConfigSchema, jsonDecode(File('packages/config/schema.json').readAsStringSync()));
+    final config = parseConfig(r'''
+# yaml-language-server: $schema=https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json
 # Global servers shared by all tasks.
 mcp_servers:
   dart:
@@ -27,10 +29,6 @@ mcp_servers:
       scopes: [training]
       callback_port: 8766
     enabled: false
-providers:
-  deepseek:
-    backend: opencode
-    settings: {reasoning: low}
 ''');
     final local = config['mcp_servers']['dart'];
     expect(local['command'], 'dart');
@@ -89,18 +87,13 @@ providers:
       'URL host': 'mcp_servers: {remote: {url: "https:///$secret"}}',
       'URL fragment':
           'mcp_servers: {remote: {url: "https://example.com/#$secret"}}',
-      'URL port':
-          'mcp_servers: {remote: {url: "https://example.com:99999/$secret"}}',
-      'public URL': 'public_url: "https://user:$secret@example.com"',
-      'provider map': 'providers: [$secret]',
+      'non-MCP public URL': 'public_url: https://callback.example',
+      'non-MCP provider settings': 'providers: {openai: {settings: {reasoning: low}}}',
+      'non-MCP default provider': 'default_provider: openai',
+      'non-MCP unload setting': 'idle_unload_seconds: 0',
       'removed code mode override': 'code_mode_only: false',
-      'provider option': 'providers: {deepseek: {backend: $secret}}',
-      for (final provider in ['openai', 'gpt', 'deepseek', 'opencode'])
-        'goals cannot be disabled for $provider': 'providers: {$provider: {settings: {goals: false}}}',
       'non-finite number':
-          'providers: {deepseek: {settings: {temperature: .nan}}}',
-      'colliding names':
-          'mcp_servers: {a-b: {command: dart}, a_b: {command: dart}}',
+          'mcp_servers: {dart: {command: dart, env: {LIMIT: .nan}}}',
       'server limit': jsonEncode({
         'mcp_servers': {
           for (var i = 0; i < 65; i++) 's$i': {'command': 'dart'},
@@ -149,6 +142,13 @@ providers:
       expect((await load()).path, yaml.path);
       await yaml.writeAsString('mcp_servers: [');
       await expectLater(load(), throwsFormatException);
+      for (final source in [
+        'mcp_servers: {remote: {url: "https://example.com:99999/mcp"}}',
+        'mcp_servers: {a-b: {command: dart}, a_b: {command: dart}}',
+      ]) {
+        await yaml.writeAsString(source);
+        await expectLater(load(), throwsFormatException);
+      }
       for (final empty in ['', '# Only a comment\n', '{}']) {
         await yaml.writeAsString(empty);
         expect((await load()).values, isEmpty);

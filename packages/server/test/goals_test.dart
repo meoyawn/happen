@@ -22,12 +22,12 @@ void main() {
   Future<AgentServer> launch() => AgentServer.start(directory: root.path, port: 0,
     configPath: '${root.path}/config.yaml',
     endpoint: 'http://127.0.0.1:${provider.port}/responses');
-  Future<String> start() async => jsonObject(await client.request('thread/start', {'cwd': root.path}))['thread']['id'] as String;
+  Future<String> start() async => jsonObject(await client.request('thread/start', {'cwd': root.path,
+    'config': {'thread_unload_delay_secs': 0}}))['thread']['id'] as String;
   Future<Json> goal(String id) async => jsonObject(await client.request('thread/goal/get', {'threadId': id}));
   Future<Json> set(String id, Json params) async => jsonObject(await client.request('thread/goal/set', {'threadId': id, ...params}));
   setUp(() async {
     root = await Directory.systemTemp.createTemp('thread-goals-'); requests.clear();
-    await File('${root.path}/config.json').writeAsString('{"idle_unload_seconds":0}');
     failureCode = null;
     sleeping = false;
     compactStarted = Completer<void>(); compactRelease = Completer<void>();
@@ -212,7 +212,8 @@ void main() {
     // idle-goal read starts. Both operations must finish and release the writer.
     final local = AgentClient.local(server);
     try {
-      final id = jsonObject(await local.request('thread/start', {'cwd': root.path}))['thread']['id'] as String;
+      final id = jsonObject(await local.request('thread/start', {'cwd': root.path,
+        'config': {'thread_unload_delay_secs': 0}}))['thread']['id'] as String;
       final completed = local.events.stream.firstWhere((event) => event['method'] == 'turn/completed');
       await local.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Inspect'}]});
       await completed.timeout(const Duration(seconds: 5));

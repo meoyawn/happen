@@ -10,6 +10,7 @@ import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import 'appearance.dart';
 import 'desktop_toast.dart';
+import 'file_reference.dart';
 
 /// Bare local addresses use HTTP; other bare hosts use HTTPS.
 /// Text without a host opens as a web search, like OpenCode's address bar.
@@ -59,14 +60,59 @@ class ConversationBrowserScope extends InheritedWidget {
   bool updateShouldNotify(ConversationBrowserScope oldWidget) => onOpen != oldWidget.onOpen;
 }
 
+Future<void> _openSystemBrowser(Uri uri, CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  final executable = Platform.isMacOS ? '/usr/bin/open'
+    : Platform.isLinux ? 'xdg-open' : throw const FormatException('Unsupported platform');
+  final process = await Process.start(executable, [uri.toString()]);
+  final hook = CancellationHook(cancellation, process.kill);
+  try {
+    final results = await Future.wait<Object?>([
+      process.exitCode, process.stdout.drain<Object?>(), process.stderr.drain<Object?>(),
+    ]).asCancellable(cancellation);
+    if (results.first != 0) throw const FileSystemException('Could not open browser');
+  } finally { hook.dispose(); }
+}
+
+Future<void> openDesktopLink(BuildContext context, String href, {
+    required String directory, required CancellationToken cancellation}) async {
+  try {
+    cancellation.throwIfCancelled();
+    final file = conversationFileLocation(href, directory);
+    if (file != null) {
+      ConversationFileScope.open(context, file);
+      return;
+    }
+    final uri = Uri.tryParse(href);
+    if (uri == null || !{'http', 'https', 'mailto'}.contains(uri.scheme) ||
+        uri.scheme != 'mailto' && !browserLocationAllowed(uri)) {
+      throw const FormatException('Unsupported link');
+    }
+    if ({'http', 'https'}.contains(uri.scheme) && browserHostIsLocal(uri.host)) {
+      if (!ConversationBrowserScope.open(context, uri)) throw StateError('Browser is unavailable');
+      return;
+    }
+    await _openSystemBrowser(uri, cancellation);
+  } on CancelledException {
+    // Closing the source cancels opening its link.
+  } catch (_) {
+    if (context.mounted && !cancellation.isCancelled) {
+      showDesktopToast(context, 'This link could not be opened.', type: DesktopToastType.error);
+    }
+  }
+}
+
 /// A retained browser tab, also used without the address bar for file previews.
 /// [initialUrl] is restored when the tab mounts; subsequent navigation belongs
 /// to its WebView. File reloads replace this widget using a new key.
 class DesktopBrowser extends StatefulWidget {
   const DesktopBrowser({super.key, this.initialUrl = '', this.active = true,
-    this.toolbar = true, this.directory, this.onPageChanged, this.onNewTab});
+    this.toolbar = true, this.navigationEnabled = true, this.directory, this.onPageChanged, this.onNewTab});
   final String initialUrl;
   final bool active, toolbar;
+  /// File previews dispatch links to their desktop destination instead of
+  /// navigating this WebView after its initial file load.
+  final bool navigationEnabled;
   final String? directory;
   final void Function(String url, String title)? onPageChanged;
   final VoidCallback? onNewTab;
@@ -81,7 +127,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   final _addressFocus = FocusNode(debugLabel: 'Browser address');
   WebViewController? _controller;
   Future<WebViewController>? _opening;
-  Uri? _location;
+  Uri? _location, _pendingFileLoad;
   String _title = '';
   String? _error;
   bool _back = false, _forward = false, _loading = false;
@@ -154,20 +200,14 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
 
   Future<WebViewController> _open() async {
     final controller = WebViewController();
-    await controller.setJavaScriptMode(JavaScriptMode.unrestricted).asCancellable(_lifetime);
+    await controller.setJavaScriptMode(widget.navigationEnabled
+      ? JavaScriptMode.unrestricted : JavaScriptMode.disabled).asCancellable(_lifetime);
+    if (controller.platform case final WebKitWebViewController webkit) {
+      await webkit.setAllowsBackForwardNavigationGestures(widget.toolbar && widget.navigationEnabled)
+        .asCancellable(_lifetime);
+    }
     await controller.setNavigationDelegate(NavigationDelegate(
-      onNavigationRequest: (request) {
-        final uri = Uri.tryParse(request.url);
-        // A remote document cannot navigate into local files.
-        if (uri == null || !browserLocationAllowed(uri) ||
-            uri.scheme == 'file' && _location?.scheme != 'file') {
-          if (request.isMainFrame && mounted) {
-            showDesktopToast(context, 'This address cannot open in the browser.', type: DesktopToastType.warning);
-          }
-          return NavigationDecision.prevent;
-        }
-        return NavigationDecision.navigate;
-      },
+      onNavigationRequest: _onNavigationRequest,
       onPageStarted: (url) {
         if (!mounted || _lifetime.isCancelled) return;
         _generation++;
@@ -199,8 +239,42 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     return controller;
   }
 
+  NavigationDecision _onNavigationRequest(NavigationRequest request) {
+    if (!mounted || _lifetime.isCancelled) return NavigationDecision.prevent;
+    final uri = Uri.tryParse(request.url);
+    if (request.isMainFrame && uri != null && uri == _pendingFileLoad) {
+      _pendingFileLoad = null;
+      return NavigationDecision.navigate;
+    }
+    // Subframes stay within their document. WebKit retargets new windows to the
+    // main frame, where their destination follows the same rules as any link.
+    if (widget.navigationEnabled && !request.isMainFrame) {
+      return uri != null && browserLocationAllowed(uri)
+        ? NavigationDecision.navigate : NavigationDecision.prevent;
+    }
+    if (widget.navigationEnabled && uri != null && browserLocationAllowed(uri) &&
+        (uri.toString() == 'about:blank' ||
+          widget.toolbar && {'http', 'https'}.contains(uri.scheme) && browserHostIsLocal(uri.host))) {
+      return NavigationDecision.navigate;
+    }
+    if (!widget.navigationEnabled && (uri == null ||
+        !{'file', 'http', 'https', 'mailto'}.contains(uri.scheme))) {
+      return NavigationDecision.prevent;
+    }
+    unawaited(openDesktopLink(context, request.url,
+      directory: widget.directory ?? '', cancellation: _lifetime));
+    return NavigationDecision.prevent;
+  }
+
   Future<void> _navigate(Uri uri) async {
     if (!browserLocationAllowed(uri)) throw const FormatException('Enter a web address or a local file.');
+    if (widget.toolbar && uri.toString() != 'about:blank' &&
+        !(uri.scheme != 'file' && browserHostIsLocal(uri.host))) {
+      await openDesktopLink(context, uri.toString(),
+        directory: widget.directory ?? '', cancellation: _lifetime);
+      if (_controller == null && mounted) setState(() { _location = null; _setAddress(); });
+      return;
+    }
     final navigation = ++_navigation;
     setState(() { _location = uri; _title = ''; _error = null; _loading = true; _progress = 0; });
     _setAddress();
@@ -210,6 +284,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     if (navigation != _navigation) return;
     if (uri.scheme == 'file') {
       final path = uri.replace(host: '', fragment: '', query: '').toFilePath();
+      _pendingFileLoad = File(path).absolute.uri;
       final directory = widget.directory;
       final root = Directory(directory ?? File(path).parent.path).absolute.uri.normalizePath();
       final readAccess = File(path).absolute.uri.normalizePath().path.startsWith(root.path)
@@ -268,14 +343,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
 
   Future<void> _external() async {
     if (_location == null) return;
-    final process = await Process.start('/usr/bin/open', [_location.toString()]);
-    final hook = CancellationHook(_lifetime, process.kill);
-    try {
-      final results = await Future.wait<Object?>([
-        process.exitCode, process.stdout.drain<Object?>(), process.stderr.drain<Object?>(),
-      ]).asCancellable(_lifetime);
-      if (results.first != 0) throw const FileSystemException('Could not open browser');
-    } finally { hook.dispose(); }
+    await _openSystemBrowser(_location!, _lifetime);
   }
 
   @override
@@ -311,14 +379,16 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     final blank = _location == null || _location.toString() == 'about:blank';
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
     return CallbackShortcuts(bindings: {
-      SingleActivator(LogicalKeyboardKey.keyL, meta: mac, control: !mac): _focusAddress,
-      SingleActivator(LogicalKeyboardKey.keyR, meta: mac, control: !mac): () => _run(_reload),
-      SingleActivator(LogicalKeyboardKey.bracketLeft, meta: mac, control: !mac):
-        () { if (_back) _run(_controller!.goBack); },
-      SingleActivator(LogicalKeyboardKey.bracketRight, meta: mac, control: !mac):
-        () { if (_forward) _run(_controller!.goForward); },
-      if (widget.onNewTab != null)
-        SingleActivator(LogicalKeyboardKey.keyT, meta: mac, control: !mac): widget.onNewTab!,
+      if (widget.toolbar && widget.navigationEnabled) ...{
+        SingleActivator(LogicalKeyboardKey.keyL, meta: mac, control: !mac): _focusAddress,
+        SingleActivator(LogicalKeyboardKey.keyR, meta: mac, control: !mac): () => _run(_reload),
+        SingleActivator(LogicalKeyboardKey.bracketLeft, meta: mac, control: !mac):
+          () { if (_back) _run(_controller!.goBack); },
+        SingleActivator(LogicalKeyboardKey.bracketRight, meta: mac, control: !mac):
+          () { if (_forward) _run(_controller!.goForward); },
+        if (widget.onNewTab != null)
+          SingleActivator(LogicalKeyboardKey.keyT, meta: mac, control: !mac): widget.onNewTab!,
+      },
       const SingleActivator(LogicalKeyboardKey.escape): () {
         if (_addressFocus.hasFocus) { _addressFocus.unfocus(); _setAddress(); }
         else if (_loading) { _run(_stop); }

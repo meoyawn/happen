@@ -13,7 +13,7 @@ Future<void> main(List<String> arguments) async {
   final commands = utf8.decoder.bind(stdin).transform(const LineSplitter()).listen((_) => lifetime.cancel());
   final server = await AgentServer.start(directory: options['directory'] as String, port: 0,
     configPath: '${options['directory']}/config.yaml', skillsHome: options['directory'] as String,
-    endpoint: options['endpoint'] as String, telemetry: false);
+    endpoint: options['endpoint'] as String, publicUrl: 'https://callback.example', telemetry: false);
   stdout.writeln(jsonEncode({'uri': server.uri.toString(), 'pid': pid}));
   try { await Completer<void>().future.asCancellable(lifetime); }
   on CancelledException { /* Parent requested graceful shutdown. */ }

@@ -1,4 +1,5 @@
 import 'package:protocol/protocol.dart';
+import 'package:openai/openai.dart';
 
 import 'providers.dart';
 
@@ -11,6 +12,8 @@ Json initialConfiguration(Json input, String cwd, bool telemetry) {
     'provider': input['provider'],
     'model': input['model'],
     'provider_settings': settings,
+    if (input['provider'] == 'openai') 'context_window': GptModel(input['model'] as String)
+      .usableContextWindow(contextWindow: settings['context_limit'] as int?),
     'reasoning_updates': input['reasoning_updates'] == true,
     'catalog_revision': input['catalog_revision'],
     'instructions': interface.baseInstructions(input['model'] as String, input['instructions'] as String),

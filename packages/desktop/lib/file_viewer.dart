@@ -241,7 +241,7 @@ class _FileViewerState extends State<FileViewer> {
     }
     if (preview.kind == 'pdf' || preview.kind == 'html' && (!_source || preview.text == null)) {
       return DesktopBrowser(key: ValueKey(widget.path), initialUrl: File(widget.path).absolute.uri.toString(),
-        active: widget.active, toolbar: false, directory: widget.directory);
+        active: widget.active, toolbar: false, navigationEnabled: preview.kind != 'pdf', directory: widget.directory);
     }
     if (preview.kind == 'image' || preview.kind == 'svg') {
       Widget failed(BuildContext context, Object error, StackTrace? stack) {

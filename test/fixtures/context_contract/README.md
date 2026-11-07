@@ -40,6 +40,11 @@ summary, low verbosity, Code Mode only, and Responses Lite. The evidence include
 the catalog's original bytes and SHA-256. The default-model branch omits model
 and effort overrides in both harnesses; other branches select only the named
 model or effort.
+The complete embedded runtime catalog is checked against `models.json` for all
+supported models, including fields that the request matrix does not exercise.
+Happen's YAML contains only MCP servers. Fixture model, effort, question-mode and
+compaction selections use the public thread API; ordinary cases omit provider
+settings so their catalog defaults remain observable.
 Each pair uses separate empty data/credential homes, real instruction and skill
 files, and explicitly isolated tool settings. Requests carry tool declarations
 and base instructions in a durable history prefix, omit top-level `tools` and
@@ -67,8 +72,10 @@ base URL and a synthetic API key. The HTTP-only peer rejects WebSocket upgrades
 with 426, exercising Codex's production HTTP fallback. The catalog's Code Mode
 only layout exposes search as `tools.web__run` inside `functions.exec`. App usage
 instructions remain disabled by the unchanged model catalog.
-The reference keeps the current default `sleep_tool` gate and model-driven mode;
-the matrix model advertises clock support. Goals are explicitly enabled.
+The reference keeps the default `sleep_tool` gate, goal tools, and model-driven
+mode; the matrix model advertises clock support. `deferred_tool_world_state` is
+explicitly enabled because the installed Codex 0.166 reference predates the local
+checkout's enabled default.
 
 Global skill discovery is explicitly redirected to the same temporary
 `home-*/.agents/skills` directory in a randomly named fixture home. Codex receives
@@ -233,6 +240,11 @@ real MCP results reaching inference, resumed input retention, and real automatic
 compaction. The multi-user compaction case uses four actual consecutive turns,
 then requires every user message to remain in its original order before the
 checkpoint in the following request, as in the user-supplied context export.
+The single-user compaction case keeps each model's catalog context limit. Usage
+first approaches its 90% threshold without crossing it, then reaches it; the
+contract catches premature and late compaction. Thread creation also checks
+the selected model, effort, raw context, and 95% usable context. The multi-user
+and audio cases retain their explicit smaller budgets.
 Compaction is triggered by synthetic reported token usage; both real
 loops must request it, install the synthetic native checkpoint, restore rules
 and skills once, and remove the old real shell receipt from visible context.

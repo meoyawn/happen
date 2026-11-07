@@ -14,11 +14,15 @@ import 'package:storage/src/codex_native.dart' show projectedCodexItem;
 
 import 'agents_md.dart';
 import 'skills.dart';
+import 'mcp_executables.dart';
 
 Future<IsolateOwner> startNetwork(
   String directory, {
   String? endpoint,
   String? apiKeyEnv,
+  String? openCodeEndpoint,
+  String? openCodeSearchEndpoint,
+  String? publicUrl,
   String? configPath,
   String? skillsHome,
   SendPort? events,
@@ -35,6 +39,9 @@ Future<IsolateOwner> startNetwork(
     'skills_home': skillsHome,
     'endpoint': endpoint,
     'api_key_env': apiKeyEnv,
+    'opencode_endpoint': openCodeEndpoint,
+    'opencode_search_endpoint': openCodeSearchEndpoint,
+    'public_url': publicUrl,
     'config_path': configPath,
     'config': global.values,
     'loaded_config_path': global.path,
@@ -46,16 +53,12 @@ Future<void> _networkMain(List<Object?> args) async {
   final directory = startup['directory'] as String;
   final configPath = startup['config_path'] as String;
   final global = jsonObject(startup['config']);
-  final providerOptions = jsonObject(global['providers'] ?? {});
-  final gptOptions = jsonObject(providerOptions['openai'] ?? providerOptions['gpt'] ?? {});
-  final deepseekOptions = jsonObject(providerOptions['deepseek'] ?? {});
-  final deepseekSearch = jsonObject(deepseekOptions['web_search'] ?? {});
   final http = HttpClient()
     ..connectionTimeout = const Duration(seconds: 30);
   final auth = AuthManager(directory, http: http);
   final consoleAuth = OpenCodeAuthManager(directory, http: http);
-  final endpoint = startup['endpoint'] ?? gptOptions['endpoint'];
-  final apiKeyEnv = startup['api_key_env'] as String? ?? gptOptions['api_key_env'] as String?;
+  final endpoint = startup['endpoint'];
+  final apiKeyEnv = startup['api_key_env'] as String?;
   if (apiKeyEnv != null && endpoint == null) throw ArgumentError('An API-key Responses endpoint is required');
   Future<Json> gptCredentials({bool refresh = false}) async {
     if (apiKeyEnv == null) return auth.credentials(refresh: refresh);
@@ -72,49 +75,24 @@ Future<void> _networkMain(List<Object?> args) async {
       endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
     ),
   );
-  final backend = deepseekOptions['backend'] as String? ?? 'native';
-  if (!{'native', 'opencode'}.contains(backend)) {
-    throw ArgumentError('DeepSeek backend must be native or opencode');
-  }
-  final deepseekEndpoint = deepseekOptions['endpoint'] == null
-      ? null
-      : Uri.parse(deepseekOptions['endpoint'] as String);
-  final deepseek = backend == 'opencode'
-      ? OpenCodeProvider(
-          http: http,
-          auth: consoleAuth,
-          endpoint: deepseekEndpoint,
-          searchAuth: consoleAuth,
-          openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
-        )
-      : OpenCodeProvider.native(
-          http: http,
-          searchAuth: consoleAuth,
-          openCodeSearchEndpoint: deepseekSearch['endpoint'] == null ? null : Uri.parse(deepseekSearch['endpoint'] as String),
-          credentials: () async {
-            final variable =
-                deepseekOptions['api_key_env'] as String? ?? 'DEEPSEEK_API_KEY';
-            final value = Platform.environment[variable];
-            if (value == null || value.isEmpty) {
-              throw StateError(
-                'DeepSeek credential environment variable is missing',
-              );
-            }
-            return value;
-          },
-          endpoint: deepseekEndpoint,
-          transport: deepseekOptions['transport'] as String? ?? 'messages',
-        );
-  final openCodeOptions = jsonObject(providerOptions['opencode'] ??
-      (backend == 'opencode' ? deepseekOptions : <String, dynamic>{}));
-  final openCodeSearch = jsonObject(openCodeOptions['web_search'] ?? {});
+  final searchEndpoint = startup['opencode_search_endpoint'] as String?;
+  final deepseek = OpenCodeProvider.native(
+    http: http,
+    searchAuth: consoleAuth,
+    openCodeSearchEndpoint: searchEndpoint == null ? null : Uri.parse(searchEndpoint),
+    credentials: () async {
+      final value = Platform.environment['DEEPSEEK_API_KEY'];
+      if (value == null || value.isEmpty) throw StateError('DeepSeek credential environment variable is missing');
+      return value;
+    },
+  );
+  final openCodeEndpoint = startup['opencode_endpoint'] as String?;
   final opencode = OpenCodeProvider(
     http: http,
     auth: consoleAuth,
     searchAuth: consoleAuth,
-    openCodeSearchEndpoint: openCodeSearch['endpoint'] == null ? null : Uri.parse(openCodeSearch['endpoint'] as String),
-    endpoint: openCodeOptions['endpoint'] == null
-        ? null : Uri.parse(openCodeOptions['endpoint'] as String),
+    openCodeSearchEndpoint: searchEndpoint == null ? null : Uri.parse(searchEndpoint),
+    endpoint: openCodeEndpoint == null ? null : Uri.parse(openCodeEndpoint),
   );
   final providers = <String, ModelProvider>{'openai': gpt, 'gpt': gpt, 'deepseek': deepseek, 'opencode': opencode};
   final active = <String, Map<String, CancellationToken>>{};
@@ -140,7 +118,7 @@ Future<void> _networkMain(List<Object?> args) async {
     onAuthChanged: (server) => (startup['events'] as SendPort?)?.send({
       'event': {'type': 'mcp.auth.changed', 'server': server},
     }),
-    publicUrl: global['public_url'] as String?,
+    publicUrl: startup['public_url'] as String?,
     persistSubscription: (operation, params, cancellation) async {
       try {
         await callIsolate(startup['events'] as SendPort, 'mcp.subscription.$operation', params, cancellation: cancellation);
@@ -207,6 +185,7 @@ Future<void> _networkMain(List<Object?> args) async {
       final servers = resolveMcpCwds({for (final name in local.keys)
         name: mergeMcpConfig(jsonObject(acceptedServers[name] ?? {}), jsonObject(local[name]))}, base: scope, defaultCwd: scope);
       parseConfig(jsonEncode({'mcp_servers': servers}));
+      validateMcpServers(servers);
       final executables = await readMcpExecutables(servers, cancellation);
       final encoded = fingerprint(servers, executables);
       localExecutables[scope] = executables;
@@ -362,7 +341,7 @@ Future<void> _networkMain(List<Object?> args) async {
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
       if ({'skills.search', 'skills.catalog', 'skills.read'}.contains(request['method'])) {
-        final provider = providers[params['provider'] as String? ?? global['default_provider'] as String? ?? 'openai'];
+        final provider = providers[params['provider'] as String? ?? 'openai'];
         if (provider == null) throw ArgumentError('Unsupported skills provider');
         final roots = provider.additionalUserSkillRoots;
         if (request['method'] == 'skills.search') {
@@ -413,7 +392,7 @@ Future<void> _networkMain(List<Object?> args) async {
       if (request['method'] == 'auth.login') {
         final requestedProvider = requiredString(params, 'provider');
         final provider = requestedProvider == 'gpt' ? 'openai' : requestedProvider;
-        if (provider != 'openai' && provider != 'opencode' && !(provider == 'deepseek' && backend == 'opencode')) {
+        if (provider != 'openai' && provider != 'opencode') {
           throw ArgumentError('Browser sign-in is unavailable for this provider');
         }
         if (loginCancellation != null) {
@@ -458,7 +437,7 @@ Future<void> _networkMain(List<Object?> args) async {
         if (provider == 'openai') {
           (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
           await auth.signOut();
-        } else if (provider == 'opencode' || provider == 'deepseek' && backend == 'opencode') {
+        } else if (provider == 'opencode') {
           await consoleAuth.signOut();
         } else {
           throw ArgumentError('This provider uses an environment API key');
@@ -621,27 +600,24 @@ Future<void> _networkMain(List<Object?> args) async {
       if (request['method'] == 'providers.list') {
         reply?.send({
           'result': {
-            'default_provider': global['default_provider'] == 'gpt' ? 'openai' : global['default_provider'] ?? 'openai',
+            'default_provider': 'openai',
             'providers': [
               {
                 'id': 'openai',
                 'name': 'ChatGPT',
                 'auth': 'chatgpt',
                 'status': await auth.status(),
-                'default_model': gptOptions['model'] ?? 'gpt-6.1-sol',
+                'default_model': defaultGptModel,
                 'models': [
                   for (final model in supportedGptModels)
                     {
                       'id': model,
                       'name': GptModel(model).data['display_name'] ?? model,
                       'reasoning_levels': GptModel(model).reasoningLevels,
-                      'default_reasoning':
-                          GptModel(model).reasoningLevels
-                              .contains(gptOptions['settings']?['reasoning'])
-                          ? gptOptions['settings']['reasoning']
-                          : GptModel(model).defaultReasoning,
+                      'default_reasoning': GptModel(model).defaultReasoning,
                       'reasoning_updates': GptModel(model).reasoningUpdates,
-                      'input_modalities': ['text', 'image'],
+                      'input_modalities': GptModel(model).data['input_modalities'],
+                      'context_limit': GptModel(model).usableContextWindow(),
                     },
                 ],
               },
@@ -650,12 +626,12 @@ Future<void> _networkMain(List<Object?> args) async {
                 'name': 'OpenCode',
                 'auth': 'opencode',
                 'status': await consoleAuth.status(),
-                'default_model': openCodeOptions['model'] ?? opencode.defaultModel,
+                'default_model': opencode.defaultModel,
                 'models': [{
                   'id': opencode.defaultModel,
                   'name': deepseekModel(opencode.defaultModel)['name'],
                   'reasoning_levels': ['off', 'low', 'high', 'max'],
-                  'default_reasoning': opencode.resolveSettings(jsonObject(openCodeOptions['settings'] ?? {}))['reasoning'],
+                  'default_reasoning': opencode.resolveSettings({})['reasoning'],
                   'reasoning_updates': false,
                   'input_modalities': ['text', 'image'],
                 }],
@@ -673,17 +649,14 @@ Future<void> _networkMain(List<Object?> args) async {
                 ? 'opencode'
                 : modelInput?.startsWith('deepseek') == true
                 ? 'deepseek'
-                : global['default_provider'] as String? ?? 'openai');
+                : 'openai');
         final lab = selectedProvider == 'gpt' ? 'openai' : selectedProvider;
         final provider = providers[lab];
         if (provider == null) throw ArgumentError('Unsupported provider');
-        final defaults = lab == 'openai' ? gptOptions : lab == 'opencode' ? openCodeOptions : jsonObject(providerOptions[lab] ?? {});
         final model =
             modelInput ??
-            defaults['model'] as String? ??
-            (provider is OpenCodeProvider ? provider.defaultModel : 'gpt-6.1-sol');
+            (provider is OpenCodeProvider ? provider.defaultModel : defaultGptModel);
         final selected = {
-          ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],
         };
@@ -711,10 +684,6 @@ Future<void> _networkMain(List<Object?> args) async {
                 : (provider as OpenCodeProvider).catalogRevision,
           },
         });
-        return;
-      }
-      if (request['method'] == 'thread.settings') {
-        reply?.send({'result': global['idle_unload_seconds'] ?? 60});
         return;
       }
       if (request['method'] == 'task.new_id') {

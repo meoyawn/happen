@@ -22,19 +22,21 @@ void main() {
   Json? polledEvent;
   ({HttpResponse response, String id})? eventStream;
   var failResponse = false;
+  int? unloadDelay;
   Future<void> launch({int? delay}) async {
+    unloadDelay = delay;
     await File('${root.path}/config.json').writeAsString(jsonEncode({
-      if (delay != null) 'idle_unload_seconds': delay,
-      'public_url': 'https://callback.example',
       'mcp_servers': {'comments': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'oauth': false, 'legacy_fallback': false}},
     }));
     server = await AgentServer.start(directory: root.path, port: 0, skillsHome: root.path,
-      configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${upstream.port}/responses');
+      configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${upstream.port}/responses',
+      publicUrl: 'https://callback.example');
     client = await AgentClient.connect(server.uri);
     listener = client.events.stream.listen(received.add);
   }
   Future<Json> request(String method, [Json params = const {}]) async => jsonObject(await client.request(method, params));
-  Future<String> start([Json params = const {}]) async => (await request('thread/start', {'cwd': root.path, ...params}))['thread']['id'] as String;
+  Future<String> start([Json params = const {}]) async => (await request('thread/start', {'cwd': root.path,
+    if (unloadDelay != null) 'config': {'thread_unload_delay_secs': unloadDelay}, ...params}))['thread']['id'] as String;
   Future<Json> notification(String method, String id) => client.events.stream.firstWhere((event) =>
     event['method'] == method && event['params']['threadId'] == id).timeout(const Duration(seconds: 10));
   Future<void> turn(String id, String text) async {
@@ -162,7 +164,7 @@ void main() {
         final resumed = await request('thread/resume', {'threadId': id});
         expect(resumed['thread']['id'], id); expect(resumed['thread']['turns'], hasLength(1));
         await request('thread/unsubscribe', {'threadId': id});
-        await noClose(id, 250); // A cold resume uses the global 1800s, not the old override.
+        await noClose(id, 250); // A cold resume uses the default delay, not the old override.
       }
     });
   }
@@ -258,9 +260,9 @@ void main() {
       await noClose(id, 100);
       expect((await request('thread/loaded/list'))['data'], isNot(contains(id)));
       expect(requests, hasLength(1), reason: 'Activation, callback verification and invalid signatures never wake a thread.');
-      final evicted = notification('thread/closed', id);
+      final completed = notification('turn/completed', id);
       await deliver(event);
-      await evicted;
+      await completed;
       expect(requests, hasLength(2), reason: 'A valid event must cold-load and run the saved thread without a client resume.');
       final input = requests.last['input'] as List;
       expect(jsonEncode(input), contains('Watch document doc_123'));

@@ -87,7 +87,6 @@ void main() {
       incoming.add((body: body, response: request.response));
     });
     final endpoint = 'http://127.0.0.1:${provider.port}/responses';
-    await File('${data.path}/config.yaml').writeAsString('idle_unload_seconds: 0');
     Future<AgentServer> start() => AgentServer.startEmbedded(directory: data.path,
       configPath: '${data.path}/config.yaml', skillsHome: home.path, endpoint: endpoint);
     var server = await start();
@@ -118,6 +117,7 @@ void main() {
     List<Json> wire(Json context) => gptInput((context['input'] as List)
       .map((item) => ConversationItem.fromJson(jsonObject(item))));
     final id = await createThread(client, {
+      'config': {'thread_unload_delay_secs': 0},
       'cwd': work.path, 'dynamicTools': [{
         'name': 'lookup', 'description': 'Deferred lookup', 'inputSchema': {'type': 'object'},
       }],

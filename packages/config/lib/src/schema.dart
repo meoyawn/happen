@@ -1,146 +1,199 @@
-const _nonemptyString = {'type': 'string', 'minLength': 1, 'pattern': r'\S'};
-const _stringMap = {
-  'type': 'object',
-  'additionalProperties': {'type': 'string'},
-};
-// Provider tuning is separate from host-owned goal availability. Saved threads
-// always have goals; this is not a user-selectable provider/config feature flag.
-const _providerSettings = {'type': 'object', 'not': {'required': ['goals']}};
-const _webSearch = {
-  'type': 'object',
-  'additionalProperties': false,
-  'properties': {
-    'endpoint': {'type': 'string', 'format': 'uri', 'pattern': r'^https?://'},
-  },
-};
-
-/// The same embedded schema validates startup and reloads, including in AOT.
-/// Provider-specific settings and model limits remain owned by each provider.
+// Generated from packages/config/schema.json.
+// Run: dart packages/config/tool/generate_schema.dart
 const globalConfigSchema = <String, Object?>{
-  r'$schema': 'http://json-schema.org/draft-07/schema#',
-  'title': 'Happen global configuration',
-  'type': 'object',
-  'additionalProperties': false,
-  'properties': {
-    'idle_unload_seconds': {'type': 'integer', 'minimum': 0, 'maximum': 9223372036854, 'default': 60},
-    'default_provider': {
-      'enum': ['openai', 'gpt', 'deepseek', 'opencode'],
-    },
-    'public_url': {'type': 'string', 'format': 'uri', 'pattern': r'^https://'},
-    'providers': {
-      'type': 'object',
-      'additionalProperties': false,
-      'properties': {
-        'openai': {
-          'type': 'object',
-          'additionalProperties': false,
-          'properties': {
-            'model': _nonemptyString,
-            'endpoint': {'type': 'string', 'format': 'uri'},
-            'api_key_env': _nonemptyString,
-            'settings': _providerSettings,
-          },
-          'dependencies': {'api_key_env': ['endpoint']},
-        },
-        'gpt': {
-          'type': 'object',
-          'additionalProperties': false,
-          'properties': {
-            'model': _nonemptyString,
-            'endpoint': {'type': 'string', 'format': 'uri'},
-            'api_key_env': _nonemptyString,
-            'settings': _providerSettings,
-          },
-          'dependencies': {'api_key_env': ['endpoint']},
-        },
-        'deepseek': {
-          'type': 'object',
-          'additionalProperties': false,
-          'properties': {
-            'model': _nonemptyString,
-            'endpoint': {'type': 'string', 'format': 'uri'},
-            'api_key_env': _nonemptyString,
-            'web_search': _webSearch,
-            'backend': {
-              'enum': ['native', 'opencode'],
-            },
-            'transport': {
-              'enum': ['messages', 'chat'],
-            },
-            'settings': _providerSettings,
-          },
-        },
-        'opencode': {
-          'type': 'object',
-          'additionalProperties': false,
-          'properties': {
-            'model': _nonemptyString,
-            'endpoint': {'type': 'string', 'format': 'uri'},
-            'web_search': _webSearch,
-            'settings': _providerSettings,
-          },
-        },
+  "\$id": "https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json",
+  "\$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Happen MCP servers",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mcp_servers": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
       },
-    },
-    'mcp_servers': {
-      'type': 'object',
-      'maxProperties': 64,
-      'propertyNames': _nonemptyString,
-      'additionalProperties': {
-        'type': 'object',
-        'additionalProperties': false,
-        'properties': {
-          'command': _nonemptyString,
-          'args': {
-            'type': 'array',
-            'items': {'type': 'string'},
+      "additionalProperties": {
+        "allOf": [
+          {
+            "\$ref": "#/definitions/server"
           },
-          'cwd': _nonemptyString,
-          'env': _stringMap,
-          'inherit_env': {'type': 'array', 'items': _nonemptyString},
-          'url': {'type': 'string', 'format': 'uri', 'pattern': r'^https?://'},
-          'headers': _stringMap,
-          'header_env': {
-            'type': 'object',
-            'additionalProperties': _nonemptyString,
-          },
-          'enabled': {'type': 'boolean'},
-          'legacy_fallback': {'type': 'boolean'},
-          'oauth': {
-            'oneOf': [
-              {'const': false},
+          {
+            "oneOf": [
               {
-                'type': 'object', 'additionalProperties': false,
-                'properties': {
-                  'client_id': _nonemptyString,
-                  'client_secret_env': _nonemptyString,
-                  'token_endpoint_auth_method': {'enum': ['none', 'client_secret_basic', 'client_secret_post']},
-                  'scopes': {'type': 'array', 'items': _nonemptyString},
-                  'callback_port': {'type': 'integer', 'minimum': 0, 'maximum': 65535},
-                },
-                'dependencies': {'client_secret_env': ['client_id'], 'token_endpoint_auth_method': ['client_id']},
+                "required": [
+                  "command"
+                ]
               },
+              {
+                "required": [
+                  "url"
+                ]
+              }
             ],
-          },
-        },
-        'oneOf': [
-          {
-            'required': ['command'],
-          },
-          {
-            'required': ['url'],
-          },
-        ],
-        'dependencies': {
-          'args': ['command'],
-          'cwd': ['command'],
-          'env': ['command'],
-          'inherit_env': ['command'],
-          'headers': ['url'],
-          'header_env': ['url'],
-          'oauth': ['url'],
-        },
-      },
-    },
+            "dependencies": {
+              "args": [
+                "command"
+              ],
+              "cwd": [
+                "command"
+              ],
+              "env": [
+                "command"
+              ],
+              "inherit_env": [
+                "command"
+              ],
+              "headers": [
+                "url"
+              ],
+              "header_env": [
+                "url"
+              ],
+              "oauth": [
+                "url"
+              ]
+            }
+          }
+        ]
+      }
+    }
   },
+  "description": "Global and project MCP server configuration. Model and host options are selected through their owning APIs.",
+  "definitions": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "inherit_env": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://[^/?#@\\s]+(?:[/?][^#\\s]*)?\$"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "header_env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "legacy_fallback": {
+          "type": "boolean"
+        },
+        "oauth": {
+          "oneOf": [
+            {
+              "const": false
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "client_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "client_secret_env": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "token_endpoint_auth_method": {
+                  "enum": [
+                    "none",
+                    "client_secret_basic",
+                    "client_secret_post"
+                  ]
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                },
+                "callback_port": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 65535
+                }
+              },
+              "dependencies": {
+                "client_secret_env": [
+                  "client_id"
+                ],
+                "token_endpoint_auth_method": [
+                  "client_id"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "project": {
+      "title": "Happen project MCP configuration",
+      "description": "Project layers may override individual MCP server fields. Transports are validated after merging with global and ancestor layers.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mcp_servers": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "additionalProperties": {
+            "\$ref": "#/definitions/server"
+          }
+        }
+      }
+    }
+  }
 };

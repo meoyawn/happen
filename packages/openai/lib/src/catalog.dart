@@ -19,6 +19,14 @@ final _catalog = {
     (value as Map)['slug'] as String: jsonObject(value),
 };
 
+String get defaultGptModel {
+  final available = _catalog.values.where((model) =>
+    supportedGptModels.contains(model['slug']) && model['visibility'] == 'list' &&
+    model['supported_in_api'] == true).toList()
+    ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int));
+  return available.first['slug'] as String;
+}
+
 class GptModel {
   GptModel(String model)
     : data =
@@ -36,9 +44,11 @@ class GptModel {
           .map((entry) => entry['effort'] as String)
           .where((value) => value != 'ultra')
           .toList();
-  int get contextWindow => data['context_window'] as int;
+  int get contextWindow => (data['context_window'] ?? data['max_context_window']) as int;
   int get maxContextWindow =>
       data['max_context_window'] as int? ?? contextWindow;
+  int usableContextWindow({int? contextWindow}) =>
+      (contextWindow ?? this.contextWindow) * (data['effective_context_window_percent'] as int? ?? 95) ~/ 100;
   bool get reasoningUpdates =>
       data['supports_reasoning_effort_updates'] == true;
   String get verbosity => data['default_verbosity'] as String? ?? 'low';

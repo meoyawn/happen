@@ -620,7 +620,7 @@ class DesktopSession extends ChangeNotifier {
           ..reasoning = config['provider_settings']?['reasoning'] as String?
           ..nextReasoning = pending.nextReasoning
           ..reasoningUpdates = config['reasoning_updates'] == true
-          ..contextLimit = config['provider_settings']?['context_limit'] as num?;
+          ..contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
         if (side.tracing) client.traceSession(id);
         sideChats..remove(key)..[id] = side;
         pending.liveText.dispose();
@@ -767,7 +767,7 @@ class DesktopSession extends ChangeNotifier {
     target._fileChanges.clear();
     final latestTurn = target.turns.values.lastOrNull;
     target.turns.clear();
-    if (latestTurn != null) {
+    if (latestTurn != null && !target.archived) {
       target.turns[latestTurn['id'] as String] = {...latestTurn, 'items': const <Json>[]};
     }
     target.liveEvents.clear();
@@ -1085,7 +1085,7 @@ class DesktopSession extends ChangeNotifier {
       }).asCancellable(_lifetime));
       final id = created['thread']['id'] as String;
       await _request('task.send', {...params, 'task_id': id});
-      return {'sessionID': id};
+      return {'sessionID': id, 'configuration': created['configuration']};
     }
     if (method == 'task.send') {
       return await client.request('turn/start', {'threadId': params['task_id'],
@@ -1437,7 +1437,7 @@ class DesktopSession extends ChangeNotifier {
       target.model = config['model'] as String?;
       target.reasoning = page['reasoning'] as String? ?? config['provider_settings']?['reasoning'] as String?;
       target.reasoningUpdates = config['reasoning_updates'] == true;
-      target.contextLimit = config['provider_settings']?['context_limit'] as num?;
+      target.contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
       target.archived = page['archived'] == true;
       if (target.archived) await terminals.removeTask(target.id);
       read.throwIfCancelled();
@@ -1670,6 +1670,8 @@ class DesktopSession extends ChangeNotifier {
           created.model = model;
           created.reasoning = effort;
           created.reasoningUpdates = info?['reasoning_updates'] == true;
+          final config = jsonObject(reply['configuration']);
+          created.contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
           created.pending.addAll(local!.pending);
           created.lastSentID = messageID;
           owner.tasks.insert(0, created);

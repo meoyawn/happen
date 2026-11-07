@@ -14,6 +14,7 @@ import 'package:storage/storage.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'src/network.dart';
+export 'package:config/config.dart' show defaultConfigPath;
 import 'src/client_tools.dart';
 import 'src/task_tools.dart';
 import 'src/file_search.dart';
@@ -73,7 +74,7 @@ class AgentServer {
   final _mcpInputs = <String, ({Json request, Completer<Json> answer, String? owner, String? threadId})>{};
   bool _closing = false;
   bool _networkExited = false;
-  int _threadUnloadDelaySecs = 60;
+  final int _threadUnloadDelaySecs = 60;
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
   Future<TraceStore>? _traces;
@@ -91,6 +92,9 @@ class AgentServer {
     String? token,
     String? endpoint,
     String? apiKeyEnv,
+    String? openCodeEndpoint,
+    String? openCodeSearchEndpoint,
+    String? publicUrl,
     String? configPath,
     String? skillsHome,
     String? socketPath,
@@ -109,6 +113,13 @@ class AgentServer {
     if (maxAgents < 1 || maxAgents > 1024) {
       throw ArgumentError('maxAgents must be 1..1024');
     }
+    if (publicUrl != null) {
+      final uri = Uri.tryParse(publicUrl);
+      if (uri == null || uri.scheme != 'https' || uri.host.isEmpty || uri.userInfo.isNotEmpty ||
+          uri.hasFragment || uri.port < 1 || uri.port > 65535) {
+        throw ArgumentError('The public callback URL must be HTTPS without credentials or a fragment');
+      }
+    }
     await Directory(directory).create(recursive: true);
     if (socketPath != null) {
       socketPath = File(socketPath).absolute.path;
@@ -124,6 +135,9 @@ class AgentServer {
         directory,
         endpoint: endpoint,
         apiKeyEnv: apiKeyEnv,
+        openCodeEndpoint: openCodeEndpoint,
+        openCodeSearchEndpoint: openCodeSearchEndpoint,
+        publicUrl: publicUrl,
         configPath: configPath,
         skillsHome: skillsHome,
         events: events.sendPort,
@@ -159,7 +173,6 @@ class AgentServer {
         events,
       );
       server.socketPath = socketPath;
-      server._threadUnloadDelaySecs = await callIsolate(network.port, 'thread.settings', {}) as int;
       server._goalSubscription = server._goalRequests.listen(server._handleGoalRequest);
       if (socketPath != null) {
         server._socketStat = await File(socketPath).stat();
@@ -208,16 +221,23 @@ class AgentServer {
     required String directory,
     String? endpoint,
     String? apiKeyEnv,
+    String? openCodeEndpoint,
+    String? openCodeSearchEndpoint,
+    String? publicUrl,
     String? configPath,
     String? skillsHome,
     bool telemetry = true,
-  }) => start(directory: directory, endpoint: endpoint, apiKeyEnv: apiKeyEnv, configPath: configPath,
+  }) => start(directory: directory, endpoint: endpoint, apiKeyEnv: apiKeyEnv,
+    openCodeEndpoint: openCodeEndpoint, openCodeSearchEndpoint: openCodeSearchEndpoint, publicUrl: publicUrl, configPath: configPath,
     skillsHome: skillsHome, telemetry: telemetry, inProcess: true);
 
   /// One process, using UDS on Unix and authenticated loopback on Windows.
   static Future<AgentServer> startEmbedded({
     required String directory,
     String? endpoint,
+    String? openCodeEndpoint,
+    String? openCodeSearchEndpoint,
+    String? publicUrl,
     String? configPath,
     String? skillsHome,
     bool telemetry = true,
@@ -229,6 +249,9 @@ class AgentServer {
         port: 0,
         token: newId(),
         endpoint: endpoint,
+        openCodeEndpoint: openCodeEndpoint,
+        openCodeSearchEndpoint: openCodeSearchEndpoint,
+        publicUrl: publicUrl,
         configPath: configPath,
         skillsHome: skillsHome,
         telemetry: telemetry,
@@ -244,6 +267,9 @@ class AgentServer {
         directory: directory,
         socketPath: '${sockets.path}/s',
         endpoint: endpoint,
+        openCodeEndpoint: openCodeEndpoint,
+        openCodeSearchEndpoint: openCodeSearchEndpoint,
+        publicUrl: publicUrl,
         configPath: configPath,
         skillsHome: skillsHome,
         telemetry: telemetry,

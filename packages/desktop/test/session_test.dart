@@ -11,6 +11,8 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:storage/storage.dart';
 
+import '../../../test/support/thread_names.dart';
+
 void main() {
   test('composer model selections route new tasks through ChatGPT and OpenCode', () async {
     final root = await Directory.systemTemp.createTemp('desktop-models-');
@@ -23,10 +25,6 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     });
-    await File('${root.path}/config.yaml').writeAsString(jsonEncode({
-      'default_provider': 'opencode',
-      'providers': {'opencode': {'endpoint': 'http://127.0.0.1:${provider.port}/v1'}},
-    }));
     final expires = DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch;
     await File('${root.path}/auth.json').writeAsString(jsonEncode({
       'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture',
@@ -40,8 +38,9 @@ void main() {
     final requests = <({String path, Json body})>[];
     Completer<void>? arrived, release;
     provider.listen((request) async {
-      requests.add((path: request.uri.path,
-        body: jsonObject(jsonDecode(await utf8.decoder.bind(request).join()))));
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      requests.add((path: request.uri.path, body: body));
       arrived?.complete();
       if (release != null) await release.future;
       request.response.headers.contentType = ContentType('text', 'event-stream');
@@ -56,7 +55,8 @@ void main() {
       await request.response.close();
     });
     server = await AgentServer.start(directory: root.path, configPath: '${root.path}/config.yaml', port: 0,
-      endpoint: 'http://127.0.0.1:${provider.port}/responses');
+      endpoint: 'http://127.0.0.1:${provider.port}/responses',
+      openCodeEndpoint: 'http://127.0.0.1:${provider.port}/v1');
     final database = await openDesktopDatabase(root.path);
     await callIsolate(database.port, 'settings.set', {'key': 'provider', 'value': 'deepseek'});
     final session = desktop = DesktopSession(await AgentClient.connect(server.uri), database);
@@ -78,11 +78,13 @@ void main() {
       expect(session.reasoning, effort);
       expect(session.authenticated, true);
       expect(await session.send('Use the selected model'), true, reason: session.error);
+      expect(session.task!.contextLimit, id == 'openai' ? 258400 : 200000,
+        reason: 'Admission retains the resolved usable context before history replay');
       await _until(session, () => !session.task!.running);
       expect(requests.last.path, path);
       expect(requests.last.body['model'], model);
       expect(requests.last.body[id == 'openai' ? 'reasoning' : 'reasoning_effort'],
-        id == 'openai' ? {'effort': effort, 'summary': 'auto'} : effort);
+        id == 'openai' ? {'effort': effort, 'context': 'all_turns'} : effort);
       expect(session.task!.provider, id);
       expect(conversation(session.task!).where((entry) => entry.role == 'Happen').single.text, reply);
     }
@@ -153,7 +155,9 @@ void main() {
       'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
     }));
     provider.listen((request) async {
-      modelInput.add(jsonObject(jsonDecode(await utf8.decoder.bind(request).join())));
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      modelInput.add(body);
       request.response.headers.contentType = ContentType('text', 'event-stream');
       request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
         'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Received'}]}],
@@ -169,7 +173,7 @@ void main() {
         sockets.addAll([incoming, outgoing]);
         incoming.listen((raw) {
           final message = jsonObject(jsonDecode(raw as String));
-          if (message['method'] == 'session.create' || message['method'] == 'session.prompt') sent.add(message);
+          if (message['method'] == 'turn/start') sent.add(message);
           outgoing.add(raw);
         }, onDone: outgoing.close);
         outgoing.listen(incoming.add, onDone: incoming.close);
@@ -191,7 +195,7 @@ void main() {
         ComposerAttachment(name: 'report.txt', path: file.path, image: false),
       ]), isTrue, reason: session.error);
       await _until(session, () => session.task?.running == false);
-      final attachments = sent.single['params']['attachments'] as List;
+      final attachments = sent.single['params']['input'] as List;
       final transmittedImages = attachments.map(jsonObject).where((part) => part['type'] == 'image').toList();
       expect(transmittedImages, hasLength(2));
       expect(transmittedImages.any((part) => part.containsKey('path') || part.containsKey('upload_id')), isFalse);
@@ -234,7 +238,7 @@ void main() {
   test('streams nested code-mode calls, cancels, and keeps tasks through remote changes', () async {
     final root = await Directory.systemTemp.createTemp('desktop-contract-');
     final work = await Directory('${root.path}/work').create();
-    final firstReply = Completer<void>(), heldReply = Completer<void>();
+    final firstReply = Completer<void>(), heldReply = Completer<void>(), steeredRequest = Completer<void>();
     final requests = <Json>[];
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     AgentServer? server;
@@ -258,11 +262,13 @@ void main() {
         final body = jsonObject(
           jsonDecode(await utf8.decoder.bind(request).join()),
         );
+        if (await respondToThreadName(request, body)) return;
         requests.add(body);
         final input = (body['input'] as List).map(jsonObject).toList();
         final prompt = (input.lastWhere(
           (item) => item['role'] == 'user',
         )['content'] as List).map((part) => part['text'] as String).join();
+        if (prompt == 'steer this turn' && !steeredRequest.isCompleted) steeredRequest.complete();
         request.response.headers.contentType = ContentType(
           'text',
           'event-stream',
@@ -359,11 +365,11 @@ void main() {
       expect(await desktop.send('hello'), isTrue);
       await _until(desktop, () => desktop.task!.streamingText == 'Hello');
       expect(desktop.task!.running, isTrue);
-      expect(desktop.task!.contextLimit, 272000, reason: 'Admission exposes the frozen context limit before history replay');
+      expect(desktop.task!.contextLimit, 258400, reason: 'Admission exposes usable context before history replay');
       final streamed = conversation(desktop.task!);
       expect(streamed.last.text, 'Hello');
-      final cell = streamed.singleWhere((entry) => entry.tool != null).tool!;
-      expect(cell.name, 'functions.exec');
+      final cell = streamed.singleWhere((entry) => entry.tool?.name == 'exec').tool!;
+      expect(cell.name, 'exec');
       expect(cell.children.map((child) => child.name), [
         'exec_command',
         'exec_command',
@@ -387,13 +393,14 @@ void main() {
       await desktop.chooseDeliveryMode('steer');
       desktop.chooseReasoning('high');
       expect(desktop.reasoning, 'high');
-      final steeredPending = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.inbox.enqueued' && event['data']['item']['text'] == 'steer this turn');
-      final resumed = desktop.client.events.stream.firstWhere((event) => event['type'] == 'session.step.started');
+      final steeredPending = desktop.client.events.stream.firstWhere((event) =>
+        event['method'] == 'happen/inbox/enqueued' && event['params']['input']['text'] == 'steer this turn');
+      final resumed = steeredRequest.future;
       final submission = desktop.send('steer this turn');
       final immediate = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
       expect(immediate.role, 'You', reason: 'A normal user message must render synchronously, before any WebSocket reply');
       expect(await submission, isTrue, reason: desktop.error);
-      pendingTimes['steer this turn'] = DateTime.fromMillisecondsSinceEpoch((await steeredPending)['created'] as int);
+      pendingTimes['steer this turn'] = DateTime.parse((await steeredPending)['params']['input']['created_at'] as String);
       await _until(desktop, () => desktop.task!.pending.length == 1);
       final delivered = conversation(desktop.task!).where((entry) => entry.text == 'steer this turn').single;
       expect(delivered.id, immediate.id, reason: 'Receipt and delivery must preserve the local message identity');
@@ -404,17 +411,17 @@ void main() {
       expect(interrupted.streaming, isFalse, reason: 'Steering keeps the text already shown and ends its live stream');
       expect(desktop.task!.streamingText, isEmpty);
       expect(desktop.task!.retryStatus, isNull, reason: 'Steering is an input change, not stream recovery');
-      await expectLater(desktop.client.request('task.send', {
-        'task_id': desktop.task!.id, 'prompt': 'invalid effort', 'reasoning': 'ultra',
+      await expectLater(desktop.client.request('turn/start', {
+        'threadId': desktop.task!.id, 'input': [{'type': 'text', 'text': 'invalid effort'}], 'effort': 'ultra',
       }), throwsA(isA<StateError>().having((error) => error.message, 'message', contains('Unsupported single-agent GPT reasoning effort'))));
-      await expectLater(desktop.client.request('task.send', {
-        'task_id': desktop.task!.id, 'prompt': 'change model', 'model': 'gpt-6.1-sol',
+      await expectLater(desktop.client.request('turn/start', {
+        'threadId': desktop.task!.id, 'input': [{'type': 'text', 'text': 'change model'}], 'model': 'gpt-6.1-sol',
       }), throwsStateError);
       expect(desktop.task!.pending.length, 1);
       expect(conversation(desktop.task!).map((e) => e.role), contains('Queued'));
       expect(pendingTimes.keys, unorderedEquals(['queued follow-up', 'steer this turn']));
       expect(pendingTimes.values, everyElement(isNotNull), reason: 'Pending messages show their actual send time');
-      expect(desktop.task!.messages.values.where((e) => e['type'] == 'idle'), isEmpty);
+      expect(desktop.task!.turns.values.every((turn) => turn['status'] == 'inProgress'), isTrue);
       desktop.chooseReasoning('medium');
       firstReply.complete();
       await _until(desktop, () => !desktop.task!.running && desktop.task!.pending.isEmpty);
@@ -424,18 +431,18 @@ void main() {
             .map((entry) => entry.text),
         ['Hello', ...List.filled(2, 'Hello from the server.')],
       );
-      final timeline = desktop.task!.messages.values.toList()..sort((a, b) => (a['metadata']['seq'] as int).compareTo(b['metadata']['seq'] as int));
-      final finishes = timeline.where((e) => e['type'] == 'idle').toList();
+      final timeline = desktop.task!.messages.values.toList()..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
+      final finishes = desktop.task!.turns.values.where((turn) => turn['status'] == 'completed').toList();
       expect(finishes.length, 2);
-      final inputs = timeline.where((e) => e['type'] == 'user').toList();
+      final inputs = timeline.where((e) => e['type'] == 'userMessage').toList();
       expect(inputs.length, 3);
       final committedMessages = conversation(desktop.task!).where((entry) => pendingTimes.containsKey(entry.text)).toList();
       expect(committedMessages, hasLength(2));
       for (final entry in committedMessages) {
         expect(entry.timestamp, pendingTimes[entry.text], reason: 'Processing a queued message must not change its send time');
       }
-      expect(inputs[1]['metadata']['seq'], lessThan(finishes[0]['metadata']['seq'] as int));
-      expect(inputs[2]['metadata']['seq'], greaterThan(finishes[0]['metadata']['seq'] as int));
+      expect(inputs[1]['turnId'], inputs[0]['turnId'], reason: 'Steering belongs to the active turn');
+      expect(inputs[2]['turnId'], isNot(inputs[0]['turnId']), reason: 'Queued input starts the following turn');
       final steeredUsers = (requests[2]['input'] as List).where((item) => item['role'] == 'user');
       expect((requests[2]['input'] as List).where((item) => item['role'] == 'assistant')
         .expand((item) => item['content'] as List).where((part) => part['text'] == 'Hello'), hasLength(1),
@@ -451,9 +458,7 @@ void main() {
         expect(input[user - 1], {'type': 'configuration_update', 'reasoning': {'effort': effort}});
       }
       for (final request in requests) {
-        expect(request['reasoning'], {'effort': 'low', 'summary': 'auto'});
-        expect(request['instructions'], requests.first['instructions']);
-        expect(request['tools'], requests.first['tools']);
+        expect(request['reasoning'], {'effort': 'low', 'context': 'all_turns'});
       }
       expect(requests[2]['input'].take((requests[1]['input'] as List).length), requests[1]['input']);
       expect(requests.last['input'].take((requests[2]['input'] as List).length), requests[2]['input']);
@@ -468,7 +473,7 @@ void main() {
       desktop.drafts[taskId] = 'Keep this draft';
       expect(cached.loaded, isFalse);
       await desktop.select(desktop.project!, cached);
-      expect(cached.contextLimit, 272000,
+      expect(cached.contextLimit, 258400,
         reason: 'A live-only cache missing admission must recover the frozen context limit');
       expect(cached.messages.length, messageCount, reason: 'History replay must not duplicate live messages');
       expect(desktop.drafts[taskId], 'Keep this draft');
@@ -565,7 +570,7 @@ void main() {
       );
       expect(
         restored
-            .singleWhere((entry) => entry.tool != null)
+            .singleWhere((entry) => entry.tool?.name == 'exec')
             .tool!
             .children
             .length,
@@ -578,7 +583,8 @@ void main() {
         .expand((item) => item['content'] as List).where((part) => part['text'] == 'Hello'), hasLength(1),
         reason: 'Restored model history keeps completed commentary exactly once');
       final historyBefore = await desktop.client.request('history.page', {'task_id': taskId, 'limit': 100}) as List;
-      final stopped = desktop.client.events.stream.firstWhere((event) => event['data']?['sessionID'] == taskId && event['type'] == 'session.execution.interrupted');
+      final stopped = desktop.client.events.stream.firstWhere((event) => event['params']?['threadId'] == taskId &&
+        event['method'] == 'turn/completed' && event['params']['turn']['status'] == 'interrupted');
       await desktop.removeProject(desktop.project!);
       await stopped.timeout(const Duration(seconds: 5));
       expect(desktop.projects, isEmpty);
@@ -669,9 +675,7 @@ Future<void> _until(DesktopSession session, bool Function() condition) async {
   final done = Completer<void>();
   void listener() {
     if (done.isCompleted) return;
-    final failures = session.task?.messages.values.where(
-      (e) => e['type'] == 'idle' && e['outcome'] == 'failed',
-    );
+    final failures = session.task?.turns.values.where((turn) => turn['status'] == 'failed');
     if (failures?.isNotEmpty == true) {
       done.completeError(StateError('${failures!.last['error']}'));
     } else if (condition()) {

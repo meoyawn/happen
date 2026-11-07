@@ -44,13 +44,6 @@ void main() {
       final config = File('${root.path}/config.yaml');
       final modelRequests = <Json>[], searchRequests = <Json>[];
       final searches = <String>[];
-      await config.writeAsString(jsonEncode({'providers': {
-        'openai': {'endpoint': '$endpoint/codex/responses'},
-        'opencode': {
-          'endpoint': '$endpoint/inference/openai/v1',
-          'web_search': {'endpoint': '$endpoint/hosted/search'},
-        },
-      }}));
       await File('${root.path}/auth.json').writeAsString(jsonEncode({
         'type': 'chatgpt', 'access_token': 'fixture-access',
         'refresh_token': 'fixture-refresh', 'account_id': 'fixture-account',
@@ -148,7 +141,10 @@ void main() {
         }
         await request.response.close();
       });
-      var server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path);
+      Future<AgentServer> start() => AgentServer.startEmbedded(directory: root.path, configPath: config.path,
+        endpoint: '$endpoint/codex/responses', openCodeEndpoint: '$endpoint/inference/openai/v1',
+        openCodeSearchEndpoint: '$endpoint/hosted/search');
+      var server = await start();
       var client = await AgentClient.connect(server.uri);
       addTearDown(() async {
         await client.close();
@@ -176,7 +172,7 @@ void main() {
       }
       await client.close();
       await server.close();
-      server = await AgentServer.startEmbedded(directory: root.path, configPath: config.path);
+      server = await start();
       client = await AgentClient.connect(server.uri);
       expect((await runTurn(client, id, prompt: 'Continue'))['status'], 'completed');
       expect(modelRequests, hasLength(4));

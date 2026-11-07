@@ -29,6 +29,13 @@ ChatGPT connectors, enterprise-managed authorization or plugins.
   bound. Legacy local/HTTP codecs retain their uncapped wire behavior; IPC,
   catalog and model-facing output budgets remain separate. A discovery timeout
   alone never authorizes a legacy handshake on the same process.
+- Codex timeouts apply on the server-owned path used by desktop: startup gets
+  30 seconds across discovery, fallback and retries; ordinary operations default
+  to 300 seconds; collecting a catalog gets one 30-second deadline across all
+  pages and retries. Tool callers may shorten the 300-second budget. Proactive
+  OAuth preparation has its own deadline and precedes the operation clock;
+  caller input pauses only its own operation. A timed-out call leaves the shared
+  connection available. Explicitly unbounded raw streams still obey cancellation.
 - Modern HTTP redirects are rejected with their status. Legacy requests follow
   at most ten same-origin redirects; cross-origin destinations are never
   contacted. Authentication challenges preserve scope/error distinctions and a
