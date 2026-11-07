@@ -311,6 +311,7 @@ class _CommandMenuState extends State<CommandMenu> {
         color: active ? opencodeLayer : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
+          mouseCursor: WidgetStateMouseCursor.clickable,
           key: ValueKey('command-menu:${entry.id}'),
           borderRadius: BorderRadius.circular(6),
           onTap: enabled ? entry.select : null,

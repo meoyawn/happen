@@ -93,6 +93,7 @@ extension _ThreadNames on AgentServer {
       final provider = requiredString(config, 'provider'), model = requiredString(config, 'model');
       final reasoning = provider == 'openai' || provider == 'gpt' ? 'low' : 'off';
       final request = ModelRequest(taskId: newUuidV7(), model: model, instructions: _threadNameInstructions,
+        modelInfo: config['model_info'] == null ? null : jsonObject(config['model_info']),
         input: [ConversationItem.text('user', jsonEncode(context))], tools: const [], toolChoice: 'none',
         settings: {...jsonObject(config['provider_settings']), 'reasoning': reasoning,
           if (provider == 'openai' || provider == 'gpt') 'verbosity': 'low'

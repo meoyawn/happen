@@ -43,6 +43,12 @@ void main() {
       final domain = Uri.parse(sourceUrl).host;
       final config = File('${root.path}/config.yaml');
       final modelRequests = <Json>[], searchRequests = <Json>[];
+      // Ported from Codex app-server/tests/suite/v2/web_search.rs:
+      // standalone_web_search_round_trips_output, including unknown result fields.
+      final searchResults = [{'type': 'text_result', 'ref_id': 'turn0search0',
+        'url': sourceUrl, 'title': 'Dart guide', 'snippet': 'Search evidence',
+        'future_field': {'preserved': true}}];
+      final notifications = <Json>[];
       final searches = <String>[];
       await File('${root.path}/auth.json').writeAsString(jsonEncode({
         'type': 'chatgpt', 'access_token': 'fixture-access',
@@ -76,7 +82,8 @@ void main() {
             request.response.headers.contentType = ContentType.json;
             request.response.write(jsonEncode({'output': body['commands']['search_query'] != null
                 ? '## [Dart guide](https://dart.dev/docs)\nSearch evidence'
-                : 'Source: https://dart.dev/docs\nL1: Cancel requests with their owner.'}));
+                : 'Source: https://dart.dev/docs\nL1: Cancel requests with their owner.',
+              'results': searchResults}));
           } else {
             expect(request.headers.value('Authorization'), 'Bearer fixture-console');
             expect(request.headers.value('x-org-id'), 'fixture-org');
@@ -146,7 +153,9 @@ void main() {
         openCodeSearchEndpoint: '$endpoint/hosted/search');
       var server = await start();
       var client = await AgentClient.connect(server.uri);
+      var subscription = client.events.stream.listen(notifications.add);
       addTearDown(() async {
+        await subscription.cancel();
         await client.close();
         await server.close();
         await remote.close(force: true);
@@ -158,6 +167,25 @@ void main() {
       expect(modelRequests, hasLength(3));
       expect(searches, everyElement(lab == 'openai' ? '/codex/alpha/search' : '/hosted/search'));
       if (lab == 'openai') {
+        final started = notifications.where((event) => event['method'] == 'item/started' &&
+          event['params']['item']['type'] == 'webSearch').toList();
+        final completed = notifications.where((event) => event['method'] == 'item/completed' &&
+          event['params']['item']['type'] == 'webSearch').toList();
+        expect(started, hasLength(2), reason: 'Standalone web calls announce native search activity');
+        expect(completed, hasLength(2));
+        for (var index = 0; index < 2; index++) {
+          final before = jsonObject(started[index]['params']['item']);
+          final after = jsonObject(completed[index]['params']['item']);
+          expect(before['id'], after['id']);
+          expect(before['query'], '');
+          expect(before['action'], isNull);
+          expect(before['results'], isNull);
+          expect(after['results'], searchResults);
+          expect(notifications.indexOf(started[index]), lessThan(notifications.indexOf(completed[index])));
+        }
+        expect(completed.first['params']['item']['query'], 'Dart guide');
+        expect(completed.first['params']['item']['action'], {'type': 'search', 'query': 'Dart guide', 'queries': null});
+        expect(completed.last['params']['item']['action'], {'type': 'openPage', 'url': sourceUrl});
         expect(searchRequests, hasLength(2));
         expect(searchRequests.first['id'], id);
         expect(searchRequests.first['settings']['external_web_access'], isTrue);
@@ -170,10 +198,18 @@ void main() {
         expect(names, isNot(contains('web__run')));
         expect(names, isNot(contains('functions__exec')));
       }
+      await subscription.cancel();
       await client.close();
       await server.close();
       server = await start();
       client = await AgentClient.connect(server.uri);
+      subscription = client.events.stream.listen(notifications.add);
+      if (lab == 'openai') {
+        final page = jsonObject(await client.request('thread/items/list', {'threadId': id}));
+        final retained = (page['data'] as List).map((entry) => entry['item']).where((item) => item['type'] == 'webSearch').toList();
+        expect(retained, hasLength(2), reason: 'Only completed native search items survive a cold read');
+        expect(retained.map((item) => item['results']), everyElement(searchResults));
+      }
       expect((await runTurn(client, id, prompt: 'Continue'))['status'], 'completed');
       expect(modelRequests, hasLength(4));
       final history = jsonEncode(await rolloutLines(client, id));
@@ -272,9 +308,10 @@ void main() {
         tools: [webSearchDefinition], settings: provider.resolveSettings({'reasoning': 'low'}, model: model),
         effectiveReasoning: 'low',
       );
+      final activity = <Json>[];
       Future<String> search(CancellationToken token) => provider.webSearch(request, {
         'search_query': [{'q': 'query'}],
-      }, cancellation: token);
+      }, cancellation: token, onItem: (phase, item) async => activity.add({'phase': phase, 'item': item}));
       expect(await search(CancellationToken()), contains('usable pool'));
       if (lab == 'openai') {
         expect(refreshes, [false, true]);
@@ -284,7 +321,24 @@ void main() {
         expect(context, isNot(contains('old user')));
         expect(context, isNot(contains('private instructions')));
         expect(context, isNot(contains('current commentary')));
-        expect((bodies.last['input'][1]['content'][0]['text'] as String).length, 4000);
+        expect(bodies.last['input'][1]['content'][0]['text'], '${'a' * 2000}…250 tokens truncated…${'a' * 2000}');
+        // Codex ext/web-search/src/tool.rs::command_action_reports_queries_and_navigation_detail.
+        // Exercise actions through the provider and real search transport.
+        final cases = [
+          ({'image_query': [{'q': 'one'}, {'q': 'two'}]}, 'one ...', {'type': 'search', 'query': null, 'queries': ['one', 'two']}),
+          ({'open': [{'ref_id': 'https://example.com/page'}]}, 'https://example.com/page', {'type': 'openPage', 'url': 'https://example.com/page'}),
+          ({'find': [{'ref_id': 'https://example.com/page', 'pattern': 'needle'}]}, "'needle' in https://example.com/page", {'type': 'findInPage', 'url': 'https://example.com/page', 'pattern': 'needle'}),
+          ({'find': [{'ref_id': 'turn0search0', 'pattern': 'needle'}]}, "'needle'", {'type': 'findInPage', 'url': null, 'pattern': 'needle'}),
+          ({'open': [{'ref_id': 'turn0search0'}]}, '', {'type': 'other'}),
+        ];
+        for (final (commands, query, action) in cases) {
+          Json? completed;
+          await provider.webSearch(request, commands, cancellation: CancellationToken(), onItem: (phase, item) async {
+            if (phase == 'completed') completed = item;
+          });
+          expect(completed?['query'], query);
+          expect(completed?['action'], action);
+        }
       }
       const specialized = {
         'finance': [{'ticker': 'BTC', 'type': 'crypto', 'market': ''}],
@@ -312,6 +366,10 @@ void main() {
       await waiting.future.timeout(const Duration(seconds: 5));
       token.cancel();
       await cancelled.timeout(const Duration(seconds: 2));
+      if (lab == 'openai') {
+        expect(activity.map((item) => item['phase']), ['started', 'completed', 'started', 'completed']);
+        expect(activity.last['item']['results'], isNull);
+      }
       final beforeCancelled = bodies.length;
       await expectLater(search(token), throwsA(isA<CancelledException>()));
       expect(bodies, hasLength(beforeCancelled));

@@ -77,6 +77,8 @@ class OpenCodeProvider implements ModelProvider {
     ModelRequest request,
     Json commands, {
     required CancellationToken cancellation,
+    String? callId,
+    ToolItemEvent? onItem,
   }) => openCodeWebSearch(http, searchAuth ?? _console, commands,
     cancellation: cancellation,
     endpoint: openCodeSearchEndpoint,

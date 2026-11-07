@@ -30,8 +30,8 @@ workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The matrix uses the catalog-selected default model (`gpt-6.1-sol`), Sol with an
-explicit `xhigh` selection, and Terra with its catalog reasoning default. Every
+The matrix uses every supported GPT model with its catalog reasoning default,
+plus Sol with an explicit `xhigh` selection. Every
 selection runs with tool search enabled. `packages/openai` always includes it
 when deferred tools are available; it is not a config setting. The reference
 explicitly enables `code_mode_tool_search` to match. The unchanged
@@ -40,8 +40,17 @@ summary, low verbosity, Code Mode only, and Responses Lite. The evidence include
 the catalog's original bytes and SHA-256. The default-model branch omits model
 and effort overrides in both harnesses; other branches select only the named
 model or effort.
-The complete embedded runtime catalog is checked against `models.json` for all
-supported models, including fields that the request matrix does not exercise.
+The bundled and embedded catalogs are checked against the independent local
+Codex checkout for all supported models. The reference receives Codex's source
+catalog, not Happen's copy. Set `CODEX_SOURCE_DIR` when that checkout is not at
+`../github/codex`. Its revision and catalog hash are retained in the report.
+A separate discovery contract omits the catalog override and makes both real
+model managers fetch authenticated metadata. It compares the CLI's typed catalog,
+Happen's complete model snapshot, consumed defaults, and base instruction bytes
+for all five models. The CLI fills optional defaults, drops unknown server fields,
+and chooses unified_exec for Code Mode; these representation differences are
+kept outside the full context comparison. Cache expiry, offline reuse, account
+isolation, and frozen thread metadata are covered by `test/model_catalog_test.dart`.
 Happen's YAML contains only MCP servers. Fixture model, effort, question-mode and
 compaction selections use the public thread API; ordinary cases omit provider
 settings so their catalog defaults remain observable.
@@ -98,12 +107,31 @@ commentary with `end_turn: false`. Neither harness may stop there: both must mak
 the next inference, actually read the fixture file through the shell, and return
 its receipt in the final request. The fixture advances past commentary only when
 the next received request retains the commentary item IDs it actually issued.
-The web case prompts `google youtube to podcast tools`. Both harnesses must
-execute their production standalone-search client against `/alpha/search` with
-the specified query and live-access setting. The endpoint supplies a unique
-receipt; the next inference must retain it and the cited answer. Captures retain
-both search requests and Responses requests. This replay makes no live internet
-query. Sleep is exercised directly, including invalid zero
+The web case replays search, batched open, targeted search, repository open, and
+find actions, then cold-resumes for a second research turn. It compares complete
+`/alpha/search` bodies, native start/completion lifecycles, opaque results including
+future fields, and persisted items against Codex's rollout. Only scoped IDs and
+event timestamps are normalized. The second turn also checks retained assistant
+phases, annotations, classification metadata, and the two-user-message tail.
+`web_search_test.dart` exercises the shared 1,000-token assistant budget.
+Model output is supplied in this deterministic replay; it proves transport and
+history parity, not sampled research choices.
+
+For an unscripted evaluation using the current account, run:
+
+```sh
+dart run tool/eval_web_parity.dart
+```
+
+An optional argument selects Happen's authentication directory. The evaluator
+uses a fresh live catalog and identical initial requests, forwards real model and
+search responses, and supplies no tool calls or answer. It checks actual search
+execution, citations to received sources, and Happen's native search completions.
+Different research paths are allowed. Credentials stay in the forwarding process;
+reports contain request bodies, responses, commands, and answers without auth
+headers. Evidence is saved under `.local/web-parity-eval/`.
+
+Sleep is exercised directly, including invalid zero
 duration; goal tools create, inspect, account usage, complete, and inspect again.
 
 The `fermented-beetroot` case preserves the Russian prompt, all fourteen native

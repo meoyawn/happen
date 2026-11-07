@@ -17,11 +17,12 @@ Json responsesRequest({
   String verbosity = 'low',
   String reasoningSummary = 'auto',
   int? maxOutputTokens,
+  Json? modelInfo,
 }) {
   if (!{'http', 'websocket'}.contains(transport)) {
     throw ArgumentError('GPT transport must be http or websocket');
   }
-  final info = supportedGptModels.contains(model) ? GptModel(model).data : null;
+  final info = supportedGptModels.contains(model) ? GptModel(model, metadata: modelInfo).data : null;
   final modalities = info?['input_modalities'] as List?;
   Json media(Json part) {
     final kind = switch (part['type']) { 'input_image' => 'image', 'input_audio' => 'audio', _ => null };
@@ -69,6 +70,7 @@ Json responsesRequest({
 
 Json gptRequest(ModelRequest request) => responsesRequest(
   model: request.model,
+  modelInfo: request.modelInfo,
   instructions: request.instructions,
   input: gptInput(request.input),
   tools: gptTools(request.tools),

@@ -247,6 +247,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
         ]))),
       SliverPadding(padding: EdgeInsets.fromLTRB(inset, 0, inset, 8), sliver: SliverToBoxAdapter(
         child: Row(children: [Expanded(child: InkWell(
+          mouseCursor: WidgetStateMouseCursor.clickable,
           onTap: () => setState(() => _messagesExpanded = !_messagesExpanded),
           child: Semantics(button: true, expanded: _messagesExpanded, child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -284,7 +285,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       PinnedHeaderSliver(child: SizedBox(height: 32,
         child: Material(color: Colors.white, shape: RoundedRectangleBorder(borderRadius: radius,
           side: const BorderSide(color: opencodeBorder)), clipBehavior: Clip.antiAlias,
-          child: InkWell(onTap: () => setState(() {
+          child: InkWell(mouseCursor: WidgetStateMouseCursor.clickable, onTap: () => setState(() {
             if (expanded) { _expanded.remove(id); } else { _expanded.add(id); }
           }), child: Semantics(button: true, expanded: expanded, child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),

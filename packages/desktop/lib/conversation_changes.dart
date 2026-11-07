@@ -129,6 +129,7 @@ class _ConversationChangedFilesState extends State<ConversationChangedFiles> {
               return Tooltip(message: file == null ? node.path :
                   '${file.oldPath == null ? '' : '${file.oldPath} → '}${file.path}',
                 child: InkWell(borderRadius: BorderRadius.circular(5),
+                  mouseCursor: WidgetStateMouseCursor.clickable,
                   onTap: () {
                     if (file != null) { ConversationDiffScope.open(context, widget.source, files, path: file.path); }
                     else { setState(() { _overrides[node.path] = !expanded; _remember(); }); }

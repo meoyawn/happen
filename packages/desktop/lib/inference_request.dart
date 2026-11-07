@@ -9,6 +9,7 @@ Json inferenceRequest(Json snapshot) {
   final request = ModelRequest(
     taskId: requiredString(snapshot, 'sessionID'),
     model: requiredString(model, 'id'),
+    modelInfo: snapshot['model_info'] == null ? null : jsonObject(snapshot['model_info']),
     instructions: snapshot['instructions'] as String? ?? '',
     input: (snapshot['input'] as List).map((item) => ConversationItem.fromJson(jsonObject(item))).toList(),
     tools: (snapshot['tools'] as List).map((tool) => ToolDefinition.fromJson(jsonObject(tool))).toList(),

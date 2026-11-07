@@ -79,7 +79,8 @@ class ComposerModelPicker extends StatelessWidget {
             const PopupMenuItem<String>(enabled: false, child: Text('Reasoning effort is fixed for this task.')),
         ],
       ],
-      child: SizedBox(height: 28, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: MouseRegion(cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        child: SizedBox(height: 28, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Center(widthFactor: 1, heightFactor: 1, child: constraints.maxWidth < 120
           ? const Icon(Icons.tune_rounded, size: 16, color: muted)
           : ConstrainedBox(constraints: const BoxConstraints(maxWidth: 160), child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -91,7 +92,7 @@ class ComposerModelPicker extends StatelessWidget {
             ],
           ])),
         ),
-      )),
+      ))),
     ));
     const labelStyle = TextStyle(fontSize: 13, height: 20 / 13, letterSpacing: -.04,
       color: opencodeMuted, fontVariations: [FontVariation('wght', 440)]);
@@ -109,11 +110,12 @@ class ComposerModelPicker extends StatelessWidget {
               model['provider'] == provider && model['id'] == (target?.model ?? session.modelId), canChangeModel),
             if (selected != null) const PopupMenuItem<String>(enabled: false,
               child: Text('Start a new task to change models.')),
-          ], child: Row(mainAxisSize: MainAxisSize.min, children: [
+          ], child: MouseRegion(cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
             Padding(padding: const EdgeInsets.only(left: 6),
               child: providerIcon(provider, size: 15, color: const Color(0xff797986))),
             Flexible(child: control(_modelLabel(model))),
-          ]))),
+          ])))),
         if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(key: effortMenuKey,
           tooltip: 'Reasoning effort', enabled: enabled,
           onSelected: chooseEffort,
@@ -122,7 +124,8 @@ class ComposerModelPicker extends StatelessWidget {
               effort == session.effortFor(target), canChangeEffort),
             if (!canChangeEffort) const PopupMenuItem<String>(enabled: false,
               child: Text('Reasoning effort is fixed for this task.')),
-          ], child: control(_effortLabel(effort))),
+          ], child: MouseRegion(cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+            child: control(_effortLabel(effort)))),
       ],
     ));
   }

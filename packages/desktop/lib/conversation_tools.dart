@@ -99,6 +99,13 @@ String toolLabel(ToolActivity tool, {String directory = '', bool active = false}
   }
   if (kind == 'question') return active ? 'Waiting for your answer' : 'Asked a question';
   if (name == 'view_image') return active ? 'Opening image' : 'Viewed image';
+  if (name == 'web_search') {
+    if (active) return 'Browsing the web';
+    final action = input is Map ? input['action'] : null;
+    final queries = action is Map ? action['queries'] : null;
+    final query = queries is List ? queries.join(', ') : input is Map ? input['query'] : null;
+    return 'Searched the web${query is String && query.isNotEmpty ? ' for $query' : ''}';
+  }
   if (kind == 'search') {
     final query = input is Map ? input['query'] ?? input['q'] ?? input['pattern'] : null;
     return '${active ? 'Searching' : 'Searched'}${query is String ? ' for $query' : ''}';

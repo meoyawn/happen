@@ -553,6 +553,7 @@ class _TurnFold extends StatelessWidget {
     decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x99e4e4e7)))),
     child: Align(alignment: Alignment.centerLeft, child: Semantics(button: true, expanded: expanded,
       child: InkWell(onTap: onToggle, borderRadius: BorderRadius.circular(6),
+        mouseCursor: WidgetStateMouseCursor.clickable,
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Text(label, style: const TextStyle(fontSize: 14, height: 1.625,

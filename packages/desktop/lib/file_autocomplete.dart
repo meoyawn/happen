@@ -770,6 +770,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                 return Semantics(selected: index == _selected, button: true,
                   child: MouseRegion(onEnter: (_) { if (_selected != index) setState(() => _selected = index); },
                     child: InkWell(canRequestFocus: false, borderRadius: BorderRadius.circular(4),
+                      mouseCursor: WidgetStateMouseCursor.clickable,
                       onTap: () { _selected = index; _chooseSelected(); },
                       child: Container(padding: const EdgeInsets.symmetric(horizontal: 6),
                         decoration: BoxDecoration(color: index == _selected ? const Color(0xfff1f2f4) : null,

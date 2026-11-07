@@ -46,6 +46,28 @@ class ResponsesClient {
   Future<Directory?>? _requestDump;
   bool _httpFallback = false;
 
+  Future<({Json? body, String? etag})> models(Json auth, {String? etag, required CancellationToken cancellation}) async {
+    final response = await httpRequest(_http, 'GET', endpoint.resolve('models').replace(
+      queryParameters: {'client_version': gptCatalogClientVersion}), cancellation: cancellation, headers: {
+        if (auth['access_token'] case final String token when token.isNotEmpty) 'authorization': 'Bearer $token',
+        if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
+        'if-none-match': ?etag,
+        'originator': 'agent', 'accept': 'application/json',
+      });
+    final incoming = ownStream(response, cancellation);
+    try {
+      if (response.statusCode == 304) return (body: null, etag: response.headers['etag'] ?? etag);
+      if (response.statusCode != 200) throw const ModelFailure('model_catalog_http', 'Unable to refresh the model catalog');
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in incoming.stream) {
+        if (bytes.length + chunk.length > 4 * 1024 * 1024) throw const FormatException('Model catalog exceeds 4 MiB');
+        bytes.add(chunk);
+      }
+      cancellation.throwIfCancelled();
+      return (body: jsonObject(jsonDecode(utf8.decode(bytes.takeBytes()))), etag: response.headers['etag']);
+    } finally { await incoming.close(); }
+  }
+
   Future<void> _dump(String Function() encoded, CancellationToken cancellation) async {
     if (Platform.environment['HAPPEN_ROLLOUT_TRACE_ROOT']?.isNotEmpty != true) return;
     final directory = await (_requestDump ??= startRequestDump(cancellation));
@@ -94,6 +116,7 @@ class ResponsesClient {
     required Json commands,
     required List<Json> input,
     required CancellationToken cancellation,
+    void Function(List<Object?>? results)? onResults,
   }) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       cancellation.throwIfCancelled();
@@ -139,6 +162,7 @@ class ResponsesClient {
       if (output is! String) {
         throw const ModelFailure('web_search_response', 'OpenAI search returned an invalid response');
       }
+      onResults?.call(response['results'] as List?);
       return clippedText(await recoverWebPages(_http, commands, output, cancellation: cancellation));
     }
     throw const ModelFailure('web_search_auth', 'OpenAI search authentication failed');
@@ -159,9 +183,11 @@ class ResponsesClient {
     int? maxOutputTokens,
     void Function(Json event)? onEvent,
     Future<void> Function(Json item)? onRecovery,
+    Json? modelInfo,
   }) async {
     var activeTransport = transport == 'websocket' && _httpFallback ? 'http' : transport;
     var body = responsesRequest(model: model, instructions: instructions, input: input,
+      modelInfo: modelInfo,
       tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
       transport: activeTransport, verbosity: verbosity, reasoningSummary: reasoningSummary,
       maxOutputTokens: maxOutputTokens);
@@ -179,7 +205,7 @@ class ResponsesClient {
       unboundedConnections: sampling,
       onContentFilter: !sampling ? null : () async {
         final item = <String, dynamic>{'id': 'msg_${newUuidV7()}', 'type': 'message', 'role': 'developer',
-          'content': [{'type': 'input_text', 'text': '<content_filter_guidance>\n${GptModel(model).contentFilterGuidance}\n</content_filter_guidance>'}]};
+          'content': [{'type': 'input_text', 'text': '<content_filter_guidance>\n${GptModel(model, metadata: modelInfo).contentFilterGuidance}\n</content_filter_guidance>'}]};
         // Only delivered messages are retained. Failed streams cannot admit or
         // execute deferred tool calls. The host durably admits this context on
         // the same ordered event channel before another request can be sent.

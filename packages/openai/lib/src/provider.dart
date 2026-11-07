@@ -1,15 +1,22 @@
+import 'dart:convert';
+
 import 'package:ai/ai.dart';
+import 'package:code_mode/code_mode.dart' show truncateTokenText;
 import 'package:protocol/protocol.dart';
 
 import 'records.dart';
 import 'responses.dart';
 import 'catalog.dart';
+import 'model_catalog.dart';
 import 'web_search.dart';
 import 'image_generation.dart' as image_generation;
 
 class OpenAIProvider implements ModelProvider {
-  OpenAIProvider(this.client);
+  OpenAIProvider(this.client, {this.catalog});
   final ResponsesClient client;
+  final GptCatalog? catalog;
+  GptModel modelInfo(String id) => catalog?.model(id) ?? GptModel(id);
+  String get defaultModel => catalog?.defaultModel ?? defaultGptModel;
   @override
   String get id => 'openai';
   @override
@@ -32,24 +39,35 @@ class OpenAIProvider implements ModelProvider {
     ModelRequest request,
     Json commands, {
     required CancellationToken cancellation,
-  }) {
+    String? callId,
+    ToolItemEvent? onItem,
+  }) async {
     _validate(request);
-    return client.search(
-      model: request.model,
-      sessionId: request.taskId,
-      commands: webSearchCommands(commands),
-      input: _searchInput(request.input),
-      cancellation: cancellation,
-    );
+    cancellation.throwIfCancelled();
+    final parsed = webSearchCommands(commands);
+    final action = webSearchAction(parsed);
+    final item = <String, dynamic>{'type': 'Extension', 'kind': 'web.search',
+      'id': callId ?? newUuidV7(), 'query': '', 'action': null, 'results': null};
+    await onItem?.call('started', item);
+    List<Object?>? results;
+    try {
+      return await client.search(
+        model: request.model, sessionId: request.taskId, commands: parsed,
+        input: _searchInput(request.input), cancellation: cancellation,
+        onResults: (value) => results = value,
+      );
+    } finally {
+      await onItem?.call('completed', {...item, 'query': webSearchActionDetail(action), 'action': action, 'results': results});
+    }
   }
 
-  // Pinned Codex model catalog; ultra requires delegation this runtime lacks.
+  // Ultra requires delegation this runtime lacks.
   static const models = supportedGptModels;
   static const efforts = {'low', 'medium', 'high', 'xhigh', 'max'};
 
   @override
-  Json resolveSettings(Json selected, {String? model}) {
-    final info = GptModel(model ?? defaultGptModel);
+  Json resolveSettings(Json selected, {String? model, Json? modelInfo}) {
+    final info = GptModel(model ?? defaultModel, metadata: modelInfo ?? catalog?.model(model ?? defaultModel).data);
     const allowed = {
       'reasoning',
       'verbosity',
@@ -86,7 +104,7 @@ class OpenAIProvider implements ModelProvider {
     }
     final webSearch = selected['web_search'] ?? 'live';
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
-    final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
+    final imageGeneration = selected['image_generation'] ?? client.endpoint.path.endsWith('/backend-api/codex/responses');
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
     for (final key in ['sleep_tool', 'goals', 'request_user_input', 'default_mode_request_user_input']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
@@ -128,8 +146,8 @@ class OpenAIProvider implements ModelProvider {
     if (!efforts.contains(request.effectiveReasoning)) {
       throw ArgumentError('Unsupported GPT reasoning effort');
     }
-    final info = GptModel(request.model);
-    resolveSettings(request.settings, model: request.model);
+    final info = GptModel(request.model, metadata: request.modelInfo);
+    resolveSettings(request.settings, model: request.model, modelInfo: info.data);
     if (!info.reasoningUpdates &&
         request.effectiveReasoning != request.settings['reasoning']) {
       throw ArgumentError(
@@ -159,6 +177,7 @@ class OpenAIProvider implements ModelProvider {
     _validate(request);
     return client.respond(
       model: request.model,
+      modelInfo: request.modelInfo,
       instructions: request.instructions,
       input: input,
       tools: gptTools(request.tools),
@@ -292,24 +311,38 @@ class OpenAIProvider implements ModelProvider {
 }
 
 List<Json> _searchInput(List<ConversationItem> input) {
-  final visible = input.where((item) => item.kind == 'message' &&
-      {'user', 'assistant'}.contains(item.role) && item.text.isNotEmpty &&
-      !item.native.containsKey('harness')).toList();
-  final users = [for (var i = 0; i < visible.length; i++) if (visible[i].role == 'user') i];
+  final visible = <Json>[];
+  for (final source in input.where((item) => item.kind == 'message' &&
+      {'user', 'assistant'}.contains(item.role) && !item.native.containsKey('harness'))) {
+    for (final wire in gptInput([source]).where((item) => item['type'] == 'message')) {
+      final item = {...wire}..remove('id');
+      if (item['role'] == 'user') {
+        item.remove('status');
+        item.remove('encrypted_content');
+        item['content'] = (item['content'] as List).where((part) => part['type'] == 'input_text').toList();
+      }
+      if ((item['content'] as List).isNotEmpty) visible.add(item);
+    }
+  }
+  final users = [for (var i = 0; i < visible.length; i++) if (visible[i]['role'] == 'user') i];
   if (users.isEmpty) return [];
   final start = users.length > 1 ? users[users.length - 2] : users.last;
-  var assistantBudget = 4000;
+  var assistantBudget = 1000;
   final messages = <Json>[];
-  for (final item in visible.sublist(start, users.last + 1).reversed) {
-    var text = item.text;
-    if (item.role == 'assistant') {
-      if (assistantBudget == 0) continue;
-      if (text.length > assistantBudget) text = text.substring(text.length - assistantBudget);
-      assistantBudget -= text.length;
+  for (final item in visible.sublist(start, users.last + 1)) {
+    if (item['role'] == 'assistant') {
+      final content = <Json>[];
+      for (final part in (item['content'] as List).map(jsonObject)) {
+        if (part['type'] != 'output_text') { content.add(part); continue; }
+        if (assistantBudget == 0) continue;
+        final text = part['text'] as String;
+        content.add({...part, 'text': truncateTokenText(text, maxTokens: assistantBudget)});
+        assistantBudget = (assistantBudget - (utf8.encode(text).length + 3) ~/ 4).clamp(0, 1000);
+      }
+      if (content.isEmpty) continue;
+      item['content'] = content;
     }
-    messages.add({'type': 'message', 'role': item.role, 'content': [
-      {'type': item.role == 'user' ? 'input_text' : 'output_text', 'text': text},
-    ]});
+    messages.add(item);
   }
-  return messages.reversed.toList();
+  return messages;
 }

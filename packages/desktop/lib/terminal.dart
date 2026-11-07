@@ -322,6 +322,7 @@ class _TerminalDock extends StatelessWidget {
               color: shell == group.active ? const Color(0xfff2f3f5) : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
               child: InkWell(onTap: () => controller.select(scope, shell), borderRadius: BorderRadius.circular(6),
+                mouseCursor: WidgetStateMouseCursor.clickable,
                 child: Padding(padding: const EdgeInsets.only(left: 8), child: Row(children: [
                   ConstrainedBox(constraints: const BoxConstraints(maxWidth: 160), child: Text(
                     shell.title.isEmpty ? 'Shell ${group.sessions.indexOf(shell) + 1}' : shell.title,

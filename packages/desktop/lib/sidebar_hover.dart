@@ -35,6 +35,7 @@ class SidebarItem extends StatelessWidget {
     color: selected ? const Color(0x0e1a1c1f) : Colors.transparent,
     borderRadius: BorderRadius.circular(10),
     child: InkWell(
+      mouseCursor: WidgetStateMouseCursor.clickable,
       onTap: onTap, borderRadius: BorderRadius.circular(10),
       hoverColor: const Color(0x0e1a1c1f), highlightColor: Colors.transparent,
       child: SizedBox(height: 30, child: Padding(padding: padding, child: child)),

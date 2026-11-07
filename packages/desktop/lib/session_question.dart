@@ -212,6 +212,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       child: Material(color: Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
+          mouseCursor: WidgetStateMouseCursor.clickable,
           focusNode: _options[index],
           onTap: available ? () => _pick(index) : null,
           borderRadius: BorderRadius.circular(6),
@@ -267,6 +268,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
               Expanded(child: Tooltip(
                 message: draft.minimized ? 'Show question and options' : 'Hide question and options',
                 child: InkWell(
+                mouseCursor: WidgetStateMouseCursor.clickable,
                 onTap: () {
                   _advance?.cancel();
                   setState(() => draft.minimized = !draft.minimized);

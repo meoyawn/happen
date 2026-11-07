@@ -300,6 +300,7 @@ class ModelRequest {
     required this.settings,
     required this.effectiveReasoning,
     this.toolChoice = 'auto',
+    this.modelInfo,
   });
   final String taskId, model, instructions, effectiveReasoning, toolChoice;
   final List<ConversationItem> input;
@@ -307,6 +308,8 @@ class ModelRequest {
 
   /// Frozen initial provider settings. Effort changes remain ordered history items.
   final Json settings;
+  /// The model contract resolved when this thread was created.
+  final Json? modelInfo;
   factory ModelRequest.fromJson(Json json) => ModelRequest(
     taskId: requiredString(json, 'task_id'),
     model: requiredString(json, 'model'),
@@ -320,6 +323,7 @@ class ModelRequest {
     settings: jsonObject(json['settings']),
     effectiveReasoning: requiredString(json, 'effective_reasoning'),
     toolChoice: json['tool_choice'] as String? ?? 'auto',
+    modelInfo: json['model_info'] == null ? null : jsonObject(json['model_info']),
   );
   Json toJson() => {
     'task_id': taskId,
@@ -330,6 +334,7 @@ class ModelRequest {
     'settings': settings,
     'effective_reasoning': effectiveReasoning,
     'tool_choice': toolChoice,
+    'model_info': ?modelInfo,
   };
 }
 
@@ -366,6 +371,8 @@ abstract interface class ModelProvider {
     ModelRequest request,
     Json commands, {
     required CancellationToken cancellation,
+    String? callId,
+    Future<void> Function(String phase, Json item)? onItem,
   });
   Future<ModelReply> respond(
     ModelRequest request, {

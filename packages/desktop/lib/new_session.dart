@@ -81,10 +81,11 @@ class NewSessionScreen extends StatelessWidget {
                       CheckedPopupMenuItem(value: 'trace', checked: session.currentDraft.tracing,
                         enabled: !session.submitting, child: const Text('Trace this session')),
                     ],
-                    child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    child: MouseRegion(cursor: project != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
+                      child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Icon(Icons.folder_outlined, size: 13, color: opencodeMuted), SizedBox(width: 6),
                       Text('Current checkout', style: TextStyle(fontSize: 12, color: opencodeMuted)),
-                    ]))))),
+                    ])))))),
                   if (project?.branch case final branch?) ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: bounds.maxWidth * .3),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -221,6 +222,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     bool selected = false, bool enabled = true, required VoidCallback onTap}) => Material(
     color: active ? opencodeLayer : Colors.transparent, borderRadius: BorderRadius.circular(4),
     child: InkWell(onTap: enabled ? onTap : null, borderRadius: BorderRadius.circular(4),
+      mouseCursor: WidgetStateMouseCursor.clickable,
       child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8), child: Opacity(
         opacity: enabled ? 1 : .45, child: Row(children: [
           icon, const SizedBox(width: 10), Expanded(child: Column(mainAxisSize: MainAxisSize.min,

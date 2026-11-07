@@ -442,7 +442,8 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
       child: Tooltip(message: widget.title,
       child: Material(color: widget.active ? conversationSurface : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
-        child: InkWell(onTap: widget.onSelect, borderRadius: BorderRadius.circular(6), child: SizedBox(height: 24,
+        child: InkWell(onTap: widget.onSelect, mouseCursor: WidgetStateMouseCursor.clickable,
+          borderRadius: BorderRadius.circular(6), child: SizedBox(height: 24,
           child: Padding(padding: const EdgeInsets.only(left: 6, right: 8), child: Row(children: [
             SizedBox.square(dimension: 16, child: widget.icon),
             const SizedBox(width: 2),

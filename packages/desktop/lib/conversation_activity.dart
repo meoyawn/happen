@@ -147,6 +147,7 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
         child: Semantics(button: true, expanded: expanded, child: InkWell(
+          mouseCursor: WidgetStateMouseCursor.clickable,
           key: _header,
           onTap: _toggle,
           onFocusChange: (focused) => setState(() => _focused = focused),

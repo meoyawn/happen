@@ -225,6 +225,7 @@ class _AttachmentTileState extends State<_AttachmentTile> {
           : attachment['path'] as String? ?? '',
         label: name, directory: widget.directory, thumbnail: true)
       : InkWell(onTap: _openFile, borderRadius: BorderRadius.circular(6),
+        mouseCursor: WidgetStateMouseCursor.clickable,
         child: Container(width: 160, padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(color: const Color(0x07000000), borderRadius: BorderRadius.circular(6),
           border: Border.all(color: opencodeBorder, width: .5)),

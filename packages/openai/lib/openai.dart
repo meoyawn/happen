@@ -1,6 +1,7 @@
 export 'auth.dart';
 export 'src/provider.dart';
 export 'src/catalog.dart';
+export 'src/model_catalog.dart';
 export 'src/tool_interface.dart';
 export 'src/web_search.dart';
 export 'src/records.dart';

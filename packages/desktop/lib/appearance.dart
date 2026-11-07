@@ -42,6 +42,8 @@ ThemeData conversationTheme(ThemeData base) => base.copyWith(
 ThemeData desktopTheme() {
   const ink = Color(0xff1a1c1f);
   const border = Color(0xffe8e9eb);
+  // Match T3's pointer for enabled controls on desktop as well as web.
+  const buttonStyle = ButtonStyle(mouseCursor: WidgetStateMouseCursor.clickable);
   final scheme = ColorScheme.fromSeed(seedColor: ink, brightness: Brightness.light).copyWith(
     primary: ink, onPrimary: Colors.white,
     secondary: const Color(0xff62666d), onSecondary: Colors.white,
@@ -67,8 +69,17 @@ ThemeData desktopTheme() {
     appBarTheme: const AppBarTheme(backgroundColor: Colors.white, surfaceTintColor: Colors.transparent,
       elevation: 0, scrolledUnderElevation: 0, titleTextStyle: TextStyle(
         fontFamily: 'Inter', fontSize: 16, fontWeight: FontWeight.w600, color: ink)),
-    iconButtonTheme: IconButtonThemeData(style: IconButton.styleFrom(foregroundColor: const Color(0xff666a71))),
+    textButtonTheme: const TextButtonThemeData(style: buttonStyle),
+    filledButtonTheme: const FilledButtonThemeData(style: buttonStyle),
+    outlinedButtonTheme: const OutlinedButtonThemeData(style: buttonStyle),
+    elevatedButtonTheme: const ElevatedButtonThemeData(style: buttonStyle),
+    iconButtonTheme: IconButtonThemeData(style: IconButton.styleFrom(foregroundColor: const Color(0xff666a71))
+      .copyWith(mouseCursor: WidgetStateMouseCursor.clickable)),
+    checkboxTheme: const CheckboxThemeData(mouseCursor: WidgetStateMouseCursor.clickable),
+    radioTheme: const RadioThemeData(mouseCursor: WidgetStateMouseCursor.clickable),
+    switchTheme: const SwitchThemeData(mouseCursor: WidgetStateMouseCursor.clickable),
     popupMenuTheme: PopupMenuThemeData(color: Colors.white, surfaceTintColor: Colors.transparent,
+      mouseCursor: WidgetStateMouseCursor.clickable,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: border))),
     tooltipTheme: TooltipThemeData(decoration: BoxDecoration(color: ink, borderRadius: BorderRadius.circular(8)),
       textStyle: const TextStyle(fontFamily: 'Inter', fontSize: 12, color: Colors.white)),

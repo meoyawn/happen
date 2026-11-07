@@ -202,16 +202,16 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     ]))));
 
   Widget _dragProxy(Widget child, int index, Animation<double> animation) =>
-    AnimatedBuilder(animation: animation, child: child, builder: (context, child) => MouseRegion(
-      cursor: SystemMouseCursors.grabbing, child: DecoratedBox(
+    AnimatedBuilder(animation: animation, child: child, builder: (context, child) => DecoratedBox(
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6),
           boxShadow: [BoxShadow(color: Color.fromRGBO(0, 0, 0, .12 * animation.value),
             blurRadius: 16 * animation.value, offset: Offset(0, 4 * animation.value))]),
-        child: child)));
+        child: child));
 
   Widget _sectionHeading(String section, String title, int count) {
     final expanded = !session.collapsedSidebarSections.contains(section);
     return InkWell(key: ValueKey('$section-section'),
+      mouseCursor: WidgetStateMouseCursor.clickable,
       onTap: () => unawaited(_run(session, () => session.chooseSidebarSection(section, expanded))),
       borderRadius: BorderRadius.circular(6), child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(children: [
@@ -235,7 +235,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           side: BorderSide(color: selected ? const Color(0xffe4e4e7) : Colors.transparent)),
         clipBehavior: Clip.antiAlias,
         child: InkWell(key: ValueKey('thread:${task.id}'), borderRadius: BorderRadius.circular(6),
-          mouseCursor: reorderable && renameInput == null ? SystemMouseCursors.grab : SystemMouseCursors.click,
+          mouseCursor: WidgetStateMouseCursor.clickable,
           hoverColor: const Color(0xfff4f4f5),
           onTap: renameInput == null ? () => widget.onSelect(project, task) : null,
           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -248,14 +248,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                 const SizedBox(width: 6),
                 Expanded(child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: conversationSecondary))),
-                if (hovering) ...[
-                  SizedBox.square(dimension: 22, child: IconButton(tooltip: 'Archive session',
-                    padding: EdgeInsets.zero, onPressed: session.connected && !task.archiving
-                      ? () => widget.onArchive(task, true) : null,
-                    icon: const Icon(Icons.archive_outlined, size: 14, color: opencodeFaint))),
-                ] else ...[
+                if (!hovering)
                   _ThreadStatus(session: session, task: task, showLabel: true),
-                ],
+                IgnorePointer(ignoring: !hovering, child: Align(alignment: Alignment.centerRight,
+                  widthFactor: hovering ? 1 : 0, child: Opacity(opacity: hovering ? 1 : 0,
+                    alwaysIncludeSemantics: true,
+                    child: _archiveButton(session, task, () => widget.onArchive(task, true))))),
               ])),
               const SizedBox(height: 4),
               renameInput ?? Tooltip(message: task.title, child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -287,6 +285,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final selected = !widget.home && session.task == null && session.currentDraft == draft;
     return Material(key: ValueKey('draft:${draft.id}'), color: selected ? const Color(0xffeeeef0) : Colors.transparent,
       borderRadius: BorderRadius.circular(8), child: InkWell(
+        mouseCursor: WidgetStateMouseCursor.clickable,
         borderRadius: BorderRadius.circular(8), onTap: () => widget.onDraft(draft),
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -345,8 +344,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                 CheckedPopupMenuItem(value: project.checkoutKey, checked: widget.projectKey == project.checkoutKey,
                   child: Text(project.name)),
             ],
-            child: SizedBox.square(dimension: 28,
-              child: Center(child: sidebarIcon(SidebarIcon.listFilter)))),
+            child: MouseRegion(cursor: SystemMouseCursors.click, child: SizedBox.square(dimension: 28,
+              child: Center(child: sidebarIcon(SidebarIcon.listFilter))))),
           _button('Open project', sidebarIcon(SidebarIcon.folderPlus), widget.onAddProject),
           _button('New thread (${mac ? '⌘N' : 'Ctrl+N'})', sidebarIcon(SidebarIcon.squarePen), widget.onNew),
         ]))),
@@ -610,6 +609,32 @@ class _ThreadRowState extends State<_ThreadRow> {
       child: widget.builder(renameInput)));
   }
 }
+
+Widget _archiveButton(DesktopSession session, DesktopTask task, VoidCallback onPressed) =>
+  SizedBox(height: 20, child: Tooltip(message: 'Archive thread', child: TextButton(
+    key: ValueKey('archive:${task.id}'),
+    onPressed: session.connected && !task.archiving ? onPressed : null,
+    style: ButtonStyle(
+      minimumSize: const WidgetStatePropertyAll(Size.zero),
+      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 6)),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
+      textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12, height: 16 / 12,
+        fontWeight: FontWeight.w400, letterSpacing: 0)),
+      foregroundColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.disabled)
+        ? const Color(0xffb5b5bd)
+        : states.contains(WidgetState.hovered) || states.contains(WidgetState.focused) || states.contains(WidgetState.pressed)
+          ? conversationForeground : conversationSecondary),
+      overlayColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.focused)
+        ? const Color(0x1471717b) : Colors.transparent),
+      animationDuration: const Duration(milliseconds: 100),
+    ),
+    child: Builder(builder: (context) => Row(mainAxisSize: MainAxisSize.min, children: [
+      sidebarIcon(SidebarIcon.check, size: 14, color: DefaultTextStyle.of(context).style.color!),
+      const SizedBox(width: 4),
+      const Text('Archive'),
+    ])),
+  )));
 
 Widget _pinButton(DesktopSession session, DesktopTask task, {bool compact = false}) {
   final pinned = session.pinnedTaskIds.contains(task.id);

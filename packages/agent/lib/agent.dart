@@ -132,9 +132,11 @@ class _Agent {
 
   ModelRequest request() {
     final interface = toolInterface(config['tool_interface'] as String, model: config['model'] as String,
-      settings: jsonObject(config['provider_settings']));
+      settings: jsonObject(config['provider_settings']),
+      modelInfo: config['model_info'] == null ? null : jsonObject(config['model_info']));
     return ModelRequest(
       taskId: taskId, model: config['model'] as String,
+      modelInfo: config['model_info'] == null ? null : jsonObject(config['model_info']),
       instructions: config['instructions'] as String,
       input: input, tools: _tools ?? interface.definitions,
       settings: jsonObject(config['provider_settings']), effectiveReasoning: effort,
@@ -153,6 +155,7 @@ class _Agent {
     return {
       ..._contextState,
       'sessionID': taskId, 'model': {'providerID': config['provider'], 'id': current.model},
+      'model_info': ?current.modelInfo,
       'limit': config['context_window'] ?? current.settings['context_limit'],
       'instructions': current.instructions, 'tools': current.tools.map((tool) => tool.toJson()).toList(),
       'settings': current.settings, 'effectiveReasoning': current.effectiveReasoning,
@@ -251,7 +254,8 @@ class _Agent {
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
     final interface = toolInterface(config['tool_interface'] as String, model: config['model'] as String,
-      settings: jsonObject(config['provider_settings']));
+      settings: jsonObject(config['provider_settings']),
+      modelInfo: config['model_info'] == null ? null : jsonObject(config['model_info']));
     ToolRuntime? host;
     var goalsEnabled = false;
     var uncachedTokensUsed = 0;
@@ -287,6 +291,7 @@ class _Agent {
       await callIsolate(network, 'validate_settings', {
         'provider': config['provider'],
         'model': config['model'],
+        'model_info': config['model_info'],
         'settings': {...baseline, 'reasoning': selectedEffort},
       }, cancellation: cancellation);
       cancellation.throwIfCancelled();
@@ -648,12 +653,39 @@ class _Agent {
         }
       }
 
-      Future<String> searchWeb(Object? commands, CancellationToken token) async =>
-          await callIsolate(network, 'web.search', {
-            'provider': config['provider'],
-            ...request().toJson(),
-            'commands': commands,
-          }, timeout: null, cancellation: token) as String;
+      Future<Object?> nativeTool(String method, Json arguments, String id, CancellationToken token) async {
+        Json? started;
+        var completed = false;
+        Future<void> notifications = Future.value();
+        try {
+          return await callIsolate(network, method, {
+            'provider': config['provider'], ...request().toJson(), ...arguments,
+            'call_id': id, 'turn_id': turnId,
+          }, timeout: null, cancellation: token, onEvent: (notification) {
+            final data = jsonObject(notification['data']);
+            if (notification['type'] == 'native.item.started') started = data;
+            if (notification['type'] == 'native.item.completed') completed = true;
+            notifications = notifications.then((_) async {
+              if (notification['type'] == 'native.item.completed') {
+                await callIsolate(writer, 'native.item.queue', data);
+              } else { event(await _append('native.item.started', data)); }
+            });
+            unawaited(notifications.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+          });
+        } finally {
+          await notifications;
+          // A cancelled request closes its mailbox before the network worker
+          // replies. Close the announced item before its terminal commit.
+          if (started != null && !completed) {
+            await callIsolate(writer, 'native.item.queue', {
+              ...started!,
+              'item': {...jsonObject(started!['item']), if (method == 'image.generate') 'status': 'failed'},
+              'canonicalItem': {...jsonObject(started!['canonicalItem']), if (method == 'image.generate') 'status': 'failed'},
+              'completedAtMs': DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+      }
 
       Future<void> compactContext(String reason) async {
         work.throwIfCancelled();
@@ -927,36 +959,9 @@ class _Agent {
                         ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd, 'provider': config['provider'],
                       }, cancellation: cancellation);
                     } else if (service == 'web.search') {
-                      output = await searchWeb(arguments, cancellation);
+                      output = await nativeTool('web.search', {'commands': arguments}, id, cancellation);
                     } else if (service == 'image.generate') {
-                      Json? started;
-                      var completed = false;
-                      Future<void> notifications = Future.value();
-                      try {
-                      output = await callIsolate(network, 'image.generate', {
-                        'provider': config['provider'], ...request().toJson(),
-                        'arguments': arguments, 'call_id': id, 'turn_id': turnId,
-                      }, timeout: null, cancellation: cancellation, onEvent: (notification) {
-                        final data = jsonObject(notification['data']);
-                        if (notification['type'] == 'native.item.started') started = data;
-                        if (notification['type'] == 'native.item.completed') completed = true;
-                        notifications = notifications.then((_) async {
-                          if (notification['type'] == 'native.item.completed') await callIsolate(writer, 'native.item.queue', data);
-                          else event(await _append('native.item.started', data));
-                        });
-                        unawaited(notifications.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
-                      });
-                      } finally {
-                        await notifications;
-                        // Cancellation closes the request mailbox before the
-                        // network worker can reply. Close only the item actually
-                        // announced to this caller, before its terminal commit.
-                        if (started != null && !completed) await callIsolate(writer, 'native.item.queue', {
-                          ...started!, 'item': {...jsonObject(started!['item']), 'status': 'failed'},
-                          'canonicalItem': {...jsonObject(started!['canonicalItem']), 'status': 'failed'},
-                          'completedAtMs': DateTime.now().millisecondsSinceEpoch,
-                        });
-                      }
+                      output = await nativeTool('image.generate', {'arguments': arguments}, id, cancellation);
                     } else if (service?.startsWith('goal.') == true) {
                       output = await goal(service!.substring(5), jsonObject(arguments), cancellation);
                     } else if (service?.startsWith('history.') == true) {

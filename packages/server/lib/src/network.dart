@@ -58,6 +58,7 @@ Future<void> _networkMain(List<Object?> args) async {
   final auth = AuthManager(directory, http: http);
   final consoleAuth = OpenCodeAuthManager(directory, http: http);
   final endpoint = startup['endpoint'];
+  final lifetime = CancellationToken();
   final apiKeyEnv = startup['api_key_env'] as String?;
   if (apiKeyEnv != null && endpoint == null) throw ArgumentError('An API-key Responses endpoint is required');
   Future<Json> gptCredentials({bool refresh = false}) async {
@@ -68,13 +69,13 @@ Future<void> _networkMain(List<Object?> args) async {
     if (host == 'localhost' || (InternetAddress.tryParse(host)?.isLoopback ?? false)) return {};
     throw StateError('Responses API credential environment variable is missing');
   }
-  final gpt = OpenAIProvider(
-    ResponsesClient(
-      http: http,
-      credentials: gptCredentials,
-      endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
-    ),
+  final gptClient = ResponsesClient(
+    http: http,
+    credentials: gptCredentials,
+    endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
   );
+  final gptCatalog = GptCatalog(gptClient, directory: directory, lifetime: lifetime);
+  final gpt = OpenAIProvider(gptClient, catalog: gptCatalog);
   final searchEndpoint = startup['opencode_search_endpoint'] as String?;
   final deepseek = OpenCodeProvider.native(
     http: http,
@@ -103,7 +104,6 @@ Future<void> _networkMain(List<Object?> args) async {
   String? loginId, loginOwner;
   CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
-  final lifetime = CancellationToken();
   final mcp = McpManager(
     http: http,
     clientCapabilities: mcpInputCapabilities,
@@ -413,6 +413,7 @@ Future<void> _networkMain(List<Object?> args) async {
               },
             });
           if (provider == 'openai') {
+            gptCatalog.invalidate();
             (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
             await auth.login(cancellation: cancellation, notify: notify);
           } else {
@@ -435,6 +436,7 @@ Future<void> _networkMain(List<Object?> args) async {
         final requestedProvider = requiredString(params, 'provider');
         final provider = requestedProvider == 'gpt' ? 'openai' : requestedProvider;
         if (provider == 'openai') {
+          gptCatalog.invalidate();
           (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
           await auth.signOut();
         } else if (provider == 'opencode') {
@@ -598,6 +600,7 @@ Future<void> _networkMain(List<Object?> args) async {
         return;
       }
       if (request['method'] == 'providers.list') {
+        await gptCatalog.refresh(cancellation);
         reply?.send({
           'result': {
             'default_provider': 'openai',
@@ -607,17 +610,17 @@ Future<void> _networkMain(List<Object?> args) async {
                 'name': 'ChatGPT',
                 'auth': 'chatgpt',
                 'status': await auth.status(),
-                'default_model': defaultGptModel,
+                'default_model': gpt.defaultModel,
                 'models': [
                   for (final model in supportedGptModels)
                     {
                       'id': model,
-                      'name': GptModel(model).data['display_name'] ?? model,
-                      'reasoning_levels': GptModel(model).reasoningLevels,
-                      'default_reasoning': GptModel(model).defaultReasoning,
-                      'reasoning_updates': GptModel(model).reasoningUpdates,
-                      'input_modalities': GptModel(model).data['input_modalities'],
-                      'context_limit': GptModel(model).usableContextWindow(),
+                      'name': gpt.modelInfo(model).data['display_name'] ?? model,
+                      'reasoning_levels': gpt.modelInfo(model).reasoningLevels,
+                      'default_reasoning': gpt.modelInfo(model).defaultReasoning,
+                      'reasoning_updates': gpt.modelInfo(model).reasoningUpdates,
+                      'input_modalities': gpt.modelInfo(model).data['input_modalities'],
+                      'context_limit': gpt.modelInfo(model).usableContextWindow(),
                     },
                 ],
               },
@@ -653,9 +656,10 @@ Future<void> _networkMain(List<Object?> args) async {
         final lab = selectedProvider == 'gpt' ? 'openai' : selectedProvider;
         final provider = providers[lab];
         if (provider == null) throw ArgumentError('Unsupported provider');
+        if (lab == 'openai') await gptCatalog.refresh(cancellation);
         final model =
             modelInput ??
-            (provider is OpenCodeProvider ? provider.defaultModel : defaultGptModel);
+            (provider is OpenCodeProvider ? provider.defaultModel : gpt.defaultModel);
         final selected = {
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],
@@ -668,7 +672,7 @@ Future<void> _networkMain(List<Object?> args) async {
           } on CancelledException { rethrow; }
           catch (_) { settings['image_generation'] = false; }
         }
-        final info = lab == 'openai' ? GptModel(model) : null;
+        final info = lab == 'openai' ? gpt.modelInfo(model) : null;
         // PersistentModeState is separate developer context in Codex, enabled
         // only for persistent reasoning. This runtime does not offer that mode.
         final base = info?.instructions ?? deepseekInstructions(model);
@@ -676,11 +680,12 @@ Future<void> _networkMain(List<Object?> args) async {
           'result': {
             'provider': lab,
             'model': model,
+            if (info != null) 'model_info': info.data,
             'provider_settings': settings,
             'instructions': base,
             'reasoning_updates': info?.reasoningUpdates ?? false,
             'catalog_revision': lab == 'openai'
-                ? gptCatalogRevision
+                ? gptCatalog.revision
                 : (provider as OpenCodeProvider).catalogRevision,
           },
         });
@@ -696,10 +701,10 @@ Future<void> _networkMain(List<Object?> args) async {
         final lab = requiredString(params, 'provider');
         final provider = providers[lab];
         if (provider == null) throw ArgumentError('Unsupported provider');
-        final settings = provider.resolveSettings(
-          jsonObject(params['settings']),
-          model: requiredString(params, 'model'),
-        );
+        final settings = provider is OpenAIProvider
+          ? provider.resolveSettings(jsonObject(params['settings']), model: requiredString(params, 'model'),
+            modelInfo: params['model_info'] == null ? null : jsonObject(params['model_info']))
+          : provider.resolveSettings(jsonObject(params['settings']), model: requiredString(params, 'model'));
         reply?.send({'result': settings});
         return;
       }
@@ -721,16 +726,20 @@ Future<void> _networkMain(List<Object?> args) async {
         reply?.send({'event': event});
       }
       final Object? result;
+      Future<void> onNativeItem(String phase, Json item) async => reply?.send({'event': {
+        'type': 'native.item.$phase', 'data': {
+          'turnId': params['turn_id'], 'item': projectedCodexItem(item), 'canonicalItem': item,
+          if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch,
+        },
+      }});
       if (request['method'] == 'web.search') {
-        result = await provider.webSearch(input, jsonObject(params['commands']), cancellation: cancellation);
+        result = await provider.webSearch(input, jsonObject(params['commands']), cancellation: cancellation,
+          callId: requiredString(params, 'call_id'), onItem: onNativeItem);
       } else if (request['method'] == 'image.generate') {
         if (provider is! OpenAIProvider) throw ArgumentError('Provider does not support image generation');
         result = await provider.generateImage(input, jsonObject(params['arguments']), outputRoot: directory,
           callId: requiredString(params, 'call_id'), turnId: requiredString(params, 'turn_id'), cancellation: cancellation,
-          onItem: (phase, item) async => reply?.send({'event': {'type': 'native.item.$phase', 'data': {
-            'turnId': params['turn_id'], 'item': projectedCodexItem(item), 'canonicalItem': item,
-            if (phase == 'completed') 'completedAtMs': DateTime.now().millisecondsSinceEpoch,
-          }}}));
+          onItem: onNativeItem);
       } else if (request['method'] == 'compact') {
         result = (await provider.compact(
           input,

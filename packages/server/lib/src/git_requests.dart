@@ -155,6 +155,7 @@ extension _GitRequests on AgentServer {
             final history = await runGit(root, ['log', '-5', '--format=%s'], cancellation, accepted: {0, 128});
             final provider = requiredString(config, 'provider'), reasoning = config['provider'] == 'openai' ? 'low' : 'off';
             final request = ModelRequest(taskId: newUuidV7(), model: requiredString(config, 'model'),
+              modelInfo: config['model_info'] == null ? null : jsonObject(config['model_info']),
               instructions: _commitInstructions, input: [ConversationItem.text('user', jsonEncode({
                 'branch': status['branch'], 'recentSubjects': clippedText(history.output, 2000),
                 'summary': context.summary, 'diff': context.patch,

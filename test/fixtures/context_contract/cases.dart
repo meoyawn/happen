@@ -113,13 +113,31 @@ const contextCases = <Map<String, dynamic>>[
     'id': 'web-search', 'workflow': 'web',
     'prompt': 'google youtube to podcast tools',
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
-    'search': {
-      'commands': {'search_query': [{'q': 'youtube to podcast tools'}], 'response_length': 'short'},
-      'output': 'YOUTUBE_PODCAST_SEARCH_RECEIPT\nListenbox converts YouTube videos into podcast feeds.\nSource: https://listenbox.app/',
-    },
+    // Replay the search/open/search/open progression from the supplied Codex
+    // rollout. The endpoint advances only after the corresponding real calls.
+    'searches': [
+      {'commands': {'search_query': [{'q': 'youtube to podcast tools'}, {'q': 'youtube RSS podcast converter'}], 'response_length': 'short'},
+        'output': 'YOUTUBE_PODCAST_SEARCH_RECEIPT\nListenbox converts YouTube videos into podcast feeds.\nSource: https://listenbox.app/'},
+      {'commands': {'open': [{'ref_id': 'turn0search0'}, {'ref_id': 'turn0search1'}], 'response_length': 'short'},
+        'output': 'YOUTUBE_PODCAST_OPEN_RECEIPT\nSelf-hosted alternatives include Podsync.'},
+      {'commands': {'search_query': [{'q': 'site:github.com/mxpv/podsync Podsync YouTube podcast RSS'}], 'response_length': 'short'},
+        'output': 'YOUTUBE_PODCAST_TARGETED_RECEIPT\nPodsync: https://github.com/mxpv/podsync'},
+      {'commands': {'open': [{'ref_id': 'https://github.com/mxpv/podsync'}], 'response_length': 'short'},
+        'output': 'YOUTUBE_PODCAST_REPOSITORY_RECEIPT\nPodsync is free, open-source, and self-hosted.'},
+      {'commands': {'find': [{'ref_id': 'turn0search0', 'pattern': 'playlist'}], 'response_length': 'short'},
+        'output': 'YOUTUBE_PODCAST_FIND_RECEIPT\nPodsync supports channels and playlists.'},
+    ],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_search',
-        'input': 'text(await tools.web__run({search_query:[{q:"youtube to podcast tools"}],response_length:"short"}));'}],
+        'input': 'text(await tools.web__run({search_query:[{q:"youtube to podcast tools"},{q:"youtube RSS podcast converter"}],response_length:"short"}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_open',
+        'input': 'text(await tools.web__run({open:[{ref_id:"turn0search0"},{ref_id:"turn0search1"}],response_length:"short"}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_targeted',
+        'input': 'text(await tools.web__run({search_query:[{q:"site:github.com/mxpv/podsync Podsync YouTube podcast RSS"}],response_length:"short"}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_repository',
+        'input': 'text(await tools.web__run({open:[{ref_id:"https://github.com/mxpv/podsync"}],response_length:"short"}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_find',
+        'input': 'text(await tools.web__run({find:[{ref_id:"turn0search0",pattern:"playlist"}],response_length:"short"}));'}],
       [
         {'type': 'message', 'role': 'assistant', 'phase': 'commentary', 'content': [{
           'type': 'output_text', 'text': 'Listenbox converts YouTube videos into podcast feeds.',

@@ -153,10 +153,11 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
               PopupMenuButton<String>(tooltip: 'Settings pages', initialValue: _page, onSelected: _select,
                 itemBuilder: (_) => [for (final item in _pages)
                   PopupMenuItem(value: item.id, child: Text(item.label))],
-                child: Padding(padding: const EdgeInsets.all(6), child: Row(mainAxisSize: MainAxisSize.min, children: [
+                child: MouseRegion(cursor: SystemMouseCursors.click,
+                  child: Padding(padding: const EdgeInsets.all(6), child: Row(mainAxisSize: MainAxisSize.min, children: [
                   Text(page.label, style: const TextStyle(fontSize: 13)),
                   const SizedBox(width: 6), const Icon(Icons.keyboard_arrow_down, size: 16),
-                ]))),
+                ])))),
             ])),
             Expanded(child: content),
             ]);
@@ -492,6 +493,7 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
             onLeave: () { if (mounted) setState(() => _dragOver = false); },
             onDrop: _dropIcon,
             child: Tooltip(message: 'Choose project icon', child: InkWell(
+              mouseCursor: WidgetStateMouseCursor.clickable,
               onTap: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(_chooseIcon)),
               borderRadius: BorderRadius.circular(6),
               child: Container(padding: const EdgeInsets.all(4),
@@ -525,6 +527,7 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
           BoxShadow(color: Color(0xfffafafa), spreadRadius: 2),
         ] : null),
         child: InkWell(borderRadius: BorderRadius.circular(6),
+          mouseCursor: WidgetStateMouseCursor.clickable,
           onTap: () => unawaited(widget.run(() => widget.session.chooseProjectAvatarColor(project, selected ? null : color))),
           child: SizedBox.square(dimension: 20, child: Stack(alignment: Alignment.center, children: [
             ProjectAvatar(project: project, color: color, label: '', size: 20),
@@ -601,6 +604,7 @@ Widget _appIconChoice(AppIconChoice choice, {required bool selected, required bo
       side: BorderSide(color: selected ? opencodeInk : opencodeBorder, width: selected ? 1.5 : .5)),
     clipBehavior: Clip.antiAlias,
     child: InkWell(onTap: enabled ? onSelected : null, canRequestFocus: false, excludeFromSemantics: true,
+      mouseCursor: WidgetStateMouseCursor.clickable,
       child: SizedBox(width: 144, child: Padding(padding: const EdgeInsets.all(12),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ExcludeSemantics(child: Image.asset(appIconPreviewAsset(choice), width: 88, height: 88,

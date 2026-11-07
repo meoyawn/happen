@@ -933,6 +933,7 @@ class AgentServer {
             await callIsolate(network.port, 'validate_settings', {
               'provider': config['provider'],
               'model': config['model'],
+              'model_info': config['model_info'],
               'settings': {...baseline, 'reasoning': effort},
             }, cancellation: client.cancellation);
             // Validation can outlive the current turn. Admit against its latest owner.

@@ -4,7 +4,8 @@ import 'package:protocol/protocol.dart';
 
 import 'catalog_data.dart';
 
-const gptCatalogRevision = '2681f8cba2831ef72bca2c0672b2e49d5f690745';
+const gptCatalogRevision = 'efdacaf46ff54660a239189a6d62434c5db33d2c';
+const gptCatalogClientVersion = '0.166.0';
 const supportedGptModels = {
   'gpt-6.1-sol',
   'gpt-6-astra',
@@ -19,8 +20,10 @@ final _catalog = {
     (value as Map)['slug'] as String: jsonObject(value),
 };
 
-String get defaultGptModel {
-  final available = _catalog.values.where((model) =>
+String get defaultGptModel => catalogDefaultGptModel(_catalog.values);
+
+String catalogDefaultGptModel(Iterable<Json> models) {
+  final available = models.where((model) =>
     supportedGptModels.contains(model['slug']) && model['visibility'] == 'list' &&
     model['supported_in_api'] == true).toList()
     ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int));
@@ -28,13 +31,14 @@ String get defaultGptModel {
 }
 
 class GptModel {
-  GptModel(String model)
+  GptModel(String model, {Json? metadata})
     : data =
-          _catalog[model] ??
+          metadata ?? _catalog[model] ??
           (throw ArgumentError('Unknown GPT model: $model')) {
     if (!supportedGptModels.contains(model)) {
       throw ArgumentError('GPT model is not supported by this harness: $model');
     }
+    if (data['slug'] != model) throw const FormatException('Model metadata does not match its model');
   }
   final Json data;
   String get id => data['slug'] as String;
