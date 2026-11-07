@@ -5,6 +5,7 @@ import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/file_autocomplete.dart';
 import 'package:desktop/file_icon.dart';
 import 'package:desktop/session.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -106,7 +107,7 @@ String _selected(WidgetTester tester) {
   return tester.widget<Text>(find.descendant(of: row, matching: find.byWidgetPredicate((widget) => widget is Text && widget.textSpan != null)).first).textSpan!.toPlainText();
 }
 
-void _testComposer(String description, WidgetTesterCallback body) {
+void _testComposer(String description, WidgetTesterCallback body, {TargetPlatformVariant? variant}) {
   testWidgets(description, (tester) async {
     try { await body(tester); }
     finally {
@@ -115,10 +116,39 @@ void _testComposer(String description, WidgetTesterCallback body) {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 150));
     }
-  }, variant: TargetPlatformVariant.desktop());
+  }, variant: variant ?? TargetPlatformVariant.desktop());
 }
 
 void main() {
+  _testComposer('macOS triple-click selects a wrapped paragraph including its newline', (tester) async {
+    const paragraph = 'Triple clicks should select this whole paragraph even when it wraps onto several visual lines. '
+      'More text keeps it longer than the editor width.';
+    final composer = await _open(tester, text: 'Before.\n$paragraph\nAfter.');
+    final position = tester.getTopLeft(find.byType(CodeEditor)) + const Offset(90, 50);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    var timestamp = Duration.zero;
+    Future<void> click() async {
+      await mouse.down(position, timeStamp: timestamp);
+      await mouse.up(timeStamp: timestamp + const Duration(milliseconds: 10));
+      await tester.pump(const Duration(milliseconds: 20));
+      timestamp += const Duration(milliseconds: 200);
+    }
+    await click();
+    expect(composer.text.selection.isCollapsed, isTrue);
+    await click();
+    expect(composer.text.selection.isCollapsed, isFalse);
+    expect(composer.code.selectedText.length, lessThan(paragraph.length));
+    await click();
+    final selection = TextSelection(baseOffset: 8, extentOffset: 8 + paragraph.length + 1);
+    expect(composer.text.selection, selection);
+    expect(composer.code.selectedText, '$paragraph\n');
+    await click();
+    expect(composer.text.selection, selection);
+    timestamp += const Duration(seconds: 1);
+    await click();
+    expect(composer.text.selection, isNot(selection));
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   _testComposer('word shortcuts use Unicode boundaries for deletion, movement, and selection', (tester) async {
     final composer = await _open(tester);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);

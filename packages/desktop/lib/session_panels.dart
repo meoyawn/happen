@@ -197,7 +197,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
 
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
-    decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: opencodeBorder, width: .5))),
+    decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: desktopBorder, width: .5))),
     padding: const EdgeInsets.symmetric(horizontal: 8),
     child: Row(children: [
       Expanded(child: LayoutBuilder(builder: (context, bounds) {
@@ -212,7 +212,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                   : isBrowserPanel(tab) ? Icons.language_rounded
                   : isDiffPanel(tab) || tab == workspaceChangesPanel ? Icons.difference_outlined
                   : isSideChatPanel(tab) ? Icons.chat_bubble_outline_rounded : Icons.add_rounded,
-                  size: 14, color: state.active == tab ? opencodeInk : opencodeFaint),
+                  size: 14, color: state.active == tab ? desktopForeground : desktopTertiary),
             active: state.active == tab,
             onSelect: () => widget.session.selectSessionPanel(widget.task!, tab),
             onClose: () => _close(tab),
@@ -244,21 +244,21 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   Widget _launchers(SessionPanelState state) => ListView(
     key: ValueKey('panel-launchers:${widget.task!.id}'),
     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28), children: [
-      const Text('Open a panel', style: TextStyle(fontSize: 13, color: opencodeMuted)),
+      const Text('Open a panel', style: TextStyle(fontSize: 13, color: desktopSecondary)),
       const SizedBox(height: 16),
       ListTile(key: const ValueKey('open-browser-panel'), contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.language_rounded, size: 18, color: opencodeMuted),
+        leading: const Icon(Icons.language_rounded, size: 18, color: desktopSecondary),
         title: const Text('Browser', style: TextStyle(fontSize: 13)),
         subtitle: const Text('Preview your app, read docs, or browse the web',
-          style: TextStyle(fontSize: 12, color: opencodeFaint)),
-        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: opencodeFaint),
+          style: TextStyle(fontSize: 12, color: desktopTertiary)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: desktopTertiary),
         onTap: () => widget.session.openBrowserPanel(widget.task!)),
       ListTile(key: const ValueKey('open-side-chat'), contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18, color: opencodeMuted),
+        leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18, color: desktopSecondary),
         title: const Text('Side chat', style: TextStyle(fontSize: 13)),
         subtitle: const Text('Ask a question with context from this session',
-          style: TextStyle(fontSize: 12, color: opencodeFaint)),
-        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: opencodeFaint),
+          style: TextStyle(fontSize: 12, color: desktopTertiary)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: desktopTertiary),
         enabled: widget.session.connected && !widget.task!.archived && !widget.task!.archiving,
         onTap: () => unawaited(() async {
           try { await widget.session.openSideChat(widget.task!); }
@@ -266,16 +266,16 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
           catch (error) { widget.session.showError(error); }
         }())),
       ListTile(key: const ValueKey('open-context-panel'), contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.donut_large_rounded, size: 18, color: opencodeMuted),
+        leading: const Icon(Icons.donut_large_rounded, size: 18, color: desktopSecondary),
         title: const Text('Context', style: TextStyle(fontSize: 13)),
-        subtitle: const Text('Usage, system prompt, and raw messages', style: TextStyle(fontSize: 12, color: opencodeFaint)),
-        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: opencodeFaint),
+        subtitle: const Text('Usage, system prompt, and raw messages', style: TextStyle(fontSize: 12, color: desktopTertiary)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: desktopTertiary),
         onTap: () => widget.session.openSessionPanel(widget.task!, contextPanel)),
       if (state.closed.isNotEmpty) ...[
         const SizedBox(height: 28),
-        const Text('Recently closed', style: TextStyle(fontSize: 12, color: opencodeFaint)),
+        const Text('Recently closed', style: TextStyle(fontSize: 12, color: desktopTertiary)),
         for (final tab in state.closed) ListTile(contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.history_rounded, size: 16, color: opencodeFaint),
+          leading: const Icon(Icons.history_rounded, size: 16, color: desktopTertiary),
           title: Text(_panelTitle(tab, state), maxLines: 1, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 13)),
           onTap: () => widget.session.openSessionPanel(widget.task!, tab)),
@@ -322,31 +322,31 @@ class _SideChatPanelState extends State<_SideChatPanel> {
     return Column(children: [
       const Padding(padding: EdgeInsets.fromLTRB(20, 12, 20, 4),
         child: Align(alignment: Alignment.centerLeft, child: Text('Temporary side chat',
-          style: TextStyle(fontSize: 12, color: opencodeFaint)))),
+          style: TextStyle(fontSize: 12, color: desktopTertiary)))),
       Expanded(child: side.sidePreparing
         ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(
             mainAxisSize: MainAxisSize.min, children: [
               if (side.sideError == null)
                 const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2))
-              else const Icon(Icons.error_outline_rounded, color: opencodeFaint),
+              else const Icon(Icons.error_outline_rounded, color: desktopTertiary),
               const SizedBox(height: 12),
               Text(side.sideError == null ? 'Preparing side chat…' : 'Couldn’t prepare side chat',
-                style: const TextStyle(fontSize: 14, color: opencodeMuted)),
+                style: const TextStyle(fontSize: 14, color: desktopSecondary)),
               if (side.sideError == null) ...[
                 const SizedBox(height: 6),
                 const Text('You can start typing below.',
-                  style: TextStyle(fontSize: 12, color: opencodeFaint)),
+                  style: TextStyle(fontSize: 12, color: desktopTertiary)),
               ],
             ])))
         : side.loaded && side.messages.isEmpty && !side.running
         ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Column(
             mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.chat_bubble_outline_rounded, size: 24, color: opencodeFaint),
+              Icon(Icons.chat_bubble_outline_rounded, size: 24, color: desktopTertiary),
               SizedBox(height: 12),
-              Text('Ask a side question', style: TextStyle(fontSize: 14, color: opencodeMuted)),
+              Text('Ask a side question', style: TextStyle(fontSize: 14, color: desktopSecondary)),
               SizedBox(height: 6),
               Text('Uses a snapshot of the main conversation.',
-                textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: opencodeFaint)),
+                textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: desktopTertiary)),
             ])))
         : ConversationDataScope(client: widget.session.client, providers: widget.session.providers,
             child: ConversationTranscript(key: ValueKey(side.id), task: side,
@@ -368,7 +368,7 @@ class SessionPanelFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(clipBehavior: Clip.antiAlias,
     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10),
-      border: Border.all(color: opencodeBorder, width: .5),
+      border: Border.all(color: desktopBorder, width: .5),
       boxShadow: const [BoxShadow(color: Color(0x0a000000), blurRadius: 3, offset: Offset(0, 1))]),
     child: Material(color: Colors.white, child: child));
 }
@@ -385,7 +385,7 @@ class _SidePanelGlyph extends CustomPainter {
   final bool opened;
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = opencodeFaint..style = PaintingStyle.stroke..strokeWidth = 1.3;
+    final paint = Paint()..color = desktopTertiary..style = PaintingStyle.stroke..strokeWidth = 1.3;
     canvas.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(1.5, 2.5, 13, 11), const Radius.circular(1.5)), paint);
     canvas.drawLine(const Offset(9.5, 2.5), const Offset(9.5, 13.5), paint);
     if (opened) canvas.drawRect(const Rect.fromLTWH(10.3, 3.3, 3.4, 9.4), paint..style = PaintingStyle.fill);
@@ -440,7 +440,7 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
       child: GestureDetector(onTertiaryTapUp: (_) => widget.onClose(),
         onSecondaryTapUp: (event) => widget.onMenu(event.globalPosition),
       child: Tooltip(message: widget.title,
-      child: Material(color: widget.active ? conversationSurface : Colors.transparent,
+      child: Material(color: widget.active ? desktopMuted : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(onTap: widget.onSelect, mouseCursor: WidgetStateMouseCursor.clickable,
           borderRadius: BorderRadius.circular(6), child: SizedBox(height: 24,
@@ -449,13 +449,13 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
             const SizedBox(width: 2),
             Expanded(child: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 12,
-                color: widget.active ? conversationForeground : conversationSecondary))),
+                color: widget.active ? desktopForeground : desktopSecondary))),
             const SizedBox(width: 2),
             SizedBox.square(dimension: 16, child: _hovered || _focused
               ? IconButton(tooltip: 'Close ${widget.title}',
                   onPressed: widget.onClose, padding: EdgeInsets.zero,
                   style: IconButton.styleFrom(minimumSize: const Size.square(16),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap, foregroundColor: conversationSecondary),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap, foregroundColor: desktopSecondary),
                   icon: const Icon(Icons.close_rounded, size: 12))
               : null),
           ]))))))))));
@@ -464,7 +464,7 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
 Widget _panelButton(String label, IconData icon, VoidCallback onPressed) => SizedBox.square(dimension: 28,
   child: IconButton(tooltip: label, onPressed: onPressed, padding: EdgeInsets.zero,
     style: IconButton.styleFrom(minimumSize: const Size.square(28), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-    icon: Icon(icon, size: 16, color: opencodeMuted)));
+    icon: Icon(icon, size: 16, color: desktopSecondary)));
 
 String _panelTitle(String tab, [SessionPanelState? state]) => tab == contextPanel ? 'Context'
   : tab == workspaceChangesPanel ? 'Changes'

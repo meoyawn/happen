@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import 'appearance.dart';
+
 // T3 Code's sidebar uses these Lucide icons. See LUCIDE-NOTICE.
 enum SidebarIcon { search, listFilter, folderPlus, squarePen, pin, pinOff, check }
 
-Widget sidebarIcon(SidebarIcon icon, {double size = 16, Color color = const Color(0xff85858f)}) =>
+Widget sidebarIcon(SidebarIcon icon, {double size = 16, Color color = desktopTertiary}) =>
   SvgPicture.string(_sources[icon]!, width: size, height: size,
     colorFilter: ColorFilter.mode(color, BlendMode.srcIn), excludeFromSemantics: true);
 

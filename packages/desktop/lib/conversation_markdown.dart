@@ -16,10 +16,6 @@ import 'inline_image.dart';
 import 'conversation_data.dart';
 import 'desktop_toast.dart';
 
-const conversationInk = conversationForeground;
-const conversationMuted = conversationSecondary;
-const conversationBorder = conversationOutline;
-
 class ConversationMarkdown extends StatelessWidget {
   const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false,
     this.fontSize = 14, this.reasoning = false});
@@ -63,48 +59,49 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
     final fitContent = markdown.fitContent, reasoning = markdown.reasoning;
     final fontSize = markdown.fontSize;
     final theme = Theme.of(context);
+    final accent = DesktopAccent.of(context);
     final styleKey = (theme, fontSize, reasoning);
     // MarkdownBody reparses on style identity changes. Compare themes by value
     // because Theme.of can return equal localized copies on unrelated rebuilds.
     if (_styleState != styleKey) {
       _styleState = styleKey;
-      final body = TextStyle(fontSize: fontSize, height: 1.625,
-        letterSpacing: 0, color: reasoning ? conversationSecondary : conversationForeground);
+      final body = theme.textTheme.bodyLarge!.copyWith(fontSize: fontSize,
+        letterSpacing: 0, color: reasoning ? desktopSecondary : desktopForeground);
       _styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
         p: body,
-        a: body.copyWith(color: conversationAccent, decoration: TextDecoration.none),
+        a: body.copyWith(color: accent.reference, decoration: TextDecoration.none),
         h1: body.copyWith(fontSize: 20, height: 1.3, fontWeight: FontWeight.w600),
         h2: body.copyWith(fontSize: 18, height: 1.3, fontWeight: FontWeight.w600),
         h3: body.copyWith(fontSize: 16, height: 1.3, fontWeight: FontWeight.w600),
         h4: body.copyWith(fontWeight: FontWeight.w600),
         h5: body.copyWith(fontWeight: FontWeight.w600),
-        h6: body.copyWith(fontWeight: FontWeight.w600, color: conversationSecondary),
+        h6: body.copyWith(fontWeight: FontWeight.w600, color: desktopSecondary),
         h1Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h2Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h3Padding: const EdgeInsets.only(top: 20, bottom: 8),
-        code: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: fontSize * .875,
-          // Flutter paints span backgrounds over the selection highlight.
-          color: conversationForeground, backgroundColor: conversationForeground.withValues(alpha: .04)),
+        code: TextStyle(fontFamily: desktopMonoFamily, fontSize: fontSize * .875,
+          // Keep the fill translucent: span backgrounds paint over selection.
+          color: desktopForeground, backgroundColor: desktopMuted),
         strong: body.copyWith(fontWeight: FontWeight.w600),
         blockSpacing: 10.4,
         listBullet: body,
         listIndent: 24,
-        blockquote: body.copyWith(color: conversationMuted),
+        blockquote: body.copyWith(color: desktopSecondary),
         blockquotePadding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
         blockquoteDecoration: const BoxDecoration(
-          border: Border(left: BorderSide(color: Color(0xffd4d6db), width: 2)),
+          border: Border(left: BorderSide(color: desktopBorderStrong, width: 2)),
         ),
         tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
         tableBody: body.copyWith(fontSize: 13),
         tableHeadAlign: TextAlign.left,
         tableColumnWidth: const FlexColumnWidth(),
-        tableBorder: TableBorder.all(color: conversationBorder),
+        tableBorder: TableBorder.all(color: desktopBorder),
         tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        tableHeadCellsDecoration: const BoxDecoration(color: Color(0xfff4f4f6)),
-        tableCellsDecoration: const BoxDecoration(color: Colors.white),
+        tableHeadCellsDecoration: const BoxDecoration(color: desktopMuted),
+        tableCellsDecoration: const BoxDecoration(color: desktopSurface),
         codeblockDecoration: const BoxDecoration(),
         horizontalRuleDecoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: conversationBorder)),
+          border: Border(top: BorderSide(color: desktopBorder)),
         ),
       );
     }
@@ -125,7 +122,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         checkboxBuilder: (checked) => Padding(
           padding: const EdgeInsets.only(top: 4, right: 4),
           child: Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank,
-            size: 17, color: checked ? conversationInk : conversationMuted),
+            size: 17, color: checked ? desktopForeground : desktopSecondary),
         ),
         onTapLink: (_, href, _) {
           if (href != null) {
@@ -192,7 +189,7 @@ class _SkillLinkBuilder extends MarkdownElementBuilder {
           const WidgetSpan(alignment: PlaceholderAlignment.middle,
             child: Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())),
           TextSpan(text: element.textContent),
-        ]), style: (parentStyle ?? const TextStyle()).copyWith(color: inlineReferenceAccent,
+        ]), style: (parentStyle ?? const TextStyle()).copyWith(color: DesktopAccent.of(context).reference,
           fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
       ),
     ));
@@ -237,16 +234,16 @@ class _ConversationCodeState extends State<ConversationCode> {
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: conversationOutline),
-        borderRadius: BorderRadius.circular(8),
+        color: desktopSurface,
+        border: Border.all(color: desktopBorder),
+        borderRadius: BorderRadius.circular(desktopControlRadius),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
           padding: const EdgeInsets.only(left: 14, right: 4),
           child: Row(children: [
             Expanded(child: Text(widget.language.isEmpty ? 'text' : widget.language,
-              style: const TextStyle(fontSize: 11, color: conversationMuted))),
+              style: const TextStyle(fontSize: 11, color: desktopSecondary))),
             IconButton(
               tooltip: _wrap ? 'Scroll long lines' : 'Wrap long lines',
               isSelected: _wrap,
@@ -257,7 +254,7 @@ class _ConversationCodeState extends State<ConversationCode> {
             ConversationCopyButton(text: text, label: 'Copy code'),
           ]),
         ),
-        const Divider(height: 1, color: conversationBorder),
+        const Divider(height: 1, color: desktopBorder),
         LayoutBuilder(builder: (context, constraints) {
           final code = SelectableText.rich(
             TextSpan(children: [
@@ -266,9 +263,9 @@ class _ConversationCodeState extends State<ConversationCode> {
             ]),
             // ExpansionTile saves a bool; this text saves its own scroll offset.
             key: const PageStorageKey('code-selection'),
-            style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 13,
+            style: TextStyle(fontFamily: desktopMonoFamily, fontSize: 13,
               height: 1.625, letterSpacing: 0,
-              color: conversationForeground),
+              color: desktopForeground),
           );
           return Scrollbar(
             controller: _scroll,
@@ -331,7 +328,7 @@ class _ConversationCopyButtonState extends State<ConversationCopyButton> {
       padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap) : null,
     visualDensity: VisualDensity.compact,
     icon: Icon(_copied ? Icons.check_rounded : Icons.content_copy_rounded,
-      size: widget.compact ? 14 : 15, color: widget.compact ? opencodeFaint : conversationMuted),
+      size: widget.compact ? 14 : 15, color: widget.compact ? desktopTertiary : desktopSecondary),
     onPressed: _copy,
   );
 }
@@ -342,6 +339,21 @@ Uri? _contentUri(String source, String directory) {
   if (uri.scheme.isEmpty) return Directory(directory.isEmpty ? Directory.current.path : directory).absolute.uri.resolveUri(uri);
   if (uri.scheme == 'file' && uri.host.isNotEmpty && uri.host != 'localhost') return null;
   return uri;
+}
+
+ImageProvider? conversationImageProvider(String source, String directory) {
+  try {
+    if (source.startsWith('data:')) return InlineImage(source);
+    final uri = _contentUri(source, directory);
+    if (uri == null) return null;
+    if ((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) return NetworkImage(uri.toString());
+    if (uri.scheme == 'file') return FileImage(File(uri.toFilePath()));
+  } on FormatException {
+    // Invalid sources affect only their own image.
+  } on ArgumentError {
+    // Invalid file URIs are presented as unavailable images.
+  }
+  return null;
 }
 
 /// The outermost group is one message (or the composer's attachment rail).
@@ -381,9 +393,17 @@ class ConversationImageParts extends StatelessWidget {
 
 class ConversationImage extends StatefulWidget {
   const ConversationImage({super.key, required this.source, required this.label, required this.directory,
-    this.thumbnail = false, this.markdown = false});
+    this.thumbnail = false, this.markdown = false, this.borderRadius, this.maxHeight,
+    this.onAspectRatio, this.previewImages = const [], this.previewID, this.onPreview, this.onPreviewChanged, this.provider});
   final String source, label, directory;
   final bool thumbnail, markdown;
+  final double? borderRadius, maxHeight;
+  final ValueChanged<double>? onAspectRatio;
+  final List<({String id, String source})> previewImages;
+  final String? previewID;
+  final VoidCallback? onPreview;
+  final ValueChanged<String>? onPreviewChanged;
+  final ImageProvider? provider;
 
   @override
   State<ConversationImage> createState() => _ConversationImageState();
@@ -393,6 +413,10 @@ class _ConversationImageState extends State<ConversationImage> {
   ImageProvider? _provider;
   bool _previewing = false;
   final _imageKey = GlobalKey();
+  ImageStream? _ratioStream;
+  ImageStreamListener? _ratioListener;
+  double? _aspectRatio;
+  double get _radius => widget.borderRadius ?? (widget.thumbnail ? 6 : 4);
 
   @override
   void initState() {
@@ -403,39 +427,45 @@ class _ConversationImageState extends State<ConversationImage> {
   @override
   void didUpdateWidget(ConversationImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.source != widget.source || oldWidget.directory != widget.directory) _resolve();
+    if (oldWidget.source != widget.source || oldWidget.directory != widget.directory || oldWidget.provider != widget.provider ||
+        oldWidget.onAspectRatio != widget.onAspectRatio) {
+      _resolve();
+      _observeRatio();
+    }
   }
 
-  void _resolve() {
-    _provider = null;
-    try {
-      if (widget.source.startsWith('data:')) {
-        _provider = InlineImage(widget.source);
-        return;
-      }
-      final uri = _contentUri(widget.source, widget.directory);
-      if (uri == null) return;
-      if (uri.scheme == 'http' || uri.scheme == 'https') {
-        if (uri.host.isNotEmpty) _provider = NetworkImage(uri.toString());
-      } else if (uri.scheme == 'file') {
-        _provider = FileImage(File(uri.toFilePath()));
-      }
-    } on FormatException {
-      // Malformed image URLs must not prevent the rest of a message rendering.
-    } on ArgumentError {
-      // A malformed local file URI is handled like a missing image.
-    }
+  void _resolve() => _provider = widget.provider ?? conversationImageProvider(widget.source, widget.directory);
+
+  @override
+  void didChangeDependencies() { super.didChangeDependencies(); _observeRatio(); }
+
+  void _observeRatio() {
+    if (_ratioListener != null) _ratioStream?.removeListener(_ratioListener!);
+    _ratioStream = null;
+    _ratioListener = null;
+    if (widget.onAspectRatio == null || _provider == null) return;
+    final source = widget.source;
+    _ratioListener = ImageStreamListener((info, _) {
+      final ratio = info.image.width / info.image.height;
+      info.dispose();
+      if (_aspectRatio == ratio) return;
+      _aspectRatio = ratio;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.source == source) widget.onAspectRatio?.call(ratio);
+      });
+    }, onError: (Object _, StackTrace? _) {});
+    _ratioStream = _provider!.resolve(createLocalImageConfiguration(context))..addListener(_ratioListener!);
   }
 
   Widget _placeholder({bool failed = false}) => Container(
     width: widget.thumbnail ? 58 : null,
     height: widget.thumbnail ? 46 : 96,
     alignment: Alignment.center,
-    color: opencodeLayer,
+    color: desktopMuted,
     child: widget.thumbnail ? (failed ? const Icon(Icons.broken_image_outlined,
-      color: opencodeFaint, size: 20) : null) : Column(mainAxisSize: MainAxisSize.min, children: [
+      color: desktopTertiary, size: 20) : null) : Column(mainAxisSize: MainAxisSize.min, children: [
       Text(failed ? 'Could not load image' : 'Loading image…',
-        style: const TextStyle(fontSize: 12, color: conversationMuted)),
+        style: const TextStyle(fontSize: 12, color: desktopSecondary)),
     ]),
   );
 
@@ -444,7 +474,7 @@ class _ConversationImageState extends State<ConversationImage> {
     if (provider == null) return _placeholder(failed: true);
     return LayoutBuilder(builder: (context, constraints) {
       final ratio = MediaQuery.devicePixelRatioOf(context);
-      final height = widget.thumbnail ? 46.0 : MediaQuery.sizeOf(context).height * .6;
+      final height = widget.thumbnail ? 46.0 : widget.maxHeight ?? MediaQuery.sizeOf(context).height * .6;
       final width = widget.thumbnail ? 58.0 : constraints.maxWidth;
       return ConstrainedBox(constraints: BoxConstraints(maxHeight: height), child: Image(
         image: ResizeImage(provider, width: width.isFinite ? (width * ratio).ceil() : null,
@@ -465,7 +495,7 @@ class _ConversationImageState extends State<ConversationImage> {
     final provider = _provider, box = _imageKey.currentContext?.findRenderObject();
     if (provider == null || box is! RenderBox || !box.attached || !box.hasSize) return null;
     return (provider: provider, label: widget.label, origin: box.localToGlobal(Offset.zero) & box.size,
-      originRadius: widget.thumbnail ? 6.0 : 4.0);
+      originRadius: _radius);
   }
 
   void _preview() {
@@ -481,6 +511,28 @@ class _ConversationImageState extends State<ConversationImage> {
       }
     }
     final group = context.getElementForInheritedWidgetOfExactType<_ConversationImageScope>();
+    if (widget.previewImages.isNotEmpty) {
+      final origin = _previewImage();
+      if (origin == null) return;
+      final previews = <PreviewImage>[];
+      final ids = <String>[];
+      for (final image in widget.previewImages) {
+        final provider = conversationImageProvider(image.source, widget.directory);
+        if (provider == null) continue;
+        ids.add(image.id);
+        previews.add((provider: provider, label: widget.label, origin: origin.origin, originRadius: _radius));
+      }
+      final initial = ids.indexOf(widget.previewID ?? '');
+      if (initial < 0) return;
+      widget.onPreview?.call();
+      showGeneralDialog<void>(context: context, barrierDismissible: true,
+        barrierLabel: 'Close image', barrierColor: Colors.transparent,
+        transitionDuration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 240),
+        pageBuilder: (context, _, _) => ImagePreview(images: previews, initialIndex: initial,
+          onChanged: (index) => widget.onPreviewChanged?.call(ids[index])),
+        transitionBuilder: (_, _, _, child) => child);
+      return;
+    }
     if (group != null) {
       group.visitChildElements(collect);
     } else {
@@ -489,6 +541,7 @@ class _ConversationImageState extends State<ConversationImage> {
     }
     final initial = images.indexWhere((image) => identical(image.$2, this));
     if (initial < 0) return;
+    widget.onPreview?.call();
     var active = initial;
     void hide(int index, bool hidden) {
       final state = images[index].$2;
@@ -505,20 +558,26 @@ class _ConversationImageState extends State<ConversationImage> {
   }
 
   @override
+  void dispose() {
+    if (_ratioListener != null) _ratioStream?.removeListener(_ratioListener!);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final image = MouseRegion(cursor: _provider == null ? MouseCursor.defer
       : widget.thumbnail ? SystemMouseCursors.click : SystemMouseCursors.zoomIn,
       child: GestureDetector(key: _imageKey, onTap: _provider == null ? null : _preview,
         child: Tooltip(message: 'Open image', child: Semantics(button: _provider != null, label: widget.label,
           child: Opacity(opacity: _previewing ? 0 : 1, child: ClipRRect(
-            borderRadius: BorderRadius.circular(widget.thumbnail ? 6 : 4),
+            borderRadius: BorderRadius.circular(_radius),
             child: _image(),
           ))))));
     if (widget.thumbnail) {
       return SizedBox(width: 58, height: 46,
       child: DecoratedBox(position: DecorationPosition.foreground,
         decoration: BoxDecoration(borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: _previewing ? Colors.transparent : opencodeBorder, width: .5)), child: image));
+          border: Border.all(color: _previewing ? Colors.transparent : desktopBorder, width: .5)), child: image));
     }
     return widget.markdown ? Padding(padding: const EdgeInsets.symmetric(vertical: 24), child: image) : image;
   }

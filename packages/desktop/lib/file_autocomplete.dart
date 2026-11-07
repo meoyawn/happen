@@ -13,6 +13,8 @@ import 'mcp_menu.dart';
 import 'mcp_auth.dart';
 import 'session.dart';
 
+import 'appearance.dart';
+
 typedef _Mention = ({int start, int end, String query});
 typedef _Command = ({int start, int end, String text});
 typedef _ContextOption = ({String kind, String label, String description, String path});
@@ -721,7 +723,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       color: Colors.white,
       elevation: 8, shadowColor: const Color(0x24000000),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: Color(0xffe1e3e6), width: .5)),
+        side: const BorderSide(color: desktopBorder, width: .5)),
       clipBehavior: Clip.antiAlias,
       child: ConstrainedBox(constraints: BoxConstraints(maxHeight: maxHeight),
         child: _mcpAnchor != null ? SingleChildScrollView(controller: _scroll,
@@ -733,10 +735,10 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
         ) : Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 6), child: Row(children: [
             Text(_historyOpen ? 'Prompt history' : _command != null ? 'Commands' : _skillsOnly ? 'Skills' : 'Add context',
-              style: const TextStyle(fontSize: 11, color: Color(0xff858a94))),
+              style: const TextStyle(fontSize: 11, color: desktopTertiary)),
             const Spacer(),
             if (_loading || _skillsLoading) const SizedBox.square(dimension: 10,
-              child: CircularProgressIndicator(strokeWidth: 1.2, color: Color(0xff858a94))),
+              child: CircularProgressIndicator(strokeWidth: 1.2, color: desktopTertiary)),
           ])),
           if (_historyOpen) Padding(padding: const EdgeInsets.symmetric(horizontal: 6),
             child: CallbackShortcuts(bindings: {
@@ -776,26 +778,26 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                         decoration: BoxDecoration(color: index == _selected ? const Color(0xfff1f2f4) : null,
                           borderRadius: BorderRadius.circular(4)),
                         child: Row(children: [
-                          if (_historyOpen) const Icon(Icons.history_rounded, size: 16, color: Color(0xff858a94))
+                          if (_historyOpen) const Icon(Icons.history_rounded, size: 16, color: desktopTertiary)
                           else if (path != null) FileIcon(path)
-                          else if (skill != null) const SkillIcon(color: Color(0xff858a94))
+                          else if (skill != null) const SkillIcon(color: desktopTertiary)
                           else if (extra != null) extra.kind == 'project' ? FileIcon(extra.path)
                             : Icon(extra.kind == 'session' ? Icons.chat_bubble_outline_rounded :
-                              extra.kind == 'tool' ? Icons.build_outlined : Icons.link_rounded, size: 16, color: const Color(0xff858a94))
+                              extra.kind == 'tool' ? Icons.build_outlined : Icons.link_rounded, size: 16, color: desktopTertiary)
                           else Icon(command!.name.startsWith('/model ') ? Icons.tune_rounded :
                             command.name.startsWith('/reasoning ') ? Icons.psychology_outlined :
                             command.name.startsWith('/mcp') ? Icons.extension_outlined : Icons.terminal_rounded,
-                            size: 16, color: const Color(0xff858a94)),
+                            size: 16, color: desktopTertiary),
                           const SizedBox(width: 8),
                           Flexible(child: Text.rich(_matched(name, query), maxLines: 1, overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 13, height: 20 / 13, color: Color(0xff1a1c1f)))),
+                            style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopForeground))),
                           if (detail.isNotEmpty) ...[
                             const SizedBox(width: 8),
                             Expanded(child: Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12, color: Color(0xff858a94)))),
+                              style: const TextStyle(fontSize: 12, color: desktopTertiary))),
                           ] else const Spacer(),
                           if (scope != null) Padding(padding: const EdgeInsets.only(left: 8),
-                            child: Text(scope, style: const TextStyle(fontSize: 10, color: Color(0xff858a94)))),
+                            child: Text(scope, style: const TextStyle(fontSize: 10, color: desktopTertiary))),
                         ]),
                       ),
                     ),
@@ -806,16 +808,16 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
           )),
           if (count == 0) Padding(padding: const EdgeInsets.all(12),
             child: Text(_failed || _skillsFailed ? 'Search unavailable' : _loading || _skillsLoading ? 'Searching…' : 'No matching items',
-              style: const TextStyle(fontSize: 13, color: Color(0xff858a94)))),
+              style: const TextStyle(fontSize: 13, color: desktopTertiary))),
           if (_failed || _skillsFailed) TextButton(onPressed: () {
             if (_mention != null && !_skillsOnly) unawaited(_lookup(_mention!));
             unawaited(_lookupSkills(_command?.text.substring(1) ?? _mention!.query));
           }, child: const Text('Retry search')),
           Padding(padding: const EdgeInsets.fromLTRB(12, 6, 12, 8), child: Row(children: [
             Text(_truncated || _skillsTruncated ? 'Type to narrow results' : '↑↓ Navigate',
-              style: const TextStyle(fontSize: 10, color: Color(0xff858a94))),
+              style: const TextStyle(fontSize: 10, color: desktopTertiary)),
             const Spacer(),
-            const Text('↵ Select    tab Complete    esc Close', style: TextStyle(fontSize: 10, color: Color(0xff858a94))),
+            const Text('↵ Select    tab Complete    esc Close', style: TextStyle(fontSize: 10, color: desktopTertiary)),
           ])),
         ]),
       ),

@@ -47,7 +47,7 @@ class _WorkspaceChangesState extends State<WorkspaceChanges> {
       IconButton(tooltip: 'Refresh changes', onPressed: () => unawaited(_refresh()),
         icon: const Icon(Icons.refresh_rounded, size: 17)),
     ]),
-    Expanded(child: _path == null ? const Center(child: Text('No file changes', style: TextStyle(color: opencodeMuted)))
+    Expanded(child: _path == null ? const Center(child: Text('No file changes', style: TextStyle(color: desktopSecondary)))
       : FutureBuilder<({ChangedFile file, bool truncated})>(future: _diff, builder: (context, snapshot) {
         final repo = widget.controller.state.repository!;
         final loaded = snapshot.connectionState == ConnectionState.done ? snapshot.data : null;
@@ -58,9 +58,9 @@ class _WorkspaceChangesState extends State<WorkspaceChanges> {
         return Column(children: [
           if (snapshot.connectionState != ConnectionState.done) const LinearProgressIndicator(minHeight: 2),
           if (snapshot.hasError) Padding(padding: const EdgeInsets.all(12),
-            child: Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: Color(0xffc23838)))),
+            child: Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: desktopError))),
           if (loaded?.truncated == true) const Padding(padding: EdgeInsets.all(8),
-            child: Text('This diff is too large to display in full.', style: TextStyle(fontSize: 12, color: opencodeMuted))),
+            child: Text('This diff is too large to display in full.', style: TextStyle(fontSize: 12, color: desktopSecondary))),
           Expanded(child: DiffViewer(files: files, directory: repo.root ?? widget.controller.cwd,
             selectedPath: _path, revealRevision: _revision,
             onSelect: (path) => setState(() => _select(path)))),

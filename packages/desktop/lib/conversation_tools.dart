@@ -7,7 +7,8 @@ import 'code_highlight.dart';
 import 'conversation_activity.dart';
 import 'conversation_changes.dart';
 import 'conversation_data.dart';
-import 'conversation_markdown.dart' show ConversationCopyButton;
+import 'conversation_markdown.dart' show ConversationCopyButton, ConversationImage, ConversationImageGroup;
+import 'conversation_images.dart';
 import 'session.dart';
 
 Object? _decode(Object? value) {
@@ -161,6 +162,7 @@ class ConversationToolCall extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (toolKind(tool) == 'question') return QuestionToolResult(tool: tool, onExpand: onExpand);
+    if (tool.name == 'view_image') return ConversationInspectedImages(tools: [tool], directory: directory, onExpand: onExpand);
     if (tool.rawInput case {'changes': final List<Object?> _}) {
       return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
     }
@@ -168,7 +170,7 @@ class ConversationToolCall extends StatelessWidget {
     key: PageStorageKey('tool:${tool.id}'),
     label: toolLabel(tool, directory: directory, active: tool.status == 'running'),
     fontSize: 14, shimmer: tool.status == 'running', timestamp: tool.startedAt,
-    color: tool.status == 'failed' ? const Color(0xffc10007) : conversationSecondary,
+    color: tool.status == 'failed' ? desktopError : desktopSecondary,
     icon: ConversationWorkIcon(kind: toolKind(tool), failed: tool.status == 'failed'),
     onExpand: onExpand,
     builder: (context) => Padding(padding: const EdgeInsets.only(left: 30, top: 4, bottom: 8),
@@ -180,18 +182,18 @@ class ConversationToolCall extends StatelessWidget {
             final result = output as String?;
             if (script != null) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Row(children: [
-                const Expanded(child: Text('JavaScript', style: TextStyle(fontSize: 11, color: conversationSecondary))),
+                const Expanded(child: Text('JavaScript', style: TextStyle(fontSize: 11, color: desktopSecondary))),
                 ConversationCopyButton(text: script, label: 'Copy JavaScript', compact: true),
               ]),
               const SizedBox(height: 4),
               ConstrainedBox(constraints: const BoxConstraints(maxHeight: 256),
                 child: SingleChildScrollView(key: PageStorageKey('tool-script:${tool.id}'),
                   child: SelectableText.rich(highlightedCode(script, language: 'javascript'),
-                    style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12,
-                      height: 1.625, color: conversationForeground)))),
+                    style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12,
+                      height: 1.625, color: desktopForeground)))),
               if (result?.isNotEmpty == true) ...[
                 const SizedBox(height: 12),
-                const Text('Output', style: TextStyle(fontSize: 11, color: conversationSecondary)),
+                const Text('Output', style: TextStyle(fontSize: 11, color: desktopSecondary)),
                 const SizedBox(height: 4),
                 _ToolOutput(id: tool.id, text: result!),
               ],
@@ -199,6 +201,12 @@ class ConversationToolCall extends StatelessWidget {
             final text = [if (source.isNotEmpty) source, if (result?.isNotEmpty == true) result!].join('\n\n');
             return _ToolOutput(id: tool.id, text: text.isEmpty ? 'No output' : text);
           })),
+        if (tool.images.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8),
+          child: ConversationImageGroup(child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 12, children: [
+            for (final part in tool.images)
+              if (toolImageSource(part) case final String source)
+                ConversationImage(source: source, label: 'Tool image', directory: directory),
+          ]))),
         for (final child in tool.children) ConversationToolCall(
           key: ValueKey(child.id), tool: child, onExpand: onExpand, directory: directory),
       ])),
@@ -283,11 +291,11 @@ class QuestionAnswerRow extends StatelessWidget {
       icon: ConversationWorkIcon(kind: 'question', failed: error != null),
       labelContent: question.isEmpty ? null : Row(children: [
         Flexible(child: Text(question, maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 14, height: 1.625, color: conversationSecondary))),
+          style: const TextStyle(fontSize: 14, height: 1.625, color: desktopSecondary))),
         if (answer.isNotEmpty) ...[
           const SizedBox(width: 6),
           Flexible(child: Text(answer, maxLines: 1, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 14, height: 1.625, color: conversationForeground))),
+            style: const TextStyle(fontSize: 14, height: 1.625, color: desktopForeground))),
         ],
       ]),
       builder: (context) => Padding(padding: const EdgeInsets.fromLTRB(30, 8, 2, 4),
@@ -295,13 +303,13 @@ class QuestionAnswerRow extends StatelessWidget {
           for (final answer in answers) Padding(padding: const EdgeInsets.only(bottom: 8),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               SelectableText(answer.question,
-                style: const TextStyle(fontSize: 14, height: 1.625, color: conversationSecondary)),
+                style: const TextStyle(fontSize: 14, height: 1.625, color: desktopSecondary)),
               if (answer.answer.isNotEmpty) Padding(padding: const EdgeInsets.only(left: 12, top: 4),
                 child: SelectableText(answer.answer,
-                  style: const TextStyle(fontSize: 14, height: 1.625, color: conversationSecondary))),
+                  style: const TextStyle(fontSize: 14, height: 1.625, color: desktopSecondary))),
             ])),
           if (error != null) SelectableText(error!,
-            style: const TextStyle(fontSize: 14, height: 1.625, color: Color(0xffc10007))),
+            style: const TextStyle(fontSize: 14, height: 1.625, color: desktopError)),
         ])),
     );
   }
@@ -347,8 +355,8 @@ class _ToolOutputState extends State<_ToolOutput> {
         return false;
       },
       child: SingleChildScrollView(key: PageStorageKey('tool-output:${widget.id}'), controller: _scroll,
-        child: SelectableText(widget.text, style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 11,
-          height: 1.625, color: conversationSecondary)))));
+        child: SelectableText(widget.text, style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11,
+          height: 1.625, color: desktopSecondary)))));
 }
 
 class ConversationWorkIcon extends StatelessWidget {
@@ -357,7 +365,7 @@ class ConversationWorkIcon extends StatelessWidget {
   final bool failed;
   @override
   Widget build(BuildContext context) => CustomPaint(size: const Size.square(16),
-    painter: _WorkIconPainter(kind, failed ? const Color(0xffc10007) : conversationSecondary));
+    painter: _WorkIconPainter(kind, failed ? desktopError : desktopSecondary));
 }
 
 class _WorkIconPainter extends CustomPainter {

@@ -228,14 +228,14 @@ class _AttachmentTileState extends State<_AttachmentTile> {
         mouseCursor: WidgetStateMouseCursor.clickable,
         child: Container(width: 160, padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(color: const Color(0x07000000), borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: opencodeBorder, width: .5)),
+          border: Border.all(color: desktopBorder, width: .5)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
           Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, height: 14 / 11,
-            letterSpacing: .05, color: opencodeInk, fontVariations: [FontVariation('wght', 530)])),
+            letterSpacing: .05, color: desktopForeground, fontVariations: [FontVariation('wght', 530)])),
           const SizedBox(height: 6),
           Row(spacing: 4, children: [FileIcon(name, size: 12),
             Flexible(child: Text(suffix == name.toUpperCase() ? 'File' : suffix, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11, height: 14 / 11, letterSpacing: .05, color: opencodeMuted)))]),
+              style: const TextStyle(fontSize: 11, height: 14 / 11, letterSpacing: .05, color: desktopSecondary)))]),
         ]))));
     return MouseRegion(onEnter: (_) => setState(() => _hovered = true), onExit: (_) => setState(() => _hovered = false),
       child: Focus(onFocusChange: (value) => setState(() => _focused = value), child: Stack(clipBehavior: Clip.none, children: [
@@ -243,7 +243,7 @@ class _AttachmentTileState extends State<_AttachmentTile> {
         if (widget.onRemove != null) Positioned(top: -4, right: -4,
           child: Opacity(opacity: _hovered || _focused ? 1 : 0,
             child: IconButton(tooltip: 'Remove $name', onPressed: widget.onRemove,
-              style: IconButton.styleFrom(backgroundColor: opencodeFaint, foregroundColor: Colors.white,
+              style: IconButton.styleFrom(backgroundColor: desktopTertiary, foregroundColor: Colors.white,
                 minimumSize: const Size.square(16), maximumSize: const Size.square(16), padding: EdgeInsets.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap, side: const BorderSide(color: Colors.white)),
               icon: const Icon(Icons.close, size: 12)))),

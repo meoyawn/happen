@@ -68,7 +68,7 @@ class WorkspacePanelButton extends StatelessWidget {
   Widget build(BuildContext context) => Semantics(toggled: opened, child: IconButton(
     tooltip: tooltip, onPressed: onPressed, icon: icon,
     style: IconButton.styleFrom(foregroundColor: const Color(0xff4d4f53),
-      backgroundColor: opened ? const Color(0xfff4f4f5) : Colors.transparent,
+      backgroundColor: opened ? desktopMuted : Colors.transparent,
       minimumSize: const Size(28, 28), maximumSize: const Size(28, 28), padding: EdgeInsets.zero,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap)));
@@ -208,10 +208,10 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
               ])),
           if (actions.state case ProjectActionsFailed(:final message))
             Padding(padding: const EdgeInsets.all(8), child: Text(message,
-              style: const TextStyle(fontSize: 11, color: Color(0xffc23838)))),
+              style: const TextStyle(fontSize: 11, color: desktopError))),
         ])),
         if (repo?.isRepo == true || git.state is GitLoading || git.state is GitFailed) ...[
-          const Divider(height: 1, thickness: 1, color: Color(0xffededed)),
+          const Divider(height: 1, thickness: 1, color: desktopBorder),
           Padding(padding: const EdgeInsets.all(12), child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (repo?.isRepo == true) DetailsRow(icon: const Icon(Icons.call_split_rounded),
               label: repo!.branch ?? 'Detached HEAD', tooltip: widget.project.tasks.any((task) => task.running)
@@ -225,7 +225,7 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
             if (repo?.isRepo == true) DetailsRow(icon: const Icon(Icons.note_add_outlined), label: 'Changes',
               onPressed: _changes, tooltip: '${repo!.files.length} changed files · Compared with HEAD',
               trailing: Padding(padding: const EdgeInsets.only(right: 8), child: repo.additions == 0 && repo.deletions == 0
-                ? Text('${repo.files.length} files', style: const TextStyle(fontSize: 11, color: opencodeFaint))
+                ? Text('${repo.files.length} files', style: const TextStyle(fontSize: 11, color: desktopTertiary))
                 : DiffStat(additions: repo.additions, deletions: repo.deletions))),
           ])),
         ],

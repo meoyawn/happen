@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'appearance.dart';
+
 /// OpenCode ui/resize-handle: delayed pill, immediate drag, anchored sizing.
 class SidebarResizer extends StatefulWidget {
   const SidebarResizer({super.key, required this.size, required this.min, required this.max,
@@ -98,7 +100,7 @@ class _SidebarResizerState extends State<SidebarResizer> with SingleTickerProvid
           duration: Duration(milliseconds: MediaQuery.disableAnimationsOf(context) ? 0 : 150),
           curve: const Cubic(.2, .8, .2, 1),
           decoration: BoxDecoration(borderRadius: BorderRadius.circular(9999),
-            color: _pointer != null ? const Color(0xff3a3a3a) : const Color(0xff808080)),
+            color: _pointer != null ? const Color(0xff3a3a3a) : desktopTertiary),
         )),
       )),
     ),

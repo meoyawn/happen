@@ -211,7 +211,7 @@ class _CommandMenuState extends State<CommandMenu> {
         backgroundColor: Colors.white, surfaceTintColor: Colors.transparent,
         elevation: 16, shadowColor: const Color(0x33000000),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: opencodeBorder, width: .5)),
+          side: const BorderSide(color: desktopBorder, width: .5)),
         clipBehavior: Clip.antiAlias,
         child: SizedBox(width: 576, child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 420),
@@ -225,19 +225,19 @@ class _CommandMenuState extends State<CommandMenu> {
                 Padding(padding: const EdgeInsets.all(6), child: Row(children: [
                   if (_projectsOpen)
                     IconButton(tooltip: 'Back', onPressed: () => _showProjects(false),
-                      icon: const Icon(Icons.arrow_back, size: 16, color: opencodeMuted),
+                      icon: const Icon(Icons.arrow_back, size: 16, color: desktopSecondary),
                       constraints: const BoxConstraints.tightFor(width: 32, height: 32),
                       padding: EdgeInsets.zero)
                   else
                     const Padding(padding: EdgeInsets.symmetric(horizontal: 8),
-                      child: Icon(Icons.search, size: 16, color: opencodeMuted)),
+                      child: Icon(Icons.search, size: 16, color: desktopSecondary)),
                   Expanded(child: TextField(
                     key: const ValueKey('command-menu-search'),
                     controller: _search, focusNode: _searchFocus, autofocus: true,
-                    style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeInk),
+                    style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopForeground),
                     decoration: InputDecoration(
                       hintText: _projectsOpen ? 'Search projects…' : 'Search sessions and commands…',
-                      hintStyle: const TextStyle(color: opencodeFaint),
+                      hintStyle: const TextStyle(color: desktopTertiary),
                       contentPadding: const EdgeInsets.symmetric(vertical: 10),
                     ),
                     onChanged: (_) {
@@ -248,13 +248,13 @@ class _CommandMenuState extends State<CommandMenu> {
                   const _KeyHint('esc'),
                   const SizedBox(width: 6),
                 ])),
-                const Divider(height: 1, thickness: .5, color: opencodeBorder),
+                const Divider(height: 1, thickness: .5, color: desktopBorder),
                 if (_projectsOpen && !entries.any((entry) => entry.project != null))
                   const Padding(padding: EdgeInsets.all(24), child: Text('No projects found.',
-                    style: TextStyle(fontSize: 13, color: opencodeMuted))),
+                    style: TextStyle(fontSize: 13, color: desktopSecondary))),
                 Flexible(child: entries.isEmpty
                   ? const Padding(padding: EdgeInsets.all(32), child: Text('No results',
-                      style: TextStyle(fontSize: 13, color: opencodeMuted)))
+                      style: TextStyle(fontSize: 13, color: desktopSecondary)))
                   : ListView.builder(
                       controller: _scroll, shrinkWrap: true,
                       padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
@@ -265,31 +265,31 @@ class _CommandMenuState extends State<CommandMenu> {
                           if (index == 0 || entries[index - 1].group != entry.group)
                             SizedBox(height: 28, child: Align(alignment: Alignment.centerLeft,
                               child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8),
-                                child: Text(entry.group, style: const TextStyle(fontSize: 12, color: opencodeMuted))))),
+                                child: Text(entry.group, style: const TextStyle(fontSize: 12, color: desktopSecondary))))),
                           _row(entry, active?.id == entry.id),
                         ]);
                       },
                     )),
-                const Divider(height: 1, thickness: .5, color: opencodeBorder),
+                const Divider(height: 1, thickness: .5, color: desktopBorder),
                 Padding(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                   child: Row(children: [
                     const _KeyHint('↑ ↓'),
                     const SizedBox(width: 6),
-                    const Text('Navigate', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+                    const Text('Navigate', style: TextStyle(fontSize: 11, color: desktopTertiary)),
                     const SizedBox(width: 14),
                     const _KeyHint('↵'),
                     const SizedBox(width: 6),
-                    Text(_projectsOpen ? 'Select' : 'Open', style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+                    Text(_projectsOpen ? 'Select' : 'Open', style: const TextStyle(fontSize: 11, color: desktopTertiary)),
                     if (_projectsOpen) ...[
                       const SizedBox(width: 14),
                       const _KeyHint('⌫'),
                       const SizedBox(width: 6),
-                      const Text('Back', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+                      const Text('Back', style: TextStyle(fontSize: 11, color: desktopTertiary)),
                     ],
                     const Spacer(),
                     const _KeyHint('esc'),
                     const SizedBox(width: 6),
-                    const Text('Close', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+                    const Text('Close', style: TextStyle(fontSize: 11, color: desktopTertiary)),
                   ])),
               ]);
             },
@@ -308,7 +308,7 @@ class _CommandMenuState extends State<CommandMenu> {
     return MouseRegion(
       onEnter: enabled ? (_) => setState(() => _activeId = entry.id) : null,
       child: Semantics(selected: active, enabled: enabled, button: true, child: Material(
-        color: active ? opencodeLayer : Colors.transparent,
+        color: active ? desktopMuted : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
           mouseCursor: WidgetStateMouseCursor.clickable,
@@ -321,31 +321,31 @@ class _CommandMenuState extends State<CommandMenu> {
               if (entry.project case final project?)
                 ProjectAvatar(project: project, generated: widget.session.projectAvatarStyle == 'generated')
               else
-                Icon(entry.icon, size: 16, color: opencodeMuted),
+                Icon(entry.icon, size: 16, color: desktopSecondary),
               const SizedBox(width: 8),
               if (projectRow)
                 Expanded(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13, height: 18 / 13, color: opencodeInk)),
+                    style: const TextStyle(fontSize: 13, height: 18 / 13, color: desktopForeground)),
                   Text(entry.description, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, height: 16 / 12, color: opencodeFaint)),
+                    style: const TextStyle(fontSize: 12, height: 16 / 12, color: desktopTertiary)),
                 ]))
               else ...[
                 Flexible(child: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13, height: 16 / 13, color: opencodeInk))),
+                  style: const TextStyle(fontSize: 13, height: 16 / 13, color: desktopForeground))),
                 if (entry.description.isNotEmpty) ...[
                   const SizedBox(width: 8),
                   Flexible(child: Text(entry.description, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: opencodeFaint))),
+                    style: const TextStyle(fontSize: 12, color: desktopTertiary))),
                 ],
                 const Spacer(),
               ],
               if (task == widget.session.task && task != null)
                 const Padding(padding: EdgeInsets.only(left: 6),
-                  child: Icon(Icons.check, size: 14, color: opencodeFaint)),
+                  child: Icon(Icons.check, size: 14, color: desktopTertiary)),
               if (entry.shortcut case final shortcut?) _KeyHint(shortcut),
               if (entry.id == 'new-thread')
-                const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.chevron_right, size: 14, color: opencodeFaint)),
+                const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.chevron_right, size: 14, color: desktopTertiary)),
             ]),
           ))),
         ),
@@ -361,8 +361,8 @@ class _KeyHint extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-    decoration: BoxDecoration(border: Border.all(color: opencodeBorder, width: .5),
+    decoration: BoxDecoration(border: Border.all(color: desktopBorder, width: .5),
       borderRadius: BorderRadius.circular(4)),
-    child: Text(label, style: const TextStyle(fontSize: 10, height: 1, color: opencodeFaint)),
+    child: Text(label, style: const TextStyle(fontSize: 10, height: 1, color: desktopTertiary)),
   );
 }

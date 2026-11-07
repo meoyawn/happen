@@ -109,9 +109,9 @@ void main() {
     expect(background.title, 'Original prompt');
     expect(client.renames, isEmpty);
 
-    await tester.tap(row);
+    await tester.tap(find.text('Original prompt'));
     await tester.pump(const Duration(milliseconds: 50));
-    await tester.tap(row);
+    await tester.tap(find.text('Original prompt'));
     await tester.pumpAndSettle();
     expectReady('Original prompt');
     await tester.enterText(input, '  A title chosen by the user  ');

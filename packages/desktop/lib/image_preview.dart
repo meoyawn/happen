@@ -151,7 +151,7 @@ class _ImagePreviewState extends State<ImagePreview> with SingleTickerProviderSt
     style: IconButton.styleFrom(minimumSize: const Size.square(28), maximumSize: const Size.square(28),
       padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
-    icon: Icon(icon, size: 16, color: action == null ? opencodeFaint : opencodeMuted));
+    icon: Icon(icon, size: 16, color: action == null ? desktopTertiary : desktopSecondary));
 
   @override
   Widget build(BuildContext context) {
@@ -217,27 +217,27 @@ class _ImagePreviewState extends State<ImagePreview> with SingleTickerProviderSt
           else const Center(child: CircularProgressIndicator(strokeWidth: 2)),
           Positioned(bottom: 12, left: 0, right: 0, child: Center(child: Opacity(opacity: t,
             child: Container(padding: const EdgeInsets.all(2),
-              decoration: BoxDecoration(color: const Color(0xfffafafa), borderRadius: BorderRadius.circular(8),
+              decoration: BoxDecoration(color: desktopSidebar, borderRadius: BorderRadius.circular(8),
                 boxShadow: const [BoxShadow(color: Color(0x24000000), blurRadius: 12, offset: Offset(0, 4))]),
               child: Row(mainAxisSize: MainAxisSize.min, spacing: 2, children: [
                 if (widget.images.length > 1) ...[
                   _button('Previous image', Icons.chevron_left, _index > 0 ? () => _move(-1) : null),
                   Text('${_index + 1} / ${widget.images.length}',
-                    style: const TextStyle(fontFamily: 'Inter', fontSize: 12, color: opencodeMuted,
+                    style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 12, color: desktopSecondary,
                       fontFeatures: [FontFeature.tabularFigures()])),
                   _button('Next image', Icons.chevron_right, _index + 1 < widget.images.length ? () => _move(1) : null),
                   const Padding(padding: EdgeInsets.symmetric(horizontal: 2),
-                    child: SizedBox(width: .5, height: 16, child: ColoredBox(color: opencodeBorder))),
+                    child: SizedBox(width: .5, height: 16, child: ColoredBox(color: desktopBorder))),
                 ],
                 _button('Zoom out', Icons.remove, () => _step(1 / 1.25)),
                 SizedBox(width: 52, height: 28, child: TextButton(onPressed: _fit,
-                  style: TextButton.styleFrom(padding: EdgeInsets.zero, foregroundColor: opencodeMuted,
+                  style: TextButton.styleFrom(padding: EdgeInsets.zero, foregroundColor: desktopSecondary,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
                   child: Text('${(view.$1 * _fitRatio * 100).round()}%',
                     semanticsLabel: 'Zoom to fit', style: const TextStyle(fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])))),
                 _button('Zoom in', Icons.add, () => _step(1.25)),
                 const Padding(padding: EdgeInsets.symmetric(horizontal: 2),
-                  child: SizedBox(width: .5, height: 16, child: ColoredBox(color: opencodeBorder))),
+                  child: SizedBox(width: .5, height: 16, child: ColoredBox(color: desktopBorder))),
                 _button('Close image', Icons.close, () => Navigator.of(context).pop(), autofocus: true),
               ])),
           ))),

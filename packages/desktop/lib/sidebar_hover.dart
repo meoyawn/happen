@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'appearance.dart';
+
 /// Keep actions in the row's layout while revealing them on hover or focus.
 class SidebarHover extends StatefulWidget {
   const SidebarHover({super.key, required this.builder});
@@ -32,12 +34,12 @@ class SidebarItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-    color: selected ? const Color(0x0e1a1c1f) : Colors.transparent,
+    color: selected ? desktopHover : Colors.transparent,
     borderRadius: BorderRadius.circular(10),
     child: InkWell(
       mouseCursor: WidgetStateMouseCursor.clickable,
       onTap: onTap, borderRadius: BorderRadius.circular(10),
-      hoverColor: const Color(0x0e1a1c1f), highlightColor: Colors.transparent,
+      hoverColor: desktopHover, highlightColor: Colors.transparent,
       child: SizedBox(height: 30, child: Padding(padding: padding, child: child)),
     ),
   );

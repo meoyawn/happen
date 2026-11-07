@@ -166,6 +166,90 @@ void main() {
     });
   }
 
+  QuestionDraft askQuestions() {
+    final request = <String, dynamic>{'id': 'question', 'questions': [
+      {'question': 'Describe your workout', 'options': <Json>[]},
+      {'question': 'What will you do next?', 'options': <Json>[]},
+    ]};
+    session.task!.questions['question'] = request;
+    return session.task!.questionDrafts['question'] = QuestionDraft.fromRequest(request);
+  }
+
+  testWidgets('question dictation inserts into answers and finishes before advancing or submitting', (tester) async {
+    final draft = askQuestions();
+    session.drafts['task'] = 'Keep the message draft';
+    await open(tester);
+    await enterText(tester, 'Before after');
+    editor(tester).selection = const TextSelection.collapsed(offset: 6);
+    await record(tester);
+    expect(find.text('Describe your workout'), findsOneWidget);
+    await stop(tester);
+    await respond(tester, text: 'spoken answer');
+    expect(editor(tester).text, 'Before spoken answer after');
+    expect(draft.answer(0), ['Before spoken answer after']);
+
+    await record(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(draft.tab, 0, reason: 'The answer must finish transcribing before navigation');
+    await respond(tester, text: 'more');
+    expect(draft.tab, 1);
+    expect(draft.answer(0), ['Before spoken answer more after']);
+    expect(editor(tester).text, isEmpty);
+
+    await record(tester);
+    await tester.tap(find.text('Submit answers'));
+    await tester.pump();
+    expect(client.answers, isEmpty);
+    await respond(tester, text: 'Train again tomorrow');
+    expect(client.answers, [
+      [['Before spoken answer more after'], ['Train again tomorrow']],
+    ]);
+    expect(client.sent, isEmpty, reason: 'Dictated answers use the question reply');
+    expect(session.drafts['task'], 'Keep the message draft');
+    expect(tester.takeException(), isNull);
+    await close(tester);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('changing questions cancels transcription and ignores a late answer', (tester) async {
+    final draft = askQuestions()..tab = 1;
+    draft.custom.setAll(0, ['First answer', 'Second answer']);
+    await open(tester);
+    await record(tester);
+    await stop(tester);
+    await tester.tap(find.text('Previous'));
+    await tester.pumpAndSettle();
+    client.reply.complete('late answer');
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pumpAndSettle();
+    expect(session.dictation.state, isA<DictationIdle>());
+    expect(editor(tester).text, 'First answer');
+    expect(draft.custom, ['First answer', 'Second answer']);
+    expect(client.answers, isEmpty);
+    expect(client.sent, isEmpty);
+    expect(tester.takeException(), isNull);
+    await close(tester);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('leaving a dictated question restores its live answer before disposing the dock', (tester) async {
+    final draft = askQuestions();
+    draft.custom[0] = 'Keep this answer';
+    session.dictationMode = 'live';
+    await liveBackend(tester);
+    await open(tester);
+    await record(tester);
+    expect(editor(tester).text, 'Keep this answer live words');
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 6));
+    expect(draft.custom[0], 'Keep this answer');
+    expect(session.dictation.state, isA<DictationIdle>());
+    expect(client.answers, isEmpty);
+    expect(client.sent, isEmpty);
+    expect(tester.takeException(), isNull);
+    await close(tester);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   test('cancelled dictation restores a selected file chip and its path', () {
     final controller = ComposerTextController(text: 'Use @file afterwards');
     addTearDown(controller.dispose);
@@ -412,11 +496,18 @@ class _Client implements AgentClient {
   @override bool get sharedFilesystem => true;
   @override final events = StreamController<Json>.broadcast();
   final sent = <Json>[];
+  final answers = <List<List<String>>?>[];
   final recordings = <Uint8List>[];
   late Completer<String> reply;
   int? streamPort;
   @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
     {'access_token': 'fixture', 'account_id': 'account'};
+  @override Future<void> answerQuestion(String sessionID, String requestID, List<List<String>>? answers, {
+    required CancellationToken cancellation,
+  }) async {
+    cancellation.throwIfCancelled();
+    this.answers.add(answers);
+  }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'turn/start') { sent.add(params); return <String, dynamic>{}; }
     throw StateError('Unexpected request: $method');

@@ -26,11 +26,13 @@ typedef QuestionComposer = ({
 class SessionQuestionDock extends StatefulWidget {
   const SessionQuestionDock({super.key, required this.request, required this.draft,
     required this.onAnswer, required this.composer, this.directory = '',
-    this.enabled = true, this.active = true});
+    this.enabled = true, this.active = true, this.onBeforeChange, this.onAdvance});
   final Json request;
   final QuestionDraft draft;
   final Future<void> Function(List<List<String>>? answers, CancellationToken cancellation) onAnswer;
   final Widget Function(QuestionComposer answer) composer;
+  final VoidCallback? onBeforeChange;
+  final void Function(VoidCallback advance)? onAdvance;
   final String directory;
   final bool enabled, active;
 
@@ -70,7 +72,10 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   @override
   void didUpdateWidget(SessionQuestionDock oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!available || !widget.active) _advance?.cancel();
+    if (!available || !widget.active) {
+      _advance?.cancel();
+      widget.onBeforeChange?.call();
+    }
   }
 
   void _prepare() {
@@ -93,6 +98,9 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
 
   @override
   void dispose() {
+    _custom.removeListener(_edited);
+    widget.onBeforeChange?.call();
+    draft.custom[draft.tab] = _custom.text;
     _lifetime.cancel();
     _advance?.cancel();
     _focus.dispose();
@@ -105,6 +113,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
 
   void _jump(int tab) {
     if (!available || tab == draft.tab || tab < 0 || tab >= questions.length) return;
+    widget.onBeforeChange?.call();
     _customFocus.unfocus();
     setState(() {
       draft.tab = tab;
@@ -118,6 +127,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
 
   void _pick(int index) {
     if (!available) return;
+    widget.onBeforeChange?.call();
     _advance?.cancel();
     final label = options[index]['label'] as String;
     setState(() {
@@ -135,6 +145,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
 
   Future<void> _finish({bool dismiss = false}) async {
     if (!available) return;
+    widget.onBeforeChange?.call();
     _advance?.cancel();
     setState(() { _sending = true; _error = null; });
     try {
@@ -151,6 +162,11 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
   }
 
   void _next() {
+    if (!available) return;
+    if (widget.onAdvance case final onAdvance?) { onAdvance(_continue); } else { _continue(); }
+  }
+
+  void _continue() {
     if (!canSubmit) return;
     if (last) { unawaited(_finish()); } else { _jump(draft.tab + 1); }
   }
@@ -221,8 +237,8 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
               Padding(padding: const EdgeInsets.only(top: 2), child: Container(
                 width: 16, height: 16,
                 decoration: BoxDecoration(
-                  color: picked ? conversationAccent : Colors.white,
-                  border: Border.all(color: picked ? conversationAccent : const Color(0xffd4d4d8)),
+                  color: picked ? desktopForeground : desktopSurface,
+                  border: Border.all(color: picked ? desktopForeground : desktopBorderStrong),
                   borderRadius: BorderRadius.circular(multi ? 4 : 8)),
                 alignment: Alignment.center,
                 child: !picked ? null : multi ? const Icon(Icons.check, size: 12, color: Colors.white)
@@ -231,18 +247,18 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(label, style: TextStyle(fontSize: 14, height: 20 / 14,
-                  fontWeight: FontWeight.w500, color: picked ? conversationForeground : const Color(0xff67676a))),
+                  fontWeight: FontWeight.w500, color: picked ? desktopForeground : desktopSecondary)),
                 if (description?.isNotEmpty == true && description != label) Padding(
                   padding: const EdgeInsets.only(top: 2), child: Text(description!,
-                    style: const TextStyle(fontSize: 11, height: 1.5, color: conversationSecondary))),
+                    style: const TextStyle(fontSize: 11, height: 1.5, color: desktopSecondary))),
               ])),
               if (index < 9) ...[
                 const SizedBox(width: 8),
                 SizedBox(width: 24, height: 20, child: Center(child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
-                  decoration: BoxDecoration(color: conversationSurface, border: Border.all(color: conversationOutline),
+                  decoration: BoxDecoration(color: desktopMuted, border: Border.all(color: desktopBorder),
                     borderRadius: BorderRadius.circular(4)),
-                  child: Text('${index + 1}', style: const TextStyle(fontSize: 10, height: 1.5, color: conversationSecondary))))),
+                  child: Text('${index + 1}', style: const TextStyle(fontSize: 10, height: 1.5, color: desktopSecondary))))),
               ],
             ])),
         ),
@@ -257,9 +273,9 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       child: DecoratedBox(decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        border: Border(top: BorderSide(color: conversationOutline),
-          left: BorderSide(color: conversationOutline),
-          right: BorderSide(color: conversationOutline))),
+        border: Border(top: BorderSide(color: desktopBorder),
+          left: BorderSide(color: desktopBorder),
+          right: BorderSide(color: desktopBorder))),
         child: Material(color: Colors.transparent,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
           clipBehavior: Clip.antiAlias,
@@ -276,17 +292,17 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
                 child: Padding(padding: const EdgeInsets.fromLTRB(16, 9, 0, 9), child: Row(children: [
                   Expanded(child: Text(draft.minimized ? '$header  ·  ${question['question']}' : header,
                     maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: conversationSecondary))),
+                    style: const TextStyle(fontSize: 12, color: desktopSecondary))),
                   if (questions.length > 1) Text('${draft.tab + 1}/${questions.length}',
-                    style: const TextStyle(fontSize: 12, color: conversationSecondary)),
+                    style: const TextStyle(fontSize: 12, color: desktopSecondary)),
                   const SizedBox(width: 8),
                   Icon(draft.minimized ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
-                    size: 16, color: conversationSecondary),
+                    size: 16, color: desktopSecondary),
                 ]))))),
               IconButton(tooltip: 'Dismiss question without answering',
                 onPressed: available ? () => unawaited(_finish(dismiss: true)) : null,
                 constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-                padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: conversationSecondary)),
+                padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: desktopSecondary)),
               const SizedBox(width: 6),
             ]),
             if (!draft.minimized) Flexible(fit: FlexFit.loose, child: ConstrainedBox(
@@ -296,7 +312,7 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                   ConversationMarkdown(text: question['question'] as String, directory: widget.directory),
                   if (multi) const Padding(padding: EdgeInsets.only(top: 8),
-                    child: Text('Select all that apply', style: TextStyle(fontSize: 11, color: conversationSecondary))),
+                    child: Text('Select all that apply', style: TextStyle(fontSize: 11, color: desktopSecondary))),
                   if (options.isNotEmpty) const SizedBox(height: 6),
                   for (var i = 0; i < options.length; i++) _option(i,
                     label: options[i]['label'] as String, description: options[i]['description'] as String?,

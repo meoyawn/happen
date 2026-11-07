@@ -165,7 +165,9 @@ class _HappenDesktopState extends State<HappenDesktop> {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([_session?.appearance]),
+    builder: (context, _) => MaterialApp(
     title: 'Happen',
     navigatorKey: _navigator,
     builder: (context, child) => DesktopLifecycle(
@@ -175,7 +177,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       child: child!,
     ),
     debugShowCheckedModeBanner: true,
-    theme: desktopTheme(),
+    theme: desktopTheme(accent: _session?.appearance.state.value ?? desktopDefaultAccent),
     home: _error != null
         ? Scaffold(
             body: Center(
@@ -189,5 +191,5 @@ class _HappenDesktopState extends State<HappenDesktop> {
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
         : DesktopNotificationWindow(notifications: _notifications!, onOpen: _openNotification,
             child: DesktopView(session: _session!)),
-  );
+  ));
 }

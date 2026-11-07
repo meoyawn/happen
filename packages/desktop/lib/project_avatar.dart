@@ -19,7 +19,7 @@ class ProjectAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final variant = color ?? project.avatarColor;
-    final palette = opencodeProjectColors[variant] ?? opencodeProjectColors['gray']!;
+    final palette = projectColors[variant] ?? projectColors['gray']!;
     final fallback = generated && variant == null
     ? RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id)))
     : DecoratedBox(

@@ -100,7 +100,7 @@ Future<Object?> _storeRequest(TaskStore? store, String method, Json params, Canc
     'context' => store!.modelSnapshot(),
     'fork.snapshot' => store!.forkSnapshot(lastTurnId: params['lastTurnId'] as String?, beforeTurnId: params['beforeTurnId'] as String?),
     'session.usage' => store!.forkUsage(),
-    'thread/read' || 'thread/items/list' || 'thread/turns/list' || 'thread/boundary' || 'session.inbox' =>
+    'thread/read' || 'thread/items/list' || 'thread/turns/list' || 'thread/boundary' || 'thread/image/read' || 'session.inbox' =>
       readStoredSession(store!.db, method, params, directory: store.directory, id: store.taskId),
     'history' => store!.rolloutPage(params),
     'history.list_windows' || 'history.list_items' || 'history.read_item' || 'history.search_contents' =>

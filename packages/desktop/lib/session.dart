@@ -15,6 +15,8 @@ import 'dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance.dart';
+import 'appearance_preferences.dart';
+import 'archive_state.dart';
 import 'app_icon.dart';
 import 'native_app_icon.dart';
 import 'terminal.dart';
@@ -67,7 +69,14 @@ class DesktopTask {
   final questionDrafts = <String, QuestionDraft>{};
   late final _notifiedEvents = <String>{};
   bool _stopRequested = false;
-  bool running = false, loaded = false, loading = false, archived = false, archiving = false;
+  bool running = false, loaded = false, loading = false, archiving = false;
+  bool _archived = false;
+  late ArchiveWriteState _archiveWrite = const ArchiveWriteIdle();
+  bool get archived => switch (_archiveWrite) {
+    ArchiveWritePending(:final archived) => archived,
+    _ => _archived,
+  };
+  set archived(bool value) => _archived = value;
   bool loadingEarlier = false;
   String? historyBefore;
   String streamingText = '';
@@ -170,6 +179,8 @@ class DesktopSession extends ChangeNotifier {
 
   final AgentClient client;
   final IsolateOwner database;
+  AppearanceController? _appearance;
+  AppearanceController get appearance => _appearance ??= AppearanceController(database);
   AppIconController? _appIcon;
   AppIconController get appIcon {
     if (_appIcon case final controller?) return controller;
@@ -236,6 +247,7 @@ class DesktopSession extends ChangeNotifier {
   bool inAppNotificationsEnabled = false;
   bool sidebarOpen = true;
   bool viewingConversation = true;
+  late int _navigationRevision = 0;
   final openTabIds = <String>[];
   final viewedTasks = <String, int>{};
   double sidebarWidth = 336;
@@ -431,7 +443,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> chooseProjectAvatarColor(Project target, String? color) async {
-    if (color != null && !opencodeProjectColors.containsKey(color)) throw ArgumentError('Invalid project avatar color');
+    if (color != null && !projectColors.containsKey(color)) throw ArgumentError('Invalid project avatar color');
     if (!projects.contains(target) || target.removing) return;
     await _setting('project_avatar_color:${target.checkoutKey}', color ?? '');
     target.avatarColor = color;
@@ -716,6 +728,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void showHome() {
+    _navigationRevision++;
     viewingConversation = false;
     _saveNavigation('active_tab', 'home');
     notifyListeners();
@@ -783,7 +796,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> chooseSidebarSection(String section, bool collapsed) async {
-    if (section != 'working') {
+    if (section != 'pinned' && section != 'working') {
       throw ArgumentError('Invalid sidebar section');
     }
     if (collapsed) {
@@ -1016,6 +1029,7 @@ class DesktopSession extends ChangeNotifier {
 
   void openDraft(SessionDraft draft) {
     if (!sessionDrafts.contains(draft)) return;
+    _navigationRevision++;
     viewingConversation = true;
     _activeDraftId = draft.id;
     project = projects.where((project) => project.checkoutKey == draft.checkoutKey && !project.removing).firstOrNull;
@@ -1120,6 +1134,7 @@ class DesktopSession extends ChangeNotifier {
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
+    await appearance.ready;
     if (supportsAppIconSwitching) await appIcon.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
@@ -1149,7 +1164,8 @@ class DesktopSession extends ChangeNotifier {
         return const [];
       }
     }
-    collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed').where((section) => section == 'working'));
+    collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed')
+      .where((section) => section == 'pinned' || section == 'working'));
     pinnedTaskIds..clear()..addAll(savedIds('sidebar_pinned_tasks'));
     pinnedProjectKeys..clear()..addAll(savedIds('sidebar_pinned_projects'));
     for (final raw in saved['projects'] as List) {
@@ -1169,7 +1185,7 @@ class DesktopSession extends ChangeNotifier {
                 )..archived = t['archived'] == 1
                   ..lastActivity = t['last_activity'] as int? ?? 0,
           ],
-        )..avatarColor = opencodeProjectColors.containsKey(settings['project_avatar_color:$key'])
+        )..avatarColor = projectColors.containsKey(settings['project_avatar_color:$key'])
           ? settings['project_avatar_color:$key'] as String : null
           ..displayName = (settings['project_name:$key'] as String?)?.trim().isNotEmpty == true
             ? settings['project_name:$key'] as String : null,
@@ -1237,6 +1253,7 @@ class DesktopSession extends ChangeNotifier {
     }
     final canonical = await folder.resolveSymbolicLinks();
     _lifetime.throwIfCancelled();
+    _navigationRevision++;
     project = projects.where((p) => p.path == canonical).firstOrNull;
     if (project == null) {
       final key = newId();
@@ -1342,6 +1359,7 @@ class DesktopSession extends ChangeNotifier {
         _saveNavigation('open_tabs', jsonEncode(openTabIds));
       }
       if (project == target) {
+        _navigationRevision++;
         project = projects.where((project) => project.available && !project.removing).firstOrNull ?? projects.firstOrNull;
         task = null;
         error = null;
@@ -1368,6 +1386,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> select(Project nextProject, [DesktopTask? nextTask]) async {
     if (nextProject.removing || !projects.contains(nextProject)) return;
+    _navigationRevision++;
     viewingConversation = true;
     project = nextProject;
     task = nextTask;
@@ -1840,24 +1859,43 @@ class DesktopSession extends ChangeNotifier {
   Future<void> setArchived(DesktopTask target, bool archived) async {
     final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
     if (target.archiving || target.archived == archived || owner == null || owner.removing) return;
+    _lifetime.throwIfCancelled();
+    final pending = ArchiveWritePending(target._archived, archived);
+    final tabIndex = openTabIds.indexOf(target.id);
+    final selected = task == target && viewingConversation;
+    target._archiveWrite = transitionArchiveWrite(target._archiveWrite, pending);
     target.archiving = true;
-    final closingTerminals = archived ? terminals.removeTask(target.id) : Future<void>.value();
+    if (archived) {
+      target._historyRead?.cancel();
+      _removeArchivedTab(target);
+    }
+    final navigationRevision = _navigationRevision;
     notifyListeners();
     try {
-      await closingTerminals;
       await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
+      if (!identical(target._archiveWrite, pending)) return;
       target.archived = archived;
+      target._archiveWrite = transitionArchiveWrite(pending, ArchiveWriteCommitted(archived));
       if (archived) {
-        _removeArchivedTab(target);
         await _releaseArchivedThread(target);
       }
       await _saveArchived(target);
-      _notice(archived ? 'Thread archived' : 'Thread restored',
-        tag: 'archive:${target.id}', description: target.title,
-        actionLabel: archived ? 'Undo' : null,
-        onAction: archived ? () => unawaited(setArchived(target, false).catchError((Object failure) {
-          if (failure is! CancelledException) showError(failure, title: 'Could not restore thread');
-        })) : null);
+    } catch (failure) {
+      if (identical(target._archiveWrite, pending)) {
+        target._archiveWrite = transitionArchiveWrite(pending, ArchiveWriteFailed(pending, failure));
+        if (!_lifetime.isCancelled && archived && !target.archived && tabIndex >= 0) {
+          if (!openTabIds.contains(target.id)) {
+            openTabIds.insert(tabIndex.clamp(0, openTabIds.length), target.id);
+            _saveNavigation('open_tabs', jsonEncode(openTabIds));
+          }
+          if (selected && _navigationRevision == navigationRevision) {
+            unawaited(select(owner, target).catchError((Object error) {
+              if (error is! CancelledException) showError(error);
+            }));
+          }
+        }
+      }
+      rethrow;
     } finally {
       target.archiving = false;
       if (!_lifetime.isCancelled) notifyListeners();
@@ -1866,7 +1904,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _saveArchived(DesktopTask target) async {
     await callIsolate(database.port, 'task.archive', {
-      'task_id': target.id, 'archived': target.archived,
+      'task_id': target.id, 'archived': target._archived,
     }, cancellation: _lifetime);
   }
 
@@ -1995,7 +2033,7 @@ class DesktopSession extends ChangeNotifier {
     _applyEvent(target, event);
     _observeActivity(target, [event]);
     if (event['method'] == 'thread/status/changed' && wasRunning && !target.running &&
-        target.loaded && !target.loading && target.sideParentID == null) {
+        !target.archived && !target.archiving && target.loaded && !target.loading && target.sideParentID == null) {
       // A read-only view can observe a turn whose subscriber was detached.
       // Refresh its final history from storage when global status becomes idle.
       if (task == target && viewingConversation) {
@@ -2008,7 +2046,7 @@ class DesktopSession extends ChangeNotifier {
     }
     if (task == target) _markViewed(target);
     if ({'thread/archived', 'thread/unarchived'}.contains(event['method'])) {
-      if (target.archived) {
+      if (target._archived) {
         _removeArchivedTab(target);
         unawaited(_releaseArchivedThread(target).catchError((Object failure) {
           if (failure is! CancelledException) showError(failure);
@@ -2133,6 +2171,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> close() async {
     _draftSave?.cancel();
     await _appIcon?.close();
+    await _appearance?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();
     await Future.wait(_projectActions.values.map((controller) => controller.close()));
@@ -2170,10 +2209,11 @@ class DesktopSession extends ChangeNotifier {
 }
 
 class ToolActivity {
-  ToolActivity(this.id, this.name, Object? input, {this.startedAt, this.preview, bool formatInput = false})
+  ToolActivity(this.id, this.name, Object? input, {this.startedAt, this.preview, this.threadId, bool formatInput = false})
     : _rawInput = input, _input = formatInput || input is! String ? null : input;
   final String id, name;
   final String? preview;
+  final String? threadId;
   final Object? _rawInput;
   String? _input, _output;
   Object? _rawOutput;
@@ -2191,6 +2231,7 @@ class ToolActivity {
   final DateTime? startedAt;
   DateTime? endedAt;
   final children = <ToolActivity>[];
+  List<Json> images = const [];
   String status = 'running';
 }
 
@@ -2213,7 +2254,7 @@ List<ChatQuestionAnswer> _questionReplyAnswers(String text) {
 class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
     this.tool, this.compaction, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
-    this.response, this.turnId, this.phase, this.questionAnswers = const [],
+    this.response, this.turnId, this.phase, this.questionAnswers = const [], this.image,
   });
   final String id, role, text;
   final String? turnId, phase;
@@ -2224,6 +2265,7 @@ class ChatEntry {
   final List<Json> attachments;
   final ChatResponse? response;
   final List<ChatQuestionAnswer> questionAnswers;
+  final Json? image;
 }
 
 class CompactionActivity {
@@ -2276,13 +2318,15 @@ List<ChatEntry> conversation(DesktopTask task) {
           response: reasoning || message['live'] == true || message['phase'] == 'commentary' ? null
             : (provider: task.provider, model: task.model, reasoning: task.reasoning,
             duration: duration, interrupted: turn?['status'] == 'interrupted')));
+      case 'imageGeneration':
+        result.add(ChatEntry(id, 'Image', '', image: message, timestamp: created,
+          streaming: task.running && message['status'] == 'inProgress', turnId: message['turnId'] as String?));
       case 'mcpToolCall':
       case 'dynamicToolCall':
       case 'commandExecution':
       case 'fileChange':
       case 'webSearch':
       case 'imageView':
-      case 'imageGeneration':
       case 'sleep':
       case 'collabAgentToolCall':
         final name = switch (message['type']) {
@@ -2290,7 +2334,6 @@ List<ChatEntry> conversation(DesktopTask task) {
           'fileChange' => 'apply_patch',
           'webSearch' => 'web_search',
           'imageView' => 'view_image',
-          'imageGeneration' => 'imagegen',
           'sleep' => 'sleep',
           _ => message['tool'] as String? ?? 'Shell',
         };
@@ -2298,21 +2341,27 @@ List<ChatEntry> conversation(DesktopTask task) {
           'fileChange' => {'changes': message['changes']},
           'webSearch' => {'query': message['query'], 'action': message['action']},
           'imageView' => {'path': message['path']},
-          'imageGeneration' => {'prompt': message['revisedPrompt']},
           'sleep' => {'duration': message['durationMs']},
           _ => {'prompt': message['prompt'], 'agents': message['receiverThreadIds']},
         };
-        final tool = ToolActivity(id, name, input, startedAt: created, formatInput: true);
+        final tool = ToolActivity(id, name, input, startedAt: created, threadId: task.id, formatInput: true);
         tool.status = switch (message['status']) {'completed' => 'done', 'failed' => 'failed',
           'inProgress' => task.running ? 'running' : 'interrupted',
           null => message['live'] == true && task.running ? 'running' : 'done', _ => 'interrupted'};
         if (tool.status != 'interrupted' && (message['success'] == false || message['error'] != null ||
             message['exitCode'] is int && message['exitCode'] != 0)) tool.status = 'failed';
         tool.endedAt = at(message['completedAtMs']);
-        final output = message['contentItems'] ?? message['result']?['content'];
-        if (output is List) {
-          final text = output.where((part) => {'text', 'inputText'}.contains(part['type'])).map((part) => part['text']).join('\n');
+        final output = switch (message) {
+          {'type': 'dynamicToolCall', 'contentItems': final List<Object?> content} => content,
+          {'type': 'mcpToolCall', 'result': {'content': final List<Object?> content}} => content,
+          _ => null,
+        };
+        if (output != null) {
+          final text = [for (final part in output)
+            if (part case {'type': 'text' || 'inputText', 'text': final String text}) text].join('\n');
           if (text.isNotEmpty) tool.output = text;
+          tool.images = output.whereType<Json>().where((part) =>
+            {'image', 'inputImage', 'input_image'}.contains(part['type'])).toList(growable: false);
         } else if (message['error'] != null || message['aggregatedOutput'] != null) { tool.output = message['error'] ?? message['aggregatedOutput']; }
         else if (message['type'] == 'webSearch') { tool.output = message['results']; }
         else if (message['type'] == 'collabAgentToolCall') { tool.output = message['agentsStates']; }

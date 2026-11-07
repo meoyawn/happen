@@ -14,12 +14,12 @@ class DetailsRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final row = SizedBox(height: 32, child: Row(children: [
       Expanded(child: TextButton(onPressed: onPressed,
-        style: TextButton.styleFrom(foregroundColor: opencodeInk, disabledForegroundColor: opencodeMuted,
+        style: TextButton.styleFrom(foregroundColor: desktopForeground, disabledForegroundColor: desktopSecondary,
           padding: const EdgeInsets.symmetric(horizontal: 10), minimumSize: const Size(0, 32),
           alignment: Alignment.centerLeft, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
         child: Row(children: [
-          IconTheme(data: const IconThemeData(size: 16, color: opencodeFaint),
+          IconTheme(data: const IconThemeData(size: 16, color: desktopTertiary),
             child: SizedBox.square(dimension: 16, child: icon)),
           const SizedBox(width: 11),
           Expanded(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
@@ -31,7 +31,7 @@ class DetailsRow extends StatelessWidget {
   }
 }
 
-const detailsChevron = Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: opencodeFaint);
+const detailsChevron = Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: desktopTertiary);
 final detailsMenuStyle = IconButton.styleFrom(
   minimumSize: const Size(32, 32), maximumSize: const Size(32, 32), padding: EdgeInsets.zero,
   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

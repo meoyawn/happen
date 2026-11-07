@@ -95,7 +95,7 @@ class ComposerModelPicker extends StatelessWidget {
       ))),
     ));
     const labelStyle = TextStyle(fontSize: 13, height: 20 / 13, letterSpacing: -.04,
-      color: opencodeMuted, fontVariations: [FontVariation('wght', 440)]);
+      color: desktopSecondary, fontVariations: [FontVariation('wght', 440)]);
     Widget control(String label) => SizedBox(height: 28, child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -113,7 +113,7 @@ class ComposerModelPicker extends StatelessWidget {
           ], child: MouseRegion(cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
             child: Row(mainAxisSize: MainAxisSize.min, children: [
             Padding(padding: const EdgeInsets.only(left: 6),
-              child: providerIcon(provider, size: 15, color: const Color(0xff797986))),
+              child: providerIcon(provider, size: 15, color: desktopSecondary)),
             Flexible(child: control(_modelLabel(model))),
           ])))),
         if (efforts.isNotEmpty && effort != null) PopupMenuButton<String>(key: effortMenuKey,

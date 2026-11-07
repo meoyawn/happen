@@ -9,10 +9,13 @@ import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'appearance_settings.dart';
 import 'app_icon.dart';
 import 'native_app_icon.dart';
 import 'composer_attachments.dart';
 import 'project_avatar.dart';
+import 'project_actions_state.dart';
+import 'project_script_dialog.dart';
 import 'session.dart';
 import 'desktop_notifications.dart';
 import 'notification_preferences.dart';
@@ -35,7 +38,7 @@ const _pages = [
 class DesktopSettingsScreen extends StatefulWidget {
   const DesktopSettingsScreen({super.key, required this.session, required this.accounts,
     required this.archived, required this.run, this.addProject, this.openProject,
-    this.removeProject, this.windowControls = true, this.initialPage = 'preferences'});
+    this.removeProject, this.windowControls = true, this.initialPage = 'preferences', this.initialProject});
   final DesktopSession session;
   final Widget accounts, archived;
   final Future<void> Function(Future<void> Function()) run;
@@ -43,14 +46,15 @@ class DesktopSettingsScreen extends StatefulWidget {
   final Future<void> Function(Project)? openProject, removeProject;
   final bool windowControls;
   final String initialPage;
+  final Project? initialProject;
 
   @override
   State<DesktopSettingsScreen> createState() => _DesktopSettingsScreenState();
 }
 
 class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
-  late String _page = widget.initialPage;
-  Project? _project;
+  late String _page = widget.initialProject == null ? widget.initialPage : 'projects';
+  late Project? _project = widget.initialProject;
   String _projectQuery = '';
   final _projectSearch = TextEditingController();
   final _scroll = ScrollController();
@@ -87,7 +91,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
       if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.escape) return KeyEventResult.ignored;
       unawaited(Navigator.maybePop(context));
       return KeyEventResult.handled;
-    }, child: Scaffold(backgroundColor: const Color(0xfffafafa), body: Column(children: [
+    }, child: Scaffold(backgroundColor: desktopSidebar, body: Column(children: [
       DesktopWindowDragRegion(child: SizedBox(height: widget.windowControls ? 40 : 8, width: double.infinity)),
       Expanded(child: Container(
         margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
@@ -114,16 +118,18 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                   ProjectAvatar(project: project, size: 32, generated: widget.session.projectAvatarStyle == 'generated'),
                   const SizedBox(width: 12),
                   Expanded(child: Text(project.name, style: const TextStyle(fontSize: 15,
-                    fontWeight: FontWeight.w600, color: opencodeInk))),
+                    fontWeight: FontWeight.w600, color: desktopForeground))),
                   _projectMenu(project),
                 ]),
+                const SizedBox(height: 6),
+                const Text('Project settings', style: TextStyle(fontSize: 11, color: desktopSecondary)),
               ] else
                 Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(page.label, style: const TextStyle(fontSize: 15, height: 20 / 15,
-                      fontWeight: FontWeight.w600, color: opencodeInk)),
+                      fontWeight: FontWeight.w600, color: desktopForeground)),
                     const SizedBox(height: 4),
-                    Text(page.description, style: const TextStyle(fontSize: 11, height: 16 / 11, color: opencodeMuted)),
+                    Text(page.description, style: const TextStyle(fontSize: 11, height: 16 / 11, color: desktopSecondary)),
                   ])),
                   if (_page == 'projects' && widget.session.projects.isNotEmpty && widget.addProject != null)
                     TextButton.icon(onPressed: widget.addProject, style: _navStyle(),
@@ -141,7 +147,8 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
                 'projects' => project == null ? _projects() : _ProjectSettings(
-                  key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run),
+                  key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run,
+                  removeProject: widget.removeProject),
                 _ => _preferences(),
               },
             ]));
@@ -202,6 +209,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   ]);
 
   Widget _appearance() => _settingsList([
+    DesktopAccentSettings(controller: widget.session.appearance, run: widget.run),
     if (supportsAppIconSwitching)
       ListenableBuilder(listenable: widget.session.appIcon, builder: (context, _) {
         final state = widget.session.appIcon.state;
@@ -220,9 +228,9 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         return Padding(padding: const EdgeInsets.symmetric(vertical: 20),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('App icon', style: TextStyle(fontSize: 13, height: 16 / 13,
-              fontWeight: FontWeight.w500, color: opencodeInk)),
+              fontWeight: FontWeight.w500, color: desktopForeground)),
             const SizedBox(height: 4),
-            Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeMuted)),
+            Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopSecondary)),
             const SizedBox(height: 16),
             RadioGroup<AppIconChoice>(groupValue: state.value, onChanged: choose,
               child: Wrap(spacing: 12, runSpacing: 12, children: [
@@ -277,11 +285,11 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
       ],
       if (projects.isEmpty)
         _settingsList([Padding(padding: const EdgeInsets.symmetric(vertical: 64), child: Column(children: [
-          const Icon(Icons.folder_outlined, size: 28, color: opencodeMuted),
+          const Icon(Icons.folder_outlined, size: 28, color: desktopSecondary),
           const SizedBox(height: 16),
           const Text('No projects yet', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
           const SizedBox(height: 4),
-          const Text('Add a project folder to get started.', style: TextStyle(fontSize: 13, color: opencodeMuted)),
+          const Text('Add a project folder to get started.', style: TextStyle(fontSize: 13, color: desktopSecondary)),
           if (widget.addProject != null) ...[
             const SizedBox(height: 24),
             OutlinedButton.icon(onPressed: widget.addProject,
@@ -290,7 +298,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         ]))])
       else if (filtered.isEmpty)
         Padding(padding: const EdgeInsets.symmetric(vertical: 48), child: Text('No projects match “${_projectQuery.trim()}”.',
-          textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: opencodeMuted)))
+          textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: desktopSecondary)))
       else
         _settingsList([for (final project in filtered)
           Row(children: [
@@ -302,14 +310,14 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 const SizedBox(width: 12),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: opencodeInk)),
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: desktopForeground)),
                   const SizedBox(height: 2),
                   Text(project.path, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, color: opencodeMuted)),
+                    style: const TextStyle(fontSize: 11, color: desktopSecondary)),
                 ])),
                 if (!project.available) const Tooltip(message: 'Project folder is unavailable',
                   child: Padding(padding: EdgeInsets.only(left: 8),
-                    child: Icon(Icons.warning_amber_rounded, size: 16, color: opencodeMuted))),
+                    child: Icon(Icons.warning_amber_rounded, size: 16, color: desktopSecondary))),
               ]))),
             _projectMenu(project),
           ]),
@@ -365,10 +373,11 @@ class _NotificationPreferencesState extends State<_NotificationPreferences> {
 }
 
 class _ProjectSettings extends StatefulWidget {
-  const _ProjectSettings({super.key, required this.project, required this.session, required this.run});
+  const _ProjectSettings({super.key, required this.project, required this.session, required this.run, this.removeProject});
   final Project project;
   final DesktopSession session;
   final Future<void> Function(Future<void> Function()) run;
+  final Future<void> Function(Project)? removeProject;
 
   @override
   State<_ProjectSettings> createState() => _ProjectSettingsState();
@@ -474,19 +483,19 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
       Container(padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: const Color(0xfffff6e5), borderRadius: BorderRadius.circular(8)),
         child: const Row(children: [
-          Icon(Icons.folder_off_outlined, size: 20, color: opencodeMuted), SizedBox(width: 12),
+          Icon(Icons.folder_off_outlined, size: 20, color: desktopSecondary), SizedBox(width: 12),
           Expanded(child: Text('This project folder is unavailable. Check that it exists and any external drive is connected.',
-            style: TextStyle(fontSize: 13, color: opencodeMuted))),
+            style: TextStyle(fontSize: 13, color: desktopSecondary))),
         ])),
       const SizedBox(height: 16),
     ],
-    _settingsList([
+    _projectSettingsSection('Project', [
       _settingsRow('Name', 'The name shown for this project in Happen.',
         SizedBox(width: 244, child: TextField(controller: _name, focusNode: _nameFocus,
-          style: const TextStyle(fontSize: 13, color: opencodeInk),
+          style: const TextStyle(fontSize: 13, color: desktopForeground),
           decoration: _settingsInput(widget.project.folderName).copyWith(labelText: 'Project name', floatingLabelBehavior: FloatingLabelBehavior.never),
           onSubmitted: (_) => _saveName(), onTapOutside: (_) => _nameFocus.unfocus()))),
-      _settingsRow('Icon', 'Upload an image or drop one onto the icon.',
+      _settingsRow('Project icon', 'Choose an image or drop one onto the icon.',
         Row(mainAxisSize: MainAxisSize.min, children: [
           DropTarget(enabled: !_loadingIcon && !_receivingIcon, acceptedKinds: const {DropItemKind.file},
             onEnter: (_) => setState(() => _dragOver = true),
@@ -498,9 +507,12 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
               borderRadius: BorderRadius.circular(6),
               child: Container(padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _dragOver ? opencodeInk : Colors.transparent)),
+                  border: Border.all(color: _dragOver ? desktopForeground : Colors.transparent)),
                 child: _loadingIcon || _receivingIcon ? const SizedBox.square(dimension: 32, child: CircularProgressIndicator(strokeWidth: 2))
                   : ProjectAvatar(project: widget.project, size: 32, generated: widget.session.projectAvatarStyle == 'generated'))))),
+          const SizedBox(width: 8),
+          OutlinedButton(onPressed: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(_chooseIcon)),
+            child: const Text('Choose file')),
           if (widget.project.avatarImage != null) ...[
             const SizedBox(width: 8),
             IconButton(tooltip: 'Remove custom icon', icon: const Icon(Icons.close, size: 16),
@@ -510,12 +522,45 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
       if (widget.project.avatarImage == null)
         _settingsRow('Color', 'Choose a color for the project icon.',
           SizedBox(width: 244, child: Wrap(spacing: 8, runSpacing: 12, alignment: WrapAlignment.end, children: [
-            for (final color in opencodeProjectColors.keys) _projectColor(widget.project, color),
+            for (final color in projectColors.keys) _projectColor(widget.project, color),
           ]))),
-      _settingsRow('Folder', 'The local folder used for this project.',
-        SizedBox(width: 244, child: SelectableText(widget.project.path,
-          style: const TextStyle(fontSize: 12, color: opencodeMuted)))),
     ]),
+    const SizedBox(height: 24),
+    _ProjectActionsSettings(project: widget.project, session: widget.session, run: widget.run),
+    const SizedBox(height: 24),
+    _projectSettingsSection('Checkouts', [
+      Padding(padding: const EdgeInsets.symmetric(vertical: 16), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Padding(padding: EdgeInsets.only(top: 2), child: Icon(Icons.folder_outlined, size: 18, color: desktopSecondary)),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(widget.session.client.sharedFilesystem ? Platform.localHostname.replaceFirst(RegExp(r'\.local$'), '') : 'Server',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: desktopForeground)),
+          const SizedBox(height: 6),
+          SelectableText(widget.project.path, style: const TextStyle(fontSize: 12, color: desktopSecondary)),
+          if (widget.project.branch case final branch?) ...[
+            const SizedBox(height: 6),
+            Row(children: [const Icon(Icons.call_split_rounded, size: 14, color: desktopSecondary), const SizedBox(width: 4),
+              Expanded(child: Text(branch, style: const TextStyle(fontSize: 12, color: desktopSecondary)))]),
+          ],
+        ])),
+        const SizedBox(width: 8),
+        IconButton(tooltip: 'Copy project path', icon: const Icon(Icons.copy_outlined, size: 16),
+          onPressed: () => unawaited(widget.run(() => Clipboard.setData(ClipboardData(text: widget.project.path))))),
+        if (widget.session.client.sharedFilesystem)
+          IconButton(tooltip: 'Open project folder', icon: const Icon(Icons.open_in_new_rounded, size: 16),
+            onPressed: widget.project.available ? () => unawaited(widget.run(() => widget.session.openProjectFolder(widget.project))) : null),
+      ])),
+    ]),
+    if (widget.removeProject != null) ...[
+      const SizedBox(height: 24),
+      _projectSettingsSection('Danger', [
+        _settingsRow('Remove project', 'Remove this project and its threads from Happen. The folder and saved thread history are kept.',
+          OutlinedButton.icon(onPressed: () => unawaited(widget.removeProject!(widget.project)),
+            style: OutlinedButton.styleFrom(foregroundColor: desktopError,
+              side: const BorderSide(color: Color(0x40c23838))),
+            icon: const Icon(Icons.delete_outline_rounded, size: 16), label: const Text('Remove project'))),
+      ]),
+    ],
   ]);
 
   Widget _projectColor(Project project, String color) {
@@ -523,8 +568,8 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
     return Tooltip(message: 'Use $color for ${project.name}', child: Semantics(selected: selected,
       child: DecoratedBox(
         decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), boxShadow: selected ? const [
-          BoxShadow(color: opencodeInk, spreadRadius: 4),
-          BoxShadow(color: Color(0xfffafafa), spreadRadius: 2),
+          BoxShadow(color: desktopForeground, spreadRadius: 4),
+          BoxShadow(color: desktopSidebar, spreadRadius: 2),
         ] : null),
         child: InkWell(borderRadius: BorderRadius.circular(6),
           mouseCursor: WidgetStateMouseCursor.clickable,
@@ -537,30 +582,96 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
   }
 }
 
+Widget _projectSettingsSection(String title, List<Widget> rows) => Column(
+  crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Padding(padding: const EdgeInsets.only(left: 4, bottom: 10), child: Text(title,
+      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: desktopSecondary))),
+    _settingsList(rows),
+  ]);
+
+class _ProjectActionsSettings extends StatefulWidget {
+  const _ProjectActionsSettings({required this.project, required this.session, required this.run});
+  final Project project;
+  final DesktopSession session;
+  final Future<void> Function(Future<void> Function()) run;
+  @override
+  State<_ProjectActionsSettings> createState() => _ProjectActionsSettingsState();
+}
+
+class _ProjectActionsSettingsState extends State<_ProjectActionsSettings> {
+  final _lifetime = CancellationToken();
+  ProjectActionsController get actions => widget.session.actionsForProject(widget.project);
+  @override
+  void initState() { super.initState(); unawaited(actions.load()); }
+  @override
+  void dispose() { _lifetime.cancel(); super.dispose(); }
+
+  void _edit([ProjectScript? script]) => unawaited(showDialog<void>(context: context,
+    builder: (context) => ProjectScriptDialog(controller: actions, script: script)));
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(listenable: actions, builder: (context, _) {
+    final state = actions.state;
+    final ready = state is ProjectActionsReady || state is ProjectActionsFailed;
+    final scripts = state.value.scripts;
+    return _projectSettingsSection('Actions', [
+      _settingsRow('Open project in', 'The application used to open this checkout.',
+        PopupMenuButton<String>(tooltip: 'Choose application', enabled: ready && actions.local,
+          onSelected: (id) => unawaited(widget.run(() => actions.save((opener: id, scripts: scripts), _lifetime))),
+          itemBuilder: (_) => [for (final target in actions.openers)
+            CheckedPopupMenuItem(value: target.id, checked: target.id == actions.opener.id, child: Text(target.label))],
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(state is ProjectActionsLoading ? 'Loading…' : state is ProjectActionsSaving ? 'Saving…' : actions.opener.label,
+              style: TextStyle(fontSize: 13, color: ready && actions.local ? desktopForeground : desktopSecondary)),
+            const SizedBox(width: 8), const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: desktopSecondary),
+          ])))),
+      _settingsRow('Project scripts', 'Saved commands available in this project’s terminal.',
+        OutlinedButton.icon(onPressed: ready ? _edit : null,
+          icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add script'))),
+      for (final script in scripts)
+        Padding(padding: const EdgeInsets.symmetric(vertical: 14), child: Row(children: [
+          const Icon(Icons.terminal_rounded, size: 18, color: desktopSecondary), const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(script.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: desktopForeground)),
+            const SizedBox(height: 4),
+            Text(script.command, maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, fontFamily: desktopMonoFamily, color: desktopSecondary)),
+          ])),
+          const SizedBox(width: 8),
+          OutlinedButton(onPressed: ready ? () => _edit(script) : null, child: const Text('Edit')),
+        ])),
+      if (state case ProjectActionsFailed(:final message))
+        Padding(padding: const EdgeInsets.symmetric(vertical: 12), child: Align(alignment: Alignment.centerLeft,
+          child: Text(message, style: const TextStyle(fontSize: 12, color: desktopError)))),
+    ]);
+  });
+}
+
 InputDecoration _settingsInput(String hint) => InputDecoration(
   hintText: hint, filled: true, fillColor: Colors.white,
   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
   enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
     borderSide: const BorderSide(color: Color(0x1f000000), width: .5)),
   focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
-    borderSide: const BorderSide(color: opencodeInk, width: 1)));
+    borderSide: const BorderSide(color: desktopForeground, width: 1)));
 
 ButtonStyle _navStyle({bool selected = false}) => TextButton.styleFrom(
   visualDensity: VisualDensity.standard,
   alignment: Alignment.centerLeft,
-  foregroundColor: selected ? opencodeInk : opencodeMuted,
+  foregroundColor: selected ? desktopForeground : desktopSecondary,
   backgroundColor: selected ? const Color(0xffeeeeee) : Colors.transparent,
-  textStyle: const TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w400),
+  textStyle: const TextStyle(fontFamily: desktopFontFamily, fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w400),
   minimumSize: const Size(0, 28), padding: const EdgeInsets.symmetric(horizontal: 6),
   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)));
 
 Widget _settingsList(List<Widget> rows) => Container(
   padding: const EdgeInsets.symmetric(horizontal: 20),
-  decoration: BoxDecoration(color: const Color(0xfffafafa), borderRadius: BorderRadius.circular(8),
+  decoration: BoxDecoration(color: desktopSidebar, borderRadius: BorderRadius.circular(8),
     border: Border.all(color: const Color(0x14000000), width: .5)),
   child: Column(children: [for (var index = 0; index < rows.length; index++) ...[
-    if (index > 0) const Divider(height: .5, thickness: .5, color: opencodeBorder),
+    if (index > 0) const Divider(height: .5, thickness: .5, color: desktopBorder),
     rows[index],
   ]]));
 
@@ -568,9 +679,9 @@ Widget _settingsRow(String title, String description, Widget control) => Padding
   padding: const EdgeInsets.symmetric(vertical: 20),
   child: LayoutBuilder(builder: (context, bounds) {
     final copy = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title, style: const TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500, color: opencodeInk)),
+      Text(title, style: const TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500, color: desktopForeground)),
       const SizedBox(height: 4),
-      Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeMuted)),
+      Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopSecondary)),
     ]);
     if (bounds.maxWidth < 420) {
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -591,8 +702,8 @@ Widget _choice(String label, String value, Map<String, String> options, ValueCha
       value: value, isDense: true, borderRadius: BorderRadius.circular(6),
       padding: EdgeInsets.zero,
       dropdownColor: Colors.white,
-      style: const TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13, color: opencodeInk),
-      icon: const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.keyboard_arrow_down, size: 14, color: opencodeMuted)),
+      style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 13, height: 16 / 13, color: desktopForeground),
+      icon: const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.keyboard_arrow_down, size: 14, color: desktopSecondary)),
       items: [for (final entry in options.entries) DropdownMenuItem(value: entry.key, child: Text(entry.value))],
       onChanged: (value) { if (value != null) onChanged(value); },
     ))));
@@ -601,7 +712,7 @@ Widget _appIconChoice(AppIconChoice choice, {required bool selected, required bo
   required VoidCallback onSelected}) => MergeSemantics(child: Opacity(opacity: enabled ? 1 : .55,
   child: Material(color: selected ? const Color(0xfff0f0f0) : Colors.white,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8),
-      side: BorderSide(color: selected ? opencodeInk : opencodeBorder, width: selected ? 1.5 : .5)),
+      side: BorderSide(color: selected ? desktopForeground : desktopBorder, width: selected ? 1.5 : .5)),
     clipBehavior: Clip.antiAlias,
     child: InkWell(onTap: enabled ? onSelected : null, canRequestFocus: false, excludeFromSemantics: true,
       mouseCursor: WidgetStateMouseCursor.clickable,
@@ -611,10 +722,10 @@ Widget _appIconChoice(AppIconChoice choice, {required bool selected, required bo
             filterQuality: FilterQuality.medium)),
           const SizedBox(height: 8),
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Radio<AppIconChoice>(value: choice, enabled: enabled, activeColor: opencodeInk,
+            Radio<AppIconChoice>(value: choice, enabled: enabled, activeColor: desktopForeground,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap, visualDensity: VisualDensity.compact),
             const SizedBox(width: 4),
             Flexible(child: Text(choice.label,
-              style: const TextStyle(fontSize: 13, height: 16 / 13, color: opencodeInk))),
+              style: const TextStyle(fontSize: 13, height: 16 / 13, color: desktopForeground))),
           ]),
         ])))))));

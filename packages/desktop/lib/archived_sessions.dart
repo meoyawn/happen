@@ -79,13 +79,13 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
           ? _conversation(preview.$1, preview.$2)
           : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Archived tasks (${archived.length})',
-                style: const TextStyle(fontSize: 15, height: 20 / 15, fontWeight: FontWeight.w600, color: opencodeInk)),
+                style: const TextStyle(fontSize: 15, height: 20 / 15, fontWeight: FontWeight.w600, color: desktopForeground)),
               const SizedBox(height: 8),
               const Text('Select a task to preview its conversation. Restore to continue it.',
-                style: TextStyle(fontSize: 12, color: opencodeMuted)),
+                style: TextStyle(fontSize: 12, color: desktopSecondary)),
               const SizedBox(height: 16),
               if (archived.isEmpty)
-                const Text('No archived tasks.', style: TextStyle(fontSize: 12, color: opencodeMuted))
+                const Text('No archived tasks.', style: TextStyle(fontSize: 12, color: desktopSecondary))
               else
                 Expanded(child: Scrollbar(controller: _scroll, child: ListView.builder(
                   key: const PageStorageKey('archived-sessions'),
@@ -124,9 +124,9 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
       Row(children: [
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(task.title, maxLines: 2, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: opencodeInk)),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: desktopForeground)),
           const SizedBox(height: 4),
-          Text(project.name, style: const TextStyle(fontSize: 12, color: opencodeMuted)),
+          Text(project.name, style: const TextStyle(fontSize: 12, color: desktopSecondary)),
         ])),
         const SizedBox(width: 12),
         _restoreButton(task),

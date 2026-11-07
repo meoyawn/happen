@@ -154,6 +154,7 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
   final config = jsonObject(storedMetadata(db, 'config') ?? {});
   final archived = storedMetadata(db, 'archived_at') != null;
   return withHistoryLineage(directory, id, db, (segments) {
+    if (method == 'thread/image/read') return _readInspectedImage(segments, requiredString(params, 'itemId'));
     for (final segment in params['includeTurns'] != true && method == 'thread/read' ? <HistorySegment>[] : segments) {
       final projected = segment.db.select('SELECT next_rollout_ordinal FROM thread_history_projection_state').firstOrNull?['next_rollout_ordinal'] as int? ?? 0;
       if (projected < segment.end) return {'needsProjection': segment.id};
@@ -212,6 +213,37 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
       'pending': pending, 'archived': archived, 'tokens': state['tokens'],
       'through': state['sourceSeq'] ?? 0};
   }, localOnly: config['side_parent_id'] != null);
+}
+
+/// Read the image the tool actually inspected, independent of source-file
+/// changes. Old rollouts can recover a single image from the immediate output
+/// batch; ambiguous batches never substitute a different image.
+Json _readInspectedImage(List<HistorySegment> segments, String itemID) {
+  for (final segment in segments.reversed) {
+    final item = segment.db.select("SELECT rollout_ordinal FROM thread_items WHERE item_id IS ? "
+      "AND item_type IS 'imageView' AND rollout_ordinal < ?", [itemID, segment.end]).firstOrNull;
+    if (item == null) continue;
+    final ordinal = item['rollout_ordinal'] as int;
+    final source = segment.db.select('SELECT line FROM rollout_lines WHERE ordinal IS ?', [ordinal]).single;
+    final line = jsonObject(jsonDecode(source['line'] as String));
+    if (line['payload']?['item']?['image_url'] case final String image) return {'source': image};
+    final next = segment.db.select(r'''SELECT line FROM rollout_lines WHERE ordinal > ? AND ordinal < ? AND (
+      (json_extract(line,'$.type') IS 'response_item' AND json_type(line,'$.payload.output') IS 'array') OR
+      (json_extract(line,'$.type') IS 'event_msg' AND (
+        json_extract(line,'$.payload.item.type') IS 'ImageView' OR
+        json_extract(line,'$.payload.type') IN ('task_started','task_complete','turn_aborted'))))
+      ORDER BY ordinal LIMIT 1''', [ordinal, segment.end]).firstOrNull;
+    if (next != null) {
+      final value = jsonObject(jsonDecode(next['line'] as String));
+      if (value case {'type': 'response_item', 'payload': {'output': final List<Object?> output}}) {
+        final images = [for (final part in output)
+          if (part case {'type': 'input_image', 'image_url': final String image}) image];
+        if (images.length == 1) return {'source': images.single};
+      }
+    }
+    return {'path': requiredString(jsonObject(line['payload']['item']), 'path')};
+  }
+  throw StateError('Unknown inspected image');
 }
 
 Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json params) {

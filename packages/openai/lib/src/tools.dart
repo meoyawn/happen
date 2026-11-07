@@ -57,8 +57,10 @@ class HostTools {
         }], cancellation: cancellation.merge(this.cancellation));
         final item = <String, dynamic>{'type': 'ImageView', 'id': callId,
           'path': File.fromUri(Directory(directory).absolute.uri.resolveUri(Uri.file(path))).path};
-        await onItem?.call('started', item); await onItem?.call('completed', item);
-        return {'image_url': attachmentDataUrl(images.single), 'detail': images.single['detail']};
+        final source = attachmentDataUrl(images.single);
+        await onItem?.call('started', item);
+        await onItem?.call('completed', {...item, 'image_url': source});
+        return {'image_url': source, 'detail': images.single['detail']};
       case 'shell_command':
         final timeout = (input['timeout_ms'] as num? ?? 10000).toInt();
         if (timeout < 0) throw const FormatException('timeout_ms must be non-negative');

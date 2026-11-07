@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
+import 'appearance.dart';
+
 class ContextUsageIndicator extends StatelessWidget {
   const ContextUsageIndicator({super.key, required this.messages, required this.onPressed, this.limit});
   final Iterable<Json> messages;
@@ -16,7 +18,7 @@ class ContextUsageIndicator extends StatelessWidget {
     final percent = used != null && limit != null && limit! > 0 ? (used / limit! * 100).clamp(0, 100).toDouble() : null;
     return Tooltip(message: 'View context usage', child: TextButton(
       key: const ValueKey('view-context'), onPressed: onPressed,
-      style: TextButton.styleFrom(foregroundColor: const Color(0xff808080), padding: const EdgeInsets.symmetric(horizontal: 8)),
+      style: TextButton.styleFrom(foregroundColor: desktopTertiary, padding: const EdgeInsets.symmetric(horizontal: 8)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         SizedBox.square(dimension: 16, child: CustomPaint(painter: _ContextUsagePainter(percent))),
         const SizedBox(width: 8),
@@ -33,7 +35,7 @@ class _ContextUsagePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    const ink = Color(0xff1a1c1f);
+    const ink = desktopForeground;
     final center = Offset(size.width / 2, size.height / 2);
     final radius = (size.shortestSide - 2) / 2;
     final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = 2;

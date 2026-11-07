@@ -360,14 +360,14 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     dimension: 28, child: IconButton(tooltip: label, onPressed: action,
       padding: EdgeInsets.zero, icon: Icon(icon, size: 16),
       style: IconButton.styleFrom(minimumSize: const Size.square(28),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap, foregroundColor: opencodeMuted)));
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap, foregroundColor: desktopSecondary)));
 
   Widget _message(IconData icon, String title, String detail, {bool retry = false}) => Center(
     child: Padding(padding: const EdgeInsets.all(28), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 28, color: opencodeFaint), const SizedBox(height: 16),
-      Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, color: opencodeMuted)),
+      Icon(icon, size: 28, color: desktopTertiary), const SizedBox(height: 16),
+      Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, color: desktopSecondary)),
       const SizedBox(height: 8),
-      Text(detail, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: opencodeFaint)),
+      Text(detail, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: desktopTertiary)),
       if (retry) ...[const SizedBox(height: 12), TextButton(onPressed: () => _run(_reload), child: const Text('Retry'))],
     ])));
 
@@ -396,7 +396,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     }, child: Column(children: [
       if (widget.toolbar) Container(height: 44,
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: opencodeBorder, width: .5))),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: desktopBorder, width: .5))),
         child: Row(children: [
           _button('Back', Icons.arrow_back_rounded, _back ? () => _run(_controller!.goBack) : null),
           _button('Forward', Icons.arrow_forward_rounded, _forward ? () => _run(_controller!.goForward) : null),
@@ -405,9 +405,9 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
           const SizedBox(width: 6),
           Expanded(child: TextField(key: const ValueKey('browser-address'),
             controller: _address, focusNode: _addressFocus, onSubmitted: _submit,
-            style: const TextStyle(fontSize: 12, color: opencodeInk),
+            style: const TextStyle(fontSize: 12, color: desktopForeground),
             decoration: InputDecoration(hintText: 'Search or enter a URL', isDense: true,
-              filled: true, fillColor: opencodeLayer, contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              filled: true, fillColor: desktopMuted, contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none)),
             onTap: () {
               _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length);
@@ -418,7 +418,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
           _button('Open in system browser', Icons.open_in_new_rounded, blank ? null : () => _run(_external)),
         ])),
       if (_loading) LinearProgressIndicator(minHeight: 2,
-        value: _progress > 0 ? _progress / 100 : null, color: opencodeMuted, backgroundColor: opencodeLayer),
+        value: _progress > 0 ? _progress / 100 : null, color: desktopSecondary, backgroundColor: desktopMuted),
       Expanded(child: _error != null
         ? _message(Icons.error_outline_rounded, 'This page could not be loaded.', _error!, retry: _location != null)
         : blank ? _message(Icons.language_rounded, 'Open a page', 'Preview your app, read docs, or browse the web.')

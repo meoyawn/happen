@@ -85,6 +85,71 @@ void main() {
       });
     });
 
+    test('unused saved data does not consume a cell heap; loaded values remain snapshots', () async {
+      const mode = CodeMode(memoryLimit: 1024 * 1024);
+      final saved = <String, dynamic>{
+        'cold': 'x' * (4 * 1024 * 1024),
+        'small': {'value': 41},
+        'nothing': null,
+        '__proto__': {'value': 'saved'},
+      };
+      final calls = <String>[];
+      final result = await mode.execute(r'''
+        const first = load("small");
+        first.value = 99;
+        text(load("small"));
+        text([load("missing") === undefined, load("nothing") === null, load("__proto__").value]);
+        Object.prototype.value = 99;
+        Object.prototype.error = "inherited";
+        text([load("missing") === undefined, load("small").value]);
+        delete Object.prototype.value;
+        delete Object.prototype.error;
+        const changed = {value: await tools.increment(load("small").value)};
+        store("small", changed);
+        changed.value = -1;
+        const loaded = load("small");
+        loaded.value = -2;
+        text(load("small"));
+      ''', values: saved, cancellation: CancellationToken(),
+        tool: (name, input, {required cancellation}) async {
+          calls.add(name);
+          return (input as int) + 1;
+        });
+      expect(result['output'], ['{"value":41}', '[true,true,"saved"]', '[true,41]', '{"value":42}']);
+      expect(calls, ['increment']);
+      final values = jsonObject(result['values']);
+      expect(values['cold'], saved['cold']);
+      expect(values['small'], {'value': 42});
+      final next = await mode.execute('text(load("small"));', values: values,
+        cancellation: CancellationToken(),
+        tool: (_, _, {required cancellation}) async => throw StateError('unexpected host call'));
+      expect(next['output'], ['{"value":42}']);
+    });
+
+    test('yielded cells load their admitted snapshot while later cells see committed writes', () async {
+      final lifetime = CancellationToken();
+      final session = CodeSession(lifetime);
+      addTearDown(() async { await session.close(); lifetime.cancel(); });
+      final entered = Completer<void>(), release = Completer<void>();
+      Future<Json> execute(String source) => session.execute(source,
+        cancellation: lifetime, values: {}, catalog: [{'name': 'hold', 'description': ''}],
+        tool: (_, _, {required cancellation}) async {
+          entered.complete();
+          await release.future.asCancellable(cancellation);
+          return null;
+        });
+      await execute('store("answer", {value: 41});');
+      final pending = await execute('yield_control(); await tools.hold({}); text(load("answer"));');
+      await entered.future;
+      final updated = await execute('store("answer", {value: 42});');
+      expect(jsonObject(updated['values'])['answer'], {'value': 42});
+      release.complete();
+      final completed = await session.wait({'cell_id': pending['cell_id']}, cancellation: lifetime);
+      expect(completed['error'], isNull);
+      expect(completed['output'], ['{"value":41}']);
+      expect((await execute('text(load("answer"));'))['output'], ['{"value":42}']);
+    });
+
     test(
       'large batched output is truncated without aborting the cell',
       () async {

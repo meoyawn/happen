@@ -9,6 +9,8 @@ import 'package:xterm2/xterm.dart';
 
 import 'terminal_process.dart';
 
+import 'appearance.dart';
+
 bool get terminalHasFocus =>
   FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<_TerminalView>() != null;
 
@@ -304,7 +306,7 @@ class _TerminalDock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
-    decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Color(0xffe8e9eb)))),
+    decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: desktopBorder))),
     child: Column(children: [
       MouseRegion(cursor: SystemMouseCursors.resizeUpDown, child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -312,14 +314,14 @@ class _TerminalDock extends StatelessWidget {
         child: const SizedBox(height: 4, width: double.infinity))),
       SizedBox(height: 32, child: Row(children: [
         const SizedBox(width: 12),
-        const Icon(Icons.terminal_outlined, size: 16, color: Color(0xff656971)),
+        const Icon(Icons.terminal_outlined, size: 16, color: desktopSecondary),
         const SizedBox(width: 8),
         const Text('Terminal', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
         const SizedBox(width: 12),
         Expanded(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
           for (final shell in group.sessions)
             ListenableBuilder(listenable: shell, builder: (context, _) => Material(
-              color: shell == group.active ? const Color(0xfff2f3f5) : Colors.transparent,
+              color: shell == group.active ? desktopMuted : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
               child: InkWell(onTap: () => controller.select(scope, shell), borderRadius: BorderRadius.circular(6),
                 mouseCursor: WidgetStateMouseCursor.clickable,
@@ -343,7 +345,7 @@ class _TerminalDock extends StatelessWidget {
 
 Widget _terminalButton(String label, IconData icon, VoidCallback onPressed) => SizedBox.square(
   dimension: 26, child: IconButton(tooltip: label, onPressed: onPressed, padding: EdgeInsets.zero,
-    icon: Icon(icon, size: 14, color: const Color(0xff777b82))));
+    icon: Icon(icon, size: 14, color: desktopSecondary)));
 
 class _TerminalView extends StatefulWidget {
   const _TerminalView({super.key, required this.shell, required this.focusRequest});
@@ -382,19 +384,19 @@ class _TerminalViewState extends State<_TerminalView> {
         focusNode: _focus, readOnly: !shell.running,
         padding: const EdgeInsets.only(left: 16, top: 8, right: 8, bottom: 12),
         textStyle: const TerminalStyle(fontFamily: 'monospace', fontSize: 13, height: 1.2),
-        theme: _terminalTheme)),
+        theme: _terminalTheme(DesktopAccent.of(context).selection))),
       if (status != null)
         Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: Text(status,
-          maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xff777b82)))),
+          maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
     ]);
   });
 }
 
-const _terminalTheme = TerminalTheme(
-  cursor: Color(0xff1a1c1f), selection: Color(0x1a000000),
-  foreground: Color(0xff1a1c1f), background: Colors.white,
-  black: Color(0xff979aa0), white: Color(0xff1a1c1f),
-  brightBlack: Color(0xff777b82), brightWhite: Color(0xff1a1c1f),
+TerminalTheme _terminalTheme(Color selection) => TerminalTheme(
+  cursor: desktopForeground, selection: selection,
+  foreground: desktopForeground, background: Colors.white,
+  black: Color(0xff979aa0), white: desktopForeground,
+  brightBlack: desktopSecondary, brightWhite: desktopForeground,
   red: Color(0xffe02e2a), brightRed: Color(0xffe02e2a),
   green: Color(0xff00a240), brightGreen: Color(0xff00a240),
   yellow: Color(0xffffc300), brightYellow: Color(0xffffc300),
@@ -402,5 +404,5 @@ const _terminalTheme = TerminalTheme(
   magenta: Color(0xff924ff7), brightMagenta: Color(0xff924ff7),
   cyan: Color(0xff339cff), brightCyan: Color(0xff339cff),
   searchHitBackground: Color(0xffffc300), searchHitBackgroundCurrent: Color(0xffffc300),
-  searchHitForeground: Color(0xff1a1c1f),
+  searchHitForeground: desktopForeground,
 );

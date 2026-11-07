@@ -13,6 +13,7 @@ import 'conversation_streaming.dart';
 import 'conversation_tools.dart';
 import 'conversation_response.dart';
 import 'conversation_changes.dart';
+import 'conversation_images.dart';
 
 typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, String? label});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
@@ -27,6 +28,17 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
     activity = [];
   }
   for (final entry in entries) {
+    final imageKind = entry.image != null ? 'images' : entry.tool?.name == 'view_image' ? 'imageViews' : null;
+    if (imageKind != null) {
+      flush();
+      final previous = rows.lastOrNull;
+      if (previous != null && previous.kind == imageKind && previous.entries.last.turnId == entry.turnId) {
+        rows[rows.length - 1] = (id: previous.id, kind: imageKind, entries: [...previous.entries, entry], label: null);
+      } else {
+        rows.add((id: entry.id, kind: imageKind, entries: [entry], label: null));
+      }
+      continue;
+    }
     if (entry.tool != null && (toolKind(entry.tool!) == 'question' || entry.tool!.status == 'failed')) {
       flush();
       rows.add((id: entry.id, kind: 'message', entries: [entry], label: null));
@@ -63,7 +75,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       rows.addAll(_workRows(response));
     } else {
       final answer = response.where((entry) => entry.role == 'Happen' && entry.phase != 'commentary').lastOrNull;
-      final work = response.where((entry) => entry != answer && !{'Answer', 'Error', 'Status', 'Compaction'}.contains(entry.role)).toList();
+      final work = response.where((entry) => entry != answer && !{'Answer', 'Error', 'Status', 'Compaction', 'Image'}.contains(entry.role)).toList();
       if (work.isNotEmpty) {
         final start = turn?['startedAt'] is int ? DateTime.fromMillisecondsSinceEpoch((turn!['startedAt'] as int) * 1000)
           : work.first.startedAt ?? work.first.timestamp;
@@ -76,9 +88,9 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
           label: stopped ? elapsed == null ? 'You stopped this response' : 'You stopped after $elapsed'
             : elapsed == null ? 'Worked' : 'Worked for $elapsed'));
         if (expandedTurns.contains(id)) rows.addAll(_workRows(work));
-        for (final entry in response) {
-          if (entry == answer || {'Answer', 'Error', 'Status', 'Compaction'}.contains(entry.role)) rows.addAll(_workRows([entry]));
-        }
+        final visible = response.where((entry) => entry == answer ||
+          {'Answer', 'Error', 'Status', 'Compaction', 'Image'}.contains(entry.role)).toSet();
+        rows.addAll(_workRows(response).where((row) => visible.contains(row.entries.first)));
       } else {
         rows.addAll(_workRows(response));
       }
@@ -341,7 +353,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
           onPressed: _latest,
           icon: const Icon(Icons.arrow_downward_rounded, size: 16),
           label: const Text('Jump to latest'),
-          style: FilledButton.styleFrom(elevation: 1, backgroundColor: const Color(0xfff1f1f3), foregroundColor: conversationInk),
+          style: FilledButton.styleFrom(elevation: 1, backgroundColor: const Color(0xfff1f1f3), foregroundColor: desktopForeground),
         )),
       ),
     ]);
@@ -364,8 +376,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final started = task.runStartedAt;
     final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
     return LayoutBuilder(builder: (context, constraints) {
-        final sidePadding = constraints.maxWidth > conversationWidth + 40
-          ? (constraints.maxWidth - conversationWidth) / 2 : 20.0;
+        final sidePadding = constraints.maxWidth > desktopConversationWidth + 40
+          ? (constraints.maxWidth - desktopConversationWidth) / 2 : 20.0;
         return NotificationListener<ScrollMetricsNotification>(
             onNotification: (notification) {
               if (notification.depth == 0) {
@@ -421,6 +433,15 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                       key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
                       child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
                         files: changesForSource(task, 'turn:${row.label}'), directory: widget.directory));
+                    if (row.kind == 'images') return Padding(
+                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
+                      child: ConversationGeneratedImages(items: row.entries, directory: widget.directory,
+                        conversationImages: entries.where((entry) => entry.image != null).toList(growable: false),
+                        onExpand: () => _following = false));
+                    if (row.kind == 'imageViews') return Padding(
+                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 8),
+                      child: ConversationInspectedImages(tools: row.entries.map((entry) => entry.tool!).toList(growable: false),
+                        directory: widget.directory, onExpand: () => _following = false));
                     final entry = row.kind == 'message' ? row.entries.single : null;
                     return Padding(
                       key: ValueKey(row.id),
@@ -495,7 +516,7 @@ class _ActivityGroup extends StatelessWidget {
     return ConversationDisclosure(
       key: PageStorageKey('disclosure:${entries.first.id}'),
       label: label, shimmer: active, timestamp: entries.first.timestamp,
-      color: failed ? const Color(0xffc10007) : conversationSecondary,
+      color: failed ? desktopError : desktopSecondary,
       icon: ConversationWorkIcon(kind: thinking || tools.isEmpty ? 'reasoning'
         : tools.map(toolKind).toSet().length == 1 ? toolKind(tools.first) : 'tool', failed: failed),
       fontSize: 14,
@@ -557,10 +578,10 @@ class _TurnFold extends StatelessWidget {
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             Text(label, style: const TextStyle(fontSize: 14, height: 1.625,
-              color: conversationSecondary, fontFeatures: [FontFeature.tabularFigures()])),
+              color: desktopSecondary, fontFeatures: [FontFeature.tabularFigures()])),
             const SizedBox(width: 4),
             Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
-              size: 16, color: conversationSecondary),
+              size: 16, color: desktopSecondary),
           ]))))),
   );
 }
@@ -608,7 +629,7 @@ class _MessageState extends State<_Message> {
       constraints: const BoxConstraints.tightFor(width: 20, height: 20),
       visualDensity: VisualDensity.compact,
       onPressed: _changing ? null : () => _change(action),
-      icon: Icon(icon, size: 14, color: conversationMuted)),
+      icon: Icon(icon, size: 14, color: desktopSecondary)),
   );
 
   @override
@@ -638,8 +659,8 @@ class _MessageState extends State<_Message> {
               constraints: BoxConstraints(maxWidth: constraints.maxWidth * .8),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: pending ? const Color(0xfffafafa) : conversationSurface,
-                border: pending ? Border.all(color: conversationBorder) : null,
+                color: pending ? desktopSidebar : desktopMuted,
+                border: pending ? Border.all(color: desktopBorder) : null,
                 borderRadius: BorderRadius.circular(16),
               ),
               child: body,
@@ -660,8 +681,8 @@ class _MessageState extends State<_Message> {
           crossAxisAlignment: WrapCrossAlignment.center,
           alignment: user ? WrapAlignment.end : WrapAlignment.start,
           children: [
-            if (pending) const Icon(Icons.schedule_rounded, size: 13, color: conversationMuted),
-            if (pending) Text(entry.role, style: const TextStyle(fontSize: 11, color: conversationMuted)),
+            if (pending) const Icon(Icons.schedule_rounded, size: 13, color: desktopSecondary),
+            if (pending) Text(entry.role, style: const TextStyle(fontSize: 11, color: desktopSecondary)),
             if (entry.timestamp case final at?) _Timestamp(at: at),
             if (pending && widget.onPendingAction != null) ...[
               _action('steer', widget.running ? 'Steer' : 'Send', Icons.arrow_upward_rounded),
@@ -690,7 +711,7 @@ class _Timestamp extends StatelessWidget {
       message: '${local.toIso8601String()} ${local.timeZoneName}',
       child: Text('${labels.formatShortDate(local)} · $time',
         style: TextStyle(fontSize: 12, height: 18 / 12,
-          color: conversationSecondary)),
+          color: desktopSecondary)),
     );
   }
 }
@@ -717,8 +738,8 @@ class _TurnStatus extends StatelessWidget {
     final label = entry.text == 'Stopped' ? 'Interrupted' : entry.text;
     return Row(children: [
       const Expanded(child: Divider(height: 1)), const SizedBox(width: 12),
-      if (icon != null) ...[Icon(icon, size: 14, color: conversationMuted), const SizedBox(width: 6)],
-      Text(label, style: const TextStyle(fontSize: 13, height: 20 / 13, color: conversationMuted)),
+      if (icon != null) ...[Icon(icon, size: 14, color: desktopSecondary), const SizedBox(width: 6)],
+      Text(label, style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopSecondary)),
       const SizedBox(width: 12), const Expanded(child: Divider(height: 1)),
     ]);
   }
@@ -803,7 +824,7 @@ class _TurnClockState extends State<_TurnClock> {
         padding: const EdgeInsets.fromLTRB(4, 4, 2, 8),
         decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x99e4e4e7)))),
         alignment: Alignment.centerLeft,
-        child: Text(label, style: const TextStyle(fontSize: 14, height: 1.625, color: conversationSecondary,
+        child: Text(label, style: const TextStyle(fontSize: 14, height: 1.625, color: desktopSecondary,
           fontFeatures: [FontFeature.tabularFigures()]))));
   }
 }
@@ -862,29 +883,29 @@ class _ProviderRetryNoticeState extends State<_ProviderRetryNotice> {
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: opencodeLayer,
-          border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(8)),
+        decoration: BoxDecoration(color: desktopMuted,
+          border: Border.all(color: desktopBorder), borderRadius: BorderRadius.circular(8)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Semantics(liveRegion: true, child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Icon(waiting ? Icons.schedule_outlined : Icons.refresh_rounded, size: 16, color: opencodeMuted),
+            Icon(waiting ? Icons.schedule_outlined : Icons.refresh_rounded, size: 16, color: desktopSecondary),
             const SizedBox(width: 8),
             Expanded(child: Text('${widget.contextLabel == null ? '' : '${widget.contextLabel} · '}$label',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: opencodeInk))),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: desktopForeground))),
           ])),
           if (detail != null && detail.isNotEmpty) ...[
             const SizedBox(height: 8),
-            SelectableText(detail, style: const TextStyle(fontSize: 13, height: 1.4, color: opencodeMuted)),
+            SelectableText(detail, style: const TextStyle(fontSize: 13, height: 1.4, color: desktopSecondary)),
           ],
           if (diagnostics.isNotEmpty) ...[
             const SizedBox(height: 4),
-            SelectableText(diagnostics, style: const TextStyle(fontSize: 12, color: opencodeFaint)),
+            SelectableText(diagnostics, style: const TextStyle(fontSize: 12, color: desktopTertiary)),
           ],
           const SizedBox(height: 8),
           Text(waiting
             ? '${status['provider_delay'] == true ? 'Provider requested a wait. ' : ''}'
               'Retrying automatically in ${_durationSeconds((remaining + 999) ~/ 1000)}.'
             : 'Retrying now…',
-            style: const TextStyle(fontSize: 12, color: opencodeMuted)),
+            style: const TextStyle(fontSize: 12, color: desktopSecondary)),
         ]),
       ),
     );

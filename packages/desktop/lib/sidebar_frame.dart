@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'appearance.dart';
+
 /// One sidebar surface docks beside the content or peeks over it while closed.
 class DesktopSidebarFrame extends StatefulWidget {
   const DesktopSidebarFrame({super.key, required this.open, required this.width,
@@ -107,7 +109,7 @@ class _DesktopSidebarFrameState extends State<DesktopSidebarFrame> with TickerPr
             child: Offstage(offstage: shown == 0, child: ExcludeSemantics(excluding: shown == 0,
               child: ExcludeFocus(excluding: shown == 0, child: IgnorePointer(ignoring: !widget.open && !peeking,
                 child: FocusScope(node: _sidebarFocus, child: DecoratedBox(
-                  decoration: BoxDecoration(color: const Color(0xfff9f9f9),
+                  decoration: BoxDecoration(color: desktopSidebar,
                     boxShadow: peeking ? const [BoxShadow(color: Color(0x22000000), blurRadius: 14, offset: Offset(4, 0))] : null),
                   child: Stack(clipBehavior: Clip.none, children: [
                     Positioned.fill(child: widget.sidebar),
@@ -151,10 +153,10 @@ class _SidebarGlyph extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = const Color(0xff808080)..strokeWidth = 1.25..style = PaintingStyle.stroke;
+    final paint = Paint()..color = desktopTertiary..strokeWidth = 1.25..style = PaintingStyle.stroke;
     canvas.drawRect(const Rect.fromLTWH(2, 2.5, 12, 11), paint);
     canvas.drawLine(const Offset(6, 2.5), const Offset(6, 13.5), paint);
-    if (open) canvas.drawRect(const Rect.fromLTWH(2.5, 3, 3, 10), Paint()..color = const Color(0xff808080));
+    if (open) canvas.drawRect(const Rect.fromLTWH(2.5, 3, 3, 10), Paint()..color = desktopTertiary);
   }
 
   @override

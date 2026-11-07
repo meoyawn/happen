@@ -8,17 +8,17 @@ import 'file_change.dart';
 import 'file_icon.dart';
 import 'file_reference.dart';
 
-const diffAdded = Color(0xff16803c), diffRemoved = Color(0xffc23838);
+const diffAdded = Color(0xff16803c), diffRemoved = desktopError;
 
 class DiffStat extends StatelessWidget {
   const DiffStat({super.key, required this.additions, required this.deletions});
   final int additions, deletions;
   @override
   Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
-    if (additions > 0) Text('+${MaterialLocalizations.of(context).formatDecimal(additions)}', style: const TextStyle(fontFamily: 'IBM Plex Mono',
+    if (additions > 0) Text('+${MaterialLocalizations.of(context).formatDecimal(additions)}', style: const TextStyle(fontFamily: desktopMonoFamily,
       fontSize: 11, color: diffAdded, fontFeatures: [FontFeature.tabularFigures()])),
     if (additions > 0 && deletions > 0) const SizedBox(width: 7),
-    if (deletions > 0) Text('−${MaterialLocalizations.of(context).formatDecimal(deletions)}', style: const TextStyle(fontFamily: 'IBM Plex Mono',
+    if (deletions > 0) Text('−${MaterialLocalizations.of(context).formatDecimal(deletions)}', style: const TextStyle(fontFamily: desktopMonoFamily,
       fontSize: 11, color: diffRemoved, fontFeatures: [FontFeature.tabularFigures()])),
   ]);
 }
@@ -71,14 +71,14 @@ class _DiffViewerState extends State<DiffViewer> {
   @override
   Widget build(BuildContext context) {
     final file = _file, files = widget.files;
-    if (file == null) return const Center(child: Text('No file changes', style: TextStyle(color: conversationSecondary)));
+    if (file == null) return const Center(child: Text('No file changes', style: TextStyle(color: desktopSecondary)));
     final index = files.indexOf(file);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(padding: const EdgeInsets.fromLTRB(12, 6, 8, 6), child: Row(children: [
         FileIcon(file.path, size: 16), const SizedBox(width: 8),
         Expanded(child: DropdownButtonHideUnderline(child: DropdownButton<String>(
           value: file.path, isExpanded: true, isDense: true,
-          style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 11, color: conversationForeground),
+          style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11, color: desktopForeground),
           items: [for (final item in files) DropdownMenuItem(value: item.path,
             child: Text(item.path, maxLines: 1, overflow: TextOverflow.ellipsis))],
           onChanged: (path) { if (path != null) _choose(path); }))),
@@ -87,7 +87,7 @@ class _DiffViewerState extends State<DiffViewer> {
       Padding(padding: const EdgeInsets.fromLTRB(8, 0, 8, 6), child: Row(children: [
         _button('Previous file', Icons.chevron_left_rounded,
           index > 0 ? () => _choose(files[index - 1].path) : null),
-        Text('${index + 1} / ${files.length}', style: const TextStyle(fontSize: 11, color: conversationSecondary)),
+        Text('${index + 1} / ${files.length}', style: const TextStyle(fontSize: 11, color: desktopSecondary)),
         _button('Next file', Icons.chevron_right_rounded,
           index + 1 < files.length ? () => _choose(files[index + 1].path) : null),
         const Spacer(),
@@ -101,10 +101,10 @@ class _DiffViewerState extends State<DiffViewer> {
           }),
       ])),
       if (file.oldPath != null) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-        child: Text('${file.oldPath} → ${file.path}', style: const TextStyle(fontSize: 11, color: conversationSecondary))),
+        child: Text('${file.oldPath} → ${file.path}', style: const TextStyle(fontSize: 11, color: desktopSecondary))),
       const Divider(height: 1),
       Expanded(child: _lines.isEmpty
-        ? const Center(child: Text('No line changes', style: TextStyle(fontSize: 12, color: conversationSecondary)))
+        ? const Center(child: Text('No line changes', style: TextStyle(fontSize: 12, color: desktopSecondary)))
         : LayoutBuilder(builder: (context, bounds) {
           final longest = _lines.fold<int>(0, (size, line) => math.max(size, line.text.length));
           final columnWidth = math.max(_split ? bounds.maxWidth / 2 : bounds.maxWidth, longest * 7.2 + (_split ? 76 : 128));
@@ -127,23 +127,23 @@ class _DiffViewerState extends State<DiffViewer> {
   Widget _button(String label, IconData icon, VoidCallback? action) => SizedBox.square(dimension: 28,
     child: IconButton(tooltip: label, onPressed: action, padding: EdgeInsets.zero,
       style: IconButton.styleFrom(minimumSize: const Size.square(28), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-      icon: Icon(icon, size: 15, color: action == null ? conversationOutline : conversationSecondary)));
+      icon: Icon(icon, size: 15, color: action == null ? desktopBorder : desktopSecondary)));
 
   Widget _line(DiffLine? line, {bool? oldSide}) {
     final added = line?.kind == '+', removed = line?.kind == '-', hunk = line?.kind == '@';
     final color = added ? const Color(0xffeaf7ee) : removed ? const Color(0xfffcecec)
-      : hunk ? const Color(0xffedf2fa) : line == null ? const Color(0xfff8f8f9) : Colors.white;
-    const numberStyle = TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 10, color: conversationSecondary,
+      : hunk ? const Color(0xffedf2fa) : line == null ? desktopSidebar : Colors.white;
+    const numberStyle = TextStyle(fontFamily: desktopMonoFamily, fontSize: 10, color: desktopSecondary,
       fontFeatures: [FontFeature.tabularFigures()]);
     return ColoredBox(color: color, child: Row(children: [
       SizedBox(width: 48, child: Text('${(oldSide == false ? line?.newLine : line?.oldLine) ?? ''}',
         textAlign: TextAlign.right, style: numberStyle)),
       if (oldSide == null) SizedBox(width: 48, child: Text('${line?.newLine ?? ''}', textAlign: TextAlign.right, style: numberStyle)),
       SizedBox(width: 24, child: Text(added ? '+' : removed ? '−' : '', textAlign: TextAlign.center,
-        style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, color: added ? diffAdded : diffRemoved))),
+        style: TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, color: added ? diffAdded : diffRemoved))),
       Expanded(child: SelectableText(line?.text ?? '', maxLines: 1,
-        style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, height: 1.6,
-          color: hunk || line?.kind == '\\' ? conversationSecondary : conversationForeground))),
+        style: TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 1.6,
+          color: hunk || line?.kind == '\\' ? desktopSecondary : desktopForeground))),
     ]));
   }
 }

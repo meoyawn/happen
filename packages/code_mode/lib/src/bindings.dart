@@ -131,34 +131,34 @@ void Function() jsInstallExit(Pointer<Void> runtime, void Function() onExit) {
 
 void jsClearExit(Pointer<Void> runtime) => _uncatchable(runtime.cast<_Engine>().ref.context, 0);
 
-/// Synchronous metadata only: no I/O or audio playback occurs in this callback.
-void Function() jsInstallAudioMetadata(Pointer<Void> runtime, Map<String, Object?> Function(String) metadata) {
+/// Synchronous JSON data only; the callback performs no I/O.
+void Function() jsInstallJsonCallback(Pointer<Void> runtime, String name, Map<String, Object?> Function(String) callback) {
   final context = runtime.cast<_Engine>().ref.context;
   final callable = NativeCallable<_Function>.isolateLocal((Pointer<Void> context, _Value receiver, int argc, Pointer<_Value> argv) {
     final length = calloc<Size>();
     Pointer<Utf8> source = nullptr;
     try {
-      Map<String, Object?> value;
-      if (argc == 0) { value = {'error': 'audio expects an inline URL'}; }
+      String encoded;
+      if (argc == 0) { encoded = jsonEncode({'error': '$name expects a string'}); }
       else {
         source = _toString(context, length, argv[0], 0);
         if (source == nullptr) return _throw(context, _exception(context));
-        try { value = metadata(utf8.decode(source.cast<Uint8>().asTypedList(length.value), allowMalformed: true)); }
-        catch (error) { value = {'error': error.toString()}; }
+        try { encoded = jsonEncode(callback(utf8.decode(source.cast<Uint8>().asTypedList(length.value), allowMalformed: true))); }
+        catch (error) { encoded = jsonEncode({'error': error.toString()}); }
       }
-      final json = jsonEncode(value).toNativeUtf8(), filename = '<audio-metadata>'.toNativeUtf8();
+      final json = encoded.toNativeUtf8(), filename = '<$name>'.toNativeUtf8();
       try { return _parseJson(context, json, json.length, filename); }
       finally { malloc.free(json); malloc.free(filename); }
     } finally { if (source != nullptr) _freeString(context, source); calloc.free(length); }
   });
-  final name = '__audioMetadata'.toNativeUtf8(), global = _global(context);
+  final nativeName = name.toNativeUtf8(), global = _global(context);
   try {
-    if (_setProperty(context, global, name, _function(context, callable.nativeFunction, name, 1, 0, 0)) < 0) {
-      throw StateError('Could not install audio metadata');
+    if (_setProperty(context, global, nativeName, _function(context, callable.nativeFunction, nativeName, 1, 0, 0)) < 0) {
+      throw StateError('Could not install $name');
     }
     return callable.close;
   } catch (_) { callable.close(); rethrow; }
-  finally { _release(context, global); malloc.free(name); }
+  finally { _release(context, global); malloc.free(nativeName); }
 }
 
 /// Returns whether compilation/evaluation threw. JS_SetPropertyStr consumes

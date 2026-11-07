@@ -2,15 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
-import 'conversation_indicator.dart';
 import 'project_avatar.dart';
 import 'provider_icon.dart';
 import 'rename_state.dart';
 import 'session.dart';
+import 'sidebar_activity.dart';
 import 'sidebar_hover.dart';
 import 'sidebar_icons.dart';
 import 'thread_reorder_state.dart';
@@ -49,10 +50,10 @@ List<String> sidebarThreadIds(DesktopSession session, {String? projectKey}) {
   final tasks = _sidebarTasks(session, projectKey);
   final pins = session.pinnedTaskIds.toSet();
   return [
-    for (final (_, task) in tasks.where((entry) => pins.contains(entry.$2.id)))
-      task.id,
-    for (final (_, task) in tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id)))
-      if (!session.collapsedSidebarSections.contains('working') || session.task == task) task.id,
+    if (!session.collapsedSidebarSections.contains('pinned'))
+      for (final (_, task) in tasks.where((entry) => pins.contains(entry.$2.id))) task.id,
+    if (!session.collapsedSidebarSections.contains('working'))
+      for (final (_, task) in tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id))) task.id,
     for (final draft in _sidebarDrafts(session, projectKey)) draft.id,
     for (final (_, task) in tasks.where((entry) => !entry.$2.running && !pins.contains(entry.$2.id))) task.id,
   ];
@@ -63,7 +64,7 @@ class ThreadSidebar extends StatefulWidget {
     required this.onHome, required this.onSearch, required this.onNew, required this.onSettings,
     required this.onSelect, required this.onArchive, required this.onDraft,
     required this.onAddProject, required this.onRefresh, required this.onProjectFilter,
-    this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward});
+    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward});
   final DesktopSession session;
   final bool home, windowControls;
   final double titlebarInset;
@@ -74,6 +75,7 @@ class ThreadSidebar extends StatefulWidget {
   final void Function(Project, DesktopTask) onSelect;
   final void Function(DesktopTask, bool) onArchive;
   final ValueChanged<SessionDraft> onDraft;
+  final ValueChanged<Project>? onProjectSettings;
 
   @override
   State<ThreadSidebar> createState() => _ThreadSidebarState();
@@ -85,6 +87,13 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   late ThreadReorderState _reorder = const ThreadReorderIdle();
   CancellationToken? _reorderCancellation;
   late final _pinnedList = GlobalKey<SliverReorderableListState>();
+  late final _threadList = GlobalKey();
+  late final _selectedRow = GlobalKey();
+  late final _scroll = ScrollController();
+  (String?, String?)? _selection;
+  GlobalKey? _selectionList;
+  int? _selectionIndex;
+  int _revealRevision = 0;
   late final _reorderFocus = FocusNode(debugLabel: 'Pinned thread reorder');
   bool get _reordering => _reorder is ThreadReorderDragging || _reorder is ThreadReorderDropping;
   bool get _canStartReorder => switch (_reorder) {
@@ -161,7 +170,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   @override
   void didUpdateWidget(covariant ThreadSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session != session || oldWidget.projectKey != widget.projectKey) {
+    if (oldWidget.session != session || oldWidget.projectKey != widget.projectKey ||
+        session.collapsedSidebarSections.contains('pinned')) {
       _cancelReorder(ThreadReorderCancelReason.changed);
       return;
     }
@@ -180,25 +190,80 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   @override
   void dispose() {
     _cancelReorder(ThreadReorderCancelReason.disposed);
+    _scroll.dispose();
     _reorderFocus.dispose();
     _clock?.cancel();
     super.dispose();
+  }
+
+  void _revealSelection(List<(Project, DesktopTask)> pinned, List<(String?, Widget)> rows) {
+    final id = widget.home ? null : session.draftKey;
+    final selection = (id, widget.projectKey);
+    final pin = session.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((entry) => entry.$2.id == id);
+    final index = pin >= 0 ? pin : rows.indexWhere((entry) => entry.$1 == id);
+    final list = pin >= 0 ? _pinnedList : _threadList;
+    if (_selection == selection && _selectionList == list && _selectionIndex == index) return;
+    _selection = selection;
+    _selectionList = list;
+    _selectionIndex = index;
+    final revision = ++_revealRevision;
+    if (id == null || index < 0) return;
+    final count = pin >= 0 ? pinned.length : rows.length;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _revealRow(revision, list, index, count));
+  }
+
+  void _revealRow(int revision, GlobalKey list, int index, int count, {double? lower, double? upper}) {
+    if (!mounted || revision != _revealRevision || _reordering || !_scroll.hasClients) return;
+    final position = _scroll.position;
+    if (!position.hasContentDimensions) return;
+    final target = _selectedRow.currentContext?.findRenderObject();
+    if (target != null && target.attached) {
+      final viewport = RenderAbstractViewport.of(target);
+      final top = viewport.getOffsetToReveal(target, 0).offset;
+      final bottom = viewport.getOffsetToReveal(target, 1).offset;
+      final offset = position.pixels > top ? top : position.pixels < bottom ? bottom : position.pixels;
+      if ((offset - position.pixels).abs() > .5) {
+        _scroll.jumpTo(offset.clamp(position.minScrollExtent, position.maxScrollExtent));
+      }
+      return;
+    }
+    // Lazy slivers have no element for a distant card. Seek using the mounted
+    // rows, then reveal its actual bounds after layout; never mount the whole list.
+    final sliver = list.currentContext?.findRenderObject();
+    if (sliver is! RenderSliverMultiBoxAdaptor || sliver.geometry == null) return;
+    final first = sliver.firstChild, last = sliver.lastChild;
+    var extent = sliver.geometry!.scrollExtent / count;
+    var offset = sliver.constraints.precedingScrollExtent + index * extent - position.viewportDimension / 2;
+    if (first != null && last != null) {
+      final firstIndex = sliver.indexOf(first), lastIndex = sliver.indexOf(last);
+      final start = sliver.childScrollOffset(first)!;
+      extent = (sliver.childScrollOffset(last)! + last.size.height - start) / (lastIndex - firstIndex + 1);
+      offset = sliver.constraints.precedingScrollExtent + start + (index - firstIndex) * extent - position.viewportDimension / 2;
+      if (index < firstIndex) upper = position.pixels;
+      if (index > lastIndex) lower = position.pixels;
+    }
+    final min = lower ?? position.minScrollExtent, max = upper ?? position.maxScrollExtent;
+    if (max - min <= .5) return;
+    offset = offset.clamp(position.minScrollExtent, position.maxScrollExtent);
+    if (offset < min || offset > max || (offset - position.pixels).abs() <= .5) offset = (min + max) / 2;
+    _scroll.jumpTo(offset.clamp(position.minScrollExtent, position.maxScrollExtent));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _revealRow(revision, list, index, count, lower: lower, upper: upper));
   }
 
   Widget _button(String tooltip, Widget icon, VoidCallback? onPressed) => IconButton(
     tooltip: tooltip, onPressed: onPressed,
     style: IconButton.styleFrom(minimumSize: const Size.square(28), maximumSize: const Size.square(28),
       padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      foregroundColor: onPressed == null ? const Color(0xffb5b5bd) : const Color(0xff7c7c89),
+      foregroundColor: onPressed == null ? const Color(0xffb5b5bd) : desktopSecondary,
       iconSize: 16, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
     icon: icon);
 
   Widget _dragBoundary(String label) => AnimatedSize(alignment: Alignment.topCenter,
     duration: const Duration(milliseconds: 150), child: !_reordering ? const SizedBox.shrink()
       : SizedBox(height: 24, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10), child: Row(children: [
-      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: conversationSecondary)),
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: desktopSecondary)),
       const SizedBox(width: 8),
-      const Expanded(child: Divider(height: 1, color: Color(0xffd4d4d8))),
+      const Expanded(child: Divider(height: 1, color: desktopBorderStrong)),
     ]))));
 
   Widget _dragProxy(Widget child, int index, Animation<double> animation) =>
@@ -215,16 +280,17 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       onTap: () => unawaited(_run(session, () => session.chooseSidebarSection(section, expanded))),
       borderRadius: BorderRadius.circular(6), child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(children: [
-          Expanded(child: Text(title, style: const TextStyle(fontSize: 12, color: Color(0xff72727f)))),
-          Text('$count', style: const TextStyle(fontSize: 12, color: Color(0xff9696a0))),
+          Expanded(child: Text(title, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
+          Text('$count', style: const TextStyle(fontSize: 12, color: desktopTertiary)),
           const SizedBox(width: 8),
-          Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded, size: 14, color: opencodeFaint),
+          Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded, size: 14, color: desktopTertiary),
         ])));
   }
 
   Widget _row(Project project, DesktopTask task, {int? reorderIndex}) => _ThreadRow(
     key: ValueKey('thread-row:${task.id}'), session: session, task: task, onArchive: widget.onArchive,
-    builder: (renameInput) => SidebarHover(builder: (context, hovering) {
+    onProjectSettings: widget.onProjectSettings == null ? null : () => widget.onProjectSettings!(project),
+    builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) {
       final selected = !widget.home && session.task == task;
       final pinned = session.pinnedTaskIds.contains(task.id);
       final unread = task.lastActivity > (session.viewedTasks[task.id] ?? -1);
@@ -232,11 +298,11 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       final card = Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Material(
         color: selected ? Colors.white : Colors.transparent,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6),
-          side: BorderSide(color: selected ? const Color(0xffe4e4e7) : Colors.transparent)),
+          side: BorderSide(color: selected ? desktopBorder : Colors.transparent)),
         clipBehavior: Clip.antiAlias,
         child: InkWell(key: ValueKey('thread:${task.id}'), borderRadius: BorderRadius.circular(6),
           mouseCursor: WidgetStateMouseCursor.clickable,
-          hoverColor: const Color(0xfff4f4f5),
+          hoverColor: desktopMuted,
           onTap: renameInput == null ? () => widget.onSelect(project, task) : null,
           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -247,7 +313,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   child: _pinButton(session, task, compact: true)),
                 const SizedBox(width: 6),
                 Expanded(child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: conversationSecondary))),
+                  style: const TextStyle(fontSize: 12, color: desktopSecondary))),
                 if (!hovering)
                   _ThreadStatus(session: session, task: task, showLabel: true),
                 IgnorePointer(ignoring: !hovering, child: Align(alignment: Alignment.centerRight,
@@ -256,21 +322,23 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                     child: _archiveButton(session, task, () => widget.onArchive(task, true))))),
               ])),
               const SizedBox(height: 4),
-              renameInput ?? Tooltip(message: task.title, child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+              renameInput ?? GestureDetector(onDoubleTap: renameTitle,
+                child: Tooltip(message: task.title, child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 14, height: 20 / 14,
                   fontWeight: selected || unread ? FontWeight.w500 : FontWeight.w400,
-                  color: selected || unread ? const Color(0xff18181b) : const Color(0xff52525b)))),
+                  color: selected || unread ? desktopForeground : desktopSecondary)))),
               const SizedBox(height: 2),
               SizedBox(height: 16, child: Row(children: [
                 if (project.branch case final branch?) Expanded(child: Text(branch, maxLines: 1,
-                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: conversationSecondary)))
+                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary)))
                 else const Spacer(),
                 if (task.provider != null) Tooltip(message: '${task.provider}${task.model == null ? '' : ' · ${task.model}'}',
-                  child: providerIcon(task.provider, size: 14, color: const Color(0xffa1a1aa))),
+                  child: providerIcon(task.provider, size: 14, color: desktopTertiary)),
               ])),
             ])))));
-      return reorderIndex == null ? card : ReorderableDragStartListener(
-        index: reorderIndex, enabled: reorderable, child: card);
+      final anchored = KeyedSubtree(key: selected ? _selectedRow : null, child: card);
+      return reorderIndex == null ? anchored : ReorderableDragStartListener(
+        index: reorderIndex, enabled: reorderable, child: anchored);
     }));
 
   Widget _draft(SessionDraft draft) {
@@ -287,7 +355,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       borderRadius: BorderRadius.circular(8), child: InkWell(
         mouseCursor: WidgetStateMouseCursor.clickable,
         borderRadius: BorderRadius.circular(8), onTap: () => widget.onDraft(draft),
-        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: KeyedSubtree(key: selected ? _selectedRow : null, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               if (project != null) ...[
@@ -295,15 +363,15 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                 const SizedBox(width: 6),
               ],
               Expanded(child: Text(project?.name ?? 'Draft', maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Color(0xff9696a0)))),
-              const Icon(Icons.edit_outlined, size: 13, color: opencodeFaint),
+                style: const TextStyle(fontSize: 12, color: desktopTertiary))),
+              const Icon(Icons.edit_outlined, size: 13, color: desktopTertiary),
               const SizedBox(width: 4),
-              const Text('Draft', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+              const Text('Draft', style: TextStyle(fontSize: 11, color: desktopTertiary)),
             ]),
             const SizedBox(height: 4),
             Text(text.isEmpty ? '$count attachment${count == 1 ? '' : 's'}' : text,
               maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, height: 20 / 14)),
-          ]))));
+          ])))));
   }
 
   @override
@@ -313,9 +381,22 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final pinned = tasks.where((entry) => pins.contains(entry.$2.id)).toList();
     final working = tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id)).toList();
     final drafts = _sidebarDrafts(session, widget.projectKey);
+    final rows = <(String?, Widget)>[
+      if (working.isNotEmpty) ...[
+        (null, _sectionHeading('working', 'Working', working.length)),
+        if (!session.collapsedSidebarSections.contains('working'))
+          for (final (project, task) in working) (task.id, _row(project, task)),
+        (null, const Padding(padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Divider(height: 1))),
+      ],
+      for (final draft in drafts) (draft.id, _draft(draft)),
+      for (final (project, task) in tasks.where((entry) => !entry.$2.running && !pins.contains(entry.$2.id)))
+        (task.id, _row(project, task)),
+      (null, const SizedBox(height: 12)),
+    ];
+    _revealSelection(pinned, rows);
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
-    return Material(color: const Color(0xfff8f8f9), child: DecoratedBox(
-      decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xffe2e2e5)))),
+    return Material(color: desktopSidebar, child: DecoratedBox(
+      decoration: const BoxDecoration(border: Border(right: BorderSide(color: desktopBorder))),
       child: Column(children: [
         DesktopWindowDragRegion(child: SizedBox(height: 56, child: Padding(
           padding: EdgeInsets.only(left: widget.windowControls ? widget.titlebarInset + 40 : 48, right: 12),
@@ -332,7 +413,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 12), child: SizedBox(height: 32, child: Row(children: [
           Expanded(child: TextButton.icon(onPressed: widget.onSearch,
             style: TextButton.styleFrom(alignment: Alignment.centerLeft,
-              foregroundColor: const Color(0xff72727f), padding: const EdgeInsets.symmetric(horizontal: 6)),
+              foregroundColor: desktopSecondary, padding: const EdgeInsets.symmetric(horizontal: 6)),
             icon: sidebarIcon(SidebarIcon.search),
             label: const Text('Search', style: TextStyle(fontSize: 14)))),
           PopupMenuButton<String>(tooltip: 'Filter by project',
@@ -357,33 +438,24 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           return KeyEventResult.ignored;
         }, child: Listener(onPointerCancel: (_) {
           if (_reordering) setState(() => _cancelReorder(ThreadReorderCancelReason.pointerCancelled));
-        }, child: DragBoundary(child: CustomScrollView(key: const PageStorageKey('thread-sidebar'), slivers: [
+        }, child: DragBoundary(child: CustomScrollView(key: const PageStorageKey('thread-sidebar'), controller: _scroll, slivers: [
           SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 8), sliver: SliverMainAxisGroup(slivers: [
             if (pinned.isNotEmpty) ...[
-              SliverToBoxAdapter(child: _dragBoundary('Pinned')),
-              SliverReorderableList(key: _pinnedList, itemCount: pinned.length,
-                onReorderStart: (index) => _startReorder(index, pinned.map((entry) => entry.$2.id).toList()),
-                onReorderEnd: _endReorder,
-                onReorderItem: _dropReorder,
-                proxyDecorator: _dragProxy,
-                itemBuilder: (context, index) {
-                  final (project, task) = pinned[index];
-                  return _row(project, task, reorderIndex: pinned.length > 1 ? index : null);
-                }),
-              SliverToBoxAdapter(child: _dragBoundary('Threads')),
-            ],
-            SliverList.list(children: [
-              if (working.isNotEmpty) ...[
-                _sectionHeading('working', 'Working', working.length),
-                for (final (project, task) in working)
-                  if (!session.collapsedSidebarSections.contains('working') || session.task == task) _row(project, task),
-                const Padding(padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Divider(height: 1)),
+              SliverToBoxAdapter(child: _sectionHeading('pinned', 'Pinned', pinned.length)),
+              if (!session.collapsedSidebarSections.contains('pinned')) ...[
+                SliverReorderableList(key: _pinnedList, itemCount: pinned.length,
+                  onReorderStart: (index) => _startReorder(index, pinned.map((entry) => entry.$2.id).toList()),
+                  onReorderEnd: _endReorder,
+                  onReorderItem: _dropReorder,
+                  proxyDecorator: _dragProxy,
+                  itemBuilder: (context, index) {
+                    final (project, task) = pinned[index];
+                    return _row(project, task, reorderIndex: pinned.length > 1 ? index : null);
+                  }),
+                SliverToBoxAdapter(child: _dragBoundary('Threads')),
               ],
-              for (final draft in drafts) _draft(draft),
-              for (final (project, task) in tasks.where((entry) => !entry.$2.running && !pins.contains(entry.$2.id)))
-                _row(project, task),
-              const SizedBox(height: 12),
-            ]),
+            ],
+            SliverList.list(key: _threadList, children: [for (final row in rows) row.$2]),
           ])),
         ]))))),
         Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 12), child: Row(children: [
@@ -392,7 +464,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           _button('All sessions', const Icon(Icons.grid_view_outlined), widget.onHome),
           const Spacer(),
           if (!session.connected) const Padding(padding: EdgeInsets.only(right: 8),
-            child: Text('Disconnected', style: TextStyle(fontSize: 11, color: opencodeFaint))),
+            child: Text('Disconnected', style: TextStyle(fontSize: 11, color: desktopTertiary))),
           _button('Refresh threads', const Icon(Icons.sync_rounded), session.connected ? widget.onRefresh : null),
         ])),
       ])));
@@ -401,13 +473,14 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
 class WorkspaceHome extends StatefulWidget {
   const WorkspaceHome({super.key, required this.session, required this.focusNode, required this.onSelect,
-    required this.onNew, required this.onAddProject, required this.onArchive});
+    required this.onNew, required this.onAddProject, required this.onArchive, this.onProjectSettings});
   final DesktopSession session;
   final FocusNode focusNode;
   final void Function(Project, DesktopTask) onSelect;
   final ValueChanged<Project> onNew;
   final VoidCallback onAddProject;
   final void Function(DesktopTask, bool) onArchive;
+  final ValueChanged<Project>? onProjectSettings;
   @override
   State<WorkspaceHome> createState() => _WorkspaceHomeState();
 }
@@ -441,7 +514,8 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
           final (project, task) = entries[index];
           return _ThreadRow(key: ValueKey('home-row:${task.id}'),
             session: widget.session, task: task, onArchive: widget.onArchive,
-            builder: (renameInput) => SidebarHover(builder: (context, hovering) => ListTile(
+            onProjectSettings: widget.onProjectSettings == null ? null : () => widget.onProjectSettings!(project),
+            builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) => ListTile(
               key: ValueKey('home:${task.id}'), leading: Row(mainAxisSize: MainAxisSize.min, children: [
                 ProjectAvatar(project: project),
                 const SizedBox(width: 6),
@@ -449,8 +523,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
                   maintainSize: true, maintainAnimation: true, maintainState: true,
                   child: _pinButton(widget.session, task)),
               ]),
-              title: renameInput ?? Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-              subtitle: Text(project.name, style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+              title: renameInput ?? GestureDetector(onDoubleTap: renameTitle,
+                child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+              subtitle: Text(project.name, style: const TextStyle(fontSize: 11, color: desktopTertiary)),
               trailing: _ThreadStatus(session: widget.session, task: task),
               onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
         })),
@@ -459,11 +534,13 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
 }
 
 class _ThreadRow extends StatefulWidget {
-  const _ThreadRow({super.key, required this.session, required this.task, required this.onArchive, required this.builder});
+  const _ThreadRow({super.key, required this.session, required this.task, required this.onArchive,
+    required this.builder, this.onProjectSettings});
   final DesktopSession session;
   final DesktopTask task;
   final void Function(DesktopTask, bool) onArchive;
-  final Widget Function(Widget? renameInput) builder;
+  final Widget Function(Widget? renameInput, VoidCallback? renameTitle) builder;
+  final VoidCallback? onProjectSettings;
   @override
   State<_ThreadRow> createState() => _ThreadRowState();
 }
@@ -558,21 +635,25 @@ class _ThreadRowState extends State<_ThreadRow> {
     PopupMenuItem<String> item(String value, String label, IconData icon, {required bool enabled, String? shortcut}) =>
       PopupMenuItem(value: value, enabled: enabled, height: 32, padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Row(children: [
-          Icon(icon, size: 15, color: enabled ? conversationSecondary : conversationOutline),
+          Icon(icon, size: 15, color: enabled ? desktopSecondary : desktopBorder),
           const SizedBox(width: 8),
           Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
           if (shortcut != null) ...[
             const SizedBox(width: 16),
-            Text(shortcut, style: const TextStyle(fontSize: 11, color: conversationSecondary)),
+            Text(shortcut, style: const TextStyle(fontSize: 11, color: desktopSecondary)),
           ],
         ]));
     final action = await showMenu<String>(context: context,
       constraints: const BoxConstraints(minWidth: 208, maxWidth: 240), menuPadding: const EdgeInsets.all(4),
       color: Colors.white, surfaceTintColor: Colors.transparent, elevation: 6, shadowColor: const Color(0x24000000),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: conversationOutline)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: desktopBorder)),
       position: RelativeRect.fromRect(details.globalPosition & Size.zero, Offset.zero & overlay.size), items: [
         item('pin', pinned ? 'Unpin session' : 'Pin session', pinned ? Icons.push_pin : Icons.push_pin_outlined, enabled: !task.archiving),
         item('rename', 'Rename thread', Icons.edit_outlined, enabled: _canRename, shortcut: 'F2'),
+        if (widget.onProjectSettings != null) ...[
+          const PopupMenuDivider(height: 8),
+          item('project-settings', 'Project settings', Icons.settings_outlined, enabled: true),
+        ],
         const PopupMenuDivider(height: 8),
         item('archive', task.archived ? 'Restore session' : 'Archive session',
           task.archived ? Icons.unarchive_outlined : Icons.archive_outlined, enabled: session.connected && !task.archiving),
@@ -580,33 +661,33 @@ class _ThreadRowState extends State<_ThreadRow> {
     if (!mounted) return;
     if (action == 'pin') await _run(session, () => session.pinTask(task, !pinned));
     if (action == 'rename') _startRename();
+    if (action == 'project-settings') widget.onProjectSettings?.call();
     if (action == 'archive') widget.onArchive(task, !task.archived);
   }
 
   @override
   Widget build(BuildContext context) {
-    final renameInput = _renaming ? SizedBox(height: 26, child: Semantics(label: 'Thread title', child: TextSelectionTheme(
-      data: const TextSelectionThemeData(selectionColor: Color(0xffdbe4ff), cursorColor: conversationForeground),
+    final renameInput = _renaming ? SizedBox(height: 26, child: Semantics(label: 'Thread title',
       child: TextField(
         key: ValueKey('thread-title:${widget.task.id}'), controller: _title, focusNode: _renameFocus, autofocus: true,
         selectAllOnFocus: true, cursorWidth: 1.5,
-        style: const TextStyle(fontSize: 14, height: 20 / 14, fontWeight: FontWeight.w500, color: conversationForeground),
+        style: const TextStyle(fontSize: 14, height: 20 / 14, fontWeight: FontWeight.w500, color: desktopForeground),
         textAlignVertical: TextAlignVertical.center, textInputAction: TextInputAction.done,
         decoration: InputDecoration(isDense: true, filled: true, fillColor: Colors.white,
           contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(5), borderSide: const BorderSide(color: conversationOutline)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(5), borderSide: const BorderSide(color: Color(0xffa1a1aa)))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(5), borderSide: const BorderSide(color: desktopBorder)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(5),
+            borderSide: BorderSide(color: DesktopAccent.of(context).reference))),
         onEditingComplete: () {},
         onSubmitted: (_) => _finishRename(restoreFocus: true),
         onTapOutside: (_) => _renameFocus.unfocus(),
-    )))) : null;
+    ))) : null;
     return Focus(focusNode: _rowFocus, onKeyEvent: _onKeyEvent, child: GestureDetector(
       key: ValueKey('thread-menu:${widget.task.id}'), onSecondaryTapDown: _showMenu,
-      onDoubleTap: _canRename ? () {
+      child: widget.builder(renameInput, _canRename ? () {
         final keyboard = HardwareKeyboard.instance;
         if (!keyboard.isControlPressed && !keyboard.isMetaPressed && !keyboard.isAltPressed && !keyboard.isShiftPressed) _startRename();
-      } : null,
-      child: widget.builder(renameInput)));
+      } : null)));
   }
 }
 
@@ -624,9 +705,9 @@ Widget _archiveButton(DesktopSession session, DesktopTask task, VoidCallback onP
       foregroundColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.disabled)
         ? const Color(0xffb5b5bd)
         : states.contains(WidgetState.hovered) || states.contains(WidgetState.focused) || states.contains(WidgetState.pressed)
-          ? conversationForeground : conversationSecondary),
+          ? desktopForeground : desktopSecondary),
       overlayColor: WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.focused)
-        ? const Color(0x1471717b) : Colors.transparent),
+        ? desktopHover : Colors.transparent),
       animationDuration: const Duration(milliseconds: 100),
     ),
     child: Builder(builder: (context) => Row(mainAxisSize: MainAxisSize.min, children: [
@@ -645,7 +726,7 @@ Widget _pinButton(DesktopSession session, DesktopTask task, {bool compact = fals
     style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
     onPressed: task.archiving || session.savingTaskPins ? null : () => unawaited(_run(session, () => session.pinTask(task, !pinned))),
     icon: sidebarIcon(pinned && hovering ? SidebarIcon.pinOff : SidebarIcon.pin,
-      size: compact ? 12 : 13, color: const Color(0xffa1a1aa)))));
+      size: compact ? 12 : 13, color: desktopTertiary))));
 }
 
 class _ThreadStatus extends StatelessWidget {
@@ -664,20 +745,20 @@ class _ThreadStatus extends StatelessWidget {
       : task.loadError != null || status == 'failed' ? ('Failed', Icons.error_outline, const Color(0xffc44848))
       : interrupted ? ('Interrupted', Icons.pause_circle_outline, const Color(0xffb67a2a))
       : session.hasUnseenCompletion(task) ? ('Done', Icons.check_circle_outline, const Color(0xff059669))
-      : ('Idle', Icons.circle_outlined, opencodeFaint);
+      : ('Idle', Icons.circle_outlined, desktopTertiary);
     final started = task.runStartedAt;
     final elapsed = started == null ? null : DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(started));
-    final duration = elapsed == null ? '' : elapsed.inHours > 0 ? ' ${elapsed.inHours}h ${elapsed.inMinutes % 60}m'
-      : elapsed.inMinutes > 0 ? ' ${elapsed.inMinutes}m' : ' <1m';
+    final duration = elapsed == null ? '' : elapsed.inHours > 0 ? '${elapsed.inHours}h ${elapsed.inMinutes % 60}m'
+      : elapsed.inMinutes > 0 ? '${elapsed.inMinutes}m' : '<1m';
     final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(task.lastActivity));
     final time = task.lastActivity <= 0 ? '' : age.inDays > 0 ? '${age.inDays}d'
       : age.inHours > 0 ? '${age.inHours}h' : age.inMinutes > 0 ? '${age.inMinutes}m' : 'now';
     return Tooltip(message: label, child: Semantics(label: label, child: Row(mainAxisSize: MainAxisSize.min, children: [
       if (!showLabel || label != 'Idle') SizedBox.square(dimension: 14,
-        child: icon == null ? ConversationActivityIndicator(color: color) : Icon(icon, size: 13, color: color)),
+        child: icon == null ? SidebarActivityIndicator(color: color) : Icon(icon, size: 13, color: color)),
       if (showLabel) ...[
         const SizedBox(width: 4),
-        Text(label == 'Idle' ? time : '$label${task.running && !needsInput ? duration : ''}',
+        Text(label == 'Idle' ? time : task.running && !needsInput ? duration : label,
           style: TextStyle(fontSize: 12, color: color, fontFeatures: const [FontFeature.tabularFigures()])),
       ],
     ])));

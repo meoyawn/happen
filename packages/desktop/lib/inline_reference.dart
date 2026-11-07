@@ -1,16 +1,16 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-const inlineReferenceAccent = Color(0xff2e82d2);
+import 'appearance.dart';
 
 /// Harness's inline skill glyph; no pill background, border or padding.
 class SkillIcon extends StatelessWidget {
-  const SkillIcon({super.key, this.color = inlineReferenceAccent});
-  final Color color;
+  const SkillIcon({super.key, this.color});
+  final Color? color;
 
   @override
   Widget build(BuildContext context) => SvgPicture.string(_skillSvg, width: 16, height: 16,
-    colorFilter: ColorFilter.mode(color, BlendMode.srcIn));
+    colorFilter: ColorFilter.mode(color ?? DesktopAccent.of(context).reference, BlendMode.srcIn));
 }
 
 // Source: harness/client/assets/icons/mention-skill.svg at 6b595ec8.

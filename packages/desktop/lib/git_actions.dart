@@ -80,16 +80,16 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
     if (controller.busy) {
       if (state is GitRefreshing) {
         return const DetailsRow(icon: Padding(padding: EdgeInsets.all(2),
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: opencodeMuted)), label: 'Refreshing Git status…');
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: desktopSecondary)), label: 'Refreshing Git status…');
       }
       final operation = state is GitRunning ? state : (state as GitCancelling).operation;
       return DetailsRow(icon: const Padding(padding: EdgeInsets.all(2),
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: opencodeMuted)),
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: desktopSecondary)),
         label: state is GitCancelling ? 'Cancelling…' : operation.label,
         tooltip: operation.output ?? operation.label,
         trailing: IconButton(tooltip: 'Cancel Git action', style: detailsMenuStyle,
           onPressed: state is GitCancelling ? null : controller.cancel,
-          icon: const Icon(Icons.close_rounded, size: 15, color: opencodeMuted)));
+          icon: const Icon(Icons.close_rounded, size: 15, color: desktopSecondary)));
     }
     final repo = repository!;
     final canCommit = repo.files.isNotEmpty && !repo.files.any((file) => file.conflicted);
@@ -126,8 +126,8 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
         onPressed: () => unawaited(showDialog<void>(context: context, builder: (context) => AlertDialog(
           title: const Text('Git action failed'), content: SizedBox(width: 480, child: SelectableText(state.message)),
           actions: [TextButton(onPressed: () { controller.acknowledge(); Navigator.pop(context); }, child: const Text('Close'))]))),
-        icon: const Icon(Icons.error_outline_rounded, size: 14, color: Color(0xffc23838)),
-        label: const Text('Git action failed · View details', style: TextStyle(fontSize: 11, color: Color(0xffc23838)))),
+        icon: const Icon(Icons.error_outline_rounded, size: 14, color: desktopError),
+        label: const Text('Git action failed · View details', style: TextStyle(fontSize: 11, color: desktopError))),
     ]);
   });
 }
@@ -158,19 +158,19 @@ class _CommitDialogState extends State<_CommitDialog> {
           child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Text(widget.action == 'commit_push' ? 'Commit & push changes' : 'Commit changes',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: opencodeInk)),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: desktopForeground)),
               const SizedBox(height: 6),
-              const Text('Choose the files to include in this commit.', style: TextStyle(fontSize: 12, color: opencodeMuted)),
+              const Text('Choose the files to include in this commit.', style: TextStyle(fontSize: 12, color: desktopSecondary)),
               const SizedBox(height: 18),
-              Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: opencodeLayer,
-                border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(8)),
+              Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: desktopMuted,
+                border: Border.all(color: desktopBorder), borderRadius: BorderRadius.circular(8)),
                 child: Row(children: [
-                  const Icon(Icons.call_split_rounded, size: 15, color: opencodeMuted),
+                  const Icon(Icons.call_split_rounded, size: 15, color: desktopSecondary),
                   const SizedBox(width: 8),
                   Expanded(child: Text(widget.repository.branch ?? 'Detached HEAD',
                     overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
                   if (widget.repository.remote != null) Text(widget.repository.remote!,
-                    style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+                    style: const TextStyle(fontSize: 11, color: desktopTertiary)),
                 ])),
               const SizedBox(height: 12),
               Row(children: [
@@ -181,7 +181,7 @@ class _CommitDialogState extends State<_CommitDialog> {
                     else { _selected.addAll(widget.repository.files.map((file) => file.path)); }
                   })),
                 Expanded(child: Text('${_selected.length} of ${widget.repository.files.length} files selected',
-                  style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+                  style: const TextStyle(fontSize: 12, color: desktopSecondary))),
               ]),
               Flexible(child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 200),
                 child: ListView.builder(shrinkWrap: true, itemCount: widget.repository.files.length,
@@ -196,10 +196,10 @@ class _CommitDialogState extends State<_CommitDialog> {
                         child: Row(children: [
                           FileIcon(file.path, size: 14), const SizedBox(width: 8),
                           Expanded(child: Text(file.path, maxLines: 1, overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 11))),
+                            style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11))),
                           const SizedBox(width: 8),
                           Text(file.status == '??' ? 'A' : file.status.trim(),
-                            style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 10, color: opencodeMuted)),
+                            style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 10, color: desktopSecondary)),
                         ])));
                   }))),
               const SizedBox(height: 18),

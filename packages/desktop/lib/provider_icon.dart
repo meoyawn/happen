@@ -3,7 +3,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import 'appearance.dart';
 
-Widget providerIcon(String? provider, {double size = 14, Color color = opencodeFaint}) =>
+Widget providerIcon(String? provider, {double size = 14, Color color = desktopTertiary}) =>
   provider == 'openai' || provider == 'gpt'
     ? SvgPicture.string(_openAi, width: size, height: size, colorFilter: ColorFilter.mode(color, BlendMode.srcIn))
     : Icon(Icons.terminal_rounded, size: size, color: color);

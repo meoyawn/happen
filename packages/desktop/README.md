@@ -44,7 +44,8 @@ conversation containing history through that turn. The new chat is named with a
 
 Questions appear above the composer. Choose an option, select several when
 allowed, or type your own answer. **Back** and **Next** move between questions;
-draft answers survive switching tabs. Use number keys to choose, **⌘Enter**
+draft answers survive switching tabs. On macOS, use the microphone to dictate an
+answer; **Enter** finishes dictation before advancing or submitting. Use number keys to choose, **⌘Enter**
 (**Ctrl+Enter**) to advance or submit, and **Escape** to dismiss.
 OpenCode and GPT sessions support questions. GPT can also ask while continuing
 work; submitting that answer sends a user message into the current turn.
@@ -71,7 +72,7 @@ selection also refresh the list. Closing a tab does not remove a saved session.
 Inbox keeps interrupted sessions under **Needs attention** even though their
 agents are no longer running; opening their history does not resume execution.
 
-Double-click a thread in the sidebar or Home, press **F2** on its focused row,
+Double-click a thread title in the sidebar or Home, press **F2** on its focused row,
 or choose **Rename thread** from its right-click menu to edit the title inline.
 The input immediately receives focus and selects the current title. **Enter**
 saves it; **Escape** or moving focus away cancels. Empty titles are rejected.
@@ -82,7 +83,9 @@ or **Unpin session** from its right-click menu. Pins are saved across launches.
 The sidebar keeps pinned thread cards above **Working**. Drag a pinned card to
 reorder it; **Escape** cancels the drag. The order is saved across launches and
 also used by Home and top/side tabs. Filtering by project reorders that project's
-pins in their existing positions. **Working** remembers its expansion across launches.
+pins in their existing positions. Click the **Pinned** or **Working** heading to
+collapse or expand its chats, including the selected chat. Both sections remember
+their expansion across launches; keyboard navigation skips collapsed chats.
 Reordering uses a Dart state machine for pickup, drop animation, pending save,
 commit, failure, and cancellation. Failed saves restore the previous order;
 cancelled drags never change it.
@@ -114,6 +117,9 @@ kept. **Settings → Archived tasks** also lets you restore an archived session.
 Archiving the selected session switches to the next open session to its right,
 or the previous one to its left, skipping draft tabs. If no session tabs remain,
 Home opens. Archiving another session or restoring one keeps the current view.
+The sidebar updates immediately while the archive is saved and resources close.
+A failed archive restores the row and tab without losing its draft or history.
+Archive and restore do not show a success toast.
 
 The macOS window uses its full content area. The native traffic lights sit in
 the sidebar header in Side tabs and Inbox, or beside the top tabs. Drag empty
@@ -164,6 +170,15 @@ window preview with zoom, pan, fit, and close controls. Left and Right switch
 between images from the same message, stopping at either end and resetting zoom.
 The preview also has previous/next buttons and an image count. Escape fits a
 zoomed image first, then closes it.
+
+Generated images use inline galleries, including when completed work is folded.
+Saved originals take precedence over inline base64, adjacent images share a
+thumbnail selector, and their preview navigates all generated images in the
+conversation. Active generation shows a dot animation that respects reduced
+motion and stops when interrupted. Consecutive image inspections share a
+collapsed “Viewed N images” disclosure with preview thumbnails.
+Inspection previews read the recorded image through the owning server, so a
+temporary source file can be removed without breaking its thumbnail or viewer.
 
 Drag the sidebar's right edge to resize it. The chosen width is saved between
 launches and adjusts to keep room for the conversation in a smaller window.

@@ -39,8 +39,8 @@ class ConversationFileChangeActivity extends StatelessWidget {
     return ConversationDisclosure(key: PageStorageKey('file-change:${tool.id}'),
       label: '${failed ? 'Failed to change' : active ? 'Changing' : 'Changed'} ${files.length} file${files.length == 1 ? '' : 's'}',
       fontSize: 14, timestamp: tool.startedAt, shimmer: active, onExpand: onExpand,
-      color: failed ? const Color(0xffc10007) : conversationSecondary,
-      icon: Icon(Icons.description_outlined, size: 16, color: failed ? const Color(0xffc10007) : conversationSecondary),
+      color: failed ? desktopError : desktopSecondary,
+      icon: Icon(Icons.description_outlined, size: 16, color: failed ? desktopError : desktopSecondary),
       builder: (context) => Padding(padding: const EdgeInsets.only(left: 26, top: 6, bottom: 8),
         child: ConversationChangedFiles(source: 'item:${tool.id}', files: files, directory: directory,
           notice: failed ? 'This patch failed. The preview shows the requested changes.' :
@@ -98,12 +98,12 @@ class _ConversationChangedFilesState extends State<ConversationChangedFiles> {
     }
     visit(_nodes, 0);
     final hasDirectories = _nodes.any((node) => node.file == null);
-    return Material(color: conversationSurface, borderRadius: BorderRadius.circular(8), clipBehavior: Clip.antiAlias,
+    return Material(color: desktopMuted, borderRadius: BorderRadius.circular(8), clipBehavior: Clip.antiAlias,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(padding: const EdgeInsets.fromLTRB(12, 5, 6, 5), child: Row(children: [
           Expanded(child: Wrap(spacing: 12, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
             Text('${files.length} changed file${files.length == 1 ? '' : 's'}',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: conversationForeground)),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: desktopForeground)),
             DiffStat(additions: files.fold(0, (sum, file) => sum + file.additions),
               deletions: files.fold(0, (sum, file) => sum + file.deletions)),
           ])),
@@ -111,15 +111,15 @@ class _ConversationChangedFilesState extends State<ConversationChangedFiles> {
             tooltip: _allExpanded ? 'Collapse all folders' : 'Expand all folders',
             padding: EdgeInsets.zero, iconSize: 15,
             onPressed: () => setState(() { _allExpanded = !_allExpanded; _overrides.clear(); _remember(); }),
-            icon: Icon(_allExpanded ? Icons.unfold_less_rounded : Icons.unfold_more_rounded, color: conversationSecondary))),
+            icon: Icon(_allExpanded ? Icons.unfold_less_rounded : Icons.unfold_more_rounded, color: desktopSecondary))),
           TextButton.icon(onPressed: () => ConversationDiffScope.open(context, widget.source, files, path: files.first.path),
-            style: TextButton.styleFrom(foregroundColor: conversationSecondary, minimumSize: const Size(28, 28),
+            style: TextButton.styleFrom(foregroundColor: desktopSecondary, minimumSize: const Size(28, 28),
               padding: const EdgeInsets.symmetric(horizontal: 6), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
             icon: const Icon(Icons.difference_outlined, size: 14),
             label: const Text('Open diff', style: TextStyle(fontSize: 12))),
         ])),
         if (widget.notice != null) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-          child: Text(widget.notice!, style: const TextStyle(fontSize: 11, color: conversationSecondary))),
+          child: Text(widget.notice!, style: const TextStyle(fontSize: 11, color: desktopSecondary))),
         ConstrainedBox(constraints: const BoxConstraints(maxHeight: 280),
           child: ListView.builder(key: PageStorageKey('changed-files:${widget.source}'),
             shrinkWrap: true, primary: false, itemExtent: 28, padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
@@ -138,17 +138,17 @@ class _ConversationChangedFilesState extends State<ConversationChangedFiles> {
                     child: Row(children: [
                       if (hasDirectories) SizedBox(width: 20, child: file == null
                         ? Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
-                          size: 16, color: conversationSecondary) : null),
+                          size: 16, color: desktopSecondary) : null),
                       if (file == null) Icon(expanded ? Icons.folder_open_outlined : Icons.folder_outlined,
-                        size: 15, color: conversationSecondary)
+                        size: 15, color: desktopSecondary)
                       else FileIcon(file.path, size: 15),
                       const SizedBox(width: 8),
                       Expanded(child: Text(node.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 11, color: conversationSecondary))),
+                        style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11, color: desktopSecondary))),
                       if (file != null && file.kind != 'update') Padding(padding: const EdgeInsets.only(left: 8),
                         child: Text(switch (file.kind) {'add' => 'A', 'delete' => 'D', 'rename' => 'R', _ => 'M'},
-                          style: TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 10,
-                            color: file.kind == 'add' ? diffAdded : file.kind == 'delete' ? diffRemoved : conversationSecondary))),
+                          style: TextStyle(fontFamily: desktopMonoFamily, fontSize: 10,
+                            color: file.kind == 'add' ? diffAdded : file.kind == 'delete' ? diffRemoved : desktopSecondary))),
                       const SizedBox(width: 12),
                       DiffStat(additions: node.additions, deletions: node.deletions),
                     ]))));

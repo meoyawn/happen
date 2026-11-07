@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart';
@@ -7,7 +8,6 @@ import 'package:re_editor/re_editor.dart';
 import 'appearance.dart';
 import 'composer_text_controller.dart';
 import 'file_autocomplete.dart';
-import 'inline_reference.dart';
 
 typedef _Reference = ({int start, int end, ComposerFileReference file});
 
@@ -40,6 +40,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
   bool _syncing = false;
   double _width = 0;
   TextScaler _scaler = TextScaler.noScaling;
+  ({PointerEvent event, int count})? _click;
 
   @override
   void initState() {
@@ -283,6 +284,41 @@ class _ComposerEditorState extends State<ComposerEditor> {
     _code.replaceSelection('', selection.copyWith(extentIndex: target.index, extentOffset: target.offset));
   }
 
+  void _pointerDown(PointerDownEvent event) {
+    final keyboard = HardwareKeyboard.instance;
+    if (Theme.of(context).platform != TargetPlatform.macOS || event.kind != PointerDeviceKind.mouse ||
+        event.buttons != kPrimaryButton || _code.isComposing || keyboard.isShiftPressed ||
+        keyboard.isControlPressed || keyboard.isAltPressed || keyboard.isMetaPressed) {
+      _click = null;
+      return;
+    }
+    final previous = _click;
+    final consecutive = previous != null && previous.event is PointerUpEvent && previous.event.device == event.device &&
+      event.timeStamp - previous.event.timeStamp <= kDoubleTapTimeout &&
+      (event.position - previous.event.position).distance <= kDoubleTapSlop;
+    _click = (event: event, count: consecutive ? (previous.count + 1).clamp(1, 3) : 1);
+  }
+
+  void _pointerMove(PointerMoveEvent event) {
+    final click = _click;
+    if (click != null && click.event.pointer == event.pointer &&
+        (event.position - click.event.position).distance > kDoubleTapTouchSlop) { _click = null; }
+  }
+
+  void _pointerUp(PointerUpEvent event) {
+    final click = _click;
+    if (click == null || click.event is! PointerDownEvent || click.event.pointer != event.pointer) return;
+    _click = (event: event, count: click.count);
+    if (click.count < 3 || _code.isComposing) return;
+    // The editor handles single/double clicks first. Expand its resulting
+    // selection after pointer-up so it cannot collapse the paragraph again.
+    final index = _code.selection.extentIndex;
+    final last = index == _code.codeLines.length - 1;
+    _code.selection = CodeLineSelection(baseIndex: index, baseOffset: 0,
+      extentIndex: last ? index : index + 1, extentOffset: last ? _code.codeLines[index].length : 0);
+    _code.makeCursorVisible();
+  }
+
   TextSpan _span({required BuildContext context, required int index, required CodeLine codeLine,
       required TextSpan textSpan, required TextStyle style}) {
     final start = index < _lines.length ? _lines[index] : 0;
@@ -293,7 +329,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
     for (final ref in refs) {
       spans.add(TextSpan(text: codeLine.text.substring(offset, ref.start - start)));
       spans.add(TextSpan(text: codeLine.text.substring(ref.start - start, ref.end - start),
-        style: const TextStyle(color: inlineReferenceAccent, fontWeight: FontWeight.w500)));
+        style: TextStyle(color: DesktopAccent.of(context).reference, fontWeight: FontWeight.w500)));
       offset = ref.end - start;
     }
     spans.add(TextSpan(text: codeLine.text.substring(offset)));
@@ -310,7 +346,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
       for (final line in segment.codeLines) {
         if (line.length > 1200) { _height.value = 180; return; }
         final painter = TextPainter(text: TextSpan(text: line.text.isEmpty ? ' ' : line.text,
-          style: const TextStyle(fontFamily: 'Inter', fontSize: 14, height: 1.625)),
+          style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 14, height: 1.625)),
           textDirection: TextDirection.ltr, textScaler: _scaler)..layout(maxWidth: (_width - 16).clamp(1, double.infinity));
         height += painter.height;
         painter.dispose();
@@ -352,15 +388,17 @@ class _ComposerEditorState extends State<ComposerEditor> {
       return ValueListenableBuilder<double>(valueListenable: _height, builder: (context, height, _) => SizedBox(
         height: height,
         child: Semantics(label: widget.label, textField: true, multiline: true,
-          child: CodeEditor(key: const ValueKey('composer-editor'), controller: _code,
+          child: Listener(onPointerDown: _pointerDown, onPointerMove: _pointerMove,
+            onPointerUp: _pointerUp, onPointerCancel: (_) => _click = null,
+            child: CodeEditor(key: const ValueKey('composer-editor'), controller: _code,
             focusNode: widget.focusNode, autofocus: true, readOnly: !widget.enabled,
             wordWrap: true, autocompleteSymbols: false, chunkAnalyzer: const NonCodeChunkAnalyzer(),
             padding: const EdgeInsets.fromLTRB(8, 16, 8, 8),
             hint: widget.placeholder,
-            style: const CodeEditorStyle(fontFamily: 'Inter', fontSize: 14, fontHeight: 1.625,
-              textColor: conversationForeground, hintTextColor: conversationSecondary, backgroundColor: Colors.transparent,
-              cursorColor: conversationForeground, cursorWidth: 1.5, cursorLineColor: Colors.transparent,
-              selectionColor: Color(0x332e82d2)),
+            style: CodeEditorStyle(fontFamily: desktopFontFamily, fontSize: 14, fontHeight: desktopProseHeight,
+              textColor: desktopForeground, hintTextColor: desktopSecondary, backgroundColor: Colors.transparent,
+              cursorColor: desktopForeground, cursorWidth: 1.5, cursorLineColor: Colors.transparent,
+              selectionColor: DesktopAccent.of(context).selection),
             shortcutsActivatorsBuilder: _ComposerShortcuts(completing), toolbarController: toolbar,
             shortcutOverrideActions: {
               CodeShortcutCursorMoveIntent: _ComposerAction<CodeShortcutCursorMoveIntent>(_code, onInvoke: (intent) {
@@ -421,7 +459,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 return null;
               }),
             },
-          ),
+          )),
         ),
       ));
     });

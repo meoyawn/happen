@@ -121,7 +121,7 @@ class _DesktopViewState extends State<DesktopView> {
     super.dispose();
   }
 
-  Future<void> _settings({String page = 'preferences'}) async {
+  Future<void> _settings({String page = 'preferences', Project? project}) async {
     if (_settingsOpen || !mounted) return;
     _settingsOpen = true;
     try {
@@ -134,7 +134,7 @@ class _DesktopViewState extends State<DesktopView> {
           listenable: _viewChanges,
           builder: (context, _) => DesktopSettingsScreen(
             session: session, run: _run,
-            initialPage: page,
+            initialPage: page, initialProject: project,
             addProject: _addProject,
             openProject: (project) async {
               Navigator.pop(context);
@@ -229,17 +229,17 @@ class _DesktopViewState extends State<DesktopView> {
       minimumSize: const WidgetStatePropertyAll(Size(0, 28)),
       padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      textStyle: const WidgetStatePropertyAll(TextStyle(fontFamily: 'Inter', fontSize: 13, height: 16 / 13)),
+      textStyle: const WidgetStatePropertyAll(TextStyle(fontFamily: desktopFontFamily, fontSize: 13, height: 16 / 13)),
       shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))));
     return Container(
       key: ValueKey('account:$id'),
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(color: const Color(0xfffafafa), border: Border.all(color: const Color(0x14000000), width: .5), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(color: desktopSidebar, border: Border.all(color: const Color(0x14000000), width: .5), borderRadius: BorderRadius.circular(8)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(name, style: const TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500, color: opencodeInk)),
+            Text(name, style: const TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500, color: desktopForeground)),
             if (provider['auth'] == 'opencode') const Text('DeepSeek models', style: TextStyle(fontSize: 12, color: Colors.black54)),
           ])),
           Icon(connected ? Icons.check_circle : Icons.circle_outlined, size: 15, color: connected ? const Color(0xff296748) : Colors.black38),
@@ -570,7 +570,7 @@ class _DesktopViewState extends State<DesktopView> {
     final savedWidth = session.sidebarWidth;
     final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth);
     final pane = _conversationPane(context, tasks);
-    return ColoredBox(color: const Color(0xfff9f9f9), child: DesktopSidebarFrame(
+    return ColoredBox(color: desktopSidebar, child: DesktopSidebarFrame(
       open: session.sidebarOpen, width: sidebarWidth,
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
@@ -587,6 +587,7 @@ class _DesktopViewState extends State<DesktopView> {
             onForward: _navigationIndex < _navigationHistory.length - 1 ? () => _navigateHistory(1) : null,
             onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
+            onProjectSettings: (project) => unawaited(_settings(project: project)),
             onAddProject: () => unawaited(_addProject()),
             onRefresh: () => unawaited(_run(session.refreshProjects)),
             onSelect: _openTask, onDraft: _activateDraft,
@@ -611,13 +612,12 @@ class _DesktopViewState extends State<DesktopView> {
     final home = _homeOpen;
     final transcript = home ? null : session.task ?? session.currentDraft.submission;
     return TerminalWorkspace(key: _conversationPaneKey, controller: session.terminals, scope: home ? null : _terminalScope,
-      child: Theme(data: conversationTheme(Theme.of(context)),
-          child: SessionPanelWorkspace(
+      child: SessionPanelWorkspace(
             session: session, task: home ? null : session.task,
             sideComposer: (side, active) => _Composer(key: ValueKey('composer:${side.draftKey}'),
               session: session, target: side, active: active),
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
-            child: Material(color: conversationCanvas, child: Stack(fit: StackFit.expand, children: [
+            child: Material(color: desktopCanvas, child: Stack(fit: StackFit.expand, children: [
               if (!home) ProjectDetailsWorkspace(session: session,
                 header: (opened, toggle) => _header(context, opened, toggle),
                 child: Column(children: [
@@ -680,12 +680,12 @@ class _DesktopViewState extends State<DesktopView> {
                 ],
               ])),
                if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
+                 onProjectSettings: (project) => unawaited(_settings(project: project)),
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
                 onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
            ),
-        ),
     );
   }
 
@@ -700,7 +700,7 @@ class _DesktopViewState extends State<DesktopView> {
             const SizedBox(width: 7),
             ConstrainedBox(constraints: BoxConstraints(maxWidth: bounds.maxWidth * .4),
               child: Text(session.project!.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13, color: opencodeMuted))),
+                style: const TextStyle(fontSize: 13, color: desktopSecondary))),
             const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('/', style: TextStyle(color: Color(0xffc8cacf)))),
           ],
           Expanded(child: Text(
@@ -710,7 +710,7 @@ class _DesktopViewState extends State<DesktopView> {
             style: TextStyle(fontSize: 13, height: 16 / 13, fontWeight: FontWeight.w500,
               letterSpacing: -.04,
               fontVariations: const [FontVariation('wght', 530)],
-              color: opencodeInk),
+              color: desktopForeground),
           )),
         ]))),
         if (session.task != null)
@@ -781,7 +781,8 @@ class _ComposerState extends State<_Composer> {
   late Object _voiceOwner = Object();
   DictationService? _boundVoice;
   ComposerDictationSession? _voiceText;
-  bool _finishingVoice = false, _disposing = false;
+  FocusNode? _voiceFocus;
+  bool _answerVoice = false, _finishingVoice = false, _disposing = false;
   DictationService get _voice => widget.session.dictation;
   bool get _ownsVoice => identical(_voice.owner, _voiceOwner);
   bool get _dictating => _ownsVoice && (_voice.active || _finishingVoice);
@@ -814,37 +815,59 @@ class _ComposerState extends State<_Composer> {
     setState(() {});
   }
 
-  Future<void> _startVoice() async {
-    if (_voice.active || _finishingVoice || !widget.session.connected || _submitting) return;
+  Future<void> _startVoice({QuestionComposer? answer}) async {
+    if (_voice.active || _finishingVoice || !widget.session.connected || _submitting || answer?.enabled == false) return;
+    final controller = answer?.controller ?? _text;
+    final focus = answer?.focus ?? _focus;
+    _voiceOwner = Object();
+    _voiceFocus = focus;
+    _answerVoice = answer != null;
     _voiceText?.dispose();
-    _voiceText = ComposerDictationSession(_text, (range, text) {
-      final editorContext = _focus.context;
+    _voiceText = ComposerDictationSession(controller, (range, text) {
+      final editorContext = focus.context;
       if (!_disposing && editorContext != null && editorContext.mounted) {
-        Actions.invoke(editorContext, ReplaceTextIntent(_text.value, text, range, SelectionChangedCause.keyboard));
+        Actions.invoke(editorContext, ReplaceTextIntent(controller.value, text, range, SelectionChangedCause.keyboard));
       } else {
         // Navigation may already have detached the editable widget. Restore the
         // saved draft through its controller without looking up widget actions.
-        _text.value = TextEditingValue(text: _text.text.replaceRange(range.start, range.end, text),
+        controller.value = TextEditingValue(text: controller.text.replaceRange(range.start, range.end, text),
           selection: TextSelection.collapsed(offset: range.start + text.length));
       }
     });
-    if (widget.active) _focus.requestFocus();
+    if (widget.active) focus.requestFocus();
     await _voice.start(owner: _voiceOwner, liveTranscription: widget.session.dictationMode == 'live',
       onRecordingLimit: () => unawaited(_finishVoice(DictationAction.insert)));
   }
 
-  Future<void> _cancelVoice() async {
+  Future<void> _cancelVoice({bool restoreFocus = true}) async {
     if (!_ownsVoice) return;
+    final focus = _voiceFocus ?? _focus;
     _voiceText?.dispose(cancel: true);
     _voiceText = null;
-    await _voice.cancel();
-    if (mounted) _focus.requestFocus();
+    final cancellation = _voice.cancel();
+    _voiceOwner = Object();
+    _voiceFocus = null;
+    _answerVoice = false;
+    _finishingVoice = false;
+    await cancellation;
+    if (mounted && widget.active && restoreFocus && focus.context?.mounted == true) focus.requestFocus();
   }
 
-  Future<void> _finishVoice(DictationAction action, {bool retry = false}) async {
+  void _cancelAnswerVoice() {
+    if (_answerVoice) unawaited(_cancelVoice(restoreFocus: false));
+  }
+
+  void _advanceAnswer(VoidCallback advance) {
+    if (_answerVoice && _dictating) {
+      unawaited(_finishVoice(DictationAction.send, onSend: advance));
+    } else { advance(); }
+  }
+
+  Future<void> _finishVoice(DictationAction action, {bool retry = false, VoidCallback? onSend}) async {
     if (!_ownsVoice || _finishingVoice) return;
     final owner = _voiceOwner;
-    if (retry && widget.active) _focus.requestFocus();
+    final focus = _voiceFocus ?? _focus;
+    if (retry && widget.active) focus.requestFocus();
     setState(() => _finishingVoice = true);
     try {
       final result = retry ? await _voice.retry(action) : await _voice.stop(action);
@@ -853,8 +876,10 @@ class _ComposerState extends State<_Composer> {
       if (!mounted || !identical(_voiceOwner, owner) || !_ownsVoice || !inserted) return;
       _voiceText?.dispose();
       _voiceText = null;
-      _focus.requestFocus();
-      if (result.action == DictationAction.send) await _sendPrompt();
+      if (widget.active) focus.requestFocus();
+      if (result.action == DictationAction.send) {
+        if (onSend != null) { onSend(); } else { await _sendPrompt(); }
+      }
     } finally {
       if (identical(_voiceOwner, owner)) {
         _finishingVoice = false;
@@ -885,6 +910,8 @@ class _ComposerState extends State<_Composer> {
     if (_boundVoice != null && identical(_boundVoice!.owner, _voiceOwner)) unawaited(_boundVoice!.cancel());
     _boundVoice = null;
     _voiceOwner = Object();
+    _voiceFocus = null;
+    _answerVoice = false;
     _finishingVoice = false;
     final previous = _text;
     previous.removeListener(_saveDraft);
@@ -1117,14 +1144,16 @@ class _ComposerState extends State<_Composer> {
   Widget build(BuildContext context) {
     _bindVoice();
     final target = _target, request = _target?.questions.values.firstOrNull;
-    if (target != null && request != null && !_dictating) {
+    if (target != null && request != null && (!_dictating || _answerVoice)) {
       final id = request['id'] as String;
       return SessionQuestionDock(
         key: ValueKey('question:${target.id}:$id'), request: request,
         draft: target.questionDrafts.putIfAbsent(id, () => QuestionDraft.fromRequest(request)),
         directory: _project?.path ?? '',
-        enabled: widget.session.connected && !_submitting && !_dictating,
+        enabled: widget.session.connected && !_submitting,
         active: widget.active,
+        onBeforeChange: _cancelAnswerVoice,
+        onAdvance: _advanceAnswer,
         onAnswer: (answers, cancellation) => widget.session.answerQuestion(
           target, id, answers, cancellation: cancellation),
         composer: (answer) => _input(context, answer: answer),
@@ -1202,7 +1231,7 @@ class _ComposerState extends State<_Composer> {
       child: Center(
       heightFactor: 1,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: newThread ? newThreadComposerWidth : conversationWidth + 40),
+        constraints: BoxConstraints(maxWidth: newThread ? desktopNewThreadComposerWidth : desktopConversationWidth + 40),
         child: Padding(
           padding: newThread ? EdgeInsets.zero : const EdgeInsets.fromLTRB(20, 8, 20, 16),
           child: ConstrainedBox(
@@ -1211,7 +1240,7 @@ class _ComposerState extends State<_Composer> {
           if (answer != null) Flexible(fit: FlexFit.loose, child: answer.panel),
           CallbackShortcuts(
             bindings: {
-              if (answer == null)
+              if (answer == null || _ownsVoice && (_dictating || _voice.state is DictationFailed))
               const SingleActivator(LogicalKeyboardKey.escape, includeRepeats: false): () {
                 if (!controller.value.composing.isCollapsed) return;
                 if (_ownsVoice && (_dictating || _voice.state is DictationFailed)) unawaited(_cancelVoice());
@@ -1243,7 +1272,7 @@ class _ComposerState extends State<_Composer> {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: _draggingAttachments ? Theme.of(context).colorScheme.primary
-                    : conversationOutline,
+                    : desktopBorder,
                     width: _draggingAttachments ? 2 : 1),
                   boxShadow: const [
                     BoxShadow(color: Color(0x0a000000), blurRadius: 4, offset: Offset(0, 2)),
@@ -1323,17 +1352,17 @@ class _ComposerState extends State<_Composer> {
                             ],
                             child: MouseRegion(cursor: available && !_dictating ? SystemMouseCursors.click : SystemMouseCursors.basic,
                               child: const SizedBox.square(dimension: 32,
-                                child: Icon(Icons.add_rounded, size: 20, color: conversationSecondary)))),
-                          if (answer == null && _dictating) ...[
+                                child: Icon(Icons.add_rounded, size: 20, color: desktopSecondary)))),
+                          if (_dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          if (answer == null && defaultTargetPlatform == TargetPlatform.macOS) ...[
+                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
                             DictationButton(
                               phase: _voicePhase,
                               amplitude: _voice.amplitude,
                               enabled: available && (!_voice.active || _ownsVoice),
-                              onStart: () => unawaited(_startVoice()),
+                              onStart: () => unawaited(_startVoice(answer: answer)),
                               onStop: () => unawaited(_finishVoice(DictationAction.insert)),
                               onCancel: () => unawaited(_cancelVoice()),
                               onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
@@ -1347,7 +1376,7 @@ class _ComposerState extends State<_Composer> {
                             else if (!answer.sending)
                               const Flexible(child: Padding(padding: EdgeInsets.only(left: 16),
                                 child: Text('↵ to continue · ⇧↵ for a new line', maxLines: 1, overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(fontSize: 11, color: opencodeFaint)))),
+                                  style: TextStyle(fontSize: 11, color: desktopTertiary)))),
                           ])),
                           const SizedBox(width: 8),
                           if (answer?.previous case final previous?) ...[
@@ -1358,7 +1387,8 @@ class _ComposerState extends State<_Composer> {
                             const SizedBox(width: 6),
                           ],
                           if (answer != null)
-                            FilledButton(onPressed: available && answer.canSubmit ? submit : null,
+                            FilledButton(onPressed: available && (_dictating
+                                ? _voice.state is DictationRecording && !_finishingVoice : answer.canSubmit) ? submit : null,
                               style: FilledButton.styleFrom(
                                 minimumSize: const Size(0, 32),
                                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1372,7 +1402,7 @@ class _ComposerState extends State<_Composer> {
                             final dictationCanSend = _dictating && _voice.state is DictationRecording && !_finishingVoice;
                             return IconButton.filled(
                             style: IconButton.styleFrom(
-                              backgroundColor: conversationAccent, foregroundColor: Colors.white,
+                              backgroundColor: desktopForeground, foregroundColor: desktopSurface,
                               disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
                               minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
                               shape: const CircleBorder(),

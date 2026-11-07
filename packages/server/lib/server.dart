@@ -1185,22 +1185,22 @@ class AgentServer {
       writer = task.memoryStore ?? task.writer ?? await startStore(directory, task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
-      if (archived) {
-        _goals.remove(task.id);
-        await _taskTools.release(task.id);
-        _clientTools.archive(task.id);
-        await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
-        // Archive already cleared desired subscriptions in its own commit. Do
-        // not start a second writer operation while holding maintenance here.
-        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}', 'persist': false}, cancellation: _lifetime);
-      }
+      // Publish the committed membership change before draining resources. MCP
+      // initialization or remote cleanup must not hold the archive UI open.
       _broadcast(task.id, event);
       if (archived) {
+        _goals.remove(task.id);
+        _clientTools.archive(task.id);
         for (final client in _clients) {
           client.subscriptions.remove(task.id);
           client.contextSnapshots.removeWhere((_, snapshot) => snapshot['sessionID'] == task.id);
           client.sessionTraces.remove(task.id);
         }
+        await _taskTools.release(task.id);
+        await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
+        // Archive already cleared desired subscriptions in its own commit. Do
+        // not start a second writer operation while holding maintenance here.
+        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}', 'persist': false}, cancellation: _lifetime);
       }
     } finally {
       try { await writer?.close(); if (task.writer == writer) task.writer = null; }
@@ -2002,7 +2002,7 @@ class AgentClient {
     }, cancellation: cancellation));
 
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
-    if (!{'session.context', 'thread/resume', 'thread/read', 'thread/items/list', 'thread/turns/list', 'thread/list'}.contains(method)) {
+    if (!{'session.context', 'thread/resume', 'thread/read', 'thread/items/list', 'thread/turns/list', 'thread/list', 'thread/image/read'}.contains(method)) {
       throw ArgumentError('Unknown session read');
     }
     return jsonObject(await _request(method, params, cancellation: cancellation));

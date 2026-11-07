@@ -64,16 +64,16 @@ class _ThinkingLabelState extends State<ThinkingLabel>
     final double ch;
     {
       final measure = TextPainter(text: TextSpan(text: '0',
-        style: DefaultTextStyle.of(context).style.merge(_style(conversationForeground))),
+        style: DefaultTextStyle.of(context).style.merge(_style(desktopForeground))),
         textDirection: Directionality.of(context))..layout();
       ch = measure.width;
       measure.dispose();
     }
     return RepaintBoundary(child: Stack(children: [
-    _text(conversationSecondary),
+    _text(desktopSecondary),
     Positioned.fill(child: ExcludeSemantics(child: IgnorePointer(child: AnimatedBuilder(
       animation: _sweep,
-      child: _text(conversationForeground),
+      child: _text(desktopForeground),
       builder: (context, child) => !_sweep.isAnimating ? const SizedBox.shrink() : ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (rect) {
@@ -142,7 +142,7 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
     _expanded ??= PageStorage.maybeOf(context)?.readState(context, identifier: ('disclosure', widget.key)) as bool?
       ?? widget.initiallyExpanded;
     final expanded = _expanded!;
-    final color = widget.color ?? conversationSecondary;
+    final color = widget.color ?? desktopSecondary;
     final header = MouseRegion(
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
@@ -171,7 +171,7 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
                 child: Tooltip(message: widget.timestamp!.toLocal().toString(),
                   child: Text(MaterialLocalizations.of(context).formatTimeOfDay(
                     TimeOfDay.fromDateTime(widget.timestamp!.toLocal()), alwaysUse24HourFormat: true),
-                    style: const TextStyle(fontSize: 12, color: conversationSecondary,
+                    style: const TextStyle(fontSize: 12, color: desktopSecondary,
                       fontFeatures: [FontFeature.tabularFigures()])))),
               const SizedBox(width: 4),
               Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,

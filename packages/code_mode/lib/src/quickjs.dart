@@ -34,6 +34,7 @@ class QuickJs {
   bool _running = false;
   void Function()? _closeExit;
   void Function()? _closeMedia;
+  void Function()? _closeValues;
   bool _exited = false;
 
   Object? evaluate(String source, {int cpuBudgetMs = 1000}) {
@@ -73,6 +74,7 @@ class QuickJs {
     jsResetContext(_handle);
     _closeExit?.call(); _closeExit = null;
     _closeMedia?.call(); _closeMedia = null;
+    _closeValues?.call(); _closeValues = null;
     _exited = false;
   }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
 
@@ -113,6 +115,9 @@ class QuickJs {
     if (source.length > 256 * 1024) {
       throw const FormatException('Cell source too large');
     }
+    // Capture the cell's view before sibling cells commit new writes. Only the
+    // requested key crosses into QuickJS, and each load parses a fresh value.
+    final storedValues = {...values};
     final maxOutputTokens = cellOutputTokens(source);
     // A borrowed task interrupt must never be signalled by normal cell cleanup:
     // doing so would cancel sibling yielded cells sharing the task's signal.
@@ -153,14 +158,16 @@ class QuickJs {
     Object? evaluateCell(String source) =>
       measure('code.evaluate', () => evaluate(source, cpuBudgetMs: budget()));
     Json snapshot() => traceSync('code_mode.cell.output.collect', () {
-      final result = jsonObject(evaluateCell(retainOutput ? '({values: __cell.values, writes: __cell.writes})'
-        : '({output: __cell.output.collect(), images: __cell.images, values: __cell.values})'));
+      // CodeSession owns the saved values and merges only this cell's writes.
+      // Copying its full store back can exhaust the runtime after successful work.
+      final result = jsonObject(evaluateCell(retainOutput ? '({writes: __cell.writes})'
+        : '({output: __cell.output.collect(), images: __cell.images, writes: __cell.writes})'));
       final rendered = !retainOutput && module ? renderCellContent(jsonObject(result['output']), maxOutputTokens) : null;
       return {
         if (!retainOutput) 'output': rendered == null ? renderCellOutput(jsonObject(result['output']), maxOutputTokens)
           : rendered.items.where((part) => part['type'] == 'input_text').map((part) => part['text']).toList(),
         if (rendered != null) 'content': rendered.items,
-        'values': result['values'],
+        if (!retainOutput) 'values': {...storedValues, ...jsonObject(result['writes'])},
         if (retainOutput) 'writes': result['writes'],
         if (!retainOutput && (result['images'] as List).isNotEmpty) 'images': result['images'],
       };
@@ -170,10 +177,13 @@ class QuickJs {
       traceSync('code_mode.cell.init', () {
         evaluateCell(_bootstrap);
         _closeExit = jsInstallExit(_handle, () { _exited = true; });
-        if (module) _closeMedia = jsInstallAudioMetadata(_handle, (url) { budget(); final value = audioMetadata(url); budget(); return value; });
+        if (module) _closeMedia = jsInstallJsonCallback(_handle, '__audioMetadata', (url) { budget(); final value = audioMetadata(url); budget(); return value; });
+        _closeValues = jsInstallJsonCallback(_handle, '__loadStoredValue', (key) {
+          budget();
+          return storedValues.containsKey(key) ? {'value': storedValues[key]} : {};
+        });
         evaluateCell('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
         evaluateCell('__cell.configureTools($module); null');
-        evaluateCell('__cell.values = ${jsonEncode(values)}; null');
       }, category: 'code_mode', attributes: {
         'code.catalog_count': catalog.length, 'code.values_count': values.length,
       }, includeErrorMessage: false);
@@ -285,6 +295,7 @@ class QuickJs {
       _handle = nullptr;
       _closeExit?.call(); _closeExit = null;
       _closeMedia?.call(); _closeMedia = null;
+      _closeValues?.call(); _closeValues = null;
     }
   }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
 }
@@ -334,7 +345,7 @@ var __cell = (() => {
   let next = 1, nextTimeout = 1, done = false, error = null, yielded = false, exited = false;
   const exitSignal = {};
   const api = {
-    values: {}, writes: {}, get output() { return output; }, get images() { return images; },
+    writes: {}, get output() { return output; }, get images() { return images; },
     configureTools(strict) {
       api.moduleMode = strict;
       if (strict) {
@@ -493,11 +504,15 @@ var __cell = (() => {
     if (encoded === undefined) throw new Error("store requires a JSON value");
     key = String(key);
     const snapshot = JSON.parse(encoded);
-    for (const target of [api.values, api.writes]) {
-      Object.defineProperty(target, key, {value: snapshot, configurable: true, enumerable: true, writable: true});
-    }
+    Object.defineProperty(api.writes, key, {value: snapshot, configurable: true, enumerable: true, writable: true});
   }
-  function load(key) { return Object.prototype.hasOwnProperty.call(api.values, String(key)) ? JSON.parse(JSON.stringify(api.values[String(key)])) : undefined; }
+  function load(key) {
+    key = String(key);
+    if (Object.prototype.hasOwnProperty.call(api.writes, key)) return JSON.parse(JSON.stringify(api.writes[key]));
+    const result = __loadStoredValue(key);
+    if (Object.prototype.hasOwnProperty.call(result, "error")) throw new Error(result.error);
+    return Object.prototype.hasOwnProperty.call(result, "value") ? result.value : undefined;
+  }
   function hostCall(name, args) {
     if (exited) throw exitSignal;
     if (pending.size >= 64) throw new Error("Too many outstanding host calls");

@@ -133,6 +133,13 @@ extension _ThreadProtocol on AgentServer {
         await _threadSnapshot(id, cancellation, includeTurns: false);
         return await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);
       }
+      if (method == 'thread/image/read') {
+        final result = await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);
+        if (result['source'] is String) return result;
+        final images = await prepareInputAttachments([{'type': 'image', 'name': 'Inspected image',
+          'path': requiredString(result, 'path')}], cancellation: cancellation);
+        return {'source': attachmentDataUrl(images.single)};
+      }
       if (method == 'thread/compact/start') {
         await _dispatchUntraced('task.compact', {'task_id': id}, client, requestID);
         return <String, dynamic>{};

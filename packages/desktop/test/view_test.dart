@@ -1504,6 +1504,83 @@ void main() {
     expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+  testWidgets('thread context menus open their project settings and save scripts in that checkout', (tester) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    final originalProject = session.project!, originalTask = session.task!;
+    final otherTask = DesktopTask('other', 'Another project thread')..loaded = true;
+    final otherProject = Project('other-checkout', '/other', '/other', [otherTask]);
+    session.projects.add(otherProject);
+    late IsolateOwner database;
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-project-settings-');
+      database = await openDesktopDatabase(directory!.path);
+      for (final project in session.projects) {
+        await callIsolate(database.port, 'project.add', {
+          'checkout_key': project.checkoutKey, 'identity': project.id, 'path': project.path,
+        });
+      }
+      final previous = session;
+      await previous.close();
+      client = _Client()..providers = previous.providers;
+      session = DesktopSession(client, database)
+        ..providers = previous.providers
+        ..projects.addAll(previous.projects)
+        ..project = originalProject
+        ..task = originalTask;
+      await session.actionsForProject(otherProject).load();
+    });
+    await open(tester);
+    tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text = 'Keep my conversation draft';
+    await tester.tap(find.byKey(const ValueKey('thread:other')), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    expect(find.text('Project settings'), findsOneWidget);
+    await tester.runAsync(() => tester.tap(find.text('Project settings')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DesktopSettingsScreen), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'other');
+    expect(find.text('/other'), findsOneWidget);
+    expect(find.text('Actions'), findsOneWidget);
+    expect(find.text('Checkouts'), findsOneWidget);
+    expect(session.project, same(originalProject));
+    expect(session.task, same(originalTask));
+
+    await tester.ensureVisible(find.text('Add script'));
+    await tester.tap(find.text('Add script'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).at(0), 'Start development');
+    await tester.enterText(find.byType(TextFormField).at(1), 'moonx dev');
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Save script'));
+      final saved = jsonObject(await callIsolate(database.port, 'load', {}));
+      final preferences = jsonObject(jsonDecode(saved['settings']['project_actions:other-checkout'] as String));
+      expect((preferences['scripts'] as List).single, containsPair('name', 'Start development'));
+      expect((preferences['scripts'] as List).single, containsPair('command', 'moonx dev'));
+      expect(saved['settings']['project_actions:checkout'], isNull);
+    });
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsNothing);
+    expect(find.text('Start development'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+    expect(session.project, same(originalProject));
+    expect(session.task, same(originalTask));
+    expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).controller.text, 'Keep my conversation draft');
+
+    await tester.pumpWidget(MaterialApp(home: DesktopSettingsScreen(session: session,
+      accounts: const SizedBox.shrink(), archived: const SizedBox.shrink(), run: (effect) => effect(),
+      initialProject: otherProject, windowControls: false, removeProject: (_) async {})));
+    for (final size in [const Size(640, 900), const Size(390, 900)]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(find.text('Start development'), findsOneWidget);
+      expect(find.text('Checkouts'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('Settings opens instantly, saves appearance and preferences, and restores archived tasks', (tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));

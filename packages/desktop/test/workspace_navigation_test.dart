@@ -124,8 +124,12 @@ void main() {
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: const Offset(1000, 700)); addTearDown(mouse.removePointer);
     await mouse.moveTo(tester.getCenter(row)); await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Archive session')); await tester.pumpAndSettle();
-    expect(actions, [(failed, true), (failed, true)]); expect(opened, false);
+    await tester.tap(find.byKey(const ValueKey('archive:failed')));
+    await tester.pump(const Duration(milliseconds: 99));
+    expect(actions, [(failed, true), (failed, true)],
+      reason: 'Archiving must not wait for the row double-click timeout');
+    expect(opened, false);
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

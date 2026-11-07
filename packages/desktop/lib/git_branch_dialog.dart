@@ -40,18 +40,18 @@ class _GitBranchDialogState extends State<GitBranchDialog> {
         Flexible(child: SizedBox(height: 260, child: FutureBuilder<List<GitBranch>>(future: _branches, builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: opencodeMuted)),
+              Text('${snapshot.error}', style: const TextStyle(fontSize: 12, color: desktopSecondary)),
               TextButton(onPressed: () => setState(() => _branches = widget.controller.branches(_lifetime)), child: const Text('Retry')),
             ]));
           }
           if (!snapshot.hasData) { return const Center(child: CircularProgressIndicator(strokeWidth: 2)); }
           final query = _search.text.toLowerCase();
           final branches = snapshot.data!.where((branch) => branch.name.toLowerCase().contains(query)).toList();
-          if (branches.isEmpty) return const Center(child: Text('No matching branches', style: TextStyle(color: opencodeMuted)));
+          if (branches.isEmpty) return const Center(child: Text('No matching branches', style: TextStyle(color: desktopSecondary)));
           return ListView.builder(itemCount: branches.length, itemBuilder: (context, index) {
             final branch = branches[index], current = widget.controller.state.repository?.branch == branches[index].name && !branches[index].remote;
             return ListTile(dense: true, contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-              leading: Icon(branch.remote ? Icons.cloud_outlined : Icons.call_split_rounded, size: 17, color: opencodeFaint),
+              leading: Icon(branch.remote ? Icons.cloud_outlined : Icons.call_split_rounded, size: 17, color: desktopTertiary),
               title: Text(branch.name, style: const TextStyle(fontSize: 13)),
               trailing: current ? const Icon(Icons.check_rounded, size: 17) : null,
               enabled: !current, onTap: () => _choose(branch.ref));

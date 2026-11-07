@@ -210,15 +210,15 @@ class _FileViewerState extends State<FileViewer> {
       isSelected: selected, padding: EdgeInsets.zero,
       style: IconButton.styleFrom(minimumSize: const Size.square(28),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-      icon: Icon(icon, size: 16, color: selected ? opencodeInk : opencodeMuted)));
+      icon: Icon(icon, size: 16, color: selected ? desktopForeground : desktopSecondary)));
 
   Widget _notice(IconData icon, String title, {String? detail}) => Center(child: Padding(
     padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 32, color: opencodeFaint),
+      Icon(icon, size: 32, color: desktopTertiary),
       const SizedBox(height: 16),
-      Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: opencodeMuted)),
+      Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: desktopSecondary)),
       if (detail != null) ...[const SizedBox(height: 8),
-        Text(detail, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: opencodeFaint))],
+        Text(detail, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: desktopTertiary))],
       const SizedBox(height: 16),
       TextButton.icon(onPressed: _revealing ? null : _reveal, icon: const Icon(Icons.folder_open_outlined, size: 16),
         label: Text(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager')),
@@ -259,14 +259,14 @@ class _FileViewerState extends State<FileViewer> {
     return CodeEditor(key: const ValueKey('file-source'), controller: _code, scrollController: _scroll,
       readOnly: true, showCursorWhenReadOnly: false, autofocus: false, wordWrap: _wrap,
       chunkAnalyzer: const NonCodeChunkAnalyzer(), padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
-      style: const CodeEditorStyle(fontFamily: 'IBM Plex Mono', fontSize: 13, fontHeight: 20 / 13,
-        textColor: opencodeInk, backgroundColor: Colors.white, cursorLineColor: Color(0xfff4f5f7),
-        selectionColor: Color(0x333b5cf6)),
+      style: CodeEditorStyle(fontFamily: desktopMonoFamily, fontSize: 13, fontHeight: 20 / 13,
+        textColor: desktopForeground, backgroundColor: desktopSurface, cursorLineColor: desktopMuted,
+        selectionColor: DesktopAccent.of(context).selection),
       indicatorBuilder: (context, controller, _, notifier) => Padding(
         padding: const EdgeInsets.only(left: 8, right: 8),
         child: DefaultCodeLineNumber(controller: controller, notifier: notifier,
-          textStyle: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, height: 20 / 12, color: opencodeFaint),
-          focusedTextStyle: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, height: 20 / 12, color: opencodeMuted))));
+          textStyle: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 20 / 12, color: desktopTertiary),
+          focusedTextStyle: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 20 / 12, color: desktopSecondary))));
   }
 
   @override
@@ -278,10 +278,10 @@ class _FileViewerState extends State<FileViewer> {
     final source = text != null && (!canPreview || _source);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: opencodeBorder, width: .5))),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: desktopBorder, width: .5))),
         child: Row(children: [
           Expanded(child: Tooltip(message: widget.path, child: Text(widget.path,
-            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: opencodeMuted)))),
+            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: desktopSecondary)))),
           const SizedBox(width: 8),
           _button(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager',
             Icons.folder_open_outlined, _revealing ? null : _reveal),
@@ -297,17 +297,17 @@ class _FileViewerState extends State<FileViewer> {
           _button('Reload file', Icons.refresh_rounded, _loading ? null : _load),
         ])),
       if (source && preview?.truncated == true) Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        color: opencodeLayer, child: const Text('Showing the first 2 MB of this file.',
-          style: TextStyle(fontSize: 12, color: opencodeMuted))),
+        color: desktopMuted, child: const Text('Showing the first 2 MB of this file.',
+          style: TextStyle(fontSize: 12, color: desktopSecondary))),
       Expanded(child: _body()),
       if (preview != null && !_loading && !_failed) Container(height: 28,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: const BoxDecoration(border: Border(top: BorderSide(color: opencodeBorder, width: .5))),
+        decoration: const BoxDecoration(border: Border(top: BorderSide(color: desktopBorder, width: .5))),
         child: Row(children: [
           FileIcon(widget.path, size: 12), const SizedBox(width: 6),
-          if (source) Text('${_code.lineCount} lines', style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+          if (source) Text('${_code.lineCount} lines', style: const TextStyle(fontSize: 11, color: desktopTertiary)),
           const Spacer(),
-          Text(_fileSize(preview.size), style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+          Text(_fileSize(preview.size), style: const TextStyle(fontSize: 11, color: desktopTertiary)),
         ])),
     ]);
   }

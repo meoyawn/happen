@@ -136,7 +136,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   @override
   Widget build(BuildContext context) => Material(color: Colors.white, child: Column(children: [
     _exports(),
-    const Divider(height: 1, color: opencodeBorder),
+    const Divider(height: 1, color: desktopBorder),
     Expanded(child: _error != null
       ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
           SelectableText(_error!), TextButton(onPressed: _load, child: const Text('Retry')),
@@ -151,21 +151,21 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       _exportRow('End-to-end trace', enabled: widget.task.tracing, trace: true),
       if (!widget.task.tracing) const Padding(padding: EdgeInsets.only(right: 8, bottom: 4),
         child: Text('Tracing was not enabled for this session.',
-          style: TextStyle(fontSize: 11, color: opencodeFaint))),
+          style: TextStyle(fontSize: 11, color: desktopTertiary))),
       if (_traceError != null) Padding(padding: const EdgeInsets.only(right: 8, top: 4),
         child: Text(_traceError!, style: const TextStyle(fontSize: 11, color: Colors.red))),
       if (_traceCounts case final counts?) Padding(padding: const EdgeInsets.only(right: 8, bottom: 4),
         child: Text('Events: ${counts['http'] ?? 0} HTTP · ${counts['websocket'] ?? 0} WebSocket · ${counts['sqlite'] ?? 0} SQLite',
-          style: const TextStyle(fontSize: 11, color: opencodeFaint))),
+          style: const TextStyle(fontSize: 11, color: desktopTertiary))),
     ]));
 
   Widget _exportRow(String label, {required bool enabled, required bool trace}) => Row(children: [
-    Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: opencodeMuted))),
+    Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
     if (trace) IconButton(tooltip: 'Refresh session trace counts', visualDensity: VisualDensity.compact,
       onPressed: _traceLoading || !enabled ? null : _loadTraceStatus, icon: const Icon(Icons.refresh, size: 16)),
     Tooltip(message: 'Export $label JSON and copy its absolute path',
       child: TextButton.icon(onPressed: _exporting || !enabled ? null : () => _export(trace: trace),
-        style: TextButton.styleFrom(foregroundColor: opencodeMuted, padding: const EdgeInsets.symmetric(horizontal: 6),
+        style: TextButton.styleFrom(foregroundColor: desktopSecondary, padding: const EdgeInsets.symmetric(horizontal: 6),
           textStyle: const TextStyle(fontSize: 11)),
         icon: const Icon(Icons.file_download_outlined, size: 16),
         label: Text(_exporting ? 'Exporting…' : 'Export & copy path'))),
@@ -222,9 +222,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
           Wrap(spacing: 16, runSpacing: 16, children: [for (final (label, value) in stats)
             SizedBox(width: bounds.maxWidth >= 512 ? (bounds.maxWidth - inset * 2 - 16) / 2 : bounds.maxWidth - inset * 2,
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(label, style: const TextStyle(fontSize: 12, height: 4 / 3, color: opencodeFaint)),
+                Text(label, style: const TextStyle(fontSize: 12, height: 4 / 3, color: desktopTertiary)),
                 const SizedBox(height: 4), SelectableText(value, style: const TextStyle(
-                  fontSize: 12, height: 4 / 3, fontWeight: FontWeight.w500, color: opencodeInk)),
+                  fontSize: 12, height: 4 / 3, fontWeight: FontWeight.w500, color: desktopForeground)),
               ])),
           ]),
           if (system.isNotEmpty) ...[
@@ -234,11 +234,11 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
               shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
               minTileHeight: 32, childrenPadding: const EdgeInsets.only(top: 8),
               title: Row(children: [const Expanded(child: Text('System Prompt',
-                style: TextStyle(fontSize: 12, color: opencodeFaint))),
+                style: TextStyle(fontSize: 12, color: desktopTertiary))),
                 ConversationCopyButton(text: system, label: 'Copy system prompt', compact: true)]),
               children: [Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(color: const Color(0xfffafafa),
-                  border: Border.all(color: opencodeBorder), borderRadius: BorderRadius.circular(6)),
+                decoration: BoxDecoration(color: desktopSidebar,
+                  border: Border.all(color: desktopBorder), borderRadius: BorderRadius.circular(6)),
                 child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))]),
           ],
           SizedBox(height: gap),
@@ -252,9 +252,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
           child: Semantics(button: true, expanded: _messagesExpanded, child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [const Expanded(child: Text('Raw messages', maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: opencodeFaint))),
+                style: TextStyle(fontSize: 12, color: desktopTertiary))),
               const SizedBox(width: 8), Icon(_messagesExpanded ? Icons.expand_less : Icons.expand_more,
-                size: 16, color: opencodeFaint)]))))),
+                size: 16, color: desktopTertiary)]))))),
           if (_exporting) const SizedBox.square(dimension: 12,
             child: CircularProgressIndicator(strokeWidth: 1.5))]))),
       if (_messagesExpanded) for (var index = 0; index < input.length; index++)
@@ -270,7 +270,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   Widget _raw(String title, Object value) => ExpansionTile(
     key: PageStorageKey('context-raw:${widget.task.id}:$title'),
     shape: const Border(), collapsedShape: const Border(), tilePadding: EdgeInsets.zero,
-    title: Text(title, style: const TextStyle(fontSize: 12, color: opencodeMuted), maxLines: 1, overflow: TextOverflow.ellipsis),
+    title: Text(title, style: const TextStyle(fontSize: 12, color: desktopSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
     minTileHeight: 32,
     childrenPadding: const EdgeInsets.all(12),
     // The text's scroll offset must not share the tile's expanded-state key.
@@ -284,7 +284,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     return SliverMainAxisGroup(key: ValueKey(id), slivers: [
       PinnedHeaderSliver(child: SizedBox(height: 32,
         child: Material(color: Colors.white, shape: RoundedRectangleBorder(borderRadius: radius,
-          side: const BorderSide(color: opencodeBorder)), clipBehavior: Clip.antiAlias,
+          side: const BorderSide(color: desktopBorder)), clipBehavior: Clip.antiAlias,
           child: InkWell(mouseCursor: WidgetStateMouseCursor.clickable, onTap: () => setState(() {
             if (expanded) { _expanded.remove(id); } else { _expanded.add(id); }
           }), child: Semantics(button: true, expanded: expanded, child: Padding(
@@ -292,17 +292,17 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
             child: Row(children: [
               Expanded(child: Text.rich(TextSpan(children: [
                 TextSpan(text: '${item['role'] ?? item['type']} '),
-                TextSpan(text: '• ${label == null ? '' : '$label • '}$id', style: const TextStyle(color: opencodeMuted)),
+                TextSpan(text: '• ${label == null ? '' : '$label • '}$id', style: const TextStyle(color: desktopSecondary)),
               ]), maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: opencodeInk))),
+                style: const TextStyle(fontSize: 12, color: desktopForeground))),
               const SizedBox(width: 12),
-              const Icon(Icons.unfold_more_rounded, size: 16, color: opencodeFaint),
+              const Icon(Icons.unfold_more_rounded, size: 16, color: desktopTertiary),
             ]))))))),
       if (expanded) SliverToBoxAdapter(child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(color: Colors.white,
-          border: const Border(left: BorderSide(color: opencodeBorder), right: BorderSide(color: opencodeBorder),
-            bottom: BorderSide(color: opencodeBorder)),
+          border: const Border(left: BorderSide(color: desktopBorder), right: BorderSide(color: desktopBorder),
+            bottom: BorderSide(color: desktopBorder)),
           borderRadius: last ? const BorderRadius.vertical(bottom: Radius.circular(8)) : null),
         child: _ContextJson(key: PageStorageKey('json-selection:$id'), value: item))),
     ]);
@@ -315,5 +315,5 @@ class _ContextJson extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SelectableText.rich(
     highlightedCode(const JsonEncoder.withIndent('  ').convert(value), language: 'json'),
-    style: const TextStyle(fontFamily: 'IBM Plex Mono', fontSize: 12, height: 2, color: opencodeInk));
+    style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 2, color: desktopForeground));
 }

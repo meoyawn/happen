@@ -7,6 +7,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import 'appearance.dart';
+
 
 
 /// Presentation states of the shipped A4u microphone control. The recorder owns
@@ -555,7 +557,7 @@ const _dismissSvg = '''<svg xmlns="http://www.w3.org/2000/svg" width="16" height
 class DictationPalette {
   const DictationPalette();
   static const defaults = DictationPalette();
-  Color get ink => const Color(0xff1a1c1f);
+  Color get ink => desktopForeground;
   Color get foregroundTertiary => ink.withValues(alpha: .495);
   Color get border => ink.withValues(alpha: .078);
   Color get secondaryHover => ink.withValues(alpha: .054);
