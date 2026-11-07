@@ -278,7 +278,11 @@ IDs `1`, `2`, and `3` to refer to the correct live/completed cells.
 The suite also independently checks AGENTS.md selection and overrides,
 metadata-only skill discovery, full skill reads, deferred tool discovery,
 real MCP results reaching inference, resumed input retention, and real automatic
-compaction. The multi-user compaction case uses four actual consecutive turns,
+compaction. Instruction-reading cases execute real shell reads of `AGENT.md`,
+root `AGENTS.md`, and `nested/AGENTS.md`, and require their contents in the next
+inference's tool results. Only root `AGENTS.md` is included automatically;
+the singular filename and nested guidance must stay out of the initial context.
+The multi-user compaction case uses four actual consecutive turns,
 then requires every user message to remain in its original order before the
 checkpoint in the following request, as in the user-supplied context export.
 The single-user compaction case keeps each model's catalog context limit. Usage

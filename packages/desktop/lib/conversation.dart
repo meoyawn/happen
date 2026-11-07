@@ -181,7 +181,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   Object? _contentState;
   Widget? _content;
   int _visibleRows = 0;
-  ({double pixels, double extent, int rows, bool fill})? _pagingPosition;
+  ({double extent, int rows})? _pagingPosition;
 
   @override
   void initState() {
@@ -204,11 +204,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         if (!mounted || !_scroll.hasClients) return;
         final position = _scroll.position;
         final added = position.maxScrollExtent - previous.extent;
-        if (!previous.fill && added > 0) {
-          _jumping = true;
-          try { _scroll.jumpTo((previous.pixels + added).clamp(position.minScrollExtent, position.maxScrollExtent)); }
-          finally { _jumping = false; }
-        }
         // Collapsed activity can absorb a page without adding visible rows.
         // Resume on the next scroll gesture rather than draining all history.
         if (_visibleRows <= previous.rows && added <= 1) _autofillBlocked = true;
@@ -224,15 +219,15 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   }
 
   void _follow() {
-    if (_scheduled || !_following) return;
+    if (_scheduled || !_following || !_scroll.hasClients || _scroll.position.extentBefore <= .5) return;
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
       if (!mounted || !_following || !_scroll.hasClients) return;
-      if (_scroll.position.extentAfter > .5) {
+      if (_scroll.position.extentBefore > .5) {
         _jumping = true;
         try {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+          _scroll.jumpTo(_scroll.position.minScrollExtent);
         } finally {
           _jumping = false;
         }
@@ -253,20 +248,20 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         _userScrolling = true;
         _autofillBlocked = false;
       }
-      if (notification.direction == ScrollDirection.forward) _following = false;
-      if (notification.direction == ScrollDirection.reverse && notification.metrics.extentAfter < 80) _following = true;
+      if (notification.direction == ScrollDirection.reverse) _following = false;
+      if (notification.direction == ScrollDirection.forward && notification.metrics.extentBefore < 80) _following = true;
     }
     if (notification is ScrollEndNotification) {
-      if (_userScrolling && notification.metrics.extentAfter < 1) _following = true;
+      if (_userScrolling && notification.metrics.extentBefore < 1) _following = true;
       _userScrolling = false;
     }
-    final showLatest = notification.metrics.extentAfter > 100;
+    final showLatest = notification.metrics.extentBefore > 100;
     if (showLatest != _showLatest && !_latestScheduled) {
       _latestScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _latestScheduled = false;
         if (!mounted || !_scroll.hasClients) return;
-        final show = _scroll.position.extentAfter > 100;
+        final show = _scroll.position.extentBefore > 100;
         if (show != _showLatest) setState(() => _showLatest = show);
       });
       WidgetsBinding.instance.ensureVisualUpdate();
@@ -278,7 +273,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   void _loadEarlier(ScrollMetrics metrics) {
     final task = widget.task;
     final fill = metrics.maxScrollExtent <= metrics.minScrollExtent + 1;
-    if (_following && !fill || _autofillBlocked || _jumping || _pagingScheduled || metrics.extentBefore > 400 ||
+    if (_following && !fill || _autofillBlocked || _jumping || _pagingScheduled || metrics.extentAfter > 400 ||
         task.historyBefore == null || task.loadingEarlier || task.loadError != null || widget.onLoadEarlier == null) {
       return;
     }
@@ -286,7 +281,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _pagingScheduled = false;
       if (mounted && (fill || !_following) && _scroll.hasClients) {
-        _pagingPosition = (pixels: _scroll.position.pixels, extent: _scroll.position.maxScrollExtent, rows: _visibleRows, fill: fill);
+        _pagingPosition = (extent: _scroll.position.maxScrollExtent, rows: _visibleRows);
         widget.onLoadEarlier?.call();
       }
     });
@@ -312,7 +307,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       final next = context.findRenderObject();
       if (next is! RenderBox || !next.attached) return;
       final delta = next.localToGlobal(Offset.zero).dy - top;
-      if (delta.abs() > .5) _scroll.jumpTo((_scroll.offset + delta)
+      if (delta.abs() > .5) _scroll.jumpTo((_scroll.offset - delta)
         .clamp(_scroll.position.minScrollExtent, _scroll.position.maxScrollExtent));
     });
   }
@@ -372,7 +367,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     });
     final historyOffset = task.historyBefore != null ? 1 : 0;
     final itemCount = count + historyOffset;
-    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: i + historyOffset};
+    final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: count - 1 - i};
     final started = task.runStartedAt;
     final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
     return LayoutBuilder(builder: (context, constraints) {
@@ -391,14 +386,15 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
               child: Scrollbar(
                 controller: _scroll,
                 child: ListView.builder(
-                  key: PageStorageKey('transcript:${task.id}'),
+                  key: PageStorageKey((task.id, AxisDirection.up)),
                   controller: _scroll,
-                  cacheExtent: 320,
+                  reverse: true,
+                  scrollCacheExtent: const ScrollCacheExtent.pixels(0),
                   padding: EdgeInsets.fromLTRB(sidePadding, 24, sidePadding, 24),
                   itemCount: itemCount,
                   findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
                   itemBuilder: (context, index) {
-                    if (historyOffset == 1 && index == 0) return Column(
+                    if (historyOffset == 1 && index == count) return Column(
                       key: const ValueKey('transcript-history'),
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -409,8 +405,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         else const SizedBox(height: 1),
                       ],
                     );
-                    index -= historyOffset;
-                    final row = rows[index];
+                    final row = rows[count - 1 - index];
                     if (row.kind == 'working') {
                       if (compacting) return const SizedBox(key: ValueKey('working'));
                       return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,

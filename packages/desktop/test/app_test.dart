@@ -15,6 +15,46 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('holding Option and an arrow switches on each repeat and stops at the list boundary', (tester) async {
+    late DesktopSession session;
+    late Directory directory;
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('thread-key-repeat-');
+      session = DesktopSession(_Client(), await openDesktopDatabase(directory.path));
+    });
+    addTearDown(() => tester.runAsync(() async { await session.close(); await directory.delete(recursive: true); }));
+    final tasks = [for (var index = 0; index < 4; index++)
+      DesktopTask('thread-$index', 'Thread $index')..loaded = true..lastActivity = 4 - index];
+    final project = Project('project', directory.path, directory.path, tasks);
+    session.projects.add(project);
+    session.project = project;
+    session.task = tasks.first;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    await tester.runAsync(() async {
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
+    expect(session.task, tasks[1]);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    expect(session.task, tasks[2]);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    expect(session.task, tasks[3]);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    expect(session.task, tasks[3]);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowUp);
+    expect(session.task, tasks[1]);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await callIsolate(session.database.port, 'load', {});
+    });
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('new-session project menu preserves the draft while adding and switching projects', (tester) async {
     late Directory root, firstFolder, secondFolder;
     late DesktopSession session;

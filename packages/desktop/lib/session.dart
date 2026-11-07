@@ -199,6 +199,7 @@ class DesktopSession extends ChangeNotifier {
       project.checkoutKey, project.path, local: client.sharedFilesystem));
   final panelLayouts = <String, SessionPanelState>{};
   late final panelSelection = ChangeNotifier();
+  late final sidebarChanges = ChangeNotifier();
   final _changedPanelLayouts = <String>{};
   bool _panelsLoaded = false;
   final drafts = <String, String>{};
@@ -729,6 +730,7 @@ class DesktopSession extends ChangeNotifier {
 
   void showHome() {
     _navigationRevision++;
+    if (task case final previous?) _cancelHistoryRead(previous);
     viewingConversation = false;
     _saveNavigation('active_tab', 'home');
     notifyListeners();
@@ -774,7 +776,7 @@ class DesktopSession extends ChangeNotifier {
 
   /// Releases a transcript when archiving or leaving an archived preview.
   void releaseHistory(DesktopTask target) {
-    target._historyRead?.cancel();
+    _cancelHistoryRead(target);
     target.lastSentAt ??= taskLastSentAt(target);
     target.messages.clear();
     target._fileChanges.clear();
@@ -1030,6 +1032,7 @@ class DesktopSession extends ChangeNotifier {
   void openDraft(SessionDraft draft) {
     if (!sessionDrafts.contains(draft)) return;
     _navigationRevision++;
+    if (task case final previous?) _cancelHistoryRead(previous);
     viewingConversation = true;
     _activeDraftId = draft.id;
     project = projects.where((project) => project.checkoutKey == draft.checkoutKey && !project.removing).firstOrNull;
@@ -1287,7 +1290,10 @@ class DesktopSession extends ChangeNotifier {
     ]);
     if (target.branch != identity[1]) {
       target.branch = identity[1];
-      if (!_lifetime.isCancelled) notifyListeners();
+      if (!_lifetime.isCancelled) {
+        if (project == target || !viewingConversation) { notifyListeners(); }
+        else { sidebarChanges.notifyListeners(); }
+      }
     }
     final id = identity[0]!;
     if (id == target.id) return;
@@ -1386,6 +1392,8 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> select(Project nextProject, [DesktopTask? nextTask]) async {
     if (nextProject.removing || !projects.contains(nextProject)) return;
+    final changedProject = project != nextProject;
+    if (task case final previous? when previous != nextTask) _cancelHistoryRead(previous);
     _navigationRevision++;
     viewingConversation = true;
     project = nextProject;
@@ -1409,9 +1417,34 @@ class DesktopSession extends ChangeNotifier {
       if (nextTask != null && !nextTask.loading &&
           (!nextTask.loaded || nextTask.messages.isNotEmpty && nextTask.provider == null))
         loadHistory(nextTask),
-      _refreshIdentity(nextProject),
+      if (changedProject) _refreshIdentity(nextProject),
     ]);
   }
+
+  void _cancelHistoryRead(DesktopTask target) {
+    final read = target._historyRead;
+    if (read == null) return;
+    target._historyRead = null;
+    target.loading = false;
+    target.loadingEarlier = false;
+    read.cancel();
+  }
+
+  void _taskChanged(DesktopTask target, {bool sidebar = true}) {
+    if (_lifetime.isCancelled) return;
+    if (task == target || !viewingConversation || target.sideParentID == task?.id) {
+      notifyListeners();
+    } else if (sidebar) {
+      sidebarChanges.notifyListeners();
+    }
+  }
+
+  Object _sidebarState(DesktopTask target) => (
+    target.title, target.running, target.archived, target.archiving, target.loadError,
+    target.questions.isNotEmpty, target.turns.values.lastOrNull?['status'], target.lastActivity,
+    target.provider, target.model, target.runStartedAt,
+    target.projectionState['summary']?['time']?['busy'], target.projectionState['summary']?['time']?['idle'],
+  );
 
   Future<void> loadHistory(DesktopTask target, {CancellationToken? cancellation}) async {
     if (target.loading || target.loadingEarlier) return;
@@ -1420,16 +1453,15 @@ class DesktopSession extends ChangeNotifier {
     read.throwIfCancelled();
     target.loading = true;
     target.loadError = null;
-    notifyListeners();
+    _taskChanged(target);
     try {
       target.liveEvents.clear();
       // Opening history must not attach an execution subscriber or retain a
       // server runtime. Start/resume operations own those subscriptions.
       final page = await client.sessionRead('thread/read',
-        {'threadId': target.id, 'includeTurns': false},
+        {'threadId': target.id, 'includeTurns': false, 'includeRecentHistory': true},
         cancellation: read);
-      final history = await client.sessionRead('thread/items/list', {'threadId': target.id, 'limit': 100, 'sortDirection': 'desc'}, cancellation: read);
-      final recentTurns = await client.sessionRead('thread/turns/list', {'threadId': target.id, 'limit': 5, 'itemsView': 'summary'}, cancellation: read);
+      final history = jsonObject(page['history']), recentTurns = jsonObject(page['recentTurns']);
       read.throwIfCancelled();
       target.running = page['running'] == true;
       target.retryStatus = target.running && page['status']?['type'] == 'retry'
@@ -1508,10 +1540,12 @@ class DesktopSession extends ChangeNotifier {
     } catch (failure) {
       target.loadError = failure.toString();
     } finally {
-      target.loading = false;
-      if (identical(target._historyRead, work)) target._historyRead = null;
+      if (identical(target._historyRead, work)) {
+        target.loading = false;
+        target._historyRead = null;
+        _taskChanged(target);
+      }
       work.cancel();
-      if (!_lifetime.isCancelled) notifyListeners();
     }
   }
 
@@ -1539,7 +1573,7 @@ class DesktopSession extends ChangeNotifier {
     read.throwIfCancelled();
     target.loadingEarlier = true;
     target.loadError = null;
-    notifyListeners();
+    _taskChanged(target);
     try {
       final page = await client.sessionRead('thread/items/list', {
         'threadId': target.id, 'cursor': before, 'limit': 100, 'sortDirection': 'desc',
@@ -1551,10 +1585,12 @@ class DesktopSession extends ChangeNotifier {
     } catch (failure) {
       target.loadError = failure.toString();
     } finally {
-      target.loadingEarlier = false;
-      if (identical(target._historyRead, work)) target._historyRead = null;
+      if (identical(target._historyRead, work)) {
+        target.loadingEarlier = false;
+        target._historyRead = null;
+        _taskChanged(target);
+      }
       work.cancel();
-      if (!_lifetime.isCancelled) notifyListeners();
     }
   }
 
@@ -2029,6 +2065,7 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     final wasRunning = target.running;
+    final sidebarState = _sidebarState(target);
     final appendingText = event['method'] == 'item/agentMessage/delta' && target.streamingText.isNotEmpty;
     _applyEvent(target, event);
     _observeActivity(target, [event]);
@@ -2056,7 +2093,7 @@ class DesktopSession extends ChangeNotifier {
         if (failure is! CancelledException) showError(failure);
       }));
     }
-    if (!appendingText) notifyListeners();
+    if (!appendingText) _taskChanged(target, sidebar: sidebarState != _sidebarState(target));
   }
 
   void _observeActivity(DesktopTask target, Iterable<Json> events) {
@@ -2204,6 +2241,7 @@ class DesktopSession extends ChangeNotifier {
     }
     attachmentDrafts.clear();
     panelSelection.dispose();
+    sidebarChanges.dispose();
     dispose();
   }
 }

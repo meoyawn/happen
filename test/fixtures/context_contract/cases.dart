@@ -207,6 +207,42 @@ const contextCases = <Map<String, dynamic>>[
     'contains': <Object?>[], 'absent': ['EVAL_SUPPRESSED_RULE'],
   },
   {
+    'id': 'agent-reading', 'prompt': 'Read AGENT.md in full, then reply READY.',
+    'files': {'AGENT.md': 'EVAL_AGENT_READ_RECEIPT: follow the explicitly read guidance.\n'},
+    'contains': <Object?>[], 'absent': ['EVAL_AGENT_READ_RECEIPT'],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_agent',
+        'input': 'text(await tools.exec_command({cmd:"cat AGENT.md"}));'}],
+      [_ready],
+    ],
+    'result': 'EVAL_AGENT_READ_RECEIPT',
+  },
+  {
+    'id': 'agents-reading', 'prompt': 'Read AGENTS.md in full, then reply READY.',
+    'files': {'AGENTS.md': 'EVAL_AGENTS_READ_RECEIPT: preserve the repository guidance.\n'},
+    'contains': ['EVAL_AGENTS_READ_RECEIPT'], 'absent': <Object?>[],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_agents',
+        'input': 'text(await tools.exec_command({cmd:"cat AGENTS.md"}));'}],
+      [_ready],
+    ],
+    'result': 'EVAL_AGENTS_READ_RECEIPT',
+  },
+  {
+    'id': 'nested-agents-reading', 'prompt': 'Read nested/AGENTS.md in full, then reply READY.',
+    'files': {
+      'AGENTS.md': 'EVAL_PARENT_RULE: preserve the parent guidance.\n',
+      'nested/AGENTS.md': 'EVAL_NESTED_AGENTS_READ_RECEIPT: follow this guidance inside nested.\n',
+    },
+    'contains': ['EVAL_PARENT_RULE'], 'absent': ['EVAL_NESTED_AGENTS_READ_RECEIPT'],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_nested_agents',
+        'input': 'text(await tools.exec_command({cmd:"cat nested/AGENTS.md"}));'}],
+      [_ready],
+    ],
+    'result': 'EVAL_NESTED_AGENTS_READ_RECEIPT',
+  },
+  {
     'id': 'global-skills', 'prompt': 'Reply READY without selecting a skill.', 'files': <String, Object?>{},
     'global_skills': {'fixture-global/SKILL.md': _globalSkill},
     'catalog_skills': ['fixture-global'],

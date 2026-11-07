@@ -369,14 +369,20 @@ class _DesktopViewState extends State<DesktopView> {
     final keyboard = HardwareKeyboard.instance;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
     if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed) && !keyboard.isAltPressed) return KeyEventResult.ignored;
+    if (const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true).accepts(event, keyboard)) {
+      _selectAdjacentTask(-1);
+      return KeyEventResult.handled;
+    }
+    if (const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true).accepts(event, keyboard)) {
+      _selectAdjacentTask(1);
+      return KeyEventResult.handled;
+    }
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
     final panels = task == null ? null : session.panelLayouts[task.id];
     final terminalFocused = terminalHasFocus;
     final bindings = <ShortcutActivator, VoidCallback>{
-      const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true): () => _selectAdjacentTask(-1),
-      const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true): () => _selectAdjacentTask(1),
       shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
@@ -434,13 +440,16 @@ class _DesktopViewState extends State<DesktopView> {
     final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
     final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
-    _selectThreadAt(next);
+    if (next >= 0 && next < ids.length) _selectThread(ids[next]);
   }
 
   void _selectThreadAt(int index) {
     final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
     if (index < 0 || index >= ids.length) return;
-    final id = ids[index];
+    _selectThread(ids[index]);
+  }
+
+  void _selectThread(String id) {
     final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
     if (draft != null) { _activateDraft(draft); }
     else {
@@ -570,7 +579,8 @@ class _DesktopViewState extends State<DesktopView> {
     final savedWidth = session.sidebarWidth;
     final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth);
     final pane = _conversationPane(context, tasks);
-    return ColoredBox(color: desktopSidebar, child: DesktopSidebarFrame(
+    return ListenableBuilder(listenable: session.sidebarChanges, child: pane,
+      builder: (context, pane) => ColoredBox(color: desktopSidebar, child: DesktopSidebarFrame(
       open: session.sidebarOpen, width: sidebarWidth,
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
@@ -594,8 +604,8 @@ class _DesktopViewState extends State<DesktopView> {
             onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))))
         ,
       resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
-      child: pane,
-    ));
+      child: pane!,
+    )));
   }
 
   Widget _sidebarResizer(double sidebarWidth, double minSidebarWidth, double maxSidebarWidth) =>

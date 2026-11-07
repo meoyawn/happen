@@ -201,14 +201,21 @@ void main() {
 
   test('only losing the final subscriber or disconnecting starts idle unloading; read does not subscribe', () async {
     await launch(delay: 0);
-    final id = await start(), observer = await AgentClient.connect(server.uri);
+    final id = await start();
+    await turn(id, 'Saved message');
+    final observer = await AgentClient.connect(server.uri);
     try {
       await observer.request('thread/resume', {'threadId': id});
       await request('thread/unsubscribe', {'threadId': id});
       await noClose(id, 250);
       final closed = notification('thread/closed', id);
       await observer.close(); await closed;
-      expect((await request('thread/read', {'threadId': id}))['thread']['status'], {'type': 'notLoaded'});
+      final page = await request('thread/read', {'threadId': id, 'includeRecentHistory': true});
+      expect(page['thread']['status'], {'type': 'notLoaded'});
+      expect((page['history']['data'] as List).map((item) => item['item']['type']), ['agentMessage', 'userMessage']);
+      final items = page['recentTurns']['data'].single['items'] as List;
+      expect(items.singleWhere((item) => item['type'] == 'userMessage')['content'][0]['text'], 'Saved message');
+      expect(items.singleWhere((item) => item['type'] == 'agentMessage')['text'], 'Done');
       expect((await request('thread/loaded/list'))['data'], isEmpty);
     } finally { await observer.close(); }
   });

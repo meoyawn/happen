@@ -7,7 +7,7 @@ class _RpcError implements Exception {
 }
 
 extension _ThreadProtocol on AgentServer {
-  Future<Json> _threadSnapshot(String id, CancellationToken cancellation, {bool includeTurns = true}) async {
+  Future<Json> _threadSnapshot(String id, CancellationToken cancellation, {bool includeTurns = true, bool includeRecentHistory = false}) async {
     var task = _tasks[id] ?? _Task(id, null);
     while (task.maintenance || task.finishing || task.busy && task.writer == null) {
       await (task.maintenance ? task.maintenanceDone!.future : task.finishing ? task.running! : task.ready!.future).asCancellable(cancellation);
@@ -18,11 +18,12 @@ extension _ThreadProtocol on AgentServer {
     final through = task.notificationSeq, liveTurn = task.liveTurn;
     final liveItems = task.liveItems.values.where((item) => item['live'] == true).toList();
     final running = task.busy, questions = _questions.list(id), status = task.retryStatus;
-    var page = await _readSession(task, 'thread/read', {'includeTurns': includeTurns}, cancellation);
+    final read = {'includeTurns': includeTurns, if (includeRecentHistory) 'includeRecentHistory': true};
+    var page = await _readSession(task, 'thread/read', read, cancellation);
     if (page['needsProjection'] is String) {
       final source = _tasks[page['needsProjection']] ?? _Task(page['needsProjection'] as String, null);
       await _withWriter(source, (writer) => callIsolate(writer.port, 'session.prepare', {}, cancellation: cancellation));
-      page = await _readSession(task, 'thread/read', {'includeTurns': includeTurns}, cancellation);
+      page = await _readSession(task, 'thread/read', read, cancellation);
     }
     final thread = jsonObject(page['thread']);
     thread['status'] = _threadStatus(task);
@@ -111,7 +112,9 @@ extension _ThreadProtocol on AgentServer {
       }
       if (method == 'thread/read' || method == 'thread/resume') {
         if (method == 'thread/resume') await _loadThread(id, cancellation, params: params);
-        final snapshot = await _threadSnapshot(id, cancellation, includeTurns: method == 'thread/resume' ? params['excludeTurns'] != true : params['includeTurns'] == true);
+        final snapshot = await _threadSnapshot(id, cancellation,
+          includeTurns: method == 'thread/resume' ? params['excludeTurns'] != true : params['includeTurns'] == true,
+          includeRecentHistory: params['includeRecentHistory'] == true);
         if (method == 'thread/resume') {
           final task = _tasks[id] ?? _Task(id, jsonObject(await _goalStore(id, 'metadata', {'key': 'config'}, cancellation)));
           if (_goalsEnabled(task.config!)) {
@@ -130,7 +133,6 @@ extension _ThreadProtocol on AgentServer {
         return await _threadGoalRequest(method, id, params, client, requestID, cancellation);
       }
       if (method == 'thread/items/list' || method == 'thread/turns/list') {
-        await _threadSnapshot(id, cancellation, includeTurns: false);
         return await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);
       }
       if (method == 'thread/image/read') {

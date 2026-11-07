@@ -155,7 +155,7 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
   final archived = storedMetadata(db, 'archived_at') != null;
   return withHistoryLineage(directory, id, db, (segments) {
     if (method == 'thread/image/read') return _readInspectedImage(segments, requiredString(params, 'itemId'));
-    for (final segment in params['includeTurns'] != true && method == 'thread/read' ? <HistorySegment>[] : segments) {
+    for (final segment in params['includeTurns'] != true && params['includeRecentHistory'] != true && method == 'thread/read' ? <HistorySegment>[] : segments) {
       final projected = segment.db.select('SELECT next_rollout_ordinal FROM thread_history_projection_state').firstOrNull?['next_rollout_ordinal'] as int? ?? 0;
       if (projected < segment.end) return {'needsProjection': segment.id};
     }
@@ -211,7 +211,14 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
       'turns': params['includeTurns'] == true ? turns.map(publicTurn).toList() : <Json>[]};
     return {'thread': thread, 'configuration': config, 'reasoning': thread['reasoningEffort'],
       'pending': pending, 'archived': archived, 'tokens': state['tokens'],
-      'through': state['sourceSeq'] ?? 0};
+      'through': state['sourceSeq'] ?? 0,
+      if (params['includeRecentHistory'] == true) ...{
+        'history': _pagedHistory(segments, id, 'thread/items/list',
+          {'limit': 100, 'sortDirection': 'desc', 'byteLimit': 256 * 1024}),
+        'recentTurns': _pagedHistory(segments, id, 'thread/turns/list',
+          {'limit': 5, 'itemsView': 'summary'}),
+      },
+    };
   }, localOnly: config['side_parent_id'] != null);
 }
 
@@ -251,6 +258,7 @@ Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json
   final direction = params['sortDirection'] as String? ?? (itemPage ? 'asc' : 'desc');
   if (!{'asc', 'desc'}.contains(direction)) throw const FormatException('Invalid history sort direction');
   final limit = (params['limit'] as int? ?? 100).clamp(1, 500);
+  final byteLimit = (params['byteLimit'] as int? ?? maxClientFrameBytes ~/ 2).clamp(4096, maxClientFrameBytes ~/ 2);
   int? anchor;
   final cursor = params['cursor'];
   if (cursor is String) {
@@ -293,12 +301,12 @@ Json _pagedHistory(List<HistorySegment> segments, String id, String method, Json
       if (size > maxClientFrameBytes - 4096) throw const FormatException('History item exceeds frame budget');
       entries.add((ordinal: row['rollout_ordinal'] as int, value: value));
       bytes += size;
-      if (bytes > maxClientFrameBytes ~/ 2 || entries.length > limit) break;
+      if (bytes > byteLimit || entries.length > limit) break;
     }
-    if (bytes > maxClientFrameBytes ~/ 2 || entries.length > limit) break;
+    if (bytes > byteLimit || entries.length > limit) break;
   }
   final page = entries.take(limit).toList();
-  if (bytes > maxClientFrameBytes ~/ 2 && page.length > 1) page.removeLast();
+  if (bytes > byteLimit && page.length > 1) page.removeLast();
   final turns = <String, Json>{};
   if (itemPage) {
     final ids = page.map((entry) => entry.value['turnId'] as String).toSet();

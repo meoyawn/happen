@@ -145,7 +145,9 @@ void main() {
     expect(find.text('Worked'), findsOneWidget);
     expect(find.text('Read 1 file'), findsNothing);
     expect(find.byType(ConversationGeneratedImages), findsNWidgets(2));
-    final gallery = find.byType(ConversationGeneratedImages).first;
+    final gallery = find.ancestor(
+      of: find.byWidgetPredicate((widget) => widget is Semantics && widget.properties.label == 'Show generated image 2'),
+      matching: find.byType(ConversationGeneratedImages));
     final mainImage = find.descendant(of: gallery, matching: find.byWidgetPredicate((widget) =>
       widget is ConversationImage && widget.label == 'Generated image'));
     await tester.runAsync(() async {

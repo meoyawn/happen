@@ -90,6 +90,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   late final _threadList = GlobalKey();
   late final _selectedRow = GlobalKey();
   late final _scroll = ScrollController();
+  late final _rows = <String, ({Object state, Widget row})>{};
   (String?, String?)? _selection;
   GlobalKey? _selectionList;
   int? _selectionIndex;
@@ -164,7 +165,13 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   @override
   void initState() {
     super.initState();
-    _clock = Timer.periodic(const Duration(minutes: 1), (_) => setState(() {}));
+    _clock = Timer.periodic(const Duration(minutes: 1), (_) => setState(_rows.clear));
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _rows.clear();
   }
 
   @override
@@ -287,8 +294,23 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         ])));
   }
 
-  Widget _row(Project project, DesktopTask task, {int? reorderIndex}) => _ThreadRow(
-    key: ValueKey('thread-row:${task.id}'), session: session, task: task, onArchive: widget.onArchive,
+  Widget _row(Project project, DesktopTask task, {int? reorderIndex}) {
+    final state = (
+      session, project, task, widget.home, session.task == task,
+      project.id, project.name, project.branch, project.avatarColor, project.avatarImage, session.projectAvatarStyle,
+      task.title, task.archived, task.archiving, task.running, task.loadError, task.provider, task.model,
+      task.runStartedAt, task.lastActivity, task.questions.isNotEmpty,
+      session.sideChats.values.any((side) => side.sideParentID == task.id && side.questions.isNotEmpty),
+      task.turns.values.lastOrNull?['status'], task.projectionState['summary']?['time']?['busy'],
+      task.projectionState['summary']?['time']?['idle'], session.viewedTasks[task.id],
+      session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
+      _canStartReorder, reorderIndex, widget.onProjectSettings != null,
+    );
+    final cached = _rows[task.id];
+    if (cached?.state == state) return cached!.row;
+    final row = _ThreadRow(
+    key: ValueKey('thread-row:${task.id}'), session: session, task: task,
+    onArchive: (task, archived) => widget.onArchive(task, archived),
     onProjectSettings: widget.onProjectSettings == null ? null : () => widget.onProjectSettings!(project),
     builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) {
       final selected = !widget.home && session.task == task;
@@ -340,6 +362,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       return reorderIndex == null ? anchored : ReorderableDragStartListener(
         index: reorderIndex, enabled: reorderable, child: anchored);
     }));
+    _rows[task.id] = (state: state, row: row);
+    return row;
+  }
 
   Widget _draft(SessionDraft draft) {
     final project = session.projects.where((project) => project.checkoutKey == draft.checkoutKey).firstOrNull;
@@ -375,8 +400,13 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(listenable: session.sidebarChanges,
+    builder: (context, _) => _buildSidebar(context));
+
+  Widget _buildSidebar(BuildContext context) {
     final tasks = _sidebarTasks(session, widget.projectKey);
+    final ids = tasks.map((entry) => entry.$2.id).toSet();
+    _rows.removeWhere((id, _) => !ids.contains(id));
     final pins = session.pinnedTaskIds.toSet();
     final pinned = tasks.where((entry) => pins.contains(entry.$2.id)).toList();
     final working = tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id)).toList();

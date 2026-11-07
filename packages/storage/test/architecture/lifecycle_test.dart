@@ -30,6 +30,29 @@ void main() {
     readSession(root.path, id, method, {'includeTurns': true, ...params}, cancellation: cancellation);
   List<String> turnIds(Json page) => (jsonObject(page['thread'])['turns'] as List).map(jsonObject).map((turn) => turn['id'] as String).toList();
 
+  test('initial history snapshot bounds its item page and keeps older pagination complete', () async {
+    for (var index = 0; index < 6; index++) {
+      turn(parent, 'turn-$index', 'User message $index ${'x' * 90000}');
+    }
+    final page = await read('parent', 'thread/read', {'includeTurns': false, 'includeRecentHistory': true});
+    expect(page['thread']['turns'], isEmpty);
+    expect((page['recentTurns']['data'] as List).map((turn) => turn['id']),
+      ['turn-5', 'turn-4', 'turn-3', 'turn-2', 'turn-1']);
+    final initial = jsonObject(page['history']);
+    expect((initial['data'] as List).map((item) => item['turnId']), ['turn-5', 'turn-4']);
+    expect(utf8.encode(jsonEncode(initial)).length, lessThan(256 * 1024));
+    turn(parent, 'later', 'A newer commit must not move an existing cursor');
+    final seen = [for (final item in initial['data'] as List) item['turnId']];
+    var cursor = initial['nextCursor'];
+    while (cursor != null) {
+      final older = await read('parent', 'thread/items/list',
+        {'cursor': cursor, 'sortDirection': 'desc', 'byteLimit': 256 * 1024});
+      seen.addAll((older['data'] as List).map((item) => item['turnId']));
+      cursor = older['nextCursor'];
+    }
+    expect(seen, ['turn-5', 'turn-4', 'turn-3', 'turn-2', 'turn-1', 'turn-0']);
+  });
+
   test('reference-backed paginated fork shares the immutable prefix without copying history', () async {
     turn(parent, 'one', 'Saved user message');
     final original = parent.db.select('SELECT line FROM rollout_lines').map((r) => r['line']).toList();

@@ -225,13 +225,11 @@ class _Client implements AgentClient {
     if (method == 'thread/read') return {
       'notificationThrough': 1, 'archived': !restored.contains(params['threadId']),
       'thread': {'id': params['threadId'], 'preview': 'Archived-only conversation ${(params['threadId'] as String).split('-').last}'},
-    };
-    if (method == 'thread/turns/list') return {'data': <Object?>[], 'nextCursor': null};
-    if (method == 'thread/items/list') return {
-      'data': [{'turnId': 'turn', 'order': 1, 'startedAtMs': 1,
+      'recentTurns': {'data': <Object?>[], 'nextCursor': null},
+      'history': {'data': [{'turnId': 'turn', 'order': 1, 'startedAtMs': 1,
         'item': {'id': 'message', 'type': 'userMessage',
           'content': [{'type': 'text', 'text': 'Read-only archived preview'}]},
-      }], 'nextCursor': null,
+      }], 'nextCursor': null},
     };
     throw StateError('Unexpected read: $method');
   }

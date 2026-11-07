@@ -31,6 +31,10 @@ class ProjectDetailsWorkspace extends StatefulWidget {
 
 class _ProjectDetailsWorkspaceState extends State<ProjectDetailsWorkspace> {
   bool? _opened;
+  Object? _cardState;
+  Widget? _card;
+  @override
+  void reassemble() { super.reassemble(); _cardState = null; }
   @override
   Widget build(BuildContext context) => LayoutBuilder(builder: (context, bounds) {
     final project = widget.session.project;
@@ -38,8 +42,15 @@ class _ProjectDetailsWorkspaceState extends State<ProjectDetailsWorkspace> {
     final inline = bounds.maxWidth >= 920;
     final opened = available && (_opened ?? inline);
     void toggle() => setState(() => _opened = !opened);
-    final card = project == null ? const SizedBox.shrink() : ProjectDetailsCard(
-      key: ValueKey(project.checkoutKey), session: widget.session, project: project);
+    final cardState = (widget.session, project, project?.available, project?.removing,
+      widget.session.task?.archived, widget.session.task?.archiving,
+      widget.session.providerId, widget.session.modelId, project?.tasks.any((task) => task.running));
+    if (_cardState != cardState) {
+      _cardState = cardState;
+      _card = project == null ? const SizedBox.shrink() : ProjectDetailsCard(
+        key: ValueKey(project.checkoutKey), session: widget.session, project: project);
+    }
+    final card = _card!;
     return Column(children: [
       widget.header(opened, toggle),
       Expanded(child: inline ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -149,7 +160,7 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(listenable: Listenable.merge([git, actions]), builder: (context, _) {
+  Widget build(BuildContext context) => ListenableBuilder(listenable: Listenable.merge([git, actions, widget.session.sidebarChanges]), builder: (context, _) {
     final repo = git.state.repository;
     final settingsReady = actions.state is ProjectActionsReady || actions.state is ProjectActionsFailed;
     final local = actions.local && widget.project.available;
