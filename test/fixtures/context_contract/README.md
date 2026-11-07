@@ -8,7 +8,7 @@ This is a source-level integration contract, not a model-quality eval or a CLI
 startup test. Happen runs its production agent and provider in-process through
 `AgentServer.startLocal`. The installed Codex executable is the independent
 reference. Neither a compiled Happen CLI nor a CLI build dependency is needed.
-The models and scenarios are a named, parameterized Dart test matrix; the Moon
+The scenarios and tool-search modes are a named, parameterized Dart test matrix; the Moon
 command takes no scenario/model overrides. `test-unit` excludes the `e2e` tag
 and also runs from source. The separate `build-cli` task remains cached for release
 builds and is not a dependency of this comparison.
@@ -30,16 +30,20 @@ workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The matrix uses every supported GPT model with its catalog reasoning default,
-plus Sol with an explicit `xhigh` selection. Every
-selection runs with tool search enabled. `packages/openai` always includes it
-when deferred tools are available; it is not a config setting. The reference
-explicitly enables `code_mode_tool_search` to match. The unchanged
+The executable matrix uses only GPT-6.1 Sol with its catalog reasoning default.
+It runs ordinary cases with `code_mode_tool_search` explicitly off and on in both
+harnesses. Cases that invoke ranked search require the enabled variant. Deferred
+tools remain callable through the `ALL_TOOLS` metadata catalog in both modes;
+its discovery replay checks the actual presence of ranked search in the catalog.
+Happen also requires the model's `supports_search_tool` capability. The unchanged
 `packages/openai/catalog/models.json` selects no reasoning
 summary, low verbosity, Code Mode only, and Responses Lite. The evidence includes
-the catalog's original bytes and SHA-256. The default-model branch omits model
-and effort overrides in both harnesses; other branches select only the named
-model or effort.
+the catalog's original bytes and SHA-256. Both harnesses explicitly select Sol
+and leave reasoning at its catalog default.
+The first replay selects tool search through Happen's global config file. The
+second reloads the opposite global value and selects the intended value through
+explicit thread settings, checking their precedence against the same Codex
+request. Test names, evidence directories, and report results identify the flag.
 The bundled and embedded catalogs are checked against the independent local
 Codex checkout for all supported models. The reference receives Codex's source
 catalog, not Happen's copy. Set `CODEX_SOURCE_DIR` when that checkout is not at
@@ -47,13 +51,13 @@ catalog, not Happen's copy. Set `CODEX_SOURCE_DIR` when that checkout is not at
 A separate discovery contract omits the catalog override and makes both real
 model managers fetch authenticated metadata. It compares the CLI's typed catalog,
 Happen's complete model snapshot, consumed defaults, and base instruction bytes
-for all five models. The CLI fills optional defaults, drops unknown server fields,
+for Sol. The CLI fills optional defaults, drops unknown server fields,
 and chooses unified_exec for Code Mode; these representation differences are
 kept outside the full context comparison. Cache expiry, offline reuse, account
 isolation, and frozen thread metadata are covered by `test/model_catalog_test.dart`.
-Happen's YAML contains only MCP servers. Fixture model, effort, question-mode and
-compaction selections use the public thread API; ordinary cases omit provider
-settings so their catalog defaults remain observable.
+Happen's YAML selects ranked discovery and supplies any fixture MCP servers.
+Model, question-mode and compaction selections use the public thread API;
+ordinary cases retain the remaining provider defaults.
 Each pair uses separate empty data/credential homes, real instruction and skill
 files, and explicitly isolated tool settings. Requests carry tool declarations
 and base instructions in a durable history prefix, omit top-level `tools` and
@@ -107,8 +111,10 @@ commentary with `end_turn: false`. Neither harness may stop there: both must mak
 the next inference, actually read the fixture file through the shell, and return
 its receipt in the final request. The fixture advances past commentary only when
 the next received request retains the commentary item IDs it actually issued.
-The web case replays search, batched open, targeted search, repository open, and
-find actions, then cold-resumes for a second research turn. It compares complete
+The web case configures the real Dart MCP server and a metadata-only fixture
+skill alongside directly available web search, with ranked discovery both off
+and on. It replays search, batched open, targeted search, repository
+open, and find actions, then cold-resumes for a second research turn. It compares complete
 `/alpha/search` bodies, native start/completion lifecycles, opaque results including
 future fields, and persisted items against Codex's rollout. Only scoped IDs and
 event timestamps are normalized. The second turn also checks retained assistant
@@ -147,7 +153,10 @@ The goal case also cold-resumes the completed goal: Codex launches a new CLI
 process, and Happen unsubscribes and waits for idle thread unloading before the
 next prompt. Goal state uses dedicated tables in the same session SQLite;
 host-owned goal accounting survives inference turns and restores on cold resume.
-The package-reading MCP case installs the real server through `dart mcp-server`
+The package-reading catalog case filters `ALL_TOOLS` for exact callable
+names and full declarations, checks ranked search against the flag, and executes
+the discovered tools without a search hop. The opt-in ranked-discovery case
+uses the same real server and package receipt. Both install it through `dart mcp-server`
 and starts its installed app-bundle executable directly in each harness. This
 keeps command-dispatcher startup outside Codex's default one-second optional
 server grace. Both processes use the same Dart SDK, register the fixture package,
@@ -202,7 +211,11 @@ protocol fields without credentials or identity headers. The package-reading
 search fixture includes the exact `tool_search.tool_search_tool` response from
 `project-picker-before-new-thread-context-625ed706.json` when Lite negotiation is
 missing. It reproduces the failed search instead of letting a body-only contract
-pass. The exec description normalizes only the known embedded-engine name,
+pass. Every inference independently requires the source catalog's exact base
+prompt once, inline harness context, the configured nested-discovery gate, and
+eager web availability. MCP cases require deferred namespace guidance and exclude
+eager MCP declarations. These supplement full request equality without discarding
+tool definitions or prompt differences. The exec description normalizes only the known embedded-engine name,
 Happen's two settlement-helper declarations, and its MCP-envelope guidance.
 All shared tool declarations and the rest of the description remain strict.
 Tool declarations,

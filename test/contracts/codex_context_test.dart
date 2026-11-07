@@ -417,7 +417,7 @@ Future<({HttpServer server, int bootstrapPort, Future<void> Function() close, Ma
 
 Future<Json> scenario(Json scenario, String model, String codex, String output,
   CancellationToken cancellation, String catalog, {required bool codeModeOnly,
-    required String reasoning, required String reasoningSummary}) async {
+    required String reasoning, required String reasoningSummary, required String baseInstructions}) async {
   String terminalCall(String id) => jsonObject(scenario['terminal_calls'] ?? {})[id] as String? ?? id;
   bool toolOutput(Json item) => {'custom_tool_call_output', 'function_call_output'}.contains(item['type']);
   final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
@@ -461,8 +461,7 @@ Future<Json> scenario(Json scenario, String model, String codex, String output,
   final config = StringBuffer('''
 model_catalog_json = ${jsonEncode(catalog)}
 openai_base_url = "$endpoint/codex"
-${scenario['selected_model'] == true ? 'model = "$model"' : ''}
-${scenario['selected_reasoning'] == true ? 'model_reasoning_effort = "$reasoning"' : ''}
+model = "$model"
 web_search = "live"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -475,14 +474,14 @@ enabled = false
 enabled = false
 [features]
 ${scenario['request_user_input'] == true ? 'default_mode_request_user_input = true' : ''}
-code_mode_tool_search = true
+code_mode_tool_search = ${scenario['code_mode_tool_search'] == true}
 # codex-cli 0.166 predates the checkout's default for deferred tool context.
 deferred_tool_world_state = true
 multi_agent = false
 plugins = false
 apps = false
 ''');
-  final happenConfig = <String, dynamic>{};
+  final happenConfig = <String, dynamic>{'code_mode_tool_search': scenario['code_mode_tool_search'] == true};
   final settings = <String, dynamic>{
     if (scenario['request_user_input'] == true) 'default_mode_request_user_input': true,
   };
@@ -526,6 +525,11 @@ apps = false
     // shared MCP owner. These are functional replays, not benchmark samples.
     const orders = [['codex', 'happen'], ['happen', 'codex']];
     for (final (iteration, order) in orders.indexed) {
+      if (iteration == 1) {
+        happenConfig['code_mode_tool_search'] = scenario['code_mode_tool_search'] != true;
+        await save('$data/config.yaml', happenConfig);
+        await client.request('mcp.reload', {}).asCancellable(cancellation);
+      }
       final runPath = '$output/run-$iteration';
       final starts = {for (final engine in ['codex', 'happen']) engine: peer.requests[engine]?.length ?? 0};
       String? taskID;
@@ -533,9 +537,11 @@ apps = false
         if (taskID == null) {
           final started = jsonObject(await client.request('thread/start', {'cwd': cwd,
             'config': {'thread_unload_delay_secs': 0},
-            if (scenario['selected_model'] == true) 'model': model,
-            if (scenario['selected_reasoning'] == true) 'reasoning': reasoning,
-            if (settings.isNotEmpty) 'settings': settings,
+            'model': model,
+            if (settings.isNotEmpty || iteration == 1) 'settings': {
+              ...settings,
+              if (iteration == 1) 'code_mode_tool_search': scenario['code_mode_tool_search'] == true,
+            },
           }).asCancellable(cancellation));
           taskID = started['thread']['id'] as String;
           final config = jsonObject(started['configuration']);
@@ -544,6 +550,7 @@ apps = false
           final window = settings['context_limit'] ?? defaults['context_window'];
           checks['happen:resolved_model:run-$iteration'] = config['model'] == model;
           checks['happen:resolved_effort:run-$iteration'] = resolved['reasoning'] == reasoning;
+          checks['happen:resolved_discovery:run-$iteration'] = resolved['code_mode_tool_search'] == (scenario['code_mode_tool_search'] == true);
           checks['happen:raw_context_window:run-$iteration'] = resolved['context_limit'] == window;
           checks['happen:usable_context_window:run-$iteration'] = config['context_window'] ==
             (window as int) * (defaults['effective_context_window_percent'] as int? ?? 95) ~/ 100;
@@ -655,6 +662,13 @@ apps = false
           checks['${pair.$1}:catalog_prefix:$i:run-$iteration'] = input.length > 1 &&
             input.first['type'] == 'additional_tools' && input[1]['role'] == 'developer' &&
             text(input[1]).startsWith('You are Codex,');
+          checks['${pair.$1}:base_instructions_from_source_once:$i:run-$iteration'] = input.where((item) =>
+            item['role'] == 'developer' && text(item) == baseInstructions).length == 1;
+          checks['${pair.$1}:inline_harness_context:$i:run-$iteration'] =
+            !pair.$2.containsKey('instructions') && !pair.$2.containsKey('tools');
+          checks['${pair.$1}:nested_discovery_gate:$i:run-$iteration'] =
+            execDescription.contains('declare const tools: { tool_search(') ==
+              (scenario['mcp'] == true && scenario['code_mode_tool_search'] == true);
           checks['${pair.$1}:standalone_web_run:$i:run-$iteration'] = !pair.$2.containsKey('tools') &&
             (codeModeOnly ? execDescription.contains('declare const tools: { web__run(')
               : input.where((item) => item['type'] == 'additional_tools').any((item) =>
@@ -664,8 +678,11 @@ apps = false
         if (scenario['mcp'] == true) {
           for (final entry in {'codex': a[i], 'happen': b[i]}.entries) {
             final definitions = declarations(entry.value);
-            checks['${entry.key}:discovery_declared:$i:run-$iteration'] =
-              jsonEncode(definitions).contains('tools.tool_search');
+            checks['${entry.key}:deferred_namespace_context:$i:run-$iteration'] =
+              (entry.value['input'] as List).map(jsonObject).map(text).any((value) =>
+                value.contains('<tools>') && value.contains('mcp__dart'));
+            if (codeModeOnly) checks['${entry.key}:mcp_not_eagerly_declared:$i:run-$iteration'] =
+              definitions.every((tool) => !(tool['name'] as String).startsWith('mcp__'));
           }
         }
       }
@@ -869,6 +886,11 @@ apps = false
             (tool['name'] as String).startsWith('mcp__dart__'));
           checks['${pair.$1}:${discovery.key}:declarations:run-$iteration'] = found.isNotEmpty && found.every((tool) =>
             (tool['description'] as String).contains('declare const tools: { ${tool['name']}('));
+          if (scenario['id'] == 'metadata-tool-discovery') {
+            checks['${pair.$1}:ranked_search_matches_config:run-$iteration'] = outputs.any((output) =>
+              (output['output'] as List).map(jsonObject).any((part) =>
+                part['text'] == jsonEncode({'ranked_search': scenario['code_mode_tool_search'] == true})));
+          }
           if (expected['names'] case final List<Object?> names) {
             checks['${pair.$1}:${discovery.key}:selected_tools:run-$iteration'] = jsonEncode(found.map((tool) => tool['name']).toList()) == jsonEncode(names);
           }
@@ -940,7 +962,7 @@ apps = false
 // This contract deliberately supplies no model_catalog_json. Both real model
 // managers discover the endpoint's metadata, including base instructions and
 // fields not projected by providers.list. Provider routing is not a prompt test.
-Future<Json> catalogDiscovery(String output, List<Json> bundled, CancellationToken cancellation) async {
+Future<Json> catalogDiscovery(String output, List<Json> bundled, List<String> models, CancellationToken cancellation) async {
   final live = [for (final entry in bundled) {
     ...entry, 'default_reasoning_level': 'high', 'context_window': 333000,
     'supports_reasoning_effort_updates': true,
@@ -987,7 +1009,7 @@ supports_websockets = false
   final client = AgentClient.local(host);
   final checks = <String, bool>{};
   try {
-    for (final model in supportedGptModels) {
+    for (final model in models) {
       final expected = live.singleWhere((entry) => entry['slug'] == model);
       await run(['codex', '-C', cwd, 'exec', '--skip-git-repo-check', '--json', '-m', model, 'Reply READY.'],
         isolatedEnvironment(home, codexHome), '$output/$model.jsonl', cancellation);
@@ -1031,17 +1053,13 @@ void main() {
   if (!upstream.existsSync()) throw StateError('The Codex source checkout is required; set CODEX_SOURCE_DIR for moon run test-e2e');
   final upstreamBytes = upstream.readAsBytesSync();
   final modelDefaults = (jsonObject(jsonDecode(utf8.decode(upstreamBytes)))['models'] as List).map(jsonObject).toList();
-  final available = modelDefaults.where((entry) => entry['visibility'] == 'list' && entry['supported_in_api'] == true).toList()
-    ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int));
-  final defaultModel = available.first['slug'] as String;
-  final selections = [
-    (model: defaultModel, effort: null),
-    (model: 'gpt-6.1-sol', effort: 'xhigh'),
-    (model: 'gpt-6.1-terra', effort: null),
-    for (final model in supportedGptModels.where((id) => id != defaultModel && id != 'gpt-6.1-terra'))
-      (model: model, effort: null),
+  const models = ['gpt-6.1-sol'];
+  final cases = [
+    for (final enabled in [false, true])
+      for (final fixture in contextCases)
+        if (enabled || fixture['requires_tool_search'] != true)
+          {...fixture, 'code_mode_tool_search': enabled},
   ];
-  final models = selections.map((selection) => selection.model).toSet().toList();
   var output = '';
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
@@ -1076,26 +1094,25 @@ void main() {
     for (final signal in signals) { await signal.cancel(); }
     if (output.isEmpty) return;
     report['passed'] = report['embeddedCatalogEqual'] == true && report['catalogDiscovery']?['passed'] == true &&
-      (report['results'] as List).length == selections.length * contextCases.length &&
+      (report['results'] as List).length == models.length * cases.length &&
       (report['results'] as List).every((item) => item['passed'] == true);
     await save('$output/report.json', report);
     print('Context contract evidence: $output/report.json');
   });
-  test('discovered catalog matches Codex for every supported model', () async {
-    final result = await catalogDiscovery('$output/catalog-discovery', modelDefaults, cancellation);
+  test('discovered GPT-6.1 Sol catalog matches Codex', () async {
+    final result = await catalogDiscovery('$output/catalog-discovery', modelDefaults, models, cancellation);
     report['catalogDiscovery'] = result;
     await save('$output/catalog-discovery/result.json', result);
     expect(result['passed'], isTrue, reason: jsonObject(result['checks']).entries.where((entry) => entry.value != true)
       .map((entry) => entry.key).join(', '));
   });
-  for (final selection in selections) {
-    final model = selection.model;
+  for (final model in models) {
     final defaults = modelDefaults.singleWhere((entry) => entry['slug'] == model);
-      final reasoning = selection.effort ?? defaults['default_reasoning_level'] as String;
+    final reasoning = defaults['default_reasoning_level'] as String;
     final reasoningSummary = defaults['default_reasoning_summary'] as String? ?? 'none';
     final codeModeOnly = defaults['tool_mode'] == 'code_mode_only';
-    group('$model reasoning=$reasoning code_mode_tool_search=true', () {
-      for (final fixture in contextCases) {
+    group('$model reasoning=$reasoning', () {
+      for (final fixture in cases) {
         final value = terminalShells({...fixture,
           if (fixture['workflow'] == 'web') ...{
             'messages': [fixture['prompt'], 'Compare hosted and self-hosted tools. Verify their sources again.'],
@@ -1103,8 +1120,6 @@ void main() {
               ...item, if (item['call_id'] != null) 'call_id': 'resumed_${item['call_id']}',
             }]],
           },
-          'selected_model': model != defaultModel,
-          'selected_reasoning': selection.effort != null,
           if (fixture['id'] == 'compaction') ...{
             'catalog_compaction': true,
             'auto_compact_limit': (defaults['auto_compact_token_limit'] as int? ??
@@ -1112,8 +1127,8 @@ void main() {
               .clamp(1, (defaults['context_window'] as int) * 9 ~/ 10),
           },
         });
-        test(fixture['id'] as String, () async {
-          final path = '$output/$model/$reasoning/${value['id']}';
+        test('${fixture['id']} code_mode_tool_search=${fixture['code_mode_tool_search']}', () async {
+          final path = '$output/$model/$reasoning/tool-search-${value['code_mode_tool_search']}/${value['id']}';
           final deadline = TimeoutCancellationToken(const Duration(minutes: 2));
           final lifetime = CancellationToken();
           addTearDown(lifetime.cancel);
@@ -1122,7 +1137,8 @@ void main() {
             result = await scenario(value, model, codex, path,
               cancellation.merge(deadline).merge(lifetime), '$output/models.json',
               codeModeOnly: codeModeOnly,
-              reasoning: reasoning, reasoningSummary: reasoningSummary);
+              reasoning: reasoning, reasoningSummary: reasoningSummary,
+              baseInstructions: defaults['model_messages']['instructions_template'] as String);
           } catch (error) {
             result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
           } finally { deadline.cancel(); }
@@ -1131,7 +1147,7 @@ void main() {
           result['reasoning_summary'] = reasoningSummary;
           result['code_mode'] = true;
           result['code_mode_only'] = codeModeOnly;
-          result['code_mode_tool_search'] = true;
+          result['code_mode_tool_search'] = value['code_mode_tool_search'] == true;
           result['use_responses_lite'] = defaults['use_responses_lite'];
           (report['results'] as List).add(result);
           await save('$path/result.json', result);

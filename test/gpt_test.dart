@@ -21,6 +21,18 @@ void main() {
     }
   });
 
+  test('GPT ranked code-mode discovery is opt-in and requires model support', () {
+    final client = ResponsesClient(credentials: ({bool refresh = false}) async => {});
+    addTearDown(client.close);
+    final provider = OpenAIProvider(client);
+    const model = 'gpt-6.1-sol';
+    expect(provider.resolveSettings({}, model: model)['code_mode_tool_search'], isFalse);
+    expect(provider.resolveSettings({'code_mode_tool_search': true}, model: model)['code_mode_tool_search'], isTrue);
+    expect(provider.resolveSettings({'code_mode_tool_search': true}, model: model,
+      modelInfo: {...GptModel(model).data, 'supports_search_tool': false})['code_mode_tool_search'], isFalse);
+    expect(() => provider.resolveSettings({'code_mode_tool_search': 'true'}, model: model), throwsArgumentError);
+  });
+
   test('GPT context overrides preserve the Codex compaction ceiling', () {
     final client = ResponsesClient(credentials: ({bool refresh = false}) async => {});
     addTearDown(client.close);

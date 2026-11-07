@@ -7,6 +7,7 @@ ToolInterface toolInterface(String provider, {required String model, Json settin
   'openai' || 'gpt' => OpenAIToolInterface(webSearch: settings['web_search'] != 'disabled', imageGeneration: settings['image_generation'] == true,
     sleepTool: settings['sleep_tool'] != false, goals: settings['goals'] != false,
     codeModeOnly: GptModel(model, metadata: modelInfo).data['tool_mode'] == 'code_mode_only',
+    codeModeToolSearch: settings['code_mode_tool_search'] == true,
     requestUserInput: settings['request_user_input'] != false,
     defaultModeRequestUserInput: settings['default_mode_request_user_input'] == true),
   'opencode' || 'deepseek' => const OpenCodeToolInterface(),

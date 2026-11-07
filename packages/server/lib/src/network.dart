@@ -53,6 +53,7 @@ Future<void> _networkMain(List<Object?> args) async {
   final directory = startup['directory'] as String;
   final configPath = startup['config_path'] as String;
   final global = jsonObject(startup['config']);
+  var codeModeToolSearch = global['code_mode_tool_search'] as bool?;
   final http = HttpClient()
     ..connectionTimeout = const Duration(seconds: 30);
   final auth = AuthManager(directory, http: http);
@@ -250,6 +251,7 @@ Future<void> _networkMain(List<Object?> args) async {
         lifetime.throwIfCancelled();
         appliedMcp = encoded;
         acceptedServers = servers;
+        codeModeToolSearch = updated.values['code_mode_tool_search'] as bool?;
         loadedConfigPath = updated.path;
         configError = null;
         if (changed || recovered) {
@@ -661,6 +663,7 @@ Future<void> _networkMain(List<Object?> args) async {
             modelInput ??
             (provider is OpenCodeProvider ? provider.defaultModel : gpt.defaultModel);
         final selected = {
+          if (lab == 'openai' && codeModeToolSearch != null) 'code_mode_tool_search': codeModeToolSearch,
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],
         };

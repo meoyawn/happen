@@ -1,10 +1,15 @@
 {
   "$id": "https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Happen MCP servers",
+  "title": "Happen configuration",
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "code_mode_tool_search": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable ranked discovery of deferred tools in GPT code mode. Explicit thread settings take precedence."
+    },
     "mcp_servers": {
       "type": "object",
       "maxProperties": 64,
@@ -59,7 +64,7 @@
       }
     }
   },
-  "description": "Global and project MCP server configuration. Model and host options are selected through their owning APIs.",
+  "description": "Global tool discovery and MCP server configuration. Project layers configure MCP servers; model and other host options are selected through their owning APIs.",
   "definitions": {
     "server": {
       "type": "object",

@@ -81,6 +81,7 @@ class OpenAIProvider implements ModelProvider {
       'goals',
       'request_user_input',
       'default_mode_request_user_input',
+      'code_mode_tool_search',
     };
     final unsupported = selected.keys.where((key) => !allowed.contains(key)).toList()..sort();
     if (unsupported.isNotEmpty) {
@@ -106,7 +107,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? client.endpoint.path.endsWith('/backend-api/codex/responses');
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['sleep_tool', 'goals', 'request_user_input', 'default_mode_request_user_input']) {
+    for (final key in ['sleep_tool', 'goals', 'request_user_input', 'default_mode_request_user_input', 'code_mode_tool_search']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -136,6 +137,7 @@ class OpenAIProvider implements ModelProvider {
       'goals': selected['goals'] ?? true,
       'request_user_input': selected['request_user_input'] ?? true,
       'default_mode_request_user_input': selected['default_mode_request_user_input'] ?? false,
+      'code_mode_tool_search': selected['code_mode_tool_search'] == true && info.data['supports_search_tool'] == true,
     };
   }
 

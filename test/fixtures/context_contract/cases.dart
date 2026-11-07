@@ -110,9 +110,12 @@ const contextCases = <Map<String, dynamic>>[
     'result': 'STREAMED_TOOL_RECEIPT',
   },
   {
-    'id': 'web-search', 'workflow': 'web',
+    'id': 'web-search', 'workflow': 'web', 'mcp': true,
     'prompt': 'google youtube to podcast tools',
-    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
+    'files': _dartProject,
+    'global_skills': {'fixture-global/SKILL.md': _globalSkill},
+    'catalog_skills': ['fixture-global'],
+    'contains': ['fixture-global'], 'absent': ['REAL_DART_MCP_RECEIPT', 'GLOBAL_FIXTURE_BODY_MUST_STAY_ON_DISK'],
     // Replay the search/open/search/open progression from the supplied Codex
     // rollout. The endpoint advances only after the corresponding real calls.
     'searches': [
@@ -231,7 +234,24 @@ const contextCases = <Map<String, dynamic>>[
     'result': 'EVAL_SKILL_BODY_END',
   },
   {
-    'id': 'tool-search', 'workflow': 'search', 'mcp': true,
+    'id': 'metadata-tool-discovery', 'workflow': 'search', 'mcp': true,
+    'prompt': 'Use ALL_TOOLS to find the Dart MCP package-reading and project-roots tools, register this project, and read package:context_contract/fixture.dart. Reply READY.',
+    'discovery_calls': {'metadata_dart': {'limit': 2, 'names': ['mcp__dart__read_package_uris', 'mcp__dart__roots']}},
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'metadata_dart',
+        'input': 'text({tools:ALL_TOOLS.filter(tool => /^mcp__dart__(read_package_uris|roots)\$/.test(tool.name))}); '
+          'text({ranked_search:ALL_TOOLS.some(tool => tool.name === "tool_search")});'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'metadata_register_root',
+        'input': 'text(await tools.mcp__dart__roots({command:"add",uris:["{{WORK_URI}}"]}));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'metadata_read_package',
+        'input': 'text(await tools.mcp__dart__read_package_uris({root:"{{WORK_URI}}",uris:["package:context_contract/fixture.dart"]}));'}],
+      [_ready],
+    ],
+    'files': _dartProject,
+    'contains': <Object?>[], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'REAL_DART_MCP_RECEIPT',
+  },
+  {
+    'id': 'tool-search', 'workflow': 'search', 'mcp': true, 'requires_tool_search': true,
     // Captured from project-picker-before-new-thread-context-625ed706.json.
     // Without Lite negotiation the service exposed this ordinary function call.
     'unnegotiated_search_response': {
@@ -255,7 +275,7 @@ const contextCases = <Map<String, dynamic>>[
     'contains': <Object?>[], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'REAL_DART_MCP_RECEIPT',
   },
   {
-    'id': 'dart-evaluation-discovery', 'workflow': 'search', 'mcp': true,
+    'id': 'dart-evaluation-discovery', 'workflow': 'search', 'mcp': true, 'requires_tool_search': true,
     'prompt': 'Discover Dart MCP tools for evaluating an expression, Flutter driver commands, and runtime errors. '
       'Print their declarations, then reply READY. Do not connect to an app or execute any discovered runtime tool.',
     'discovery_calls': {

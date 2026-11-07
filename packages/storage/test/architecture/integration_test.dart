@@ -53,7 +53,8 @@ void main() {
       store.append('task.created', original, metadata: {'config': original});
       store.append('input.committed', {'item': user});
       final before = store.modelSnapshot();
-      final expected = provider == 'opencode' ? original : {...config, 'provider': provider};
+      final expected = provider == 'opencode' ? original : {...config, 'provider': provider,
+        'provider_settings': {...config['provider_settings'] as Map, 'code_mode_tool_search': true}};
       for (var reopen = 0; reopen < 2; reopen++) {
         store.close(); store = TaskStore(root.path, 'session', create: false);
         expect(store.metadata('config'), expected);

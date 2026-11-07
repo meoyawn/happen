@@ -12,6 +12,7 @@ void main() {
     final config = parseConfig(r'''
 # yaml-language-server: $schema=https://raw.githubusercontent.com/meoyawn/happen/master/packages/config/schema.json
 # Global servers shared by all tasks.
+code_mode_tool_search: true
 mcp_servers:
   dart:
     command: dart
@@ -30,6 +31,7 @@ mcp_servers:
       callback_port: 8766
     enabled: false
 ''');
+    expect(config['code_mode_tool_search'], isTrue);
     final local = config['mcp_servers']['dart'];
     expect(local['command'], 'dart');
     expect(local['args'], ['mcp-server', '--disable', 'analysis']);
@@ -55,6 +57,10 @@ mcp_servers:
       'non-string key': 'mcp_servers: {42: {command: dart}}',
       'recursive alias': 'mcp_servers: &self {dart: *self}',
       'unknown field': 'mcp_servres: $secret',
+      'tool search string': 'code_mode_tool_search: $secret',
+      'tool search quoted boolean': 'code_mode_tool_search: "true"',
+      'tool search number': 'code_mode_tool_search: 1',
+      'tool search null': 'code_mode_tool_search: null',
       'server array': 'mcp_servers: [$secret]',
       'server scalar': 'mcp_servers: {dart: $secret}',
       'missing transport': 'mcp_servers: {dart: {args: [$secret]}}',
@@ -137,8 +143,9 @@ mcp_servers:
       expect((await load()).path, isNull);
       await legacy.writeAsString('{"mcp_servers":{"old":{"command":"old"}}}');
       expect((await load()).values['mcp_servers'].keys, ['old']);
-      await yaml.writeAsString('mcp_servers: {new: {command: new}}');
+      await yaml.writeAsString('code_mode_tool_search: false\nmcp_servers: {new: {command: new}}');
       expect((await load()).values['mcp_servers'].keys, ['new']);
+      expect((await load()).values['code_mode_tool_search'], isFalse);
       expect((await load()).path, yaml.path);
       await yaml.writeAsString('mcp_servers: [');
       await expectLater(load(), throwsFormatException);
