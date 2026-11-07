@@ -69,6 +69,8 @@ class OpenCodeProvider implements ModelProvider {
   String get id => _console == null ? 'deepseek' : 'opencode';
   @override
   String newTaskId() => taskIds.create();
+  @override
+  List<String> get additionalUserSkillRoots => const [];
 
   @override
   Future<String> webSearch(

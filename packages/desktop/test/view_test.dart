@@ -1720,7 +1720,7 @@ class _Client implements AgentClient {
   final searches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
   final skillSearches = <({String cwd, String query, CancellationToken cancellation, Completer<Json> reply})>[];
   bool deferSkills = false;
-  @override Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) {
+  @override Future<Json> searchSkills(String cwd, String query, {String? provider, required CancellationToken cancellation}) {
     if (!deferSkills) return Future.value({'skills': <Object?>[], 'truncated': false});
     final reply = Completer<Json>();
     skillSearches.add((cwd: cwd, query: query, cancellation: cancellation, reply: reply));

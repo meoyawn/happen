@@ -83,7 +83,7 @@ void main() {
       return result;
     }
 
-    final id = await createThread(client, {'cwd': work.path, 'settings': {'code_mode_tool_search': true}});
+    final id = await createThread(client, {'cwd': work.path});
     List<Object?>? previousInput;
     for (var i = 0; i < 5; i++) {
       final before = requests.length;

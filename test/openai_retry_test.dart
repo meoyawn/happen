@@ -533,7 +533,11 @@ void main() {
     ]);
     expect(fixture.requests[6].elapsed - fixture.requests[5].elapsed, greaterThanOrEqualTo(const Duration(seconds: 1)));
     expect(fixture.requests[5].body['type'], 'response.create');
+    expect(fixture.requests[5].body['client_metadata'], {
+      'ws_request_header_x_openai_internal_codex_responses_lite': 'true',
+    });
     expect(fixture.requests[6].body.containsKey('type'), isFalse);
+    expect(fixture.requests[6].body.containsKey('client_metadata'), isFalse);
     expect(fixture.requests[6].body['stream'], isTrue);
     expect(fixture.requests[6].body['input'], fixture.requests[5].body['input']);
     expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');

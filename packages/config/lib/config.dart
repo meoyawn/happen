@@ -38,8 +38,7 @@ String defaultConfigPath() {
   return p.join(home, '.config', 'happen', 'config.yaml');
 }
 
-/// Parses one YAML document into immutable plain Dart data. `code_mode_only`
-/// accepts a boolean; OpenAI defaults to true when it is omitted. Never includes
+/// Parses one YAML document into immutable plain Dart data. Never includes
 /// source text or rejected values in errors: env/headers can contain credentials.
 Map<String, dynamic> parseConfig(String source, {bool partialMcp = false}) {
   if (utf8.encode(source).length > _maxBytes) {

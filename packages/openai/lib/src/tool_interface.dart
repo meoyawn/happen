@@ -20,8 +20,8 @@ import 'model_context.dart';
 class OpenAIToolInterface extends ToolInterface {
   const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
     this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
-    this.codeModeToolSearch = false, this.requestUserInput = true, this.defaultModeRequestUserInput = false});
-  final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, codeModeToolSearch, requestUserInput, defaultModeRequestUserInput;
+    this.requestUserInput = true, this.defaultModeRequestUserInput = false});
+  final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, requestUserInput, defaultModeRequestUserInput;
   @override
   String get id => 'openai';
   @override
@@ -42,7 +42,7 @@ class OpenAIToolInterface extends ToolInterface {
     // Codex prepares its cached search handler while building the tool router.
     prepareToolSearch(deferred);
     return [
-    specs.codeDefinition(deferredTools: deferred.isNotEmpty && codeModeToolSearch, webSearch: webSearch,
+    specs.codeDefinition(deferredTools: deferred.isNotEmpty, webSearch: webSearch,
       imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
@@ -90,7 +90,7 @@ class OpenAIToolInterface extends ToolInterface {
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
     ...hostCatalog.where((tool) => codeModeOnly || deferred.isNotEmpty || !mcpResourceMethods.containsKey(tool['name'])),
-    if (deferred.isNotEmpty && codeModeToolSearch) describeTool(specs.toolSearchCatalog),
+    if (deferred.isNotEmpty) describeTool(specs.toolSearchCatalog),
   ];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) =>

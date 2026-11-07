@@ -195,6 +195,7 @@ class ResponsesClient {
         activeTransport = 'http';
         _httpFallback = true;
         body = {...body, 'stream': true}..remove('type');
+        body.remove('client_metadata');
         return true;
       }, onEvent: onEvent), category: 'model',
       attributes: {'gen_ai.request.model': model, 'network.transport': activeTransport});
@@ -218,9 +219,8 @@ class ResponsesClient {
         if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
         'originator': 'agent',
         HttpHeaders.userAgentHeader: 'agent/0.1.0 (Dart)',
-        'OpenAI-Beta': transport == 'websocket'
-            ? 'responses_websockets=2026-02-06'
-            : 'responses=experimental',
+        'x-openai-internal-codex-responses-lite': 'true',
+        if (transport == 'websocket') 'OpenAI-Beta': 'responses_websockets=2026-02-06',
         'session-id': sessionId,
         'x-client-request-id': newId(),
       };

@@ -93,7 +93,7 @@ providers:
           'mcp_servers: {remote: {url: "https://example.com:99999/$secret"}}',
       'public URL': 'public_url: "https://user:$secret@example.com"',
       'provider map': 'providers: [$secret]',
-      'code mode only type': 'code_mode_only: $secret',
+      'removed code mode override': 'code_mode_only: false',
       'provider option': 'providers: {deepseek: {backend: $secret}}',
       for (final provider in ['openai', 'gpt', 'deepseek', 'opencode'])
         'goals cannot be disabled for $provider': 'providers: {$provider: {settings: {goals: false}}}',

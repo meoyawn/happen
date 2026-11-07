@@ -33,12 +33,13 @@ typedef ComposerCommand = ({String description, VoidCallback run});
 class ComposerAutocomplete extends StatefulWidget {
   const ComposerAutocomplete({super.key, required this.controller, required this.focusNode,
     required this.client, required this.cwd, required this.enabled, required this.child,
-    this.session, this.target, this.commands = const {}});
+    this.session, this.target, this.provider, this.commands = const {}});
 
   final TextEditingController controller;
   final FocusNode focusNode;
   final AgentClient client;
   final String cwd;
+  final String? provider;
   final bool enabled;
   final Widget child;
   final DesktopSession? session;
@@ -146,7 +147,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       oldWidget.focusNode.removeListener(_changed);
       widget.focusNode.addListener(_changed);
     }
-    if (oldWidget.cwd != widget.cwd || oldWidget.client != widget.client ||
+    if (oldWidget.cwd != widget.cwd || oldWidget.provider != widget.provider || oldWidget.client != widget.client ||
         oldWidget.enabled != widget.enabled || oldWidget.controller != widget.controller) {
       _cancel();
       _closeMcp();
@@ -439,7 +440,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       final key = 'skills:$query';
       final cached = _cache.remove(key);
       final result = cached != null && DateTime.now().difference(cached.time) < const Duration(seconds: 10)
-          ? cached.result : await widget.client.searchSkills(widget.cwd, query, cancellation: token);
+          ? cached.result : await widget.client.searchSkills(widget.cwd, query, provider: widget.provider, cancellation: token);
       if (!mounted || token.isCancelled || !identical(_skillSearch, token)) return;
       _cache[key] = (result: result, time: DateTime.now());
       while (_cache.length > 20) { _cache.remove(_cache.keys.first); }

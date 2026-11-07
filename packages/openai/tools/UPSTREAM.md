@@ -65,10 +65,12 @@ The code-mode-only description contract also follows
 (`build_exec_tool_description`): eager nested tool declarations belong in the
 exec description; ranked search receives the deferred catalog. Happen renders
 its implemented shell, patch, history, resource, and search tools there, with
-ALL_TOOLS and nested-search guidance. OpenAI defaults to CodeModeOnly for the
-supported GPT-6 models. `code_mode_only: false` selects CodeMode instead: native
-declarations retain their registration order and nested-call declarations,
-while exec contains runtime and discovery guidance without duplicating schemas.
+ALL_TOOLS and nested-search guidance. The selected model's catalog `tool_mode`
+owns the tool surface, matching Codex's `requested_tool_mode` resolver. All
+supported GPT-6 models select CodeModeOnly; no global or provider setting can
+override it. CodeMode surfaces retain native registration order and nested-call
+declarations while exec contains runtime and discovery guidance without
+duplicating schemas.
 Native `tool_search_call`/`tool_search_output` items retain their client execution,
 schemas and identities through history and resume; nested search still returns
 callable names and TypeScript declarations. Standalone web search follows

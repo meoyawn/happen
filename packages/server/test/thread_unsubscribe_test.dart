@@ -24,7 +24,6 @@ void main() {
   var failResponse = false;
   Future<void> launch({int? delay}) async {
     await File('${root.path}/config.json').writeAsString(jsonEncode({
-      'code_mode_only': false,
       if (delay != null) 'idle_unload_seconds': delay,
       'public_url': 'https://callback.example',
       'mcp_servers': {'comments': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'oauth': false, 'legacy_fallback': false}},
@@ -84,13 +83,14 @@ void main() {
       } else {
         requests.add(body);
         final input = body['input'] as List;
-        final hasResult = input.any((item) => item['type'] == 'function_call_output' && item['call_id'] == 'deterministic-wait-call');
+        final hasResult = input.any((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'deterministic-wait-call');
         request.response.headers.contentType = ContentType('text', 'event-stream');
         request.response.write('data: ${jsonEncode({'type': failResponse ? 'response.failed' : 'response.completed', 'response': {
           'id': 'response-${requests.length}', 'status': failResponse ? 'failed' : 'completed',
           if (failResponse) 'error': {'code': 'server_error', 'message': 'simulated failure'}
           else 'output': [if (jsonEncode(input).contains('run deterministic tool') && !hasResult)
-            {'type': 'function_call', 'namespace': 'client', 'name': 'deterministic_wait', 'call_id': 'deterministic-wait-call', 'arguments': '{}'}
+            {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'deterministic-wait-call',
+              'input': 'text(await tools.client__deterministic_wait({}));'}
             else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]}],
         }})}\n\n');
       }

@@ -30,12 +30,8 @@ Json responsesRequest({
     }
     if (kind == 'image') {
       final image = {...part};
-      // Codex client_common.rs projects image detail for the receiving model.
-      if (info?['use_responses_lite'] == true) {
-        image.remove('detail');
-      } else if (image['detail'] == 'original' && info?['supports_image_detail_original'] != true) {
-        image['detail'] = 'high';
-      }
+      // Responses Lite omits image detail.
+      image.remove('detail');
       return image;
     }
     return part;
@@ -46,6 +42,9 @@ Json responsesRequest({
   ];
   return {
     if (transport == 'websocket') 'type': 'response.create',
+    if (transport == 'websocket') 'client_metadata': {
+      'ws_request_header_x_openai_internal_codex_responses_lite': 'true',
+    },
     'model': model,
     'input': [for (final item in context) {
       ...item,

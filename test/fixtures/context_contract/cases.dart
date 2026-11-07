@@ -1,6 +1,66 @@
 import 'fermented_beetroot.dart';
 import 'tldw.dart';
 
+const _terminalShell = '''async function terminalShell(input) {
+  let result = await tools.exec_command({...input,cmd:"stty -onlcr; " + input.cmd,tty:true});
+  const output = [result.output];
+  let tokens = result.original_token_count ?? 0;
+  while (result.session_id != null) {
+    result = await tools.write_stdin({session_id:result.session_id,yield_time_ms:1000});
+    output.push(result.output);
+    tokens += result.original_token_count ?? 0;
+  }
+  return {...result,original_token_count:tokens,output:output.join("")};
+}
+''';
+
+// Yield file-I/O cells deliberately, then wait for their terminal receipts. This
+// keeps process scheduling out of the verdict and exercises real continuation.
+Map<String, dynamic> terminalShells(Map<String, dynamic> scenario) {
+  String script(String source) {
+    final prefix = source.startsWith('// @exec:') ? source.indexOf('\n') + 1 : 0;
+    final shell = source.contains('tools.exec_command(') && !source.contains('async function terminalShell(');
+    return '${source.substring(0, prefix)}yield_control();\n${shell ? _terminalShell : ''}' +
+      (shell ? source.substring(prefix).replaceAll('tools.exec_command(', 'terminalShell(') : source.substring(prefix));
+  }
+  final result = {...scenario}, calls = <String, String>{};
+  for (final key in ['responses', 'resume_responses']) {
+    if (scenario[key] case final List<Object?> steps) {
+      var cell = 0;
+      final expanded = <List<Map<String, dynamic>>>[], positions = <int, int>{};
+      for (final (index, step) in steps.indexed) {
+        positions[index] = expanded.length;
+        final output = <Map<String, dynamic>>[], waits = <Map<String, dynamic>>[];
+        for (final raw in step as List) {
+          final item = Map<String, dynamic>.from(raw as Map);
+          if (item['type'] == 'custom_tool_call' && item['name'] == 'exec') {
+            cell++;
+            final source = item['input'] as String;
+            if (source.contains('tools.exec_command(') || source.contains('tools.view_image(')) {
+              final id = '${item['call_id']}_terminal';
+              calls[item['call_id'] as String] = id;
+              item['input'] = script(source);
+              waits.add({'type': 'function_call', 'name': 'wait', 'call_id': id,
+                'arguments': '{"cell_id":"$cell","yield_time_ms":60000}'});
+            }
+          }
+          output.add(item);
+        }
+        expanded.add(output);
+        for (final wait in waits) { expanded.add([wait]); }
+      }
+      result[key] = expanded;
+      if (key == 'responses') {
+        if (scenario['continue_after'] case final List<Object?> continuing) {
+          result['continue_after'] = [for (final index in continuing) positions[index as int]!];
+        }
+      }
+    }
+  }
+  result['terminal_calls'] = calls;
+  return result;
+}
+
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[]},
   {'id': 'default-mode-user-input', 'prompt': 'Check whether blocking questions are available, then reply READY.',
@@ -16,10 +76,10 @@ const contextCases = <Map<String, dynamic>>[
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'parallel_shells',
-        'input': 'const prefix = "parallel-" + Date.now() + "-" + Math.random().toString(16).slice(2); '
+        'input': _terminalShell + 'const prefix = "parallel-" + Date.now() + "-" + Math.random().toString(16).slice(2); '
           'const results = await Promise.all([ '
-          'tools.exec_command({cmd:"touch " + prefix + "-left; for n in {1..500}; do if [ -f " + prefix + "-right ]; then printf PARALLEL_TOOL_RECEIPT_LEFT; exit 0; fi; sleep 0.01; done; exit 41",login:false}), '
-          'tools.exec_command({cmd:"touch " + prefix + "-right; for n in {1..500}; do if [ -f " + prefix + "-left ]; then printf PARALLEL_TOOL_RECEIPT_RIGHT; exit 0; fi; sleep 0.01; done; exit 42",login:false})]); '
+          'terminalShell({cmd:"touch " + prefix + "-left; for n in {1..500}; do if [ -f " + prefix + "-right ]; then printf PARALLEL_TOOL_RECEIPT_LEFT; exit 0; fi; sleep 0.01; done; exit 41"}), '
+          'terminalShell({cmd:"touch " + prefix + "-right; for n in {1..500}; do if [ -f " + prefix + "-left ]; then printf PARALLEL_TOOL_RECEIPT_RIGHT; exit 0; fi; sleep 0.01; done; exit 42"})]); '
           'text({both_succeeded:results.every(result => result.exit_code === 0)}); '
           'results.forEach((value,i) => text({i,status:"fulfilled",value}));'}],
       [_ready],
@@ -44,7 +104,7 @@ const contextCases = <Map<String, dynamic>>[
       [{'type': 'message', 'role': 'assistant', 'phase': 'commentary',
         'content': [{'type': 'output_text', 'text': "I'll check the requested tools."}]}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'streamed_receipt',
-        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt",login:false}));'}],
+        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt"}));'}],
       [_ready],
     ],
     'result': 'STREAMED_TOOL_RECEIPT',
@@ -139,7 +199,7 @@ const contextCases = <Map<String, dynamic>>[
     'catalog_skills': ['fixture-global', 'fixture-skill'],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_skill',
-        'input': 'text(await tools.exec_command({cmd:"cat .agents/skills/fixture-skill/SKILL.md",login:false}));'}],
+        'input': 'text(await tools.exec_command({cmd:"cat .agents/skills/fixture-skill/SKILL.md"}));'}],
       [_ready],
     ],
     'files': {
@@ -154,6 +214,12 @@ const contextCases = <Map<String, dynamic>>[
   },
   {
     'id': 'tool-search', 'workflow': 'search', 'mcp': true,
+    // Captured from project-picker-before-new-thread-context-625ed706.json.
+    // Without Lite negotiation the service exposed this ordinary function call.
+    'unnegotiated_search_response': {
+      'type': 'function_call', 'namespace': 'tool_search', 'name': 'tool_search_tool',
+      'arguments': '{"query":"+mcp__dart get_runtime_info hot_reload widget_tree evaluate","limit":2}',
+    },
     'discovery_calls': {'search_dart': {'limit': 2, 'names': ['mcp__dart__read_package_uris', 'mcp__dart__roots']}},
     'prompt': 'Use Dart MCP to read package:context_contract/fixture.dart. Discover its package-reading and project-roots tools first. '
       'Register this project with the MCP server, read the package URI, then reply READY. Do not change project files.',
@@ -161,15 +227,6 @@ const contextCases = <Map<String, dynamic>>[
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_dart',
         'input': 'text(await tools.tool_search({query:"dart read_package_uris",limit:1})); '
           'text(await tools.tool_search({query:"dart roots manage project roots",limit:1}));'}],
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'register_root',
-        'input': 'text(await tools.mcp__dart__roots({command:"add",uris:["{{WORK_URI}}"]}));'}],
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_package',
-        'input': 'text(await tools.mcp__dart__read_package_uris({root:"{{WORK_URI}}",uris:["package:context_contract/fixture.dart"]}));'}],
-      [_ready],
-    ],
-    'catalog_responses': [
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_dart',
-        'input': 'text({tools:ALL_TOOLS.filter(tool => ["mcp__dart__roots","mcp__dart__read_package_uris"].includes(tool.name))});'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'register_root',
         'input': 'text(await tools.mcp__dart__roots({command:"add",uris:["{{WORK_URI}}"]}));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_package',
@@ -195,14 +252,6 @@ const contextCases = <Map<String, dynamic>>[
         'input': 'text(await tools.tool_search({query:"dart vm_service evaluate expression",limit:1}));'}],
       [_ready],
     ],
-    'catalog_responses': [
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_dart_evaluation',
-        'input': '// @exec: {"max_output_tokens": 20000}\n'
-          'text({tools:ALL_TOOLS.filter(tool => tool.name.startsWith("mcp__dart__") && /eval|driver|runtime.errors|vm_service/.test(tool.name + " " + tool.description)).slice(0,8)});'}],
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'search_vm_service',
-        'input': 'text({tools:ALL_TOOLS.filter(tool => tool.name === "mcp__dart__vm_service")});'}],
-      [_ready],
-    ],
     'files': _dartProject,
     'contains': <Object?>[], 'absent': ['REAL_DART_MCP_RECEIPT'], 'result': 'vm_service',
   },
@@ -217,7 +266,7 @@ const contextCases = <Map<String, dynamic>>[
     'catalog_skills': ['fixture-global'],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_receipt',
-        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt",login:false}));'}],
+        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt"}));'}],
       [_ready],
     ],
     'contains': ['COMPACTION_REPOSITORY_RULE', 'fixture-global'],
@@ -246,7 +295,7 @@ const contextCases = <Map<String, dynamic>>[
     'catalog_skills': ['fixture-global'],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_receipt',
-        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt",login:false}));'}],
+        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt"}));'}],
       [_ready],
     ],
     'contains': ['COMPACTION_REPOSITORY_RULE', 'fixture-global'],
@@ -260,14 +309,7 @@ const contextCases = <Map<String, dynamic>>[
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_receipt',
         'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_CONTEXT_RECEIPT\\n*** End Patch"));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_patched_receipt',
-        'input': 'text(await tools.exec_command({cmd:"cat receipt.txt",login:false}));'}],
-      [_ready],
-    ],
-    'mixed_responses': [
-      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'apply_patch', 'call_id': 'patch_receipt',
-        'input': '*** Begin Patch\n*** Add File: receipt.txt\n+PATCH_CONTEXT_RECEIPT\n*** End Patch'}],
-      [{'type': 'function_call', 'namespace': 'functions', 'name': 'exec_command', 'call_id': 'read_patched_receipt',
-        'arguments': '{"cmd":"cat receipt.txt","login":false}'}],
+        'input': _terminalShell + 'text(await terminalShell({cmd:"cat receipt.txt"}));'}],
       [_ready],
     ],
     'result': 'PATCH_CONTEXT_RECEIPT',
@@ -277,7 +319,7 @@ const contextCases = <Map<String, dynamic>>[
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'unicode_output',
-        'input': 'text(await tools.exec_command({cmd:"printf \'AB😀CD😀EF\'",login:false,max_output_tokens:2}));'}],
+        'input': 'text(await tools.exec_command({cmd:"printf \'AB😀CD😀EF\'",max_output_tokens:2}));'}],
       [_ready],
     ],
     'result': 'AB…2 tokens truncated…EF',
@@ -287,7 +329,7 @@ const contextCases = <Map<String, dynamic>>[
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'pty_output',
-        'input': 'text(await tools.exec_command({cmd:"test -t 0 && test -t 1 && test -t 2 && printf PTY-CONTEXT",login:false,tty:true}));'}],
+        'input': 'text(await tools.exec_command({cmd:"test -t 0 && test -t 1 && test -t 2 && printf PTY-CONTEXT",tty:true}));'}],
       [_ready],
     ],
     'result': 'PTY-CONTEXT',
@@ -308,7 +350,7 @@ const contextCases = <Map<String, dynamic>>[
     'files': <String, Object?>{}, 'binary_sources': {'recording.wav': 'media/jfk-excerpt.wav'}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'audio_result',
-        'input': 'const clip = await tools.exec_command({cmd:"base64 < recording.wav",login:false,max_output_tokens:20000}); '
+        'input': 'const clip = await tools.exec_command({cmd:"base64 < recording.wav",max_output_tokens:20000}); '
           r'text("audio-before"); audio("data:audio/wav;base64," + clip.output.replace(/\s/g,"")); text("audio-after");'}],
       [_ready],
     ],

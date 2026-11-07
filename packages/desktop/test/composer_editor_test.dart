@@ -30,7 +30,7 @@ class _Client extends Fake implements AgentClient {
   }
 
   @override
-  Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) async =>
+  Future<Json> searchSkills(String cwd, String query, {String? provider, required CancellationToken cancellation}) async =>
     {'skills': skills, 'truncated': false};
 
   @override

@@ -14,6 +14,8 @@ import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:server/server.dart';
 
+import '../../../test/support/thread_names.dart';
+
 final _questions = <Json>[
   {'header': 'Confirm', 'question': 'Should we proceed?', 'options': [
     {'label': 'Yes', 'description': 'Continue with the plan'},
@@ -167,12 +169,15 @@ void main() {
     var asking = true;
     var asyncStage = -1;
     final asyncReceipt = Completer<Json>();
-    final questionRequest = Completer<Json>();
+    Future<List<String>> toolNames(AgentClient client, String id) async {
+      final context = jsonObject(await client.request('session.context', {'sessionID': id}));
+      return [for (final tool in context['tools'] as List) tool['name'] as String];
+    }
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
       requests.add(body);
       final openai = request.uri.path == '/responses';
-      if (openai && asking && !questionRequest.isCompleted) questionRequest.complete(body);
       final prompts = openai ? [
         for (var i = 0; i < _questions.length; i++) {
           'id': 'q$i', 'header': _questions[i]['header'], 'question': _questions[i]['question'],
@@ -232,7 +237,7 @@ void main() {
     final savedID = created['thread']['id'] as String;
     await headless.request('turn/start', {'threadId': savedID, 'input': [{'type': 'text', 'text': 'Save a session without interactive tools'}]});
     await completed.timeout(const Duration(seconds: 20));
-    expect((requests.last['tools'] as List).map((tool) => tool['name']),
+    expect(await toolNames(headless, savedID),
       isNot(contains('request_user_input_async')));
     final unloaded = headless.events.stream.firstWhere((event) => event['method'] == 'thread/closed' && event['params']['threadId'] == savedID);
     await headless.request('thread/unsubscribe', {'threadId': savedID});
@@ -248,13 +253,12 @@ void main() {
       if (model != 'gpt-6-astra') session.chooseModel(model);
       asking = true;
       expect(await session.send('Ask me about the plan'), true, reason: session.error);
+      await _until(session, () => session.task!.questions.isNotEmpty);
       if (model == 'gpt-6-astra') {
-        final request = await questionRequest.future.timeout(const Duration(seconds: 10));
-        expect((request['tools'] as List).map((tool) => tool['name']),
+        expect(await toolNames(session.client, savedID),
           containsAll(['request_user_input', 'request_user_input_async']),
           reason: 'The desktop can answer questions in a session created without interactive tools');
       }
-      await _until(session, () => session.task!.questions.isNotEmpty);
       var target = session.task!;
       final id = target.id, requestID = target.questions.keys.single;
       await expectLater(session.client.answerQuestion(id, requestID, [['Yes']], cancellation: lifetime), throwsStateError);
@@ -328,7 +332,7 @@ void main() {
       'threadId': savedID, 'input': [{'type': 'text', 'text': 'Continue without a desktop connected'}],
     });
     await finished.timeout(const Duration(seconds: 20));
-    expect((requests.last['tools'] as List).map((tool) => tool['name']),
+    expect(await toolNames(resumed, savedID),
       isNot(anyOf(contains('request_user_input'), contains('request_user_input_async'))),
       reason: 'Closing the desktop must not leave blocking question tools enabled for a headless client');
   }, _RealHttp()));

@@ -5,7 +5,7 @@ import 'providers.dart';
 Json initialConfiguration(Json input, String cwd, bool telemetry) {
   final settings = {...jsonObject(input['provider_settings']),
     if (input['provider'] == 'openai') 'goals': input['ephemeral'] != true};
-  final interface = toolInterface(input['provider'] as String, settings: settings);
+  final interface = toolInterface(input['provider'] as String, model: input['model'] as String, settings: settings);
   return {
     'cwd': cwd,
     'provider': input['provider'],

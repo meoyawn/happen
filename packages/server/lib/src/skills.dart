@@ -6,8 +6,8 @@ import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'package:yaml/yaml.dart';
 
-/// Local host skills from user and repository .agents/skills directories
-/// and the user's .codex/skills/.system directory.
+/// Local host skills from user and repository .agents/skills directories,
+/// plus provider-supplied user roots.
 /// Uses Codex 67f0994's parser and bounded walk.
 /// Catalogs contain metadata only. Bodies are read afresh when explicitly loaded.
 class FilesystemSkills {
@@ -17,7 +17,9 @@ class FilesystemSkills {
   final String? homeDirectory;
 
   /// Composer metadata only; explicit selection also includes non-implicit skills.
-  Future<Json> search(Json params, CancellationToken cancellation) async {
+  Future<Json> search(Json params, CancellationToken cancellation, {
+    List<String> additionalUserRoots = const [],
+  }) async {
     cancellation.throwIfCancelled();
     final cwd = requiredString(params, 'cwd');
     final query = params['query'];
@@ -30,7 +32,7 @@ class FilesystemSkills {
     }
     if (limit is! int || limit < 1 || limit > 50) throw const FormatException('limit must be 1..50');
     if (!await Directory(cwd).exists()) throw const FileSystemException('Search directory is unavailable');
-    final catalog = await this.catalog(cwd, cancellation);
+    final catalog = await this.catalog(cwd, cancellation, additionalUserRoots: additionalUserRoots);
     final needle = query.trim().toLowerCase();
     final matches = <({Json skill, int score, int order})>[];
     for (final raw in catalog['skills'] as List) {
@@ -58,7 +60,9 @@ class FilesystemSkills {
     return {'skills': skills, 'truncated': truncated};
   }
 
-  Future<Json> catalog(String cwd, CancellationToken cancellation) async {
+  Future<Json> catalog(String cwd, CancellationToken cancellation, {
+    List<String> additionalUserRoots = const [],
+  }) async {
     final chain = <String>[];
     var cursor = p.normalize(p.absolute(cwd));
     var repository = false;
@@ -75,7 +79,8 @@ class FilesystemSkills {
       for (final directory in repository ? chain.reversed : [chain.first])
         (path: p.join(directory, '.agents', 'skills'), scope: 'repo'),
       if (homeDirectory != null) (path: p.join(homeDirectory!, '.agents', 'skills'), scope: 'user'),
-      if (homeDirectory != null) (path: p.join(homeDirectory!, '.codex', 'skills', '.system'), scope: 'user'),
+      if (homeDirectory != null) for (final root in additionalUserRoots)
+        (path: p.join(homeDirectory!, root), scope: 'user'),
     ];
     final skills = <Json>[], errors = <Json>[];
     final seenRoots = <String>{}, seenFiles = <String>{};
@@ -169,8 +174,10 @@ class FilesystemSkills {
     return {'skills': skills, 'errors': errors, 'error_count': errorCount};
   }
 
-  Future<Json> read(String cwd, String id, CancellationToken cancellation) async {
-    final current = await catalog(cwd, cancellation);
+  Future<Json> read(String cwd, String id, CancellationToken cancellation, {
+    List<String> additionalUserRoots = const [],
+  }) async {
+    final current = await catalog(cwd, cancellation, additionalUserRoots: additionalUserRoots);
     final skills = (current['skills'] as List).map(jsonObject).toList();
     var pathId = id;
     if (p.isAbsolute(id)) {

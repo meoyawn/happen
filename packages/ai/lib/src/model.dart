@@ -358,6 +358,9 @@ class CompactionResult {
 abstract interface class ModelProvider {
   String get id;
   String newTaskId();
+
+  /// Additional skill roots relative to the user's home directory.
+  List<String> get additionalUserSkillRoots;
   Json resolveSettings(Json selected, {String? model});
   Future<String> webSearch(
     ModelRequest request,

@@ -15,6 +15,8 @@ import 'dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance.dart';
+import 'app_icon.dart';
+import 'native_app_icon.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
@@ -168,6 +170,12 @@ class DesktopSession extends ChangeNotifier {
 
   final AgentClient client;
   final IsolateOwner database;
+  AppIconController? _appIcon;
+  AppIconController get appIcon {
+    if (_appIcon case final controller?) return controller;
+    final native = DesktopIconEffects(File(attachmentDirectory).parent.path);
+    return _appIcon = AppIconController(database, apply: native.apply, release: native.close);
+  }
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
   final terminals = DesktopTerminals();
@@ -1112,6 +1120,7 @@ class DesktopSession extends ChangeNotifier {
       await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
+    if (supportsAppIconSwitching) await appIcon.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -2121,6 +2130,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> close() async {
     _draftSave?.cancel();
+    await _appIcon?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();
     await Future.wait(_projectActions.values.map((controller) => controller.close()));

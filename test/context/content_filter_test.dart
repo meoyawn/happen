@@ -53,7 +53,6 @@ void main() {
           endpoint: 'http://127.0.0.1:${peer.port}/responses');
         client = await AgentClient.connect(server.uri);
       }
-      await File('${root.path}/config.yaml').writeAsString('code_mode_only: false\n');
       await File('${root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture',
         'refresh_token': 'fixture', 'account_id': 'fixture', 'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
       await launch();

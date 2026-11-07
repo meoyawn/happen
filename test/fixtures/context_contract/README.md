@@ -32,8 +32,10 @@ workspace's package configuration with temporary cache paths.
 
 The matrix uses the catalog-selected default model (`gpt-6.1-sol`), Sol with an
 explicit `xhigh` selection, and Terra with its catalog reasoning default. Every
-selection runs with `code_mode_tool_search` both disabled (the Codex default) and
-enabled. The unchanged `packages/openai/catalog/models.json` selects no reasoning
+selection runs with tool search enabled. `packages/openai` always includes it
+when deferred tools are available; it is not a config setting. The reference
+explicitly enables `code_mode_tool_search` to match. The unchanged
+`packages/openai/catalog/models.json` selects no reasoning
 summary, low verbosity, Code Mode only, and Responses Lite. The evidence includes
 the catalog's original bytes and SHA-256. The default-model branch omits model
 and effort overrides in both harnesses; other branches select only the named
@@ -51,6 +53,14 @@ startup grace, server optionality and tool approval use Codex's defaults.
 No user config or ChatGPT account is used. Shell
 selection is not overridden: the runtime follows Codex's account-database shell
 selection and platform defaults, not the launching terminal's `SHELL` value.
+Commands also keep the default login mode, exercising snapshot capture and
+restoration in the isolated home.
+Shell replays explicitly select a PTY and disable its newline conversion with
+`stty -onlcr`. The installed Codex 0.166.0 reference can leave exited pipe
+children unreaped and wait indefinitely for their exit notification. PTY
+execution avoids that reference defect while retaining real commands, exact
+output bytes and exit-status assertions. Happen's default pipe execution is
+covered by the tool-runtime and shell-snapshot suites.
 Standalone OpenAI web search is enabled in both configurations
 (`web_search = "live"`). Codex uses its built-in OpenAI provider with a local
 base URL and a synthetic API key. The HTTP-only peer rejects WebSocket upgrades
@@ -110,9 +120,8 @@ and read its package URI. The separate
 `dart-evaluation-discovery` case searches the same real catalog with
 `+mcp__dart evaluate expression flutter driver runtime errors` and compares the
 ordered results and full TypeScript declarations in the catalog's Code Mode
-only layout when ranked search is enabled. With search disabled, both scenarios
-inspect the real deferred catalog through `ALL_TOOLS` and invoke its advertised
-tools. Native discovery's schema and output-schema omission contracts are
+only layout. Both scenarios discover tools through the real ranked search
+handler. Native discovery's schema and output-schema omission contracts are
 covered separately by `test/openai_mcp_output_test.dart`.
 It does not execute the discovered tools, connect to an app, or interact with the
 human's desktop. The
@@ -142,14 +151,23 @@ wire encoding rather than omitting the field.
 
 ## Assertions and evidence
 
-Only actual requests received by the shared OpenAI endpoint are compared. At
-the end of each session, the final complete inference request uses deep JSON
-equality after excluding the top-level `client_metadata` telemetry field,
+Only actual requests received by the shared OpenAI endpoint are compared. Every
+paired inference request uses deep JSON equality, including the first request,
+continuations, tool results, compaction and cold resume. Request counts must
+match; an intermediate mismatch cannot be repaired by a later matching context.
+The comparison excludes the top-level `client_metadata` telemetry field,
 removing explicitly scoped generated protocol/transport IDs and normalizing known
 numeric timing fields:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
-The exec description normalizes only the known embedded-engine name,
+Method, endpoint path, Accept, Content-Type, OpenAI-Beta and
+`x-openai-internal-codex-responses-lite` are compared for every paired request.
+Both harnesses must negotiate Lite explicitly. Header sidecars retain these
+protocol fields without credentials or identity headers. The package-reading
+search fixture includes the exact `tool_search.tool_search_tool` response from
+`project-picker-before-new-thread-context-625ed706.json` when Lite negotiation is
+missing. It reproduces the failed search instead of letting a body-only contract
+pass. The exec description normalizes only the known embedded-engine name,
 Happen's two settlement-helper declarations, and its MCP-envelope guidance.
 All shared tool declarations and the rest of the description remain strict.
 Tool declarations,
@@ -188,6 +206,16 @@ received, not a second serialization of its parsed JSON. Comparison uses those
 received bodies, not either harness's debug/export API.
 There are no separate
 prepared contexts, snapshot-based inference reconstructions, or input-only dumps.
+
+File-I/O scripts deliberately yield their JavaScript cells, and the scripted
+model calls `wait` before advancing. Shell calls also await their real terminal
+receipts through `write_stdin` when `exec_command` yields a running session.
+The shared helper retains the final receipt fields and accumulates output and
+token counts. The initial yielded cell, wait call and terminal result all remain
+in strict request equality. The dedicated resumable-cell scenario stays
+unchanged. Compaction's synthetic usage is reported with the wait call so the
+terminal receipt enters history before the checkpoint. Exit status remains part
+of strict equality; process-completion scheduling is not a verdict.
 
 Identity normalization has independent gates first: thread IDs must be unique,
 monotonically ordered UUIDv7 identifiers; generated item IDs have their Codex

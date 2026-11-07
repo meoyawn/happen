@@ -17,10 +17,14 @@ typedef _Entry = ({
 
 class CommandMenu extends StatefulWidget {
   const CommandMenu({super.key, required this.session, required this.actions,
-    required this.onOpen});
+    required this.onOpen, required this.onNewThread, required this.onAddProject,
+    this.pickProject = false});
   final DesktopSession session;
   final List<CommandMenuAction> actions;
   final void Function(Project, DesktopTask) onOpen;
+  final ValueChanged<Project> onNewThread;
+  final VoidCallback onAddProject;
+  final bool pickProject;
 
   @override
   State<CommandMenu> createState() => _CommandMenuState();
@@ -31,6 +35,13 @@ class _CommandMenuState extends State<CommandMenu> {
   final _scroll = ScrollController();
   late final _searchFocus = FocusNode(onKeyEvent: _searchKey);
   String? _activeId;
+  bool _projectsOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _projectsOpen = widget.pickProject;
+  }
 
   @override
   void dispose() {
@@ -45,9 +56,50 @@ class _CommandMenuState extends State<CommandMenu> {
     action();
   }
 
+  void _showProjects(bool opened) {
+    setState(() {
+      _projectsOpen = opened;
+      _activeId = null;
+      _search.clear();
+    });
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    _searchFocus.requestFocus();
+  }
+
   List<_Entry> get _entries {
     final words = _search.text.toLowerCase().trim().split(RegExp(r'\s+'));
     bool matches(String value) => words.every(value.toLowerCase().contains);
+    if (_projectsOpen) {
+      final session = widget.session;
+      final projects = session.projects.where((project) => !project.removing &&
+        matches('${project.name} ${project.path}')).toList();
+      final order = {for (final (index, project) in session.projects.indexed) project: index};
+      int latest(Project project) => project.tasks.fold(0,
+        (value, task) => task.lastActivity > value ? task.lastActivity : value);
+      projects.sort((a, b) {
+        final preferred = (b == session.project ? 1 : 0).compareTo(a == session.project ? 1 : 0);
+        if (preferred != 0) return preferred;
+        final pinned = (session.pinnedProjectKeys.contains(b.checkoutKey) ? 1 : 0)
+          .compareTo(session.pinnedProjectKeys.contains(a.checkoutKey) ? 1 : 0);
+        if (pinned != 0) return pinned;
+        final activity = latest(b).compareTo(latest(a));
+        return activity != 0 ? activity : order[a]!.compareTo(order[b]!);
+      });
+      return [
+        for (final project in projects)
+          (id: 'project:${project.checkoutKey}', group: 'Projects', title: project.name,
+            description: project.available
+              ? '${session.client.sharedFilesystem ? 'Local' : 'Remote'} · ${project.path}'
+              : 'Folder unavailable · ${project.path}',
+            icon: null, shortcut: null, project: project, task: null,
+            select: () {
+              if (project.available && !project.removing) _close(() => widget.onNewThread(project));
+            }),
+        (id: 'add-project', group: 'Actions', title: 'Add project',
+          description: '', icon: Icons.create_new_folder_outlined, shortcut: null,
+          project: null, task: null, select: () => _close(widget.onAddProject)),
+      ];
+    }
     final tasks = [
       for (final project in widget.session.projects)
         if (!project.removing)
@@ -59,6 +111,11 @@ class _CommandMenuState extends State<CommandMenu> {
       return activity != 0 ? activity : a.$2.id.compareTo(b.$2.id);
     });
     return [
+      if (matches('New thread in… new chat task session project pick choose select'))
+        (id: 'new-thread', group: 'Commands', title: 'New thread in…',
+          description: '', icon: Icons.edit_square,
+          shortcut: defaultTargetPlatform == TargetPlatform.macOS ? '⌘ N' : 'Ctrl N',
+          project: null, task: null, select: () => _showProjects(true)),
       for (final action in widget.actions)
         if (matches('${action.title} ${action.keywords}'))
           (id: 'command:${action.title}', group: 'Commands', title: action.title,
@@ -78,31 +135,41 @@ class _CommandMenuState extends State<CommandMenu> {
 
   int _activeIndex(List<_Entry> entries) {
     final index = entries.indexWhere((entry) => entry.id == _activeId);
-    return index < 0 ? 0 : index;
+    return index >= 0 && _enabled(entries[index]) ? index : entries.indexWhere(_enabled);
   }
+
+  bool _enabled(_Entry entry) => entry.task?.archiving != true &&
+    (entry.task != null || entry.project == null || entry.project!.available && !entry.project!.removing);
 
   void _move(int offset) {
     final entries = _entries;
     if (entries.isEmpty) return;
-    final index = (_activeIndex(entries) + offset) % entries.length;
+    var index = _activeIndex(entries);
+    if (index < 0) return;
+    do {
+      index = (index + offset) % entries.length;
+    } while (!_enabled(entries[index]));
     setState(() => _activeId = entries[index].id);
     if (!_scroll.hasClients) return;
     var top = 0.0;
     for (var i = 0; i <= index; i++) {
       if (i == 0 || entries[i - 1].group != entries[i].group) top += 28;
-      if (i < index) top += 40;
+      if (i < index) top += _rowHeight(entries[i]);
     }
     final position = _scroll.position;
+    final bottom = top + _rowHeight(entries[index]);
     final target = top < position.pixels ? top
-      : top + 40 > position.pixels + position.viewportDimension
-        ? top + 40 - position.viewportDimension : position.pixels;
+      : bottom > position.pixels + position.viewportDimension
+        ? bottom - position.viewportDimension : position.pixels;
     _scroll.jumpTo(target.clamp(0.0, position.maxScrollExtent));
   }
 
   void _activate() {
     final entries = _entries;
     if (entries.isEmpty) return;
-    final entry = entries[_activeIndex(entries)];
+    final index = _activeIndex(entries);
+    if (index < 0) return;
+    final entry = entries[index];
     entry.select();
   }
 
@@ -115,7 +182,11 @@ class _CommandMenuState extends State<CommandMenu> {
       case LogicalKeyboardKey.arrowDown: _move(1);
       case LogicalKeyboardKey.arrowUp: _move(-1);
       case LogicalKeyboardKey.enter:
+        if (!_search.value.composing.isCollapsed) { return KeyEventResult.ignored; }
         if (event is KeyDownEvent) _activate();
+      case LogicalKeyboardKey.backspace:
+        if (!_projectsOpen || _search.text.isNotEmpty) return KeyEventResult.ignored;
+        if (event is KeyDownEvent) _showProjects(false);
       default: return KeyEventResult.ignored;
     }
     return KeyEventResult.handled;
@@ -148,17 +219,24 @@ class _CommandMenuState extends State<CommandMenu> {
             listenable: Listenable.merge([widget.session, _search]),
             builder: (context, _) {
               final entries = _entries;
-              final active = entries.isEmpty ? null : entries[_activeIndex(entries)];
+              final activeIndex = _activeIndex(entries);
+              final active = activeIndex < 0 ? null : entries[activeIndex];
               return Column(mainAxisSize: MainAxisSize.min, children: [
                 Padding(padding: const EdgeInsets.all(6), child: Row(children: [
-                  const Padding(padding: EdgeInsets.symmetric(horizontal: 8),
-                    child: Icon(Icons.search, size: 16, color: opencodeMuted)),
+                  if (_projectsOpen)
+                    IconButton(tooltip: 'Back', onPressed: () => _showProjects(false),
+                      icon: const Icon(Icons.arrow_back, size: 16, color: opencodeMuted),
+                      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                      padding: EdgeInsets.zero)
+                  else
+                    const Padding(padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Icon(Icons.search, size: 16, color: opencodeMuted)),
                   Expanded(child: TextField(
                     key: const ValueKey('command-menu-search'),
                     controller: _search, focusNode: _searchFocus, autofocus: true,
                     style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeInk),
                     decoration: InputDecoration(
-                      hintText: 'Search sessions and commands…',
+                      hintText: _projectsOpen ? 'Search projects…' : 'Search sessions and commands…',
                       hintStyle: const TextStyle(color: opencodeFaint),
                       contentPadding: const EdgeInsets.symmetric(vertical: 10),
                     ),
@@ -171,9 +249,12 @@ class _CommandMenuState extends State<CommandMenu> {
                   const SizedBox(width: 6),
                 ])),
                 const Divider(height: 1, thickness: .5, color: opencodeBorder),
+                if (_projectsOpen && !entries.any((entry) => entry.project != null))
+                  const Padding(padding: EdgeInsets.all(24), child: Text('No projects found.',
+                    style: TextStyle(fontSize: 13, color: opencodeMuted))),
                 Flexible(child: entries.isEmpty
                   ? const Padding(padding: EdgeInsets.all(32), child: Text('No results',
-                      style: const TextStyle(fontSize: 13, color: opencodeMuted)))
+                      style: TextStyle(fontSize: 13, color: opencodeMuted)))
                   : ListView.builder(
                       controller: _scroll, shrinkWrap: true,
                       padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
@@ -198,7 +279,17 @@ class _CommandMenuState extends State<CommandMenu> {
                     const SizedBox(width: 14),
                     const _KeyHint('↵'),
                     const SizedBox(width: 6),
-                    const Text('Open', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+                    Text(_projectsOpen ? 'Select' : 'Open', style: const TextStyle(fontSize: 11, color: opencodeFaint)),
+                    if (_projectsOpen) ...[
+                      const SizedBox(width: 14),
+                      const _KeyHint('⌫'),
+                      const SizedBox(width: 6),
+                      const Text('Back', style: TextStyle(fontSize: 11, color: opencodeFaint)),
+                    ],
+                    const Spacer(),
+                    const _KeyHint('esc'),
+                    const SizedBox(width: 6),
+                    const Text('Close', style: TextStyle(fontSize: 11, color: opencodeFaint)),
                   ])),
               ]);
             },
@@ -208,18 +299,22 @@ class _CommandMenuState extends State<CommandMenu> {
     );
   }
 
+  double _rowHeight(_Entry entry) => _projectsOpen && entry.project != null ? 48 : 40;
+
   Widget _row(_Entry entry, bool active) {
     final task = entry.task;
+    final enabled = _enabled(entry);
+    final projectRow = _projectsOpen && entry.project != null;
     return MouseRegion(
-      onEnter: (_) => setState(() => _activeId = entry.id),
-      child: Semantics(selected: active, button: true, child: Material(
+      onEnter: enabled ? (_) => setState(() => _activeId = entry.id) : null,
+      child: Semantics(selected: active, enabled: enabled, button: true, child: Material(
         color: active ? opencodeLayer : Colors.transparent,
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
           key: ValueKey('command-menu:${entry.id}'),
           borderRadius: BorderRadius.circular(6),
-          onTap: task?.archiving == true ? null : entry.select,
-          child: SizedBox(height: 40, child: Padding(
+          onTap: enabled ? entry.select : null,
+          child: Opacity(opacity: enabled ? 1 : .45, child: SizedBox(height: _rowHeight(entry), child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(children: [
               if (entry.project case final project?)
@@ -227,21 +322,31 @@ class _CommandMenuState extends State<CommandMenu> {
               else
                 Icon(entry.icon, size: 16, color: opencodeMuted),
               const SizedBox(width: 8),
-              Flexible(child: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, height: 16 / 13,
-                  color: opencodeInk))),
-              if (entry.description.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Flexible(child: Text(entry.description, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: opencodeFaint))),
+              if (projectRow)
+                Expanded(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13, height: 18 / 13, color: opencodeInk)),
+                  Text(entry.description, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, height: 16 / 12, color: opencodeFaint)),
+                ]))
+              else ...[
+                Flexible(child: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, height: 16 / 13, color: opencodeInk))),
+                if (entry.description.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Flexible(child: Text(entry.description, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: opencodeFaint))),
+                ],
+                const Spacer(),
               ],
-              const Spacer(),
               if (task == widget.session.task && task != null)
                 const Padding(padding: EdgeInsets.only(left: 6),
                   child: Icon(Icons.check, size: 14, color: opencodeFaint)),
               if (entry.shortcut case final shortcut?) _KeyHint(shortcut),
+              if (entry.id == 'new-thread')
+                const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.chevron_right, size: 14, color: opencodeFaint)),
             ]),
-          )),
+          ))),
         ),
       )),
     );

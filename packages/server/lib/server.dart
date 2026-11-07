@@ -2042,8 +2042,8 @@ class AgentClient {
       jsonObject(await _request('files.search', {'cwd': cwd, 'query': query},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
-  Future<Json> searchSkills(String cwd, String query, {required CancellationToken cancellation}) async =>
-      jsonObject(await _request('skills.search', {'cwd': cwd, 'query': query},
+  Future<Json> searchSkills(String cwd, String query, {String? provider, required CancellationToken cancellation}) async =>
+      jsonObject(await _request('skills.search', {'cwd': cwd, 'query': query, 'provider': ?provider},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
   Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
@@ -2136,6 +2136,7 @@ class AgentClient {
     final token = cancellation == null ? deadline : cancellation.merge(deadline);
     final result = CancellableCompleter<Object?>(token, onCancel: () {
       _pending.remove(id);
+      if (_closed) return;
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }

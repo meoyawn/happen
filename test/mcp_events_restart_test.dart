@@ -11,6 +11,8 @@ import 'package:server/server.dart' show AgentClient;
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
+import 'support/thread_names.dart';
+
 void main() {
   late _Events peer;
   setUp(() async { peer = await _Events.start(); });
@@ -259,7 +261,7 @@ class _Events {
     await Directory('${peer.cwd}/.git').create(recursive: true);
     await Directory('${peer.cwd}/.happen').create();
     await File('${peer.cwd}/.happen/config.yaml').writeAsString('mcp_servers:\n  comments:\n    url: ${peer.origin}/mcp\n    oauth: false\n    legacy_fallback: false\n');
-    await File('${peer.root.path}/config.json').writeAsString(jsonEncode({'code_mode_only': false, 'idle_unload_seconds': 0, 'public_url': 'https://callback.example'}));
+    await File('${peer.root.path}/config.json').writeAsString(jsonEncode({'idle_unload_seconds': 0, 'public_url': 'https://callback.example'}));
     await File('${peer.root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
       'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     return peer;
@@ -351,6 +353,7 @@ class _Events {
     final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
     request.response.headers.contentType = ContentType.json;
     if (request.uri.path == '/responses') {
+      if (await respondToThreadName(request, body)) return;
       responses.add(body);
       if (holdNext) { holdNext = false; if (!held.isCompleted) held.complete(); await (responseGate ?? Completer<void>()).future.asCancellable(lifetime); }
       request.response.headers.contentType = ContentType('text', 'event-stream');

@@ -9,6 +9,8 @@ import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'app_icon.dart';
+import 'native_app_icon.dart';
 import 'composer_attachments.dart';
 import 'project_avatar.dart';
 import 'session.dart';
@@ -199,6 +201,36 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   ]);
 
   Widget _appearance() => _settingsList([
+    if (supportsAppIconSwitching)
+      ListenableBuilder(listenable: widget.session.appIcon, builder: (context, _) {
+        final state = widget.session.appIcon.state;
+        final enabled = state is AppIconReady || state is AppIconFailed;
+        final description = switch (state) {
+          AppIconFailed() => 'Could not update the app icon. Try choosing it again.',
+          AppIconLoading() || AppIconSaving() => 'Updating app icon…',
+          _ => Platform.isMacOS ? 'Choose the icon shown in the Dock.' : 'Choose the icon shown for Happen windows.',
+        };
+        void choose(AppIconChoice? choice) {
+          final current = widget.session.appIcon.state;
+          if ((current is AppIconReady || current is AppIconFailed) && choice != null) {
+            unawaited(widget.run(() => widget.session.appIcon.choose(choice)));
+          }
+        }
+        return Padding(padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('App icon', style: TextStyle(fontSize: 13, height: 16 / 13,
+              fontWeight: FontWeight.w500, color: opencodeInk)),
+            const SizedBox(height: 4),
+            Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: opencodeMuted)),
+            const SizedBox(height: 16),
+            RadioGroup<AppIconChoice>(groupValue: state.value, onChanged: choose,
+              child: Wrap(spacing: 12, runSpacing: 12, children: [
+                for (final choice in AppIconChoice.values)
+                  _appIconChoice(choice, selected: state.value == choice, enabled: enabled,
+                    onSelected: () => choose(choice)),
+              ])),
+          ]));
+      }),
     _settingsRow('Project icons', 'Choose the marks shown beside your projects.',
       Row(mainAxisSize: MainAxisSize.min, children: [
         if (widget.session.project case final project?) ...[
@@ -561,3 +593,24 @@ Widget _choice(String label, String value, Map<String, String> options, ValueCha
       items: [for (final entry in options.entries) DropdownMenuItem(value: entry.key, child: Text(entry.value))],
       onChanged: (value) { if (value != null) onChanged(value); },
     ))));
+
+Widget _appIconChoice(AppIconChoice choice, {required bool selected, required bool enabled,
+  required VoidCallback onSelected}) => MergeSemantics(child: Opacity(opacity: enabled ? 1 : .55,
+  child: Material(color: selected ? const Color(0xfff0f0f0) : Colors.white,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8),
+      side: BorderSide(color: selected ? opencodeInk : opencodeBorder, width: selected ? 1.5 : .5)),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(onTap: enabled ? onSelected : null, canRequestFocus: false, excludeFromSemantics: true,
+      child: SizedBox(width: 144, child: Padding(padding: const EdgeInsets.all(12),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ExcludeSemantics(child: Image.asset(appIconPreviewAsset(choice), width: 88, height: 88,
+            filterQuality: FilterQuality.medium)),
+          const SizedBox(height: 8),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Radio<AppIconChoice>(value: choice, enabled: enabled, activeColor: opencodeInk,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap, visualDensity: VisualDensity.compact),
+            const SizedBox(width: 4),
+            Flexible(child: Text(choice.label,
+              style: const TextStyle(fontSize: 13, height: 16 / 13, color: opencodeInk))),
+          ]),
+        ])))))));

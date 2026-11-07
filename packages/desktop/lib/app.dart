@@ -156,7 +156,7 @@ class _DesktopViewState extends State<DesktopView> {
     }
   }
 
-  Future<void> _commandMenu() async {
+  Future<void> _commandMenu({bool pickProject = false}) async {
     if (_commandMenuOpen || !mounted) return;
     _commandMenuOpen = true;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
@@ -167,9 +167,10 @@ class _DesktopViewState extends State<DesktopView> {
         barrierColor: const Color(0x22000000),
         builder: (context) => CommandMenu(
           session: session,
+          pickProject: pickProject,
+          onNewThread: (project) => unawaited(_run(() => _newChat(project))),
+          onAddProject: () => unawaited(_addProject()),
           actions: [
-            (title: 'New thread', keywords: 'new chat task session', icon: Icons.edit_square,
-              shortcut: mac ? '⌘ N' : 'Ctrl N', run: () => unawaited(_run(_newChat))),
             (title: 'Home', keywords: 'all sessions', icon: Icons.grid_view_outlined,
               shortcut: null, run: _showHome),
             (title: 'Archived sessions', keywords: 'archive chats tasks restore unarchive',
@@ -467,6 +468,11 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Future<void> _newChat([Project? owner]) async {
+    if (owner == null) {
+      await _commandMenu(pickProject: true);
+      return;
+    }
+    if (owner.removing || !owner.available || !session.projects.contains(owner)) return;
     session.newSession(owner);
     if (mounted) _focusComposer();
   }
@@ -1159,6 +1165,7 @@ class _ComposerState extends State<_Composer> {
         focusNode: _focus,
         client: session.client,
         cwd: _project?.path ?? '',
+        provider: _target?.provider ?? session.providerId,
         enabled: hasProject && session.connected && !_submitting && !_dictating,
         session: session,
         target: widget.target,

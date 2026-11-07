@@ -24,6 +24,8 @@ void main() {
         await file.parent.create(recursive: true);
         await file.writeAsString('---\ndescription: $description\n---\n$content');
       }
+      final system = File('${home.path}/.codex/skills/.system/builtin/SKILL.md');
+      await skill(system, 'Use built-in OpenAI guidance.', 'SYSTEM_BODY');
       for (var i = 0; i < 400; i++) {
         await skill(File('${home.path}/.agents/skills/skill-${i.toString().padLeft(3, '0')}/SKILL.md'),
           'Use for global task $i. ' * 30, body);
@@ -42,7 +44,7 @@ void main() {
       });
       final openCode = providerId == 'opencode';
       await File('${data.path}/config.yaml').writeAsString(jsonEncode({
-        'default_provider': providerId,
+        'default_provider': openCode ? 'openai' : 'opencode',
         'providers': {providerId: {
           if (openCode) 'endpoint': 'http://127.0.0.1:${provider.port}/inference/openai/v1',
         }},
@@ -62,7 +64,9 @@ void main() {
         requests.add(requestBody);
         final messages = (requestBody[openCode ? 'messages' : 'input'] as List).map(jsonObject).toList();
         final lastUser = messages.lastIndexWhere((message) => message['role'] == 'user');
-        final load = lastUser >= 0 && openAIMessageText(messages[lastUser]) == 'load omitted skill';
+        final prompt = lastUser >= 0 ? openAIMessageText(messages[lastUser]) : '';
+        final loadSystem = prompt == 'load system skill';
+        final load = loadSystem || prompt == 'load omitted skill';
         final hasResult = messages.skip(lastUser + 1).any((message) =>
           message['role'] == 'tool' || message['type'] == 'custom_tool_call_output');
         request.response.headers.contentType = ContentType('text', 'event-stream');
@@ -70,7 +74,7 @@ void main() {
           final delta = load && !hasResult ? {
             'tool_calls': [{
               'index': 0, 'id': 'load-${++sequence}', 'type': 'function',
-              'function': {'name': 'skill', 'arguments': jsonEncode({'id': selectedId.path})},
+              'function': {'name': 'skill', 'arguments': jsonEncode({'id': loadSystem ? system.path : selectedId.path})},
             }],
           } : {'content': 'Ready'};
           request.response.write('data: ${jsonEncode({
@@ -83,7 +87,7 @@ void main() {
             {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
               'call_id': 'load-${++sequence}',
               'input': 'text(await tools.exec_command(${jsonEncode({
-                'cmd': 'cat "${chosen.path}"', 'shell': '/bin/sh', 'login': false,
+                'cmd': 'cat "${loadSystem ? system.path : chosen.path}"', 'shell': '/bin/sh', 'login': false,
               })}));'},
           ] : <Json>[
             {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Ready'}]},
@@ -126,16 +130,33 @@ void main() {
       }
 
       await start();
-      final id = await createThread(client!, {'cwd': work.path, 'settings': {'context_limit': 100000}});
+      final id = await createThread(client!, {'cwd': work.path, 'provider': providerId,
+        'settings': {'context_limit': 100000}});
       await turn(id, prompt: 'continue');
       bounded();
       final initial = catalogText();
       expect(initial, hasLength(1));
       expect(initial.single, contains('local'));
+      expect(initial.single, openCode ? isNot(contains('builtin')) : contains('builtin'));
       expect(initial.single, isNot(contains('skill-399')));
       expect(bodyCount(), 0);
       expect(jsonEncode(requests.last), isNot(contains('LOCAL_BODY')));
       expect(jsonEncode(requests.last), isNot(contains('fingerprint')));
+      final searchCancellation = CancellationToken();
+      try {
+        for (final provider in ['openai', 'gpt', 'opencode', 'deepseek']) {
+          final search = await client!.searchSkills(work.path, 'builtin', provider: provider,
+            cancellation: searchCancellation);
+          expect(search['skills'], {'openai', 'gpt'}.contains(provider)
+            ? [containsPair('name', 'builtin')] : isEmpty);
+        }
+      } finally { searchCancellation.cancel(); }
+      await send(id, 'load system skill');
+      if (openCode) {
+        final output = (requests.last['messages'] as List).lastWhere((message) => message['role'] == 'tool')['content'];
+        expect(output, contains('Unable to load skill'));
+      }
+      expect(jsonEncode(requests.last), openCode ? isNot(contains('SYSTEM_BODY')) : contains('SYSTEM_BODY'));
 
       final beforeLoad = requests.length;
       await send(id, 'load omitted skill');

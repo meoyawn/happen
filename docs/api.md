@@ -27,10 +27,9 @@ fails, or is cancelled, `exec` exports a local Chrome Trace Event JSON file unde
 `DATA_DIR/telemetry/` and prints its absolute path. With `--json`, the final output
 is a `telemetry.exported` event whose `data.path` contains that path.
 
-Set `code_mode_only: false` in that file to expose direct OpenAI tools alongside
-`exec`/`wait`, including native MCP discovery. This boolean defaults to `true`;
-Code Mode remains enabled in both modes. The choice is fixed when a session is
-created and preserved on resume. It does not change OpenCode sessions.
+OpenAI's tool layout follows the selected model's catalog `tool_mode`, matching
+Codex. Supported GPT models select CodeModeOnly: `exec`/`wait` orchestrate shell
+and deferred MCP tools, with tool search enabled.
 
 Skills are discovered only in `~/.agents/skills/` globally and `.agents/skills/`
 locally. Local discovery walks from the nearest Git repository root down to the

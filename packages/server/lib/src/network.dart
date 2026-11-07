@@ -361,16 +361,19 @@ Future<void> _networkMain(List<Object?> args) async {
       cancellation = CancellationToken();
       operations[operationId] = cancellation;
       active.putIfAbsent(ownerId, () => {})[operationId] = cancellation;
-      if (request['method'] == 'skills.search') {
-        reply?.send({'result': await skills.search(params, cancellation)});
-        return;
-      }
-      if (request['method'] == 'skills.catalog' || request['method'] == 'skills.read') {
+      if ({'skills.search', 'skills.catalog', 'skills.read'}.contains(request['method'])) {
+        final provider = providers[params['provider'] as String? ?? global['default_provider'] as String? ?? 'openai'];
+        if (provider == null) throw ArgumentError('Unsupported skills provider');
+        final roots = provider.additionalUserSkillRoots;
+        if (request['method'] == 'skills.search') {
+          reply?.send({'result': await skills.search(params, cancellation, additionalUserRoots: roots)});
+          return;
+        }
         if (id == null) throw ArgumentError('Skills require a task');
         final cwd = requiredString(params, 'cwd');
         reply?.send({'result': request['method'] == 'skills.catalog'
-          ? await skills.catalog(cwd, cancellation)
-          : await skills.read(cwd, requiredString(params, 'id'), cancellation)});
+          ? await skills.catalog(cwd, cancellation, additionalUserRoots: roots)
+          : await skills.read(cwd, requiredString(params, 'id'), cancellation, additionalUserRoots: roots)});
         return;
       }
       if (request['method'] == 'agents.repository') {
@@ -680,7 +683,6 @@ Future<void> _networkMain(List<Object?> args) async {
             defaults['model'] as String? ??
             (provider is OpenCodeProvider ? provider.defaultModel : 'gpt-6.1-sol');
         final selected = {
-          if (lab == 'openai') 'code_mode_only': global['code_mode_only'] ?? true,
           ...jsonObject(defaults['settings'] ?? {}),
           ...jsonObject(params['settings'] ?? {}),
           if (params['reasoning'] != null) 'reasoning': params['reasoning'],

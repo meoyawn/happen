@@ -131,7 +131,8 @@ class _Agent {
   }();
 
   ModelRequest request() {
-    final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
+    final interface = toolInterface(config['tool_interface'] as String, model: config['model'] as String,
+      settings: jsonObject(config['provider_settings']));
     return ModelRequest(
       taskId: taskId, model: config['model'] as String,
       instructions: config['instructions'] as String,
@@ -249,7 +250,8 @@ class _Agent {
     _accepting = true;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
-    final interface = toolInterface(config['tool_interface'] as String, settings: jsonObject(config['provider_settings']));
+    final interface = toolInterface(config['tool_interface'] as String, model: config['model'] as String,
+      settings: jsonObject(config['provider_settings']));
     ToolRuntime? host;
     var goalsEnabled = false;
     var uncachedTokensUsed = 0;
@@ -360,7 +362,7 @@ class _Agent {
       var skillsSnapshot = jsonObject(await _metadata('skills_state') ?? {});
       var skillsCatalog = <String, dynamic>{'skills': <Object?>[]};
       Future<Json> readSkills() async => jsonObject(await callIsolate(network, 'skills.catalog', {
-          'task_id': taskId, 'cwd': cwd,
+          'task_id': taskId, 'cwd': cwd, 'provider': config['provider'],
         }, cancellation: work));
       Future<void> refreshSkills([Json? current]) async {
         if (identical(current, skillsCatalog)) return;
@@ -922,7 +924,7 @@ class _Agent {
                       }
                     } else if (service == 'skills.read') {
                       output = await callIsolate(network, 'skills.read', {
-                        ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd,
+                        ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd, 'provider': config['provider'],
                       }, cancellation: cancellation);
                     } else if (service == 'web.search') {
                       output = await searchWeb(arguments, cancellation);

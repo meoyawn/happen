@@ -5,6 +5,8 @@ import 'package:desktop/app.dart';
 import 'package:desktop/appearance.dart';
 import 'package:desktop/command_menu.dart';
 import 'package:desktop/database.dart';
+import 'package:desktop/composer_editor.dart';
+import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/settings_screen.dart';
 import 'package:flutter/foundation.dart';
@@ -15,6 +17,90 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('new thread waits for a project and cancellation preserves the current conversation', (tester) async {
+    late DesktopSession session;
+    late Directory root;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-new-thread-');
+      addTearDown(() => root.delete(recursive: true));
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      addTearDown(() => tester.runAsync(session.close));
+    });
+    final active = DesktopTask('active', 'Current conversation')..loaded = true;
+    final original = Project('original', 'original', '${root.path}/original', [active]);
+    final selected = Project('selected', 'selected', '${root.path}/selected');
+    final unavailable = Project('unavailable', 'unavailable', '${root.path}/selected-offline')..available = false;
+    final removing = Project('removing', 'removing', '${root.path}/selected-removing')..removing = true;
+    session.projects.addAll([original, unavailable, selected, removing]);
+    session.project = original;
+    session.task = active;
+    session.drafts[active.id] = 'Keep this reply';
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('happen/desktop'), null));
+    await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: DesktopView(session: session)));
+    await tester.pumpAndSettle();
+    final draftIds = session.sessionDrafts.map((draft) => draft.id).toList();
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final search = find.byKey(const ValueKey('command-menu-search'));
+    await tester.tap(find.byTooltip('New thread (${mac ? '⌘N' : 'Ctrl+N'})'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandMenu), findsOneWidget);
+    expect(find.byType(NewSessionScreen), findsNothing);
+    expect(tester.widget<TextField>(search).focusNode!.hasFocus, isTrue);
+    expect(session.task, same(active));
+    expect(session.project, same(original));
+    expect(session.sessionDrafts.map((draft) => draft.id), draftIds);
+    expect(find.byKey(const ValueKey('command-menu:project:removing')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('command-menu:project:unavailable')));
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandMenu), findsOneWidget);
+    expect(session.task, same(active));
+    await tester.enterText(search, 'no matching project');
+    await tester.pumpAndSettle();
+    expect(find.text('No projects found.'), findsOneWidget);
+    expect(find.descendant(of: find.byType(CommandMenu), matching: find.text('Add project')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandMenu), findsNothing);
+    expect(session.task, same(active));
+    expect(session.project, same(original));
+    expect(session.sessionDrafts.map((draft) => draft.id), draftIds);
+    expect(session.drafts[active.id], 'Keep this reply');
+
+    final modifier = mac ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
+    await tester.sendKeyDownEvent(modifier);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyN);
+    await tester.sendKeyUpEvent(modifier);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandMenu), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pumpAndSettle();
+    expect(find.text('New thread in…'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(search).focusNode!.hasFocus, isTrue);
+    await tester.enterText(search, selected.path);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.byType(CommandMenu), findsNothing);
+    expect(find.byType(NewSessionScreen), findsOneWidget);
+    expect(session.project, same(selected));
+    expect(session.task, isNull);
+    expect(session.currentDraft.checkoutKey, selected.checkoutKey);
+    expect(session.drafts[active.id], 'Keep this reply');
+    expect(tester.widget<ComposerEditor>(find.byType(ComposerEditor)).focusNode.hasFocus, isTrue);
+    expect(session.error, isNull);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
+
   testWidgets('command menu opens full-height archive previews without suggesting archived chats', (tester) async {
     late DesktopSession session;
     late Directory root;
@@ -128,6 +214,9 @@ void main() {
 
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
+  @override bool get sharedFilesystem => true;
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
+    {'servers': <Object?>[]};
   final restored = <String>[];
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
     if (method == 'session.message.list') return {

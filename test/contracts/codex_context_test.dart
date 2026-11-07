@@ -232,6 +232,7 @@ Future<bool> compare(Json reference, Json actual, String path) async {
 }
 
 Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json>> requests,
+  Map<String, List<Json>> headers,
   Map<String, List<Json>> searches, Map<String, List<String>> files, List<String> errors,
   Map<String, Map<String, String>> modelIds})>
     responsesPeer(Json scenario, String outputPath, CancellationToken cancellation) async {
@@ -240,6 +241,7 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
   Future<void> close() => closing ??= server.close(force: true);
   final hook = CancellationHook(cancellation, () => unawaited(close()));
   final requests = <String, List<Json>>{}, errors = <String>[];
+  final headers = <String, List<Json>>{};
   final searches = <String, List<Json>>{};
   final files = <String, List<String>>{};
   for (final engine in ['codex', 'happen']) { await Directory('$outputPath/$engine-requests').create(recursive: true); }
@@ -281,10 +283,17 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         }
       }
       final captured = requests.putIfAbsent(engine, () => [])..add(body);
+      final protocol = <String, dynamic>{
+        'method': http.method, 'path': '/${http.uri.pathSegments.skip(1).join('/')}',
+        for (final name in ['accept', 'content-type', 'openai-beta', 'x-openai-internal-codex-responses-lite'])
+          name: http.headers.value(name),
+      };
+      headers.putIfAbsent(engine, () => []).add(protocol);
       // The endpoint owns the single authoritative capture for both harnesses.
       // Save the received bytes, never a re-encoded or reconstructed body.
       final file = File('$outputPath/$engine-requests/${captured.length.toString().padLeft(6, '0')}.json');
       await file.writeAsBytes(bytes, flush: true);
+      await save('${file.path}.headers.json', protocol);
       files.putIfAbsent(engine, () => []).add(file.path);
       final completed = {for (final item in (body['input'] as List).map(jsonObject))
         if (['custom_tool_call_output', 'function_call_output', 'tool_search_output'].contains(item['type'])) item['call_id']};
@@ -318,6 +327,11 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
         'id': 'fixture_item_${captured.length}_$i',
         if (steps[step][i]['type'] != 'reasoning') 'status': 'completed', ...jsonObject(steps[step][i]),
       }];
+      if (step == 0 && protocol['x-openai-internal-codex-responses-lite'] != 'true') {
+        if (scenario['unnegotiated_search_response'] case final Map<String, dynamic> unnegotiated) {
+          output[0] = {...output.first, ...unnegotiated};
+        }
+      }
       if (compact) {
         output.clear();
         output.add({'type': 'compaction', 'encrypted_content': 'context-contract-native-checkpoint'});
@@ -328,7 +342,8 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
       if (continuing.contains(step)) {
         (continuationIds[threadKey] ??= {})[step] = output.map((item) => item['id'] as String).toSet();
       }
-      final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored ? 21000 : 100;
+      final inputTokens = scenario['workflow'] == 'compaction' && !prelude && !compact && !restored &&
+        output.any((item) => item['name'] == 'wait') ? 21000 : 100;
       final response = {'id': 'resp_fixture_${captured.length}', 'object': 'response', 'status': 'completed',
         if (continuing.isNotEmpty) 'end_turn': !continuing.contains(step),
         'output': output, 'usage': {'input_tokens': inputTokens, 'output_tokens': 10, 'total_tokens': inputTokens + 10}};
@@ -349,12 +364,14 @@ Future<({HttpServer server, Future<void> Function() close, Map<String, List<Json
     } finally { await http.response.close(); }
   });
   return (server: server, close: () async { hook.dispose(); await close(); },
-    requests: requests, searches: searches, files: files, errors: errors, modelIds: modelIds);
+    requests: requests, headers: headers, searches: searches, files: files, errors: errors, modelIds: modelIds);
 }
 
 Future<Json> scenario(Json scenario, String model, String codex, String output,
   CancellationToken cancellation, String catalog, {required bool codeModeOnly,
-    required bool codeModeToolSearch, required String reasoning, required String reasoningSummary}) async {
+    required String reasoning, required String reasoningSummary}) async {
+  String terminalCall(String id) => jsonObject(scenario['terminal_calls'] ?? {})[id] as String? ?? id;
+  bool toolOutput(Json item) => {'custom_tool_call_output', 'function_call_output'}.contains(item['type']);
   final work = '$output/work', codexHome = '$output/codex-home', data = '$output/happen-data';
   await Directory(output).create(recursive: true);
   final home = (await Directory(output).createTemp('home-')).path;
@@ -411,7 +428,7 @@ enabled = false
 enabled = false
 [features]
 default_mode_request_user_input = ${scenario['request_user_input'] == true}
-code_mode_tool_search = $codeModeToolSearch
+code_mode_tool_search = true
 deferred_tool_world_state = true
 multi_agent = false
 multi_agent_v2 = false
@@ -424,7 +441,6 @@ apps = false
     if (scenario['selected_model'] == true) 'model': model,
     'settings': <String, dynamic>{'web_search': 'live',
       if (scenario['selected_reasoning'] == true) 'reasoning': reasoning,
-      'code_mode_tool_search': codeModeToolSearch,
       'default_mode_request_user_input': scenario['request_user_input'] == true}}}};
   if ({'compaction', 'audio'}.contains(scenario['workflow'])) {
     final text = config.toString();
@@ -500,6 +516,8 @@ apps = false
       }
       final a = (peer.requests['codex'] ?? []).skip(starts['codex']!).toList();
       final b = (peer.requests['happen'] ?? []).skip(starts['happen']!).toList();
+      final aHeaders = (peer.headers['codex'] ?? []).skip(starts['codex']!).toList();
+      final bHeaders = (peer.headers['happen'] ?? []).skip(starts['happen']!).toList();
       await save('$runPath/received-request-files.json', {
         for (final engine in ['codex', 'happen']) engine: (peer.files[engine] ?? []).skip(starts[engine]!).toList(),
       });
@@ -509,9 +527,6 @@ apps = false
         request['reasoning']?['effort'] == reasoning &&
         request['reasoning']?['summary'] == (reasoningSummary == 'none' ? null : reasoningSummary));
       checks['happen:no_client_metadata:run-$iteration'] = b.isNotEmpty && b.every((request) => !request.containsKey('client_metadata'));
-      if (a.isNotEmpty && b.isNotEmpty) {
-        checks['final_request_equal:run-$iteration'] = await compare(a.last, b.last, runPath);
-      } else { checks['final_request_equal:run-$iteration'] = false; }
       for (final pair in [('codex', a), ('happen', b)]) {
         checks['${pair.$1}:thread_id_contract:run-$iteration'] = pair.$2.isNotEmpty &&
           pair.$2.every((request) => uuid7(request['prompt_cache_key']) && request['prompt_cache_key'] == pair.$2.first['prompt_cache_key']);
@@ -529,6 +544,12 @@ apps = false
       }
       checks['happen:admitted_thread_id:run-$iteration'] = b.isNotEmpty && b.first['prompt_cache_key'] == taskID;
       for (var i = 0; i < a.length && i < b.length; i++) {
+        checks['request_equal:$i:run-$iteration'] = await compare(a[i], b[i], '$runPath/request-$i');
+        checks['request_protocol_equal:$i:run-$iteration'] = equals(aHeaders[i]).matches(bHeaders[i], {});
+        for (final pair in [('codex', aHeaders[i]), ('happen', bHeaders[i])]) {
+          checks['${pair.$1}:responses_lite_negotiated:$i:run-$iteration'] =
+            pair.$2['x-openai-internal-codex-responses-lite'] == 'true';
+        }
         for (final pair in [('codex', a[i]), ('happen', b[i])]) {
           final items = (pair.$2['input'] as List).map(jsonObject).toList();
           checks['${pair.$1}:request_item_id_contract:$i:run-$iteration'] = itemIdContract(items,
@@ -577,10 +598,8 @@ apps = false
         if (scenario['mcp'] == true) {
           for (final entry in {'codex': a[i], 'happen': b[i]}.entries) {
             final definitions = declarations(entry.value);
-            checks['${entry.key}:discovery_declared:$i:run-$iteration'] = codeModeToolSearch
-              ? jsonEncode(definitions).contains('tools.tool_search')
-              : !jsonEncode(definitions).contains('tools.tool_search') &&
-                !definitions.any((tool) => tool['type'] == 'tool_search');
+            checks['${entry.key}:discovery_declared:$i:run-$iteration'] =
+              jsonEncode(definitions).contains('tools.tool_search');
           }
         }
       }
@@ -595,7 +614,7 @@ apps = false
       if (scenario['workflow'] == 'parallel') {
         for (final pair in [('codex', a), ('happen', b)]) {
           final outputs = (pair.$2.last['input'] as List).map(jsonObject)
-            .where((item) => item['call_id'] == 'parallel_shells' && item['type'] == 'custom_tool_call_output');
+            .where((item) => item['call_id'] == terminalCall('parallel_shells') && toolOutput(item));
           checks['${pair.$1}:both_parallel_tools_completed:run-$iteration'] = outputs.any((output) {
             final printed = <Json>[];
             for (final part in (output['output'] as List).map(jsonObject)) {
@@ -613,7 +632,7 @@ apps = false
       if (scenario['workflow'] == 'image') {
         for (final pair in [('codex', a), ('happen', b)]) {
           final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
-            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'image_result').toList();
+            .where((item) => toolOutput(item) && item['call_id'] == terminalCall('image_result')).toList();
           final parts = outputs.length == 1 && outputs.single['output'] is List
             ? (outputs.single['output'] as List).map(jsonObject).toList() : <Json>[];
           checks['${pair.$1}:generated_image_content_order:run-$iteration'] =
@@ -624,14 +643,14 @@ apps = false
       if (scenario['workflow'] == 'audio') {
         for (final pair in [('codex', a), ('happen', b)]) {
           final outputs = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject)
-            .where((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'audio_result').toList();
+            .where((item) => toolOutput(item) && item['call_id'] == terminalCall('audio_result')).toList();
           final parts = outputs.length == 1 && outputs.single['output'] is List
             ? (outputs.single['output'] as List).map(jsonObject).toList() : <Json>[];
           checks['${pair.$1}:recorded_audio_content_order:run-$iteration'] =
             jsonEncode(parts.map((part) => part['type']).toList()) == jsonEncode(['input_text', 'input_text', 'input_text', 'input_text']) &&
             parts[1]['text'] == 'audio-before' && parts[2]['text'] == 'audio content omitted because you do not support audio input' &&
             parts[3]['text'] == 'audio-after';
-          checks['${pair.$1}:audio_bytes_not_counted_as_prose:run-$iteration'] = pair.$2.length == 2 &&
+          checks['${pair.$1}:audio_bytes_not_counted_as_prose:run-$iteration'] = pair.$2.length == (scenario['responses'] as List).length &&
             pair.$2.every((request) => (request['input'] as List).last['type'] != 'compaction_trigger');
         }
       }
@@ -650,7 +669,7 @@ apps = false
       }
       if (scenario['workflow'] == 'continuation') {
         for (final pair in [('codex', a), ('happen', b)]) {
-          checks['${pair.$1}:commentary_continues_to_real_tool_execution:run-$iteration'] = pair.$2.length == 3 &&
+          checks['${pair.$1}:commentary_continues_to_real_tool_execution:run-$iteration'] = pair.$2.length == (scenario['responses'] as List).length &&
             (pair.$2.last['input'] as List).map(jsonObject).any((item) => item['role'] == 'assistant' && item['phase'] == 'commentary' &&
               text(item) == "I'll check the requested tools.");
         }
@@ -670,7 +689,10 @@ apps = false
       if (scenario['workflow'] == 'tldw') {
         for (final pair in [('codex', a), ('happen', b)]) {
           final input = pair.$2.isEmpty ? <Json>[] : (pair.$2.last['input'] as List).map(jsonObject).toList();
-          final receipts = {for (final item in input.where((item) => item['type'] == 'custom_tool_call_output')) item['call_id']: item['output']};
+          final receipts = {for (final item in input.where(toolOutput)) item['call_id']: item['output']};
+          for (final entry in jsonObject(scenario['terminal_calls'] ?? {}).entries) {
+            receipts[entry.key] = receipts[entry.value];
+          }
           final skillReads = receipts['tldw_read_skills'] is List
             ? (receipts['tldw_read_skills'] as List).skip(1).map((part) => jsonObject(jsonDecode(part['text'] as String))).toList() : <Json>[];
           final skillFiles = jsonObject(scenario['global_skills']).values.toList();
@@ -851,7 +873,7 @@ void main() {
     cancellation.cancel();
     for (final signal in signals) { await signal.cancel(); }
     if (output.isEmpty) return;
-    report['passed'] = (report['results'] as List).length == selections.length * 2 * contextCases.length &&
+    report['passed'] = (report['results'] as List).length == selections.length * contextCases.length &&
       (report['results'] as List).every((item) => item['passed'] == true);
     await save('$output/report.json', report);
     print('Context contract evidence: $output/report.json');
@@ -862,16 +884,14 @@ void main() {
     final reasoning = selection.effort ?? defaults['default_reasoning_level'] as String;
     final reasoningSummary = defaults['default_reasoning_summary'] as String? ?? 'none';
     final codeModeOnly = defaults['tool_mode'] == 'code_mode_only';
-    for (final codeModeToolSearch in [false, true]) {
-    group('$model reasoning=$reasoning code_mode_tool_search=$codeModeToolSearch', () {
+    group('$model reasoning=$reasoning code_mode_tool_search=true', () {
       for (final fixture in contextCases) {
-        final value = {...fixture,
+        final value = terminalShells({...fixture,
           'selected_model': model != defaultModel,
           'selected_reasoning': selection.effort != null,
-          if (!codeModeToolSearch && fixture['catalog_responses'] is List) 'responses': fixture['catalog_responses'],
-        };
+        });
         test(fixture['id'] as String, () async {
-          final path = '$output/$model/$reasoning/code-mode-tool-search-$codeModeToolSearch/${value['id']}';
+          final path = '$output/$model/$reasoning/${value['id']}';
           final deadline = TimeoutCancellationToken(const Duration(minutes: 2));
           final lifetime = CancellationToken();
           addTearDown(lifetime.cancel);
@@ -879,7 +899,7 @@ void main() {
           try {
             result = await scenario(value, model, codex, path,
               cancellation.merge(deadline).merge(lifetime), catalog.absolute.path,
-              codeModeOnly: codeModeOnly, codeModeToolSearch: codeModeToolSearch,
+              codeModeOnly: codeModeOnly,
               reasoning: reasoning, reasoningSummary: reasoningSummary);
           } catch (error) {
             result = {'scenario': value['id'], 'model': model, 'passed': false, 'error': error.toString()};
@@ -889,7 +909,7 @@ void main() {
           result['reasoning_summary'] = reasoningSummary;
           result['code_mode'] = true;
           result['code_mode_only'] = codeModeOnly;
-          result['code_mode_tool_search'] = codeModeToolSearch;
+          result['code_mode_tool_search'] = true;
           result['use_responses_lite'] = defaults['use_responses_lite'];
           (report['results'] as List).add(result);
           await save('$path/result.json', result);
@@ -898,6 +918,5 @@ void main() {
         });
       }
     });
-    }
   }
 }

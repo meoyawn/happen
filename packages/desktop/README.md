@@ -15,6 +15,11 @@ Release app RAM measurements will be added to the
 
 ## Using Happen
 
+On macOS and Windows, **Settings → Appearance → App icon** shows **Default**
+and **Toilet paper** as selectable icon previews. The choice is saved on this device and restored
+when Happen opens. macOS updates the Dock icon; Windows updates the running
+window's large and small icons. Default restores the icon bundled with the build.
+
 **Settings → Appearance → Project icons** switches between **Letters** (the
 default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
 **Settings → Projects** lists added folders and opens each project's settings.

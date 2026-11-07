@@ -45,6 +45,23 @@ void main() {
     expect(store.modelSnapshot(), before);
     store.close(); store = TaskStore(root.path, 'session', create: false); expect(store.modelSnapshot(), before);
   });
+  for (final provider in ['openai', 'gpt', 'opencode']) {
+    test('reopening $provider ${provider == 'opencode' ? 'keeps foreign settings' : 'removes retired switches'} and preserves canonical history', () {
+      final original = {...config, 'provider': provider, 'provider_settings': {
+        'reasoning': 'max', 'code_mode_only': false, 'code_mode_tool_search': true,
+      }};
+      store.append('task.created', original, metadata: {'config': original});
+      store.append('input.committed', {'item': user});
+      final before = store.modelSnapshot();
+      final expected = provider == 'opencode' ? original : {...config, 'provider': provider};
+      for (var reopen = 0; reopen < 2; reopen++) {
+        store.close(); store = TaskStore(root.path, 'session', create: false);
+        expect(store.metadata('config'), expected);
+        expect(store.modelSnapshot(), before);
+        expect(store.modelContext(), [user]);
+      }
+    });
+  }
   test('compaction replaces the model window but keeps earlier native history', () {
     seed(); store.append('input.committed', {'item': user});
     final summary = ConversationItem.user('Summary of previous actions.').toJson();

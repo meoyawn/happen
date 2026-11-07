@@ -1,12 +1,13 @@
 import Cocoa
 import FlutterMacOS
 import IOKit.hidsystem
+import ObjectiveC
 
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var desktopChannel: FlutterMethodChannel?
   private var dictationAudio: DictationAudioBridge?
   private var clipboard: ClipboardBridge?
-  private var shortcutModifierCompatibility: SyntheticCommandModifierCompatibility?
+  private var keyboardRouting: DesktopKeyboardRouting?
   private var statusItem: NSStatusItem?
   private var fullscreenCloseObserver: NSObjectProtocol?
   private let windowControls = WindowControlsView()
@@ -168,7 +169,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     RegisterGeneratedPlugins(registry: flutterViewController)
     dictationAudio = DictationAudioBridge(messenger: flutterViewController.engine.binaryMessenger)
     clipboard = ClipboardBridge(messenger: flutterViewController.engine.binaryMessenger)
-    shortcutModifierCompatibility = SyntheticCommandModifierCompatibility(window: self)
+    keyboardRouting = DesktopKeyboardRouting(window: self)
 
     let channel = FlutterMethodChannel(
       name: "happen/desktop", binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -239,12 +240,30 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
 }
 
-/// VoiceInk supplies generic Command flags; Flutter synchronizes the left/right
-/// device bits. Normalize before AppKit and Flutter process key equivalents.
-private final class SyntheticCommandModifierCompatibility {
+/// Embedded platform views can handle shortcuts only while they own focus.
+/// Normalize VoiceInk's generic Command flags for Flutter's left/right key state.
+private final class DesktopKeyboardRouting {
   private var monitor: Any?
 
+  private static let platformViewFocusGate: Void = {
+    let selector = #selector(NSView.performKeyEquivalent(with:))
+    guard let container = NSClassFromString("FlutterPlatformViewContainer"),
+          let method = class_getInstanceMethod(container, selector) else { return }
+    typealias Forward = @convention(c) (NSView, Selector, NSEvent) -> Bool
+    let forward = unsafeBitCast(method_getImplementation(method), to: Forward.self)
+    let focused: @convention(block) (NSView, NSEvent) -> Bool = { view, event in
+      guard let responder = view.window?.firstResponder as? NSView,
+            responder === view || responder.isDescendant(of: view) else { return false }
+      return forward(view, selector, event)
+    }
+    let implementation = imp_implementationWithBlock(focused)
+    if !class_addMethod(container, selector, implementation, method_getTypeEncoding(method)) {
+      imp_removeBlock(implementation)
+    }
+  }()
+
   init(window: NSWindow) {
+    _ = Self.platformViewFocusGate
     monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak window] event in
       guard let window = window,
             event.window === window || (event.window == nil && NSApplication.shared.keyWindow === window) else { return event }

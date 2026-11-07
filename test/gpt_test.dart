@@ -10,6 +10,17 @@ import 'package:test/test.dart';
 import 'support/openai_output.dart';
 
 void main() {
+  test('GPT rejects provider overrides of catalog-owned tool mode', () {
+    final client = ResponsesClient(credentials: ({bool refresh = false}) async => {
+      'access_token': 'fixture', 'account_id': 'fixture',
+    });
+    addTearDown(client.close);
+    final provider = OpenAIProvider(client);
+    for (final value in [false, true]) {
+      expect(() => provider.resolveSettings({'code_mode_only': value}), throwsArgumentError);
+    }
+  });
+
   for (final transport in ['http', 'websocket']) {
     test(
       'GPT $transport preserves native state and ordered updates across requests',
@@ -17,6 +28,7 @@ void main() {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final http = HttpClient();
         final bodies = <Json>[];
+        final protocol = <Json>[];
         final sockets = <WebSocket>[];
         final raw = ResponsesClient(
           http: http,
@@ -117,6 +129,10 @@ void main() {
         }
 
         server.listen((request) async {
+          protocol.add({
+            'lite': request.headers.value('x-openai-internal-codex-responses-lite'),
+            'beta': request.headers.value('openai-beta'),
+          });
           if (WebSocketTransformer.isUpgradeRequest(request)) {
             final socket = await WebSocketTransformer.upgrade(request);
             sockets.add(socket);
@@ -194,7 +210,20 @@ void main() {
         // Request inspection must match the packet received by inference,
         // including the base prompt, tool schemas, native items and settings.
         expect(gptRequest(request(context)), bodies[1]);
-        expect((bodies[1]['input'] as List).sublist(3, 6), native);
+        expect(protocol, isNotEmpty);
+        expect(protocol, everyElement({
+          'lite': 'true',
+          'beta': transport == 'websocket' ? 'responses_websockets=2026-02-06' : null,
+        }));
+        for (final body in bodies) {
+          expect(body['client_metadata'], transport == 'websocket'
+            ? {'ws_request_header_x_openai_internal_codex_responses_lite': 'true'} : isNull);
+        }
+        expect((bodies[1]['input'] as List).sublist(3, 6), [
+          native[0],
+          {...native[1], 'internal_chat_message_metadata_passthrough': {'content_item_kinds': ['unknown']}},
+          native[2],
+        ]);
         expect(bodies[1]['reasoning'], {'effort': 'low', 'context': 'all_turns'});
         expect(
           (bodies[1]['input'] as List).reversed.skip(1).first['type'],

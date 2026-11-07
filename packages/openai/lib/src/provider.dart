@@ -14,6 +14,8 @@ class OpenAIProvider implements ModelProvider {
   String get id => 'openai';
   @override
   String newTaskId() => newUuidV7();
+  @override
+  List<String> get additionalUserSkillRoots => const ['.codex/skills/.system'];
 
   Future<Json> generateImage(ModelRequest request, Json arguments, {
     required String outputRoot, required String callId, required String turnId, required CancellationToken cancellation,
@@ -65,8 +67,6 @@ class OpenAIProvider implements ModelProvider {
       'image_generation',
       'sleep_tool',
       'goals',
-      'code_mode_only',
-      'code_mode_tool_search',
       'request_user_input',
       'default_mode_request_user_input',
     };
@@ -94,7 +94,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'live', 'disabled'}.contains(webSearch)) throw ArgumentError('GPT web_search must be live or disabled');
     final imageGeneration = selected['image_generation'] ?? (client.endpoint.host == 'chatgpt.com' && client.endpoint.path.startsWith('/backend-api/codex/'));
     if (imageGeneration is! bool) throw ArgumentError('GPT image_generation must be a boolean');
-    for (final key in ['sleep_tool', 'goals', 'code_mode_only', 'code_mode_tool_search', 'request_user_input', 'default_mode_request_user_input']) {
+    for (final key in ['sleep_tool', 'goals', 'request_user_input', 'default_mode_request_user_input']) {
       if (selected[key] != null && selected[key] is! bool) throw ArgumentError('GPT $key must be a boolean');
     }
     final context = selected['context_limit'] ?? info.contextWindow;
@@ -120,8 +120,6 @@ class OpenAIProvider implements ModelProvider {
       'image_generation': imageGeneration && (info.data['input_modalities'] as List? ?? []).contains('image'),
       'sleep_tool': selected['sleep_tool'] != false && (info.data['experimental_supported_tools'] as List? ?? []).contains('clock'),
       'goals': selected['goals'] ?? true,
-      'code_mode_only': selected['code_mode_only'] ?? info.data['tool_mode'] == 'code_mode_only',
-      'code_mode_tool_search': selected['code_mode_tool_search'] ?? false,
       'request_user_input': selected['request_user_input'] ?? true,
       'default_mode_request_user_input': selected['default_mode_request_user_input'] ?? false,
     };
