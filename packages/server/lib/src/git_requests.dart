@@ -16,6 +16,7 @@ final class _GitGenerating extends _GitWriteState {
   const _GitGenerating(this.context);
   final ({String tree, String summary, String patch}) context;
 }
+final class _GitCreatingBranch extends _GitWriteState { const _GitCreatingBranch(); }
 final class _GitCommitting extends _GitWriteState {
   _GitCommitting(this.message, List<String> paths, this.tree) : paths = List.unmodifiable(paths);
   final String message, tree;
@@ -63,11 +64,12 @@ _GitCommitReceipt? _gitReceipt(_GitWriteState state) => switch (state) {
 
 _GitWriteState _gitWriteTransition(_GitWriteState current, _GitWriteState next) => switch ((current, next)) {
   (_GitPreparing(), _GitGenerating() || _GitCommitting() || _GitPushing() || _GitSwitching()) => next,
-  (_GitGenerating(), _GitCommitting()) => next,
+  (_GitPreparing() || _GitGenerating(), _GitCreatingBranch()) => next,
+  (_GitGenerating() || _GitCreatingBranch(), _GitCommitting()) => next,
   (_GitCommitting(), _GitCommitted()) => next,
   (_GitCommitted(), _GitPushing() || _GitWriteCompleted()) => next,
   (_GitPushing() || _GitSwitching(), _GitWriteCompleted()) => next,
-  (_GitPreparing() || _GitGenerating() || _GitCommitting() || _GitCommitted() || _GitPushing() || _GitSwitching(),
+  (_GitPreparing() || _GitGenerating() || _GitCreatingBranch() || _GitCommitting() || _GitCommitted() || _GitPushing() || _GitSwitching(),
     _GitWriteFailed() || _GitWriteCancelling()) => next,
   (_GitWriteCancelling(), _GitWriteCancelled()) => next,
   _ => throw StateError('Invalid Git write transition: ${current.runtimeType} → ${next.runtimeType}'),
@@ -77,7 +79,8 @@ extension _GitRequests on AgentServer {
   Future<Object?> _gitRequest(String method, Json params, _Client client, Object requestId) async {
     final parent = client.gitOperations[requestId]!.merge(client.cancellation).merge(_lifetime);
     final cwd = requiredString(params, 'cwd');
-    final status = await gitStatus(cwd, parent);
+    final includeUnstaged = params['includeUnstaged'] != false;
+    final status = await gitStatus(cwd, parent, includeUnstaged: includeUnstaged);
     if (method == 'git/status') return status;
     if (status['isRepo'] != true) throw StateError('This folder is not a Git repository');
     if (method == 'git/branches') return {'branches': await gitBranches(requiredString(status, 'root'), parent)};
@@ -94,6 +97,7 @@ extension _GitRequests on AgentServer {
       if (cancellation.isCancelled) return;
       final phase = switch (state) {
         _GitGenerating() => ('generating', 'Generating commit message…'),
+        _GitCreatingBranch() => ('creating_branch', 'Creating branch…'),
         _GitCommitting() => ('committing', 'Committing…'),
         _GitPushing() => ('pushing', 'Pushing…'),
         _GitSwitching() => ('switching', action == 'switch' ? 'Switching branch…' : 'Creating branch…'),
@@ -142,10 +146,18 @@ extension _GitRequests on AgentServer {
           : status['remote'] == null ? 'Configure a Git remote before pushing' : 'Pull or rebase upstream changes before pushing');
       }
       if (action != 'push') {
+        if (!includeUnstaged && params['filePaths'] != null) {
+          throw const FormatException('Staged-only commits use the complete index');
+        }
+        final newBranch = params['newBranch'] as String?;
+        if (newBranch != null) {
+          if (newBranch.startsWith('-') || newBranch.contains('\u0000')) throw const FormatException('Invalid branch name');
+          await runGit(root, ['check-ref-format', '--branch', newBranch], cancellation);
+        }
         final paths = gitSelectedPaths(status, params['filePaths']);
         final temp = await Directory.systemTemp.createTemp('happen-commit-');
         try {
-          final context = await gitCommitContext(status, paths, '${temp.path}/index', cancellation);
+          final context = await gitCommitContext(status, paths, '${temp.path}/index', cancellation, includeUnstaged: includeUnstaged);
           var message = (params['commitMessage'] as String? ?? '').trim();
           if (message.length > 10000 || message.contains('\u0000')) throw const FormatException('Invalid commit message');
           if (message.isEmpty) {
@@ -178,23 +190,35 @@ extension _GitRequests on AgentServer {
           }
           final current = await gitStatus(root, cancellation);
           if (current['head'] != status['head'] || current['branch'] != status['branch'] ||
-              (await gitCommitContext(current, paths, '${temp.path}/index', cancellation)).tree != context.tree) {
+              (await gitCommitContext(current, paths, '${temp.path}/index', cancellation, includeUnstaged: includeUnstaged)).tree != context.tree) {
             throw StateError('The selected files or branch changed. Review the changes and try again');
+          }
+          if (newBranch != null) {
+            advance(const _GitCreatingBranch());
+            await runGit(root, ['switch', '--create', newBranch], cancellation, write: true);
+            final created = await gitStatus(root, cancellation);
+            if (created['head'] != status['head'] || created['branch'] != newBranch ||
+                (await gitCommitContext(created, paths, '${temp.path}/index', cancellation, includeUnstaged: includeUnstaged)).tree != context.tree) {
+              throw StateError('The checkout changed while creating the branch. Review the changes and try again');
+            }
           }
           cancellation.throwIfCancelled();
           advance(_GitCommitting(message, paths, context.tree));
           final messageFile = File('${temp.path}/message.txt');
           await messageFile.writeAsString(message);
-          final indexed = (await runGit(root, ['ls-files', '--cached', '-z', '--', ...paths], cancellation))
-            .output.split('\u0000').toSet();
-          final stage = <String>[];
-          for (final path in paths) {
-            if (indexed.contains(path) || await FileSystemEntity.type(p.join(root, path), followLinks: false) != FileSystemEntityType.notFound) {
-              stage.add(path);
+          if (includeUnstaged) {
+            final indexed = (await runGit(root, ['ls-files', '--cached', '-z', '--', ...paths], cancellation))
+              .output.split('\u0000').toSet();
+            final stage = <String>[];
+            for (final path in paths) {
+              if (indexed.contains(path) || await FileSystemEntity.type(p.join(root, path), followLinks: false) != FileSystemEntityType.notFound) {
+                stage.add(path);
+              }
             }
+            if (stage.isNotEmpty) await runGit(root, ['add', '--all', '--', ...stage], cancellation, write: true);
           }
-          if (stage.isNotEmpty) await runGit(root, ['add', '--all', '--', ...stage], cancellation, write: true);
-          await runGit(root, ['commit', '--only', '--file', messageFile.path, '--', ...paths], cancellation,
+          await runGit(root, ['commit', if (includeUnstaged) '--only', '--file', messageFile.path,
+            if (includeUnstaged) ...['--', ...paths]], cancellation,
             write: true, onOutput: (output) => progress(output: output));
           final sha = (await runGit(root, ['rev-parse', 'HEAD'], cancellation)).output.trim();
           advance(_GitCommitted((sha: sha, subject: message.split('\n').first)));
@@ -203,7 +227,7 @@ extension _GitRequests on AgentServer {
       if (action != 'commit') {
         cancellation.throwIfCancelled();
         final current = await gitStatus(root, cancellation);
-        if (current['branch'] != status['branch']) throw StateError('The branch changed before pushing');
+        if (current['branch'] != (params['newBranch'] ?? status['branch'])) throw StateError('The branch changed before pushing');
         final receipt = _gitReceipt(state);
         if (receipt != null && current['head'] != receipt.sha) throw StateError('The branch changed after committing. Review it before pushing');
         final remote = requiredString(current, 'remote'), branch = requiredString(current, 'branch');

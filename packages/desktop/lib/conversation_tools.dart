@@ -101,6 +101,9 @@ String? toolJavaScript(ToolActivity tool) {
   return null;
 }
 
+bool toolShowsFailure(ToolActivity tool) => tool.status == 'failed' &&
+  (!_isCommand(tool) || toolJavaScript(tool) != null);
+
 String? _commandPreview(ToolActivity tool) {
   final actions = _commandActions(tool);
   var source = actions.length == 1 && actions.single['command'] is String
@@ -128,12 +131,12 @@ String _relative(String path, String directory) => directory.isNotEmpty && path.
 String toolLabel(ToolActivity tool, {String directory = '', bool active = false}) {
   final input = _decode(tool.rawInput);
   final name = tool.name.split('.').last.split('__').last;
-  final failed = tool.status == 'failed';
+  final failed = toolShowsFailure(tool);
   final kind = toolKind(tool);
   if (_isCommand(tool)) {
     if (toolJavaScript(tool) != null) return failed ? 'JavaScript failed' : active ? 'Running JavaScript' : 'Ran JavaScript';
     final actions = _commandActions(tool);
-    if (actions.length == 1 && !failed && tool.status != 'interrupted') {
+    if (actions.length == 1 && tool.status != 'interrupted') {
       final action = actions.single;
       final path = action['displayLabel'] ?? action['name'] ?? action['path'];
       final target = path is String ? _relative(path, directory) : null;
@@ -144,7 +147,7 @@ String toolLabel(ToolActivity tool, {String directory = '', bool active = false}
         return '${active ? 'Searching' : 'Searched'}${query == null ? ' files' : ' for $query'}${target == null ? '' : ' in $target'}';
       }
     }
-    final verb = failed ? 'Failed' : active ? 'Running' : tool.status == 'interrupted' ? 'Stopped' : 'Ran';
+    final verb = active ? 'Running' : tool.status == 'interrupted' ? 'Stopped' : 'Ran';
     return '$verb ${_commandPreview(tool) ?? 'command'}';
   }
   if (kind == 'read' || kind == 'edit') {
@@ -229,12 +232,13 @@ class ConversationToolCall extends StatelessWidget {
       return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
     }
     final label = toolLabel(tool, directory: directory, active: tool.status == 'running');
+    final failed = toolShowsFailure(tool);
     return ConversationDisclosure(
     key: PageStorageKey('tool:${tool.id}'),
     label: label,
     fontSize: 14, shimmer: tool.status == 'running', timestamp: tool.startedAt,
-    color: tool.status == 'failed' ? desktopError : desktopSecondary,
-    icon: ConversationWorkIcon(kind: toolKind(tool), failed: tool.status == 'failed'),
+    color: failed ? desktopError : desktopSecondary,
+    icon: ConversationWorkIcon(kind: toolKind(tool), failed: failed),
     onExpand: onExpand,
     builder: (context) => Padding(padding: const EdgeInsets.only(left: 20, top: 4, bottom: 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [

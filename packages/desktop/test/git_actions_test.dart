@@ -141,18 +141,34 @@ void main() {
     await tester.tap(find.byTooltip('Close changes'));
     await tester.pumpAndSettle();
     await tester.runAsync(() async {
+      await git(['add', 'selected.txt']);
       await tester.tap(find.text('Commit'));
       await until((state) => state is! GitLoading);
     });
     await tester.pumpAndSettle();
-    expect(find.text('Commit message (optional)'), findsOneWidget);
-    expect(find.text('2 of 2 files selected'), findsOneWidget);
-    await tester.tap(find.text('excluded.txt'));
+    expect(find.text('Include unstaged changes'), findsOneWidget);
+    expect(find.text('Commit and push'), findsOneWidget);
+    await tester.enterText(find.descendant(of: find.byType(Dialog), matching: find.byType(TextField)), 'Save the staged file');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(find.text('1 of 2 files selected'), findsOneWidget);
-    await tester.enterText(find.descendant(of: find.byType(Dialog), matching: find.byType(TextField)), 'Save the selected file');
+    expect(find.byType(Dialog), findsOneWidget, reason: 'Plain Enter in the message must not submit');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
     await tester.runAsync(() async {
-      await tester.tap(find.widgetWithText(FilledButton, 'Commit'));
+      await tester.tap(find.text('Commit'));
+      await until((state) => state is! GitLoading);
+    });
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Save the staged file');
+    await tester.runAsync(() async {
+      await tester.tap(find.text('Include unstaged changes'));
+      final token = CancellationToken();
+      try { await controller.commitSelection(false, token); } finally { token.cancel(); }
+    });
+    await tester.pumpAndSettle();
+    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, false);
+    await tester.runAsync(() async {
+      await tester.tap(find.descendant(of: find.byType(Dialog), matching: find.widgetWithText(TextButton, 'Commit')));
       await until((state) => state is GitCompleted || state is GitFailed);
     });
     await tester.pumpAndSettle();
@@ -161,7 +177,8 @@ void main() {
     expect(phases, containsAllInOrder([GitStarting, GitCommitting, GitRefreshing, GitCompleted]));
     await tester.runAsync(() async {
       expect(await git(['ls-tree', '--name-only', 'HEAD']), 'selected.txt');
-      expect(await git(['log', '-1', '--format=%B']), 'Save the selected file');
+      expect(await git(['log', '-1', '--format=%B']), 'Save the staged file');
+      expect(controller.commitMessage, isEmpty);
     });
     await tester.runAsync(() async {
       await tester.tap(find.byTooltip('Choose branch'));
@@ -193,10 +210,12 @@ void main() {
       await until((state) => state is! GitLoading);
     });
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Include unstaged changes'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.descendant(of: find.byType(Dialog), matching: find.byType(TextField)), 'Publish remaining file');
     phases.clear();
     await tester.runAsync(() async {
-      await tester.tap(find.widgetWithText(FilledButton, 'Commit & push'));
+      await tester.tap(find.widgetWithText(TextButton, 'Commit and push'));
       await until((state) => state is GitCompleted || state is GitFailed);
     });
     await tester.pumpAndSettle();

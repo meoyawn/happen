@@ -43,6 +43,7 @@ sealed class GitRunning extends GitState {
   String get id => operation.id;
   String get label => switch (this) {
     GitStarting() => 'Starting…', GitGenerating() => 'Generating commit message…',
+    GitCreatingBranch() => 'Creating branch…',
     GitCommitting() => 'Committing…', GitPushing() => 'Pushing…',
     GitSwitching() => operation.action == GitAction.createBranch ? 'Creating branch…' : 'Switching branch…',
   };
@@ -53,6 +54,7 @@ sealed class GitRunning extends GitState {
 }
 final class GitStarting extends GitRunning { const GitStarting(super.repository, super.operation); }
 final class GitGenerating extends GitRunning { const GitGenerating(super.repository, super.operation); }
+final class GitCreatingBranch extends GitRunning { const GitCreatingBranch(super.repository, super.operation); }
 final class GitCommitting extends GitRunning {
   const GitCommitting(super.repository, super.operation, {this.progress});
   final String? progress;
@@ -116,12 +118,13 @@ GitState _transition(GitState current, GitState next) => switch ((current, next)
   (GitReady() || GitCompleted() || GitFailed() || GitCancelled(), GitLoading() || GitStarting() || GitReady()) => next,
   (GitRunning(:final operation), GitRunning(operation: final nextOperation)) when operation != nextOperation =>
     throw StateError('A stale Git operation cannot transition the current operation'),
-  (GitStarting(operation: (:final action, id: _)), GitGenerating() || GitCommitting())
+  (GitStarting(operation: (:final action, id: _)), GitGenerating() || GitCreatingBranch() || GitCommitting())
     when action == GitAction.commit || action == GitAction.commitPush => next,
   (GitStarting(operation: (action: GitAction.push, id: _)), GitPushing()) => next,
   (GitStarting(operation: (:final action, id: _)), GitSwitching())
     when action == GitAction.switchBranch || action == GitAction.createBranch => next,
-  (GitGenerating(), GitCommitting()) => next,
+  (GitGenerating(), GitCreatingBranch() || GitCommitting()) => next,
+  (GitCreatingBranch(), GitCommitting()) => next,
   (GitCommitting(), GitCommitting()) => next,
   (GitCommitting(operation: (action: GitAction.commitPush, id: _)), GitPushing()) => next,
   (GitPushing(), GitPushing()) => next,
@@ -144,6 +147,7 @@ class GitActionsController extends ChangeNotifier {
       final output = value['output'] as String?;
       final next = switch (value['phase']) {
         'generating' => GitGenerating(repo, operation),
+        'creating_branch' => GitCreatingBranch(repo, operation),
         'committing' => GitCommitting(repo, operation, progress: output ?? (current is GitCommitting ? current.progress : null)),
         'pushing' => GitPushing(repo, operation, commit: _commit(value['commit']) ?? (current is GitPushing ? current.commit : null),
           progress: output ?? (current is GitPushing ? current.progress : null)),
@@ -155,6 +159,12 @@ class GitActionsController extends ChangeNotifier {
   }
   final AgentClient client;
   final String cwd;
+  String _commitMessage = '';
+  bool _includeUnstaged = true;
+  String get commitMessage => _commitMessage;
+  bool get includeUnstaged => _includeUnstaged;
+  void editCommitMessage(String value) { _commitMessage = value; }
+  void chooseIncludeUnstaged(bool value) { _includeUnstaged = value; }
   final _lifetime = CancellationToken();
   late final StreamSubscription<Json> _events;
   CancellationToken? _read;
@@ -216,7 +226,12 @@ class GitActionsController extends ChangeNotifier {
       truncated: result['truncated'] == true);
   }
 
-  Future<void> run(String action, {String message = '', List<String>? filePaths, String? provider, String? model, String? branch}) async {
+  Future<GitRepository> commitSelection(bool includeUnstaged, CancellationToken cancellation) async =>
+    _repository(await client.gitRequest('git/status', {'cwd': cwd, 'includeUnstaged': includeUnstaged},
+      cancellation: cancellation.merge(_lifetime)));
+
+  Future<void> run(String action, {String message = '', List<String>? filePaths, String? provider, String? model,
+    String? branch, bool includeUnstaged = true, String? newBranch}) async {
     if (busy || _lifetime.isCancelled) return;
     final repository = _state.repository;
     if (repository == null || !repository.isRepo) return;
@@ -228,9 +243,11 @@ class GitActionsController extends ChangeNotifier {
     GitOutcome outcome;
     try {
       final result = await client.gitRequest('git/run', {'cwd': cwd, 'actionId': id, 'action': action,
-        'commitMessage': message, 'filePaths': ?filePaths, 'provider': ?provider, 'model': ?model, 'branch': ?branch},
+        'commitMessage': message, 'filePaths': ?filePaths, 'provider': ?provider, 'model': ?model, 'branch': ?branch,
+        'includeUnstaged': includeUnstaged, 'newBranch': ?newBranch},
         cancellation: token.merge(_lifetime));
       final commit = _commit(result['commit']);
+      if (commit != null && _commitMessage.trim() == message.trim()) _commitMessage = '';
       outcome = result['status'] == 'failed' ? GitRejected(
         '${commit == null ? '' : 'Committed ${commit.sha.substring(0, 7)}. '}${result['message']}', commit) : GitSucceeded(commit);
     } on CancelledException {

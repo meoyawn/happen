@@ -1,11 +1,13 @@
-// Commit controls and file selection follow T3 Code GitActionsControl.tsx, 86d8838e9.
+// Commit dialog follows Harness client/lib/ui/git_actions.dart.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
-import 'file_icon.dart';
+import 'git_action_glyphs.dart';
 import 'git_actions_state.dart';
 import 'details_row.dart';
 
@@ -59,11 +61,11 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
     if (!mounted || controller.busy) return;
     final repository = controller.state.repository;
     if (repository == null || repository.files.isEmpty) return;
-    final result = await showDialog<({String message, List<String> paths})>(context: context,
-      builder: (context) => _CommitDialog(repository: repository, action: action));
+    final result = await showDialog<_CommitRequest>(context: context, barrierColor: const Color(0x22000000),
+      builder: (context) => _CommitDialog(repository: repository, controller: controller, action: action));
     if (result == null) return;
-    await controller.run(action, message: result.message, filePaths: result.paths,
-      provider: widget.provider, model: widget.model);
+    await controller.run(result.action, message: result.message, includeUnstaged: result.includeUnstaged,
+      newBranch: result.newBranch, provider: widget.provider, model: widget.model);
   }
 
   @override
@@ -132,89 +134,200 @@ class _GitActionsControlState extends State<GitActionsControl> with WidgetsBindi
   });
 }
 
+typedef _CommitRequest = ({String action, String message, bool includeUnstaged, String? newBranch});
+
 class _CommitDialog extends StatefulWidget {
-  const _CommitDialog({required this.repository, required this.action});
+  const _CommitDialog({required this.repository, required this.controller, required this.action});
   final GitRepository repository;
+  final GitActionsController controller;
   final String action;
   @override
   State<_CommitDialog> createState() => _CommitDialogState();
 }
 
 class _CommitDialogState extends State<_CommitDialog> {
-  final _message = TextEditingController();
-  late final _selected = widget.repository.files.map((file) => file.path).toSet();
-  @override
-  void dispose() { _message.dispose(); super.dispose(); }
-  void _submit() {
-    if (_selected.isNotEmpty) Navigator.pop(context, (message: _message.text.trim(), paths: _selected.toList()));
+  late final _message = TextEditingController(text: widget.controller.commitMessage);
+  final _branch = TextEditingController();
+  final _messageFocus = FocusNode(), _branchFocus = FocusNode();
+  final _branchMenu = MenuController();
+  late bool _includeUnstaged = widget.controller.includeUnstaged;
+  late String _selectedAction = widget.action;
+  late Future<GitRepository> _selection = _loadSelection();
+  CancellationToken? _read;
+  bool _newBranch = false;
+  String? _validation;
+
+  Future<GitRepository> _loadSelection() {
+    _read?.cancel();
+    final token = _read = CancellationToken();
+    return _includeUnstaged ? Future.value(widget.repository) : widget.controller.commitSelection(false, token);
   }
+
+  void _chooseIncludeUnstaged(bool value) {
+    widget.controller.chooseIncludeUnstaged(value);
+    setState(() { _includeUnstaged = value; _selection = _loadSelection(); });
+  }
+
+  void _submit(String action) {
+    if (widget.controller.busy) return;
+    if (action != 'push' && _newBranch && _branch.text.trim().isEmpty) {
+      setState(() => _validation = 'Enter a branch name.');
+      _branchFocus.requestFocus();
+      return;
+    }
+    Navigator.pop(context, (action: action, message: _message.text.trim(), includeUnstaged: _includeUnstaged,
+      newBranch: action != 'push' && _newBranch ? _branch.text.trim() : null));
+  }
+
   @override
-  Widget build(BuildContext context) => Shortcuts(
-    shortcuts: {const SingleActivator(LogicalKeyboardKey.enter, meta: true): const ActivateIntent(),
-      const SingleActivator(LogicalKeyboardKey.enter, control: true): const ActivateIntent()},
-    child: Actions(actions: {ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) { _submit(); return null; })},
-      child: Dialog(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 520, maxHeight: 620),
-          child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Text(widget.action == 'commit_push' ? 'Commit & push changes' : 'Commit changes',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: desktopForeground)),
-              const SizedBox(height: 6),
-              const Text('Choose the files to include in this commit.', style: TextStyle(fontSize: 12, color: desktopSecondary)),
-              const SizedBox(height: 18),
-              Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: desktopMuted,
-                border: Border.all(color: desktopBorder), borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [
-                  const Icon(Icons.call_split_rounded, size: 15, color: desktopSecondary),
+  void dispose() {
+    _read?.cancel();
+    _message.dispose(); _branch.dispose(); _messageFocus.dispose(); _branchFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<GitRepository>(key: ValueKey(_includeUnstaged),
+    future: _selection, builder: (context, snapshot) {
+      final repo = widget.repository, selection = snapshot.data;
+      final loading = snapshot.connectionState != ConnectionState.done;
+      final conflict = repo.files.any((file) => file.conflicted);
+      final canCommit = !widget.controller.busy && !loading && selection != null && selection.files.isNotEmpty && !conflict;
+      final canPublish = repo.branch != null && repo.remote != null && repo.behind == 0;
+      final canPush = canPublish && repo.head != null && (repo.ahead > 0 || repo.upstream == null);
+      final commitReason = loading ? 'Loading changes…' : snapshot.hasError ? 'Could not load changes'
+        : conflict ? 'Resolve merge conflicts before committing' : 'No changes to commit';
+      final pushReason = repo.remote == null ? 'No Git remote configured for push' : repo.branch == null
+        ? 'Check out a branch before pushing' : repo.behind > 0 ? 'Pull or rebase upstream changes before pushing' : 'No new commits to push';
+      final actions = [if (canCommit) 'commit', if (canCommit && canPublish) 'commit_push', if (canPush) 'push'];
+      return Dialog(backgroundColor: desktopSurface, surfaceTintColor: Colors.transparent, elevation: 0,
+        constraints: const BoxConstraints(minWidth: 0),
+        insetPadding: EdgeInsets.symmetric(horizontal: MediaQuery.sizeOf(context).width * .04, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: DecoratedBox(decoration: BoxDecoration(color: desktopSurface, borderRadius: BorderRadius.circular(16),
+          boxShadow: const [BoxShadow(color: Color(0x30000000), offset: Offset(0, 16), blurRadius: 32, spreadRadius: -8)]),
+          child: Semantics(namesRoute: true, label: 'Commit or push', child: SizedBox(width: 420,
+            child: Focus(skipTraversal: true, onKeyEvent: (_, event) {
+              if (event is! KeyDownEvent || actions.isEmpty) return KeyEventResult.ignored;
+              final key = event.logicalKey;
+              if (key == LogicalKeyboardKey.enter && (HardwareKeyboard.instance.isMetaPressed || HardwareKeyboard.instance.isControlPressed)) {
+                _submit(actions.contains(_selectedAction) ? _selectedAction : actions.first);
+                return KeyEventResult.handled;
+              }
+              if (!_messageFocus.hasFocus && !_branchFocus.hasFocus &&
+                  (key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.arrowUp)) {
+                final index = actions.indexOf(_selectedAction);
+                setState(() => _selectedAction = actions[(index + (key == LogicalKeyboardKey.arrowDown ? 1 : -1)) % actions.length]);
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            }, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.all(4),
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                MenuAnchor(controller: _branchMenu,
+                  style: MenuStyle(backgroundColor: const WidgetStatePropertyAll(desktopSidebar),
+                    surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+                    padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
+                    shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)))),
+                  menuChildren: [
+                    const Padding(padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Text('Commit to', style: TextStyle(fontSize: 12))),
+                    MenuItemButton(leadingIcon: _gitGlyph('branch', desktopSecondary),
+                      trailingIcon: !_newBranch ? const Icon(Icons.check_rounded, size: 14) : null,
+                      onPressed: () => setState(() { _newBranch = false; _validation = null; }),
+                      child: Text(repo.branch ?? 'Detached HEAD')),
+                    MenuItemButton(leadingIcon: const Icon(Icons.add_rounded, size: 16),
+                      trailingIcon: _newBranch ? const Icon(Icons.check_rounded, size: 14) : null,
+                      onPressed: () => setState(() { _newBranch = true; _validation = null; }), child: const Text('New branch')),
+                  ], builder: (context, menu, _) => SizedBox(height: 32, child: TextButton(
+                    onPressed: () => menu.isOpen ? menu.close() : menu.open(),
+                    style: TextButton.styleFrom(foregroundColor: desktopSecondary, minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap, padding: const EdgeInsets.symmetric(horizontal: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                    child: Row(children: [_gitGlyph('branch', desktopSecondary), const SizedBox(width: 8),
+                      Expanded(child: Text(_newBranch ? 'New branch' : repo.branch ?? 'Detached HEAD',
+                        overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, height: 1.5))),
+                      const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: desktopSecondary),
+                    ])))),
+                const SizedBox(height: 4),
+                if (_newBranch) Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: TextField(controller: _branch, focusNode: _branchFocus, autofocus: true,
+                    style: const TextStyle(fontSize: 14), onChanged: (_) { if (_validation != null) setState(() => _validation = null); },
+                    decoration: const InputDecoration(hintText: 'Create a new branch', isDense: true))),
+                SizedBox(height: 80, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Semantics(label: 'Commit message', child: TextField(controller: _message, focusNode: _messageFocus,
+                    onChanged: widget.controller.editCommitMessage,
+                    autofocus: !_newBranch, expands: true, minLines: null, maxLines: null, maxLength: 10000,
+                    keyboardType: TextInputType.multiline, style: const TextStyle(fontSize: 14, height: 1.5),
+                    decoration: const InputDecoration(hintText: 'Commit message (leave blank to generate)…',
+                      hintStyle: TextStyle(color: desktopSecondary, fontWeight: FontWeight.w400),
+                      border: InputBorder.none, contentPadding: EdgeInsets.zero, isDense: true, counterText: ''),
+                  )))),
+                Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 12), child: Row(children: [
+                  SizedBox.square(dimension: 16, child: Checkbox(value: _includeUnstaged,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap, visualDensity: VisualDensity.compact,
+                    onChanged: (value) => _chooseIncludeUnstaged(value ?? true))),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(widget.repository.branch ?? 'Detached HEAD',
-                    overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
-                  if (widget.repository.remote != null) Text(widget.repository.remote!,
-                    style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+                  Expanded(child: GestureDetector(onTap: () => _chooseIncludeUnstaged(!_includeUnstaged),
+                    child: const Text('Include unstaged changes', overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 14, height: 1.5, color: desktopForeground)))),
+                  const SizedBox(width: 8),
+                  if (loading) const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.2))
+                  else if (selection != null) ...[
+                    Text('+${selection.additions}', style: const TextStyle(fontSize: 12, color: Color(0xff00a240))),
+                    const SizedBox(width: 4),
+                    Text('-${selection.deletions}', style: const TextStyle(fontSize: 12, color: Color(0xffba2623))),
+                  ],
                 ])),
-              const SizedBox(height: 12),
-              Row(children: [
-                Checkbox(value: _selected.length == widget.repository.files.length ? true : _selected.isEmpty ? false : null,
-                  tristate: true, visualDensity: VisualDensity.compact,
-                  onChanged: (_) => setState(() {
-                    if (_selected.length == widget.repository.files.length) { _selected.clear(); }
-                    else { _selected.addAll(widget.repository.files.map((file) => file.path)); }
-                  })),
-                Expanded(child: Text('${_selected.length} of ${widget.repository.files.length} files selected',
-                  style: const TextStyle(fontSize: 12, color: desktopSecondary))),
-              ]),
-              Flexible(child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 200),
-                child: ListView.builder(shrinkWrap: true, itemCount: widget.repository.files.length,
-                  itemExtent: 32, itemBuilder: (context, index) {
-                    final file = widget.repository.files[index];
-                    return CheckboxListTile(value: _selected.contains(file.path), dense: true,
-                      controlAffinity: ListTileControlAffinity.leading, contentPadding: EdgeInsets.zero,
-                      onChanged: (selected) => setState(() {
-                        if (selected == true) { _selected.add(file.path); } else { _selected.remove(file.path); }
-                      }),
-                      title: Tooltip(message: file.previousPath == null ? file.path : '${file.previousPath} → ${file.path}',
-                        child: Row(children: [
-                          FileIcon(file.path, size: 14), const SizedBox(width: 8),
-                          Expanded(child: Text(file.path, maxLines: 1, overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11))),
-                          const SizedBox(width: 8),
-                          Text(file.status == '??' ? 'A' : file.status.trim(),
-                            style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 10, color: desktopSecondary)),
-                        ])));
-                  }))),
-              const SizedBox(height: 18),
-              const Text('Commit message (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-              const SizedBox(height: 8),
-              TextField(controller: _message, autofocus: true, minLines: 3, maxLines: 5, maxLength: 10000,
-                style: const TextStyle(fontSize: 12),
-                decoration: const InputDecoration(hintText: 'Leave empty to auto-generate', counterText: '',
-                  contentPadding: EdgeInsets.all(12))),
-              const SizedBox(height: 20),
-              Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                const SizedBox(width: 8),
-                FilledButton(onPressed: _selected.isEmpty ? null : _submit,
-                  child: Text(widget.action == 'commit_push' ? 'Commit & push' : 'Commit')),
-              ]),
-            ]))))));
+                if (_validation != null) Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: Text(_validation!, style: const TextStyle(fontSize: 12, color: desktopError))),
+                if (snapshot.hasError) Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [
+                  const Expanded(child: Text('Could not load changes', style: TextStyle(fontSize: 12, color: desktopError))),
+                  TextButton(onPressed: () => setState(() => _selection = _loadSelection()), child: const Text('Retry')),
+                ])),
+                const SizedBox(height: 4),
+                const Divider(height: 1, thickness: 1, color: desktopBorder),
+                Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Column(children: [
+                  _GitCommandRow(label: 'Commit', glyph: 'commit', reason: commitReason, enabled: canCommit,
+                    selected: _selectedAction == 'commit', onHighlight: () => setState(() => _selectedAction = 'commit'),
+                    onSelect: () => _submit('commit')),
+                  const SizedBox(height: 4),
+                  _GitCommandRow(label: 'Commit and push', glyph: 'push', reason: canCommit ? pushReason : commitReason,
+                    enabled: canCommit && canPublish, selected: _selectedAction == 'commit_push',
+                    onHighlight: () => setState(() => _selectedAction = 'commit_push'), onSelect: () => _submit('commit_push')),
+                  const SizedBox(height: 4),
+                  _GitCommandRow(label: 'Push', glyph: 'push', reason: pushReason, enabled: canPush,
+                    selected: _selectedAction == 'push', onHighlight: () => setState(() => _selectedAction = 'push'),
+                    onSelect: () => _submit('push')),
+                ])),
+              ]))))))));
+    });
+}
+
+Widget _gitGlyph(String name, Color color) => SvgPicture.string(gitActionGlyphs[name]!, width: 16, height: 16,
+  colorFilter: ColorFilter.mode(color, BlendMode.srcIn));
+
+class _GitCommandRow extends StatelessWidget {
+  const _GitCommandRow({required this.label, required this.glyph, required this.reason, required this.enabled,
+    required this.onSelect, required this.onHighlight, required this.selected});
+  final String label, glyph, reason;
+  final bool enabled, selected;
+  final VoidCallback onSelect, onHighlight;
+  @override
+  Widget build(BuildContext context) {
+    final active = enabled && selected;
+    return Tooltip(message: enabled ? '' : reason, child: SizedBox(height: 32,
+      child: TextButton(onPressed: enabled ? onSelect : null,
+        onHover: (value) { if (value) onHighlight(); }, onFocusChange: (value) { if (value) onHighlight(); },
+        style: TextButton.styleFrom(alignment: Alignment.centerLeft, foregroundColor: desktopForeground,
+          disabledForegroundColor: desktopForeground, backgroundColor: active ? desktopHover : Colors.transparent,
+          minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+        child: Opacity(opacity: !enabled ? .25 : active ? 1 : .75, child: Row(children: [
+          _gitGlyph(glyph, desktopForeground), const SizedBox(width: 8),
+          Expanded(child: Text(label, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, height: 1.5))),
+          if (active) Text(Theme.of(context).platform == TargetPlatform.macOS ? '⌘↵' : 'Ctrl+↵',
+            style: const TextStyle(fontSize: 12, color: desktopSecondary)),
+        ])))));
+  }
 }

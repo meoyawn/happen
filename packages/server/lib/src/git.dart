@@ -96,7 +96,7 @@ result=$?
 exit "$result"
 ''';
 
-Future<Json> gitStatus(String cwd, CancellationToken cancellation) async {
+Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool includeUnstaged = true}) async {
   final discovery = await runGit(cwd, ['rev-parse', '--show-toplevel'], cancellation, accepted: {0, 128});
   if (discovery.code == 128) return {'isRepo': false, 'host': Platform.localHostname, 'files': <Json>[]};
   final root = await Directory(discovery.output.trim()).resolveSymbolicLinks();
@@ -129,6 +129,9 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation) async {
         if (rename) 'previousPath': records[++i]});
     }
   }
+  if (!includeUnstaged) {
+    files.removeWhere((file) => {'.', ' ', '?'}.contains((file['status'] as String)[0]));
+  }
   final remotes = (await runGit(root, ['remote'], cancellation)).output.trim().split('\n').where((line) => line.isNotEmpty).toList();
   String? remote;
   if (branch != null) {
@@ -140,8 +143,9 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation) async {
       .where((name) => name.isNotEmpty && remotes.contains(name)).firstOrNull;
   }
   final counts = <String, (int, int, bool)>{};
-  if (head != null && files.isNotEmpty) {
-    final diff = await runGit(root, ['diff', '--numstat', '-z', '--find-renames', '--no-ext-diff', '--no-textconv', head], cancellation);
+  if (files.isNotEmpty && (head != null || !includeUnstaged)) {
+    final diff = await runGit(root, ['diff', '--numstat', '-z', '--find-renames', '--no-ext-diff', '--no-textconv',
+      if (!includeUnstaged) '--cached' else head!], cancellation);
     final entries = diff.output.split('\u0000');
     for (var index = 0; index < entries.length; index++) {
       final record = entries[index];
@@ -160,7 +164,7 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation) async {
       final old = counts[previous] ?? (0, 0, false);
       count = (count.$1 + old.$1, count.$2 + old.$2, count.$3 || old.$3);
     }
-    if (file['status'] == '??' || head == null) count = await _newFileCount(p.join(root, path), cancellation);
+    if (includeUnstaged && (file['status'] == '??' || head == null)) count = await _newFileCount(p.join(root, path), cancellation);
     file.addAll({'additions': count.$1, 'deletions': count.$2, 'binary': count.$3});
   }
   return {'isRepo': true, 'host': Platform.localHostname, 'root': root, 'branch': branch, 'head': head, 'upstream': upstream,
@@ -214,12 +218,17 @@ Future<Json> gitFileDiff(Json status, String path, CancellationToken cancellatio
 
 /// An isolated index previews exactly the selected working files, preserving the user's index.
 Future<({String tree, String summary, String patch})> gitCommitContext(
-  Json status, List<String> paths, String index, CancellationToken cancellation,
+  Json status, List<String> paths, String index, CancellationToken cancellation, {bool includeUnstaged = true}
 ) async {
   final root = requiredString(status, 'root');
   final env = {'GIT_INDEX_FILE': index};
-  await runGit(root, ['read-tree', if (status['head'] == null) '--empty' else status['head'] as String], cancellation, environment: env);
-  await runGit(root, ['add', '--all', '--', ...paths], cancellation, environment: env);
+  if (includeUnstaged) {
+    await runGit(root, ['read-tree', if (status['head'] == null) '--empty' else status['head'] as String], cancellation, environment: env);
+    await runGit(root, ['add', '--all', '--', ...paths], cancellation, environment: env);
+  } else {
+    final staged = (await runGit(root, ['write-tree'], cancellation)).output.trim();
+    await runGit(root, ['read-tree', staged], cancellation, environment: env);
+  }
   final changed = await runGit(root, ['diff', '--cached', '--quiet'], cancellation, environment: env, accepted: {0, 1});
   if (changed.code == 0) throw StateError('The selected files have no changes to commit');
   final tree = (await runGit(root, ['write-tree'], cancellation, environment: env)).output.trim();

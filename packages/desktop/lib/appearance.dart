@@ -80,7 +80,10 @@ ThemeData desktopTheme({Color accent = desktopDefaultAccent}) {
     surface: surface, onSurface: ink, onSurfaceVariant: desktopSecondary,
     surfaceTint: Colors.transparent,
     surfaceContainerLowest: surface, surfaceContainerLow: desktopSidebar,
-    surfaceContainer: desktopMuted, surfaceContainerHigh: desktopHover,
+    // Material uses these as standalone backgrounds, including for dialogs.
+    // Composite the overlay neutrals so raised surfaces never show through.
+    surfaceContainer: Color.alphaBlend(desktopMuted, surface),
+    surfaceContainerHigh: Color.alphaBlend(desktopHover, surface),
     secondaryContainer: desktopMuted, onSecondaryContainer: ink,
     outline: desktopBorderStrong, outlineVariant: border,
     error: desktopError,

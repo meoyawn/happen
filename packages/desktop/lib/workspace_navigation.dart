@@ -218,6 +218,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final revision = ++_revealRevision;
     if (id == null || index < 0) return;
     final count = pin >= 0 ? pinned.length : rows.length;
+    // Mounted cards already have usable bounds. Scroll before layout so held
+    // navigation does not paint the new selection outside the viewport first.
+    final target = _selectedRow?.currentContext?.findRenderObject();
+    if (target is RenderBox && target.attached && target.hasSize) {
+      _revealRow(revision, list, index, count);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _revealRow(revision, list, index, count));
   }
 

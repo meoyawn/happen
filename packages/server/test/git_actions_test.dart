@@ -22,9 +22,11 @@ void main() {
     return (result.stdout as String).trim();
   }
   Future<Json> status([String? cwd]) => client.gitRequest('git/status', {'cwd': cwd ?? repo.path}, cancellation: lifetime);
-  Future<Json> run(String action, {String message = '', List<String>? files, CancellationToken? cancellation}) =>
+  Future<Json> run(String action, {String message = '', List<String>? files, CancellationToken? cancellation,
+    bool includeUnstaged = true, String? newBranch}) =>
     client.gitRequest('git/run', {'cwd': repo.path, 'actionId': newId(), 'action': action,
-      'commitMessage': message, 'filePaths': ?files, 'provider': 'openai', 'model': 'gpt-6.1-sol'},
+      'commitMessage': message, 'filePaths': ?files, 'provider': 'openai', 'model': 'gpt-6.1-sol',
+      'includeUnstaged': includeUnstaged, 'newBranch': ?newBranch},
       cancellation: cancellation ?? lifetime);
   setUp(() async {
     root = await Directory.systemTemp.createTemp('git-actions-');
@@ -133,7 +135,7 @@ void main() {
     expect((await status())['branch'], 'main');
   });
 
-  test('generated commit and push use selected files and preserve excluded staged changes', () async {
+  test('generated commit and push on a new branch preserve excluded staged changes', () async {
     final remote = '${root.path}/remote.git';
     await git(['init', '--bare', remote]);
     await git(['remote', 'add', 'origin', remote]);
@@ -142,11 +144,13 @@ void main() {
     await File('${repo.path}/features/[new].txt').writeAsString('selected addition\n');
     await File('${repo.path}/features/n.txt').writeAsString('EXCLUDED_CONTENT\n');
     await git(['add', 'features/n.txt']);
-    final result = await run('commit_push', files: ['tracked.txt', 'features/[new].txt']);
+    final original = await git(['rev-parse', 'HEAD']);
+    final result = await run('commit_push', files: ['tracked.txt', 'features/[new].txt'], newBranch: 'feature/publish');
     expect(result['status'], 'completed', reason: '${result['message']}');
     final sha = await git(['rev-parse', 'HEAD']);
     expect(result['commit']['sha'], sha);
-    expect(await git(['rev-parse', 'refs/heads/main'], cwd: remote), sha);
+    expect(await git(['rev-parse', 'refs/heads/main']), original);
+    expect(await git(['rev-parse', 'refs/heads/feature/publish'], cwd: remote), sha);
     expect(await git(['show', '--format=', '--name-only', 'HEAD']), 'features/[new].txt\ntracked.txt');
     expect(await git(['diff', '--cached', '--name-only']), 'features/n.txt');
     expect(await git(['log', '-1', '--format=%B']), 'Update selected files\n\nKeep the change focused.');
@@ -155,8 +159,29 @@ void main() {
     expect(requests.single['tools'] as List? ?? const <Object?>[], isEmpty);
     final input = jsonEncode(requests.single['input']);
     expect(input, contains('selected change')); expect(input, isNot(contains('EXCLUDED_CONTENT')));
-    expect(progress, containsAllInOrder(['generating', 'committing', 'pushing']));
+    expect(progress, containsAllInOrder(['generating', 'creating_branch', 'committing', 'pushing']));
     expect(jsonObject(await client.request('thread/list', {'cwd': repo.path}))['data'], isEmpty);
+  });
+
+  test('staged-only totals, generation and commit preserve unstaged edits in the same file', () async {
+    await File('${repo.path}/tracked.txt').writeAsString('STAGED_CONTENT\n');
+    await git(['add', 'tracked.txt']);
+    final stagedTree = await git(['write-tree']);
+    await File('${repo.path}/tracked.txt').writeAsString('UNSTAGED_CONTENT\nextra\n');
+    await File('${repo.path}/untracked.txt').writeAsString('UNTRACKED_CONTENT\n');
+    final selected = await client.gitRequest('git/status', {'cwd': repo.path, 'includeUnstaged': false}, cancellation: lifetime);
+    expect((selected['additions'], selected['deletions']), (1, 1));
+    expect((selected['files'] as List).map((file) => file['path']), ['tracked.txt']);
+    final result = await run('commit', includeUnstaged: false);
+    expect(result['status'], 'completed', reason: '${result['message']}');
+    expect(await git(['rev-parse', 'HEAD^{tree}']), stagedTree);
+    expect(await git(['diff', '--cached', '--name-only']), isEmpty);
+    expect(await File('${repo.path}/tracked.txt').readAsString(), 'UNSTAGED_CONTENT\nextra\n');
+    expect(await File('${repo.path}/untracked.txt').readAsString(), 'UNTRACKED_CONTENT\n');
+    final input = jsonEncode(requests.single['input']);
+    expect(input, contains('STAGED_CONTENT'));
+    expect(input, isNot(contains('UNSTAGED_CONTENT')));
+    expect(input, isNot(contains('UNTRACKED_CONTENT')));
   });
 
   test('manual messages bypass generation and selected renames include both paths', () async {

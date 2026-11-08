@@ -39,7 +39,7 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
       }
       continue;
     }
-    if (entry.tool != null && (toolKind(entry.tool!) == 'question' || entry.tool!.status == 'failed')) {
+    if (entry.tool != null && (toolKind(entry.tool!) == 'question' || toolShowsFailure(entry.tool!))) {
       flush();
       rows.add((id: entry.id, kind: 'message', entries: [entry], label: null));
       continue;
@@ -515,7 +515,7 @@ class _ActivityGroup extends StatelessWidget {
     final label = thinking ? _thoughtPreview(thought?.text ?? '', active: true)
       : active && current != null ? toolLabel(current, directory: directory, active: running != null)
       : tools.isEmpty ? entries.length == 1 ? 'Thought' : 'Thought (×${entries.length})' : toolGroupSummary(tools);
-    final failed = tools.any((tool) => tool.status == 'failed');
+    final failed = tools.any(toolShowsFailure);
     return ConversationDisclosure(
       key: PageStorageKey('disclosure:${entries.first.id}'),
       label: label, shimmer: active, timestamp: entries.first.timestamp,
