@@ -216,6 +216,8 @@ void main() {
       final imported = jsonObject(await client.request('history.import', {'path': path, 'operation_id': 'import-operation'}));
       final copy = imported['task_id'] as String;
       expect(await client.request('history.import', {'path': path, 'operation_id': 'import-operation'}), imported);
+      final listed = jsonObject(await client.request('thread/list', {'cwd': work.path}));
+      expect((listed['data'] as List).map((thread) => thread['id']), unorderedEquals([id, child, copy]));
       expect(users(await read(copy)), ['calculate']);
       expect((await finish('continue', id: child))['params']['turn']['status'], 'completed');
       expect((await finish('continue', id: copy))['params']['turn']['status'], 'completed');

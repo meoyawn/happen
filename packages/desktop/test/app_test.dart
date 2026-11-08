@@ -458,7 +458,7 @@ class _Client implements AgentClient {
   }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     jsonObject(await request(method, params));
-  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => {'servers': <Object?>[]};
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async => {'servers': <Object?>[]};
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -5,15 +5,16 @@ import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
-Future<void> showMcpAuthentication(BuildContext context, AgentClient client, String server, {bool signOut = false}) async {
+Future<void> showMcpAuthentication(BuildContext context, AgentClient client, String server, {String? cwd, bool signOut = false}) async {
   await showDialog<void>(context: context, barrierDismissible: false,
-    builder: (_) => _McpAuthentication(client: client, server: server, signOut: signOut));
+    builder: (_) => _McpAuthentication(client: client, server: server, cwd: cwd, signOut: signOut));
 }
 
 class _McpAuthentication extends StatefulWidget {
-  const _McpAuthentication({required this.client, required this.server, required this.signOut, this.onDone});
+  const _McpAuthentication({required this.client, required this.server, required this.signOut, this.cwd, this.onDone});
   final AgentClient client;
   final String server;
+  final String? cwd;
   final bool signOut;
   final VoidCallback? onDone;
   @override
@@ -51,9 +52,9 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
     }
     try {
       if (widget.signOut) {
-        await widget.client.mcpLogout(widget.server, cancellation: cancellation);
+        await widget.client.mcpLogout(widget.server, cwd: widget.cwd, cancellation: cancellation);
       } else {
-        final result = await widget.client.mcpLogin(widget.server, id, cancellation: cancellation);
+        final result = await widget.client.mcpLogin(widget.server, id, cwd: widget.cwd, cancellation: cancellation);
         if (result['state'] != 'ready') { throw StateError('MCP connection is unavailable'); }
       }
       if (mounted && !cancellation.isCancelled) {
@@ -119,10 +120,11 @@ class _McpAuthenticationState extends State<_McpAuthentication> {
 }
 
 class McpAuthenticationCard extends StatelessWidget {
-  const McpAuthenticationCard({super.key, required this.client, required this.server, required this.onDone});
+  const McpAuthenticationCard({super.key, required this.client, required this.server, required this.cwd, required this.onDone});
   final AgentClient client;
   final String server;
+  final String cwd;
   final VoidCallback onDone;
   @override
-  Widget build(BuildContext context) => _McpAuthentication(client: client, server: server, signOut: false, onDone: onDone);
+  Widget build(BuildContext context) => _McpAuthentication(client: client, server: server, cwd: cwd, signOut: false, onDone: onDone);
 }

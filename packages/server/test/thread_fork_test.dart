@@ -55,6 +55,11 @@ void main() {
         store.append('turn.completed', {});
       }
     } finally { store.close(); }
+    final token = CancellationToken(), catalog = await startServerStore(root.path, cancellation: token);
+    try {
+      final writer = await startStore(root.path, 'parent', create: false, catalog: catalog.port, cancellation: token);
+      await writer.close();
+    } finally { await catalog.close(); token.cancel(); }
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));

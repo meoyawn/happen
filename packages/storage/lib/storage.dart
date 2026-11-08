@@ -13,6 +13,7 @@ import 'src/session_reader.dart';
 export 'src/owner.dart' show startStore, importHistory;
 export 'src/session_reader.dart' show readSession, readMcpEventOwners;
 export 'src/thread_list.dart' show listThreads;
+export 'src/server_store.dart' show startServerStore;
 
 part 'src/kv.dart';
 part 'src/native_adapter.dart';

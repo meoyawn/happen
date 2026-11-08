@@ -79,10 +79,10 @@ clients receive `thread/name/updated`; desktop renders `name`, falling back to
 `preview` until a name is available. Ephemeral threads are excluded.
 
 Listing never loads a conversation or runs its tools. Creation is acknowledged
-after the session history is durable. Existing histories, including interrupted
-sessions, need no registration or migration. The desktop refreshes its local
-sidebar cache from the server at startup, when adding a project, returning to
-Home, and on resume.
+after the session history and catalog metadata are durable. Saved interrupted
+sessions remain listed after restart. The desktop refreshes its local sidebar
+cache from the server at startup, when adding a project, returning to Home,
+and on resume.
 
 Keep the resulting `bundle/bin` and `bundle/lib` directories together. For a
 single-file macOS arm64 release, use the Moon target instead:
@@ -605,12 +605,12 @@ or `interrupted` status. Happen extensions use `happen/…` notifications.
 | --- | --- |
 | `thread/start` | Optional `cwd`, `provider`, `model`, `settings`, `developerInstructions`, `dynamicTools`, `ephemeral`. Creates and subscribes to a thread; returns `thread` and configuration. |
 | `thread/resume` | `threadId`, optional `excludeTurns`. Loads a saved thread and subscribes this connection. Warm resume preserves cached status. |
-| `thread/read` | `threadId`, optional `includeTurns`. Read-only snapshot; does not load or subscribe. |
+| `thread/read` | `threadId`, optional `includeTurns`, `watch`. Reads history without loading execution. Happen's `watch: true` also forwards live items on this connection without retaining a runtime; `watch: false` stops that watch. |
 | `thread/loaded/list` | Returns currently loaded IDs, including unsubscribed threads awaiting their idle deadline. |
 | `thread/list` | Pages saved thread summaries. |
 | `thread/name/set` | `threadId`, `name`. Persists a nonempty name and broadcasts `thread/name/updated` to every connected client. Explicit names take precedence over background generation. |
 | `thread/items/list` / `thread/turns/list` | `threadId`, optional opaque `cursor`, `limit`, and view/direction options. Reads native history without loading it. |
-| `thread/unsubscribe` | `threadId`. Removes only this connection's subscription; returns `unsubscribed`, `notSubscribed`, or `notLoaded`. Never cancels a running turn. |
+| `thread/unsubscribe` | `threadId`. Removes this connection's execution subscription and transcript watch; returns `unsubscribed`, `notSubscribed`, or `notLoaded`. Never cancels a running turn. |
 | `turn/start` | `threadId`, `input`, optional `effort`, `delivery`. Starts or queues input and subscribes this connection. |
 | `turn/steer` / `turn/interrupt` | `threadId`, `expectedTurnId` and `input` for steering, or `turnId` for interruption. |
 | `thread/fork` | `threadId`, optional stored SQLite `path`, `lastTurnId` or `beforeTurnId`, `excludeTurns`, `model`, `modelProvider`, `cwd`, `settings`, `reasoning`, `baseInstructions`, `developerInstructions`, `ephemeral`. Structurally shares the selected immutable prefix and subscribes the caller to the new thread. |
@@ -631,6 +631,11 @@ including items embedded in full turns and turn summaries. Clients retain that
 order across pages; timestamps do not determine transcript order. Snapshot
 `liveItems` contain unfinished items, and `notificationThrough` is captured before
 the history read so later notifications remain replayable.
+Desktop opens unarchived history with `watch: true` before that watermark is
+captured. This keeps event-triggered turns visible after reconnecting, including
+their event input, streamed replies, tool activity, and questions. Watches survive
+runtime unloading and end on unsubscribe, archive, or connection close. They do
+not load a thread, resume a goal, start inference, or delay idle unloading.
 
 Happen uses Codex's default 60-second idle unload delay. A full delay must elapse
 after both turn activity and the final subscriber are gone. Resubscription
@@ -1042,7 +1047,21 @@ returns `503` and retrying the same occurrence remains safe. A bounded receipt
 joins that admission's transaction rather than adding a second commit.
 Thread-owned desired subscriptions and cursors are saved in that thread's
 existing SQLite file and restored automatically across server-process restart,
-including its saved project-local MCP configuration. Restoration alone does not
+including its saved project-local MCP configuration. One server-owned writer
+maintains `server.sqlite`: a shared `threads` metadata catalog for listings and
+archive filters, plus the recovery owner IDs in `mcp_event_threads`. Startup
+queries that index, checks each indexed thread's archived state and private
+checkpoints, and reconnects unarchived owners independently. Fresh installations
+initialize an empty catalog; startup never enumerates history folders.
+Managed writes journal a thread ID before changing its canonical history and
+update the catalog after commit. Startup repairs only those journaled IDs if a
+process stopped before catalog synchronization.
+An index entry commits before a subscription or occurrence can be admitted, so a
+crash can leave an extra candidate but cannot hide committed recovery work.
+Removal preserves an owner while acknowledged event input remains pending;
+archive removes it after the thread's archive commit. The index contains no
+credentials or callback secrets. Polling starts afresh after relaunch rather than
+persisting the previous process's sleeping timer. Restoration alone does not
 load the thread or run a model. A previously acknowledged, still-pending inbox
 event is resumed without waiting for a new occurrence. Unsubscribe, archive and
 provider termination remove desired state durably; ordinary connection-owned

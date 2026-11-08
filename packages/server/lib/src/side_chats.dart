@@ -101,7 +101,7 @@ extension _SideChats on AgentServer {
       ConversationItem.text('user', _sideBoundary).toJson(),
     ];
     final store = await traceAsync('session.fork.store', () =>
-      startStore(directory, id, inMemory: true,
+      _startStore(id, inMemory: true,
         fork: {...snapshot, 'config': effective, 'items': suffix, 'title': title}));
     final task = _Task(id, effective)..sideParentID = parent.id..memoryStore = store
       ..loaded = true..unloadDelaySecs = _threadUnloadDelaySecs;

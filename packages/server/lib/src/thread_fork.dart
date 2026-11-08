@@ -61,7 +61,7 @@ extension _ThreadFork on AgentServer {
       final snapshot = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, 'fork.snapshot',
         {'lastTurnId': params['lastTurnId'], 'beforeTurnId': params['beforeTurnId']}, cancellation: cancellation)));
       final effective = {...config, 'forked_from_id': id};
-      final writer = await startStore(directory, child, inMemory: true, fork: {
+      final writer = await _startStore(child, inMemory: true, fork: {
         ...snapshot, 'config': effective,
         'metadata': {...jsonObject(snapshot['metadata']), if (params['cwd'] != null) 'current_cwd': config['cwd']},
         if (config['developer_instructions'] != source['configuration']['developer_instructions'])

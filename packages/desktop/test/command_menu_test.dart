@@ -218,7 +218,7 @@ void main() {
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override bool get sharedFilesystem => true;
-  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async =>
     {'servers': <Object?>[]};
   final restored = <String>[];
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {

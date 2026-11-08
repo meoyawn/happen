@@ -109,20 +109,49 @@ Future<Json> readSession(String directory, String sessionID, String method, Json
       (db) => readStoredSession(db, method, params, directory: directory, id: sessionID))), cancellation);
 }
 
+/// Codex StateRuntime-style public metadata, kept separate from canonical
+/// history and from private subscription credentials.
+Json catalogThread(TracedDatabase db, String directory, String id) {
+  final config = storedMetadata(db, 'config');
+  if (config is! Map || config['ephemeral'] == true) return {'id': id, 'missing': true};
+  final page = readStoredSession(db, 'thread/read', {}, directory: directory, id: id);
+  final subscriptions = jsonObject(storedMetadata(db, 'mcp_event_subscriptions') ?? {});
+  final receipts = (storedMetadata(db, 'mcp_event_receipts') as List? ?? []).cast<String>().toSet();
+  final pending = (page['pending'] as List).map(jsonObject).any((item) => receipts.contains(item['id']));
+  return {'id': id, 'thread': page['thread'], 'archived': page['archived'], 'sequence': page['through'],
+    'recovery': page['archived'] != true && (subscriptions.isNotEmpty || pending)};
+}
+
+Future<List<Json>> readCatalogThreads(String directory, List<String> ids, {required CancellationToken cancellation}) {
+  cancellation.throwIfCancelled();
+  return CancellableIsolate.run(() async {
+    final result = <Json>[];
+    for (final id in ids) {
+      try {
+        validateTaskId(id);
+        final file = File('$directory/tasks/$id/history.sqlite');
+        if (FileSystemEntity.typeSync(file.path, followLinks: false) != FileSystemEntityType.file) {
+          result.add({'id': id, 'missing': true}); continue;
+        }
+        result.add(await withReadOnlySnapshot(file.path, (db) => catalogThread(db, directory, id)));
+      } on FormatException { /* An invalid neighbor cannot hide healthy metadata. */ }
+      on SqliteException catch (error) { if (error.resultCode == 5) rethrow; }
+    }
+    return result;
+  }, cancellation);
+}
+
 /// Startup inventory only: never opens a writer, loads a thread, copies lineage
 /// or subscribes a client. Subscription secrets stay in this private host path,
 /// outside portable history/fork metadata and ordinary thread reads.
-Future<List<Json>> readMcpEventOwners(String directory, {required CancellationToken cancellation}) async {
+Future<List<Json>> readMcpEventOwners(String directory, {required List<String> threadIds, required CancellationToken cancellation}) async {
   cancellation.throwIfCancelled();
   return CancellableIsolate.run(() async {
-    final folder = Directory('$directory/tasks'), result = <Json>[];
-    if (!folder.existsSync()) return result;
-    for (final entry in folder.listSync(followLinks: false)) {
-      if (entry is! Directory) continue;
-      final id = entry.uri.pathSegments.where((p) => p.isNotEmpty).last;
+    final result = <Json>[];
+    for (final id in threadIds) {
       try {
         validateTaskId(id);
-        final path = File('${entry.path}/history.sqlite');
+        final path = File('$directory/tasks/$id/history.sqlite');
         if (FileSystemEntity.typeSync(path.path, followLinks: false) != FileSystemEntityType.file) continue;
         final owner = await withReadOnlySnapshot<Json?>(path.path, (db) {
           if (storedMetadata(db, 'archived_at') != null) return null;

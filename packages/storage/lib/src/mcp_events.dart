@@ -28,18 +28,23 @@ extension McpEventStore on TaskStore {
     try { _metadata({'mcp_event_subscriptions': after}); db.execute('COMMIT'); }
     catch (_) { db.execute('ROLLBACK'); rethrow; }
   }
-  List<String> mcpSubscription(String action, Json params) {
+  Json _mcpRecoveryState(Json subscriptions) {
+    final receipts = (metadata('mcp_event_receipts') as List? ?? []).cast<String>().toSet();
+    return {'subscriptions': subscriptions.keys.toList(),
+      'pending': jsonObject(state['pendingInputs'] ?? {}).values.map(jsonObject).any((item) => receipts.contains(item['id']))};
+  }
+  Json mcpSubscription(String action, Json params) {
     final previous = _mcpSubscriptions();
     if (action == 'remove') {
       final next = {...previous}..remove(requiredString(params, 'subscription_id'));
-      _writeMcpSubscriptions(previous, next); return next.keys.toList();
+      _writeMcpSubscriptions(previous, next); return _mcpRecoveryState(next);
     }
     _checkMcpOwner();
     final snapshot = jsonObject(params['snapshot']), id = requiredString(snapshot, 'subscription_id');
     if (snapshot['threadId'] != taskId) throw StateError('MCP subscription belongs to another thread');
     final next = params['create'] == true ? {...previous, id: snapshot} : _mcpCheckpoint(previous, snapshot);
     if (next.length > 64) throw StateError('MCP event subscription limit reached');
-    _writeMcpSubscriptions(previous, next); return next.keys.toList();
+    _writeMcpSubscriptions(previous, next); return _mcpRecoveryState(next);
   }
 
   /// Inbox, receipt and resume checkpoint are one durability boundary. No

@@ -249,7 +249,7 @@ class _Agent {
     final cancellation = CancellationToken();
     _cancellation = cancellation;
     var work = _workCancellation = CancellationToken();
-    final workLink = CancellationHook(cancellation, () => _workCancellation?.cancel());
+    final workLink = CancellationHook(cancellation, () => work.cancel());
     _accepting = true;
     final telemetry = Telemetry(enabled: config['telemetry'] != false);
     final total = Stopwatch()..start();
@@ -689,63 +689,75 @@ class _Agent {
 
       Future<void> compactContext(String reason) async {
         work.throwIfCancelled();
-        event(await _append('compaction.started', {'reason': reason}));
-        final inputGoalIds = input.where(isUserGoalInstruction).map((item) => item.id).toSet();
-        final CompactionResult result;
+        // Like Codex's sampling input watcher, steering preempts regular work,
+        // but leaves compaction and its durable replacement uninterrupted.
+        // Stop still cancels work through the turn's cancellation hook.
+        _workCancellation = null;
         try {
-          result = CompactionResult.fromJson(await networkCall('compact'));
-          work.throwIfCancelled();
-        } on CancelledException {
-          event(await _append('compaction.cancelled', {'reason': reason}));
-          rethrow;
+          event(await _append('compaction.started', {'reason': reason}));
+          final inputGoalIds = input.where(isUserGoalInstruction).map((item) => item.id).toSet();
+          final CompactionResult result;
+          try {
+            result = CompactionResult.fromJson(await networkCall('compact'));
+            work.throwIfCancelled();
+          } on CancelledException {
+            event(await _append('compaction.cancelled', {'reason': reason}));
+            rethrow;
+          }
+          await countUsage(result.usage);
+          final freshSkills = skillContext(skillsCatalog,
+            contextWindow: baseline['context_limit'] as int?);
+          final restored = restoreContext(
+            result.context,
+            input,
+            snapshot!,
+            cwd,
+            baseline['reasoning'] as String,
+            effort,
+            config['reasoning_updates'] == true,
+            mcpSnapshot: mcpSnapshot,
+            clientSnapshot: clientSnapshot,
+            catalogContext: interface.catalogContext,
+            instructionContext: interface.instructionContext,
+            environmentContext: interface.environmentContext,
+            developerContextFirst: interface.developerContextFirst,
+            prefix: interface.modelContext(config['instructions'] as String, request().tools, const []),
+            skills: freshSkills.item,
+          );
+          final replacementIds = restored.map((item) => item.id).toSet();
+          restored.addAll(input.where((item) => isUserGoalInstruction(item) &&
+            !inputGoalIds.contains(item.id) && !replacementIds.contains(item.id)));
+          final size = estimateTokens(restored) +
+            (restored.any((item) => item.native['harness']?['context'] == 'model') ? 0 : request().instructions.length ~/ 3);
+          final entry = await _append(
+            'context.compacted',
+            {
+              'input': restored.map((v) => v.toJson()).toList(),
+              'summary': result.summary,
+              'usage': result.usage.toJson(),
+              'observed_usage': ?result.observedUsage,
+              'reason': reason,
+              'skills_state': freshSkills.snapshot,
+            },
+            metadata: {
+              'context_usage': size,
+              'context_usage_items': restored.length,
+              'skills_state': freshSkills.snapshot,
+              'uncached_tokens_used': uncachedTokensUsed,
+            },
+          );
+          skillsSnapshot = freshSkills.snapshot;
+          usageTokens = size;
+          usageItems = input.length;
+          telemetry.add('compactions');
+          event(entry);
+        } finally {
+          _workCancellation = work;
         }
-        await countUsage(result.usage);
-        final freshSkills = skillContext(skillsCatalog,
-          contextWindow: baseline['context_limit'] as int?);
-        final restored = restoreContext(
-          result.context,
-          input,
-          snapshot!,
-          cwd,
-          baseline['reasoning'] as String,
-          effort,
-          config['reasoning_updates'] == true,
-          mcpSnapshot: mcpSnapshot,
-          clientSnapshot: clientSnapshot,
-          catalogContext: interface.catalogContext,
-          instructionContext: interface.instructionContext,
-          environmentContext: interface.environmentContext,
-          developerContextFirst: interface.developerContextFirst,
-          prefix: interface.modelContext(config['instructions'] as String, request().tools, const []),
-          skills: freshSkills.item,
-        );
-        final replacementIds = restored.map((item) => item.id).toSet();
-        restored.addAll(input.where((item) => isUserGoalInstruction(item) &&
-          !inputGoalIds.contains(item.id) && !replacementIds.contains(item.id)));
-        final size = estimateTokens(restored) +
-          (restored.any((item) => item.native['harness']?['context'] == 'model') ? 0 : request().instructions.length ~/ 3);
-        final entry = await _append(
-          'context.compacted',
-          {
-            'input': restored.map((v) => v.toJson()).toList(),
-            'summary': result.summary,
-            'usage': result.usage.toJson(),
-            'observed_usage': ?result.observedUsage,
-            'reason': reason,
-            'skills_state': freshSkills.snapshot,
-          },
-          metadata: {
-            'context_usage': size,
-            'context_usage_items': restored.length,
-            'skills_state': freshSkills.snapshot,
-            'uncached_tokens_used': uncachedTokensUsed,
-          },
-        );
-        skillsSnapshot = freshSkills.snapshot;
-        usageTokens = size;
-        usageItems = input.length;
-        telemetry.add('compactions');
-        event(entry);
+        // Admit pending steering against the committed replacement before
+        // sampling again or finishing a manual compaction turn.
+        if (_steering.isNotEmpty) work.cancel();
+        work.throwIfCancelled();
       }
 
       Future<void> finish(String text) async {

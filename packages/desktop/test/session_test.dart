@@ -14,6 +14,108 @@ import 'package:storage/storage.dart';
 import '../../../test/support/thread_names.dart';
 
 void main() {
+  test('an open saved transcript streams an MCP wake after its execution client disconnects', () async {
+    final temporary = await Directory.systemTemp.createTemp('desktop-mcp-wake-');
+    final root = Directory(await temporary.resolveSymbolicLinks());
+    final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    AgentServer? server;
+    DesktopSession? desktop;
+    AgentClient? creator;
+    final release = Completer<void>(), responding = Completer<void>();
+    ({HttpResponse response, Object id})? eventStream;
+    final requests = <Json>[];
+    addTearDown(() async {
+      if (!release.isCompleted) release.complete();
+      await desktop?.close(); await creator?.close(); await server?.close();
+      await provider.close(force: true); await root.delete(recursive: true);
+    });
+    await File('${root.path}/config.yaml').writeAsString(jsonEncode({'mcp_servers': {
+      'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+    }}));
+    await File('${root.path}/auth.json').writeAsString(jsonEncode({
+      'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
+      'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
+    }));
+    provider.listen((request) async {
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      if (await respondToThreadName(request, body)) return;
+      if (request.uri.path == '/mcp') {
+        if (body['method'] == 'events/stream') {
+          eventStream = (response: request.response, id: body['id'] as Object);
+          request.response.headers.contentType = ContentType('text', 'event-stream');
+          request.response.bufferOutput = false;
+          request.response.write('data: ${jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/events/active',
+            'params': {'cursor': null, 'truncated': false, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
+          await request.response.flush(); return;
+        }
+        final result = switch (body['method']) {
+          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
+          'events/list' => {'events': [{'name': 'ci.completed', 'delivery': ['push'],
+            'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+          _ => throw StateError('Unexpected MCP method ${body['method']}'),
+        };
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
+      } else {
+        requests.add(body);
+        final waking = jsonEncode(body['input']).contains('ci-result-1');
+        request.response.headers.contentType = ContentType('text', 'event-stream');
+        request.response.bufferOutput = false;
+        if (waking) {
+          request.response.write('data: {"type":"response.created"}\n\n');
+          request.response.write('data: ${jsonEncode({'type': 'response.output_text.delta', 'delta': 'CI failed; inspecting the logs.'})}\n\n');
+          await request.response.flush(); responding.complete();
+          await release.future;
+        }
+        request.response.write('data: ${jsonEncode({'type': 'response.completed', 'response': {
+          'id': 'response-${requests.length}', 'status': 'completed', 'output': [
+            {'id': waking ? 'wake-reply' : 'initial-reply', 'type': 'message', 'role': 'assistant',
+              'content': [{'type': 'output_text', 'text': waking ? 'CI failed; inspecting the logs.' : 'Waiting for CI.'}]},
+          ],
+        }})}\n\n');
+      }
+      await request.response.close();
+    });
+    server = await AgentServer.startLocal(directory: root.path, configPath: '${root.path}/config.yaml',
+      skillsHome: root.path, endpoint: 'http://127.0.0.1:${provider.port}/responses');
+    creator = AgentClient.local(server);
+    final id = jsonObject(await creator.request('thread/start', {'cwd': root.path,
+      'config': {'thread_unload_delay_secs': 0}}))['thread']['id'] as String;
+    final done = creator.events.stream.firstWhere((event) => event['method'] == 'turn/completed');
+    await creator.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Wait for CI.'}]});
+    await done.timeout(const Duration(seconds: 10));
+    await creator.request('mcp.events.subscribe', {'threadId': id, 'server': 'events', 'name': 'ci.completed', 'mode': 'push'});
+    final closed = creator.events.stream.firstWhere((event) => event['method'] == 'thread/closed');
+    await creator.request('thread/unsubscribe', {'threadId': id});
+    await closed.timeout(const Duration(seconds: 10));
+    await creator.close(); creator = null;
+
+    final session = desktop = DesktopSession(AgentClient.local(server), await openDesktopDatabase('${root.path}/desktop'));
+    await session.load(); await session.addProject(root.path);
+    final target = session.project!.tasks.singleWhere((task) => task.id == id);
+    await session.select(session.project!, target);
+    expect((await session.client.request('thread/loaded/list') as Json)['data'], isEmpty,
+      reason: 'Viewing an idle transcript must not load its execution runtime.');
+    expect(requests, hasLength(1));
+    eventStream!.response.write('data: ${jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/events/event',
+      'params': {'eventId': 'ci-result-1', 'name': 'ci.completed', 'timestamp': '2026-11-08T18:00:00Z',
+        'data': {'conclusion': 'failure'}, 'cursor': null,
+        '_meta': {'io.modelcontextprotocol/subscriptionId': eventStream!.id}}})}\n\n');
+    await eventStream!.response.flush();
+    await responding.future.timeout(const Duration(seconds: 10));
+    await _until(session, () => conversation(target).any((entry) => entry.text == 'CI failed; inspecting the logs.'));
+    expect(target.running, isTrue, reason: 'The reply must arrive while inference is still streaming.');
+    expect(conversation(target).where((entry) => entry.role == 'You').last.text, contains('ci-result-1'));
+    expect(target.pending, isEmpty);
+    expect(requests, hasLength(2), reason: 'Observing the wake must not start another inference.');
+    release.complete();
+    await _until(session, () => !target.running && !target.loading);
+    expect(conversation(target).where((entry) => entry.text == 'CI failed; inspecting the logs.'), hasLength(1));
+    session.releaseHistory(target);
+    expect((await session.client.request('thread/unsubscribe', {'threadId': id}) as Json)['status'], 'notSubscribed',
+      reason: 'Releasing a transcript also releases its view subscription.');
+  });
+
   test('composer model selections route new tasks through ChatGPT and OpenCode', () async {
     final root = await Directory.systemTemp.createTemp('desktop-models-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

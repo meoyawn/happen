@@ -402,7 +402,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     final token = _mcpRequest = CancellationToken();
     setState(() { _mcpLoading = true; _mcpFailed = false; });
     try {
-      final result = await widget.client.mcpInventory(verbose: _verbose, cancellation: token);
+      final result = await widget.client.mcpInventory(verbose: _verbose, cwd: widget.cwd, cancellation: token);
       if (!mounted || token.isCancelled || _mcpAnchor == null) return;
       setState(() { _inventory = result; _mcpLoading = false; });
       _changed();
@@ -470,7 +470,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
         DateTime.now().difference(_catalogTime!) < const Duration(seconds: 30)) { return; }
     final token = _catalogSearch = CancellationToken();
     try {
-      final result = await widget.client.mcpInventory(verbose: true, cancellation: token);
+      final result = await widget.client.mcpInventory(verbose: true, cwd: widget.cwd, cancellation: token);
       if (!mounted || token.isCancelled) return;
       setState(() { _catalog = result; _catalogTime = DateTime.now(); });
     } on CancelledException {
@@ -730,8 +730,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
           padding: const EdgeInsets.all(6),
           child: McpStatusMenu(inventory: _inventory, verbose: _verbose, loading: _mcpLoading, failed: _mcpFailed,
             query: _mcpFilter, onRetry: () => unawaited(_loadMcp()),
-            onSignIn: (server) => unawaited(showMcpAuthentication(context, widget.client, server)),
-            onSignOut: (server) => unawaited(showMcpAuthentication(context, widget.client, server, signOut: true))),
+            onSignIn: (server) => unawaited(showMcpAuthentication(context, widget.client, server, cwd: widget.cwd)),
+            onSignOut: (server) => unawaited(showMcpAuthentication(context, widget.client, server, cwd: widget.cwd, signOut: true))),
         ) : Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 6), child: Row(children: [
             Text(_historyOpen ? 'Prompt history' : _command != null ? 'Commands' : _skillsOnly ? 'Skills' : 'Add context',

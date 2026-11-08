@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
-// A real server process, not an isolate restart or a special restoration API.
+// This server-owned fixture runs a real webhook listener and storage owners.
 Future<void> main(List<String> arguments) async {
   final options = jsonObject(jsonDecode(arguments.single));
   final lifetime = TimeoutCancellationToken(const Duration(minutes: 3));

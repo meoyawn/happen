@@ -159,12 +159,13 @@ class McpEventSubscription {
     return true;
   }
 
-  Future<void> _active(Json params) async {
+  Future<void> _active(Json params, {bool webhookGrant = false}) async {
     final nextCursor = params['cursor'] as String?;
     await checkpoint?.call({...toSnapshot(), 'cursor': nextCursor}, lifetime);
     lifetime.throwIfCancelled();
     cursor = nextCursor;
     state = 'active';
+    if (webhookGrant) _restoredRegistration = false;
     if (mode == 'webhook' && _restoredRegistration) return;
     _emit('notifications/events/active', params);
     if (!ready.isCompleted) ready.complete();
@@ -436,12 +437,12 @@ class McpEventSubscription {
         upstreamId = id;
         // The authenticated response pins a restored identity and validates its
         // grant before activation becomes visible to the initiating caller.
-        _restoredRegistration = false;
+        // Retain saved callback authority until its checkpoint has committed.
         await _active({
           'cursor': result['cursor'],
           'truncated': result['truncated'] == true,
           if (result['deliveryStatus'] != null) 'deliveryStatus': result['deliveryStatus'],
-        });
+        }, webhookGrant: true);
         failures = 0;
         if (refresh == null) {
           // No-expiry grants still benefit from occasional cursor and delivery

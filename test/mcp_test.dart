@@ -576,6 +576,58 @@ void main() {
     expect((await client.request('telemetry') as Map)['active_tasks'], 0);
   });
 
+  test('restored webhook callbacks wait for a pending grant checkpoint without losing saved authority', () async {
+    final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final http = HttpClient(), token = CancellationToken();
+    final checkpoint = Completer<void>(), commit = Completer<void>(), admitted = <Json>[], notifications = <Json>[];
+    final manager = McpManager(http: http, publicUrl: 'https://callback.example',
+      onEvent: (_, event) => notifications.add(event),
+      persistSubscription: (_, params, cancellation) async {
+        if (params['snapshot']['upstream_id'] == 'renewed-registration') {
+          if (!checkpoint.isCompleted) checkpoint.complete();
+          await commit.future.asCancellable(cancellation);
+        }
+      }, acceptThreadEvent: (event, _) async { admitted.add(event); });
+    addTearDown(() async {
+      if (!commit.isCompleted) commit.complete();
+      token.cancel(); await manager.close(); http.close(force: true); await upstream.close(force: true);
+    });
+    upstream.listen((request) async {
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      final result = switch (body['method']) {
+        'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
+        'events/list' => {'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+        'events/subscribe' => {'id': 'renewed-registration', 'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()},
+        'events/unsubscribe' => <String, Object?>{},
+        _ => throw StateError('Unexpected MCP method ${body['method']}'),
+      };
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
+      await request.response.close();
+    });
+    await manager.configure({'remote': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'oauth': false}}, token);
+    final id = 'a' * 32, secret = List.filled(32, 7);
+    final restoring = manager.restore('saved', [{'subscription_id': id, 'threadId': 'saved', 'server': 'remote',
+      'name': 'changed', 'mode': 'webhook', 'arguments': <String, Object?>{}, 'cursor': 'saved-cursor',
+      'callback': 'https://callback.example/mcp-events/$id', 'secret': base64Encode(secret), 'upstream_id': 'saved-registration'}], token);
+    await checkpoint.future.timeout(const Duration(seconds: 5));
+    expect(manager.subscriptions('thread:saved').single['state'], 'starting');
+    final bytes = utf8.encode(jsonEncode({'eventId': 'during-commit', 'name': 'changed', 'data': <String, Object?>{},
+      'timestamp': DateTime.now().toUtc().toIso8601String(), 'cursor': 'event-cursor'}));
+    final stamp = '${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+    final signature = base64Encode(Hmac(sha256, secret).convert([...utf8.encode('during-commit.$stamp.'), ...bytes]).bytes);
+    final callback = manager.webhook(id, {'webhook-id': 'during-commit', 'webhook-timestamp': stamp,
+      'webhook-signature': 'v1,$signature', 'x-mcp-subscription-id': 'renewed-registration'}, bytes, token);
+    expect(admitted, isEmpty);
+    expect(notifications, isEmpty);
+    commit.complete();
+    final response = await callback;
+    await restoring;
+    expect(response['status'], 200);
+    expect(admitted.single['notification']['params']['eventId'], 'during-commit');
+    expect(manager.subscriptions('thread:saved').single['state'], 'active');
+  });
+
   for (final (label, ttl, grant, valid) in [
     ('requested no expiry', null, 'none', true),
     ('finite grant instead of requested no expiry', null, 'finite', true),

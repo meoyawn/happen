@@ -589,7 +589,8 @@ class _DesktopViewState extends State<DesktopView> {
         .any(session.hasUnseenCompletion) ||
         session.projects.where((project) => !project.removing).expand((project) => project.tasks)
           .any((task) => !task.archived && task.questions.isNotEmpty) ||
-        session.sideChats.values.any((task) => task.questions.isNotEmpty),
+        session.sideChats.values.any((task) => !task.archived && !task.archiving &&
+          (task.questions.isNotEmpty || session.hasUnseenCompletion(task))),
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
             onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
@@ -641,7 +642,8 @@ class _DesktopViewState extends State<DesktopView> {
                       ? () => unawaited(_run(() => session.openProjectFolder(session.project!))) : null,
                     composer: Column(mainAxisSize: MainAxisSize.min, children: [
                       if (session.project?.available == true)
-                        McpConversationAuth(key: ValueKey(session.client), client: session.client),
+                        McpConversationAuth(key: ValueKey((session.client, session.project!.path)),
+                          client: session.client, cwd: session.project!.path),
                       _Composer(key: _composer, session: session),
                     ])))
                 else ...[
@@ -658,7 +660,8 @@ class _DesktopViewState extends State<DesktopView> {
                         ? (task, turnId) => _run(() => session.forkFromResponse(task, turnId)) : null,
                   ))),
                   if (session.project != null && session.project!.available && session.task?.archived != true)
-                    McpConversationAuth(key: ValueKey(session.client), client: session.client),
+                    McpConversationAuth(key: ValueKey((session.client, session.project!.path)),
+                      client: session.client, cwd: session.project!.path),
                   if (session.project?.removing == true)
                     const Padding(padding: EdgeInsets.all(20), child: Text('Removing project…'))
                   else if (session.project?.available == false)

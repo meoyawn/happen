@@ -58,6 +58,7 @@ extension _ThreadProtocol on AgentServer {
     try {
       if (method == 'thread/loaded/list') return {'data': _tasks.values.where((task) => task.loaded).map((task) => task.id).toList(), 'nextCursor': null};
       if (method == 'thread/list') {
+        await _serverStore.asCancellable(cancellation);
         final page = await listThreads(directory, params, cancellation: cancellation);
         return {...page, 'data': [for (final raw in page['data'] as List) {
           ...jsonObject(raw), 'status': _threadStatus(_tasks[raw['id']]),
@@ -67,7 +68,7 @@ extension _ThreadProtocol on AgentServer {
         if (params['historyMode'] != null && params['historyMode'] != 'paginated') throw const FormatException('Only paginated history is supported');
         final delay = _unloadDelay(params);
         final config = await _config(params), id = await _newTaskId(config, cancellation);
-        final writer = await startStore(directory, id, inMemory: config['ephemeral'] == true);
+        final writer = await _startStore(id, inMemory: config['ephemeral'] == true);
         try { await callIsolate(writer.port, 'append_batch', {'events': [
           {'type': 'task.created', 'data': {...config, 'task_id': id}},
           if (config['developer_instructions'] case final String policy when policy.trim().isNotEmpty)
@@ -88,10 +89,17 @@ extension _ThreadProtocol on AgentServer {
       if (method == 'thread/fork') params = _forkSource(params);
       final id = requiredString(params, 'threadId'); validateTaskId(id);
       if (method == 'thread/unsubscribe') {
-        final subscribed = client.subscriptions.remove(id), task = _tasks[id];
+        final subscribed = client.subscriptions.remove(id), observed = client.observations.remove(id), task = _tasks[id];
         if (task?.loaded != true) return {'status': 'notLoaded'};
         if (subscribed) _scheduleUnload(task!);
-        return {'status': subscribed ? 'unsubscribed' : 'notSubscribed'};
+        return {'status': subscribed || observed ? 'unsubscribed' : 'notSubscribed'};
+      }
+      if (method == 'thread/read' && params.containsKey('watch')) {
+        if (params['watch'] is! bool) throw const FormatException('watch must be a boolean');
+        // Register before the first await and the snapshot watermark. Cancelling
+        // the read leaves the watch until unsubscribe, just like thread/resume.
+        if (params['watch'] == true) { client.observations.add(id); }
+        else { client.observations.remove(id); }
       }
       if (method == 'thread/resume' || method == 'turn/start' || method == 'turn/steer') _subscribe(client, id);
       var resident = _tasks[id];

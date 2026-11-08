@@ -34,7 +34,7 @@ extension _ThreadLifecycle on AgentServer {
       final settled = task.maintenanceDone = Completer<void>();
       _tasks[id] = task;
       try {
-        task.writer ??= await startStore(directory, id, create: false);
+        task.writer ??= await _startStore(id, create: false);
         task.config ??= jsonObject(await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}, cancellation: cancellation));
         final inbox = jsonObject(await callIsolate(task.writer!.port, 'session.inbox', {}, cancellation: cancellation));
         task.pending..clear()..addAll((inbox['data'] as List).map(jsonObject));

@@ -62,20 +62,30 @@ extension _McpEvents on AgentServer {
   }
 
   Future<void> _saveMcpSubscription(String id, String method, Json params, CancellationToken cancellation) async {
+    final index = await _serverStore.asCancellable(cancellation);
+    // Commit the conservative root before choosing the current thread owner.
+    // Awaiting catalog I/O after that choice could race an unload or a resume.
+    await callIsolate(index.port, 'mcp.track', {'threadId': id}, cancellation: cancellation);
     while (true) {
       cancellation.throwIfCancelled();
       final task = _tasks[id] ?? _Task(id, null);
       if (task.maintenance) { await task.maintenanceDone!.future.asCancellable(cancellation); continue; }
       if (task.finishing) { await task.running!.asCancellable(cancellation); continue; }
       if (task.busy && task.writer == null) { await task.ready!.future.asCancellable(cancellation); continue; }
-      final subscriptions = await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation));
-      _setMcpSubscriptions(id, (subscriptions as List).cast<String>().toSet());
+      final saved = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation)));
+      final subscriptions = (saved['subscriptions'] as List).cast<String>().toSet();
+      _setMcpSubscriptions(id, subscriptions);
+      if (subscriptions.isEmpty && saved['pending'] != true) {
+        await callIsolate(index.port, 'mcp.forget', {'threadId': id}, cancellation: cancellation);
+      }
       return;
     }
   }
 
   Future<void> _restoreMcpEvents() async {
-    final owners = await readMcpEventOwners(directory, cancellation: _lifetime);
+    final index = await _serverStore;
+    final ids = (await callIsolate(index.port, 'mcp.threads', {}, cancellation: _lifetime) as List).cast<String>();
+    final owners = await readMcpEventOwners(directory, threadIds: ids, cancellation: _lifetime);
     // Seed every saved owner before waiting for any upstream to reconnect.
     // A committed save/remove/archive racing this scan already owns its entry.
     for (final owner in owners) {
@@ -84,7 +94,17 @@ extension _McpEvents on AgentServer {
         _setMcpSubscriptions(id, (owner['subscriptions'] as List).map((value) => requiredString(jsonObject(value), 'subscription_id')).toSet());
       }
     }
-    for (final owner in owners) {
+    // Reconnect independent owners without exhausting the admission mailbox
+    // when an installation has hundreds of saved watches.
+    final remaining = owners.iterator;
+    Future<void> restore() async {
+      while (remaining.moveNext()) { await _restoreMcpEventOwner(remaining.current); }
+    }
+    await Future.wait([for (var worker = 0; worker < 16 && worker < owners.length; worker++) restore()]);
+  }
+
+  Future<void> _restoreMcpEventOwner(Json owner) async {
+    try {
       _lifetime.throwIfCancelled();
       final id = requiredString(owner, 'threadId');
       if (owner['pending'] == true) {
@@ -97,10 +117,13 @@ extension _McpEvents on AgentServer {
         }
       }
       await callIsolate(network.port, 'mcp.events.restore', owner, cancellation: _lifetime);
-    }
+    } on CancelledException { if (!_closing) rethrow; }
+    catch (error) { traceError(error); }
   }
 
   Future<void> _deliverMcpEvent(String id, Json event, CancellationToken cancellation) async {
+    final index = await _serverStore.asCancellable(cancellation);
+    await callIsolate(index.port, 'mcp.track', {'threadId': id}, cancellation: cancellation);
     final task = await _loadThread(id, cancellation);
     task.eventAdmissions++;
     task.unloadTimer?.cancel(); task.unloadTimer = null;

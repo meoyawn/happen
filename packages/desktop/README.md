@@ -66,11 +66,22 @@ The archive list uses the full available height. Select a chat to preview its
 conversation inside Settings, then go back to the archive or restore it.
 
 Saved sessions come from the server's durable session list, not the live-agent
-registry or a desktop-only sidebar entry. After a crash, histories are rediscovered
-automatically when Happen opens; interrupted work is not restarted. Home and project
-selection also refresh the list. Closing a tab does not remove a saved session.
+registry or a desktop-only sidebar entry. Its shared SQLite catalog survives a
+crash; interrupted work is not restarted. Fresh installations start with an empty
+catalog. Home and project selection also refresh the list. Closing a tab does not
+remove a saved session.
 Inbox keeps interrupted sessions under **Needs attention** even though their
 agents are no longer running; opening their history does not resume execution.
+Open transcripts watch live messages and activity, including turns awakened by
+MCP events after reconnecting. These view subscriptions let idle agent runtimes
+unload and do not start inference.
+Saved MCP watches resume automatically when Happen relaunches, including watches
+on threads whose tabs are closed. The server queries its SQLite recovery index
+and reconnects unarchived threads using their saved subscriptions and cursors.
+Incoming events use a compact notification card with the source, declared event
+name, and timestamp. **Event details** expands the original payload for inspection
+and copying. The same card handles every provider and event schema; queued events
+keep their Send/Steer and Delete actions.
 
 Double-click a thread title in the sidebar or Home, press **F2** on its focused row,
 or choose **Rename thread** from its right-click menu to edit the title inline.
@@ -270,6 +281,8 @@ cancellation stay in the conversation. Successful connection removes the request
 and makes tools available on the next model step without changing the draft.
 
 Type `/mcp` and press Enter to view MCP server status in the composer popover.
+The list includes global servers and the current project's `.happen/config.yaml`
+overrides, matching the servers available to its agent.
 Use `/mcp verbose` for tool names, resources, and resource templates. Both use
 the same popover as `@` file search. HTTP OAuth servers offer **Sign in**, which
 opens your default browser, and **Sign out** after connection. Cancel stops a

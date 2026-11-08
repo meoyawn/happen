@@ -105,6 +105,7 @@ class SessionQuestions {
       request = {
         'id': newId(), 'sessionID': requiredString(params, 'task_id'),
         'questions': questions, 'callID': requiredString(params, 'call_id'),
+        'createdAt': DateTime.now().millisecondsSinceEpoch,
         if (asynchronous) 'async': true,
       };
       final answer = Completer<List<List<String>>?>();

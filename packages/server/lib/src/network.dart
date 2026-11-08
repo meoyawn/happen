@@ -453,7 +453,7 @@ Future<void> _networkMain(List<Object?> args) async {
         await initialized.asCancellable(cancellation);
         final cwd = params['cwd'] as String?;
         final scope = cwd == null ? null : Directory(cwd).absolute.uri.normalizePath().toFilePath();
-        if (scope != null && !localCwds.contains(scope)) {
+        if (scope != null && !localApplied.containsKey(scope)) {
           try { await reload(cancellation, cwd: scope); }
           on CancelledException { rethrow; }
           catch (_) { /* Retain the last accepted config, including on first discovery. */ }

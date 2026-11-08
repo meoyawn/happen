@@ -194,23 +194,6 @@ void main() {
     }
     expect((await cancelled)['status'], 'interrupted');
     expect((await rolloutLines(client, id)).where((line) => line['type'] == 'compacted'), isEmpty);
-    compactStarted = Completer<void>();
-    final steered = turn(compact: true);
-    await compactStarted.future.timeout(const Duration(seconds: 5));
-    await client.request('turn/steer', {
-      'threadId': id, 'expectedTurnId': await activeTurn(), 'input': [{'type': 'text', 'text': 'steer during compaction'}],
-    });
-    expect((await steered.timeout(const Duration(seconds: 5)))['status'], 'completed',
-      reason: 'Steering must cancel the blocked compaction and continue in the active turn');
-    expect(openAIMessageText(jsonObject((requests.last['input'] as List).lastWhere((item) => item['role'] == 'user'))),
-      'steer during compaction');
-    final projectionClient = await AgentClient.connect(server.uri);
-    try {
-      final projection = jsonObject(await projectionClient.request('thread/read', {'threadId': id, 'includeTurns': true}));
-      expect((projection['liveItems'] as List).where((item) => item['type'] == 'contextCompaction' && item['live'] == true), isEmpty);
-    } finally {
-      await projectionClient.close();
-    }
     compactMode = 'success';
     await File('${root.path}/repo/AGENTS.md')
         .writeAsString('Repository instruction: use cedar.');

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:desktop/file_autocomplete.dart';
 import 'package:desktop/mcp_conversation.dart';
@@ -9,6 +11,78 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('/mcp shows the current project servers and switches inventory with the composer', (tester) async {
+    Directory? root;
+    HttpServer? upstream;
+    AgentServer? server;
+    AgentClient? client;
+    final controller = TextEditingController(), focus = FocusNode();
+    try {
+      await tester.runAsync(() async {
+        root = await Directory.systemTemp.createTemp('mcp-project-menu-');
+        upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        upstream!.listen((request) async {
+          final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+          final result = switch (body['method']) {
+            'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {
+              'tools': <String, Object?>{}, 'resources': <String, Object?>{},
+            }},
+            'tools/list' => {'tools': [{'name': 'project_probe', 'inputSchema': {'type': 'object'}}]},
+            'resources/list' => {'resources': <Object?>[]},
+            'resources/templates/list' => {'resourceTemplates': <Object?>[]},
+            _ => throw StateError('Unexpected MCP method ${body['method']}'),
+          };
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
+          await request.response.close();
+        });
+        await File('${root!.path}/config.yaml').writeAsString('{}');
+        for (final (project, name) in [('first', 'github_events'), ('second', 'other_events')]) {
+          await Directory('${root!.path}/$project/.git').create(recursive: true);
+          final config = File('${root!.path}/$project/.happen/config.yaml');
+          await config.parent.create();
+          await config.writeAsString(jsonEncode({'mcp_servers': {
+            name: {'url': 'http://127.0.0.1:${upstream!.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+          }}));
+        }
+        server = await AgentServer.startLocal(directory: '${root!.path}/data',
+          configPath: '${root!.path}/config.yaml', skillsHome: root!.path);
+        client = AgentClient.local(server!);
+      });
+      Future<void> show(String project, String command) async {
+        await tester.pumpWidget(MaterialApp(home: Scaffold(body: Align(alignment: Alignment.bottomCenter,
+          child: ComposerAutocomplete(controller: controller, focusNode: focus, client: client!,
+            cwd: '${root!.path}/$project', enabled: true, child: TextField(controller: controller, focusNode: focus)),
+        ))));
+        await tester.enterText(find.byType(TextField), command);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        for (var attempt = 0; attempt < 300 && find.textContaining('Loading MCP ').evaluate().isNotEmpty; attempt++) {
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+          await tester.pump();
+        }
+        expect(find.textContaining('Loading MCP '), findsNothing);
+      }
+      await show('first', '/mcp');
+      expect(find.text('github_events'), findsOneWidget);
+      expect(find.text('other_events'), findsNothing);
+      expect(controller.text, isEmpty);
+      await show('second', '/mcp verbose');
+      expect(find.text('other_events'), findsOneWidget);
+      expect(find.text('github_events'), findsNothing);
+      expect(find.text('Tools: project_probe'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        await client?.close(); await server?.close(); await upstream?.close(force: true);
+        await root?.delete(recursive: true);
+      });
+      controller.dispose(); focus.dispose();
+    }
+  });
+
   testWidgets('the conversation surfaces required MCP auth and completes it inline without changing the draft', (tester) async {
     final client = _Client();
     final draft = TextEditingController(text: 'my yesterdays workout?');
@@ -25,13 +99,14 @@ void main() {
     });
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: Column(children: [
       const Expanded(child: Text('Existing conversation')),
-      McpConversationAuth(client: client),
+      McpConversationAuth(client: client, cwd: '/project'),
       TextField(controller: draft),
     ]))));
     await tester.pumpAndSettle();
     expect(find.text('MCP sign-in required'), findsOneWidget);
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
+    expect(client.loginCwd, '/project');
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('Preparing sign-in…'), findsOneWidget);
     const url = 'https://strengthmcp.com/authorize?state=fixture';
@@ -111,17 +186,19 @@ class _Client implements AgentClient {
   @override
   final events = StreamController<Json>.broadcast();
   String? loginId;
+  String? loginCwd;
   CancellationToken? loginCancellation;
   CancellableCompleter<Json>? completion;
   bool connected = false;
   @override
-  Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => {
+  Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async => {
     'servers': [{'name': 'strength', 'enabled': true, 'state': 'authentication_required',
       'auth_status': connected ? 'oauth' : 'not_authenticated', 'oauth_supported': true, 'tool_count': connected ? 1 : 0}],
   };
   @override
-  Future<Json> mcpLogin(String server, String id, {required CancellationToken cancellation}) {
+  Future<Json> mcpLogin(String server, String id, {String? cwd, required CancellationToken cancellation}) {
     loginId = id;
+    loginCwd = cwd;
     loginCancellation = cancellation;
     return (completion = CancellableCompleter<Json>(cancellation)).future.then((result) {
       connected = true;

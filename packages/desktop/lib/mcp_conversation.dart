@@ -9,8 +9,9 @@ import 'mcp_auth.dart';
 /// Live connection requests belong to the conversation surface, not its saved
 /// messages. Sign-in never sends a prompt or exposes credentials to the model.
 class McpConversationAuth extends StatefulWidget {
-  const McpConversationAuth({super.key, required this.client});
+  const McpConversationAuth({super.key, required this.client, required this.cwd});
   final AgentClient client;
+  final String cwd;
   @override
   State<McpConversationAuth> createState() => _McpConversationAuthState();
 }
@@ -41,7 +42,7 @@ class _McpConversationAuthState extends State<McpConversationAuth> with WidgetsB
     _request?.cancel();
     final token = _request = CancellationToken();
     try {
-      final result = await widget.client.mcpInventory(cancellation: token.merge(_lifetime));
+      final result = await widget.client.mcpInventory(cwd: widget.cwd, cancellation: token.merge(_lifetime));
       if (mounted && !token.isCancelled) {
         setState(() {
           _servers = (result['servers'] as List).map(jsonObject).where((server) => server['oauth_supported'] == true &&
@@ -80,7 +81,7 @@ class _McpConversationAuthState extends State<McpConversationAuth> with WidgetsB
               key: ValueKey('mcp-auth:${server['name']}'),
               padding: const EdgeInsets.only(top: 10),
               child: _active.contains(server['name'])
-                ? McpAuthenticationCard(client: widget.client, server: server['name'] as String, onDone: () {
+                ? McpAuthenticationCard(client: widget.client, server: server['name'] as String, cwd: widget.cwd, onDone: () {
                     if (mounted) setState(() => _active.remove(server['name']));
                     unawaited(_refresh());
                   })

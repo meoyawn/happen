@@ -3,6 +3,38 @@
 This is the decision record for this agent server. Measurements are observations on the
 listed environment, not capacity guarantees. Update entries as evidence changes.
 
+## 2026-11-08 — Shared thread catalog and durable MCP event recovery
+
+Adapt Codex `748ab55ca7de0b647d9a7a9d9a8e70e00f28666d`'s
+`state/src/runtime.rs` and `runtime/threads.rs`:
+one server-owned `server.sqlite` catalogs public thread metadata, archive state
+and event recovery candidates. A dedicated isolate owns its SQLite connection;
+thread listings use SQL filters and keyset pagination. Canonical histories keep
+their existing independent writers. Private subscriptions, cursors, webhook
+credentials and inbox receipts remain in their thread's history database.
+
+The existing installation's 308 histories were imported operationally. That
+completed migration code and its tests have been removed. Fresh installs
+initialize an empty catalog; startup never discovers history folders.
+Before a managed history mutation, persist a thread ID and unique ticket;
+after its commit, synchronize
+metadata and retire that ticket in one catalog transaction. Startup reconciles
+only unfinished tickets. Routine maintenance queries archived catalog entries
+instead of discovering histories again.
+
+MCP restoration queries indexed unarchived owners and reconnects them without
+loading an agent. Polling starts with a fresh timer and the durable cursor. An
+acknowledged event still pending in the inbox retains its recovery candidate even
+after unsubscribe, and wakes without another occurrence. A project scope becomes
+usable only after configuration completes, so concurrently restored owners in
+the same project cannot skip initialization.
+
+Behavioral ports cover shared metadata updates, archive/list filters, restart
+and explicit registration (`test/server_storage_test.dart`,
+`test/session_list_test.dart`), with independent SQLite failure injection for
+post-commit recovery. `packages/server/test/mcp_events_restart_test.dart` adds actual process
+termination, multiple restored owners, offline polling, and pending recovery.
+
 ## 2026-11-05 — Deterministic context contracts, separate performance work
 
 The Codex context matrix is a functional contract, not a benchmark. Remove

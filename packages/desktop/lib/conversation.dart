@@ -14,6 +14,7 @@ import 'conversation_tools.dart';
 import 'conversation_response.dart';
 import 'conversation_changes.dart';
 import 'conversation_images.dart';
+import 'conversation_event.dart';
 
 typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, String? label});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
@@ -472,6 +473,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         _ => Padding(padding: EdgeInsets.symmetric(horizontal: entry.role == 'You' || entry.role == 'Queued' ? 0 : 4),
                           child: _Message(entry: entry, directory: widget.directory,
                           running: task.running,
+                          onExpand: () => _following = false,
                           onFork: widget.onFork == null || task.archiving || task.sideParentID != null ||
                               entry.response == null || entry.turnId == null || task.turns[entry.turnId]?['status'] == 'inProgress'
                             ? null : () => widget.onFork!(task, entry.turnId!),
@@ -587,13 +589,15 @@ class _TurnFold extends StatelessWidget {
 }
 
 class _Message extends StatefulWidget {
-  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork, this.running = false});
+  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork,
+    this.onExpand, this.running = false});
   final ChatEntry entry;
   final String directory;
   final ValueListenable<String>? liveText;
   final Future<void> Function(String action)? onPendingAction;
   final Future<void> Function()? onFork;
   final bool running;
+  final VoidCallback? onExpand;
 
   @override
   State<_Message> createState() => _MessageState();
@@ -636,6 +640,13 @@ class _MessageState extends State<_Message> {
   Widget build(BuildContext context) {
     final entry = widget.entry;
     final pending = entry.role == 'Queued';
+    if (entry.event case final event?) return ConversationEventCard(
+      key: PageStorageKey(entry.id), event: event, timestamp: entry.timestamp, queued: pending, onExpand: widget.onExpand,
+      actions: !pending || widget.onPendingAction == null ? null : Row(mainAxisSize: MainAxisSize.min, children: [
+        _action('steer', widget.running ? 'Steer' : 'Send', Icons.arrow_upward_rounded),
+        const SizedBox(width: 8), _action('delete', 'Delete', Icons.delete_outline_rounded),
+      ]),
+    );
     final user = entry.role == 'You' || pending;
     final body = user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
       : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText);

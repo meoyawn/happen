@@ -17,24 +17,55 @@ import 'sidebar_icons.dart';
 import 'thread_reorder_state.dart';
 import 'window_chrome.dart';
 
-List<(Project, DesktopTask)> _sidebarTasks(DesktopSession session, String? projectKey) {
+typedef _SidebarThreadActivity = ({
+  bool running, bool needsInput, bool failed, bool interrupted, bool completed, bool unread,
+  int lastActivity, int sentAt, int? runStartedAt,
+});
+
+_SidebarThreadActivity _sidebarActivity(DesktopSession session, DesktopTask task) {
+  var running = false, needsInput = false, failed = false, interrupted = false, completed = false, unread = false;
+  var lastActivity = task.lastActivity, sentAt = 0;
+  int? runStartedAt;
+  for (final source in [task, ...session.sideChats.values.where((side) =>
+      side.sideParentID == task.id && !side.archived && !side.archiving)]) {
+    final working = source.running || source.sideSubmitting || source.sidePreparing && source.sideError == null;
+    final status = source.turns.values.lastOrNull?['status'];
+    running |= working;
+    needsInput |= source.questions.isNotEmpty;
+    failed |= source.loadError != null || source.sideError != null || status == 'failed';
+    interrupted |= !working && (status == 'inProgress' || status == 'interrupted' ||
+      source.projectionState['summary']?['time']?['busy'] != null && source.projectionState['summary']?['time']?['idle'] == null);
+    completed |= session.hasUnseenCompletion(source);
+    unread |= (source == task || source.lastActivity > 0) && source.lastActivity > (session.viewedTasks[source.id] ?? -1);
+    if (source.lastActivity > lastActivity) lastActivity = source.lastActivity;
+    if (working) {
+      final sent = taskLastSentAt(source);
+      if (sent > sentAt) sentAt = sent;
+      final started = source.runStartedAt;
+      if (started != null && (runStartedAt == null || started < runStartedAt)) runStartedAt = started;
+    }
+  }
+  return (running: running, needsInput: needsInput, failed: failed, interrupted: interrupted,
+    completed: completed, unread: unread, lastActivity: lastActivity, sentAt: sentAt, runStartedAt: runStartedAt);
+}
+
+List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSession session, String? projectKey) {
   final pins = {for (final (index, id) in session.pinnedTaskIds.indexed) id: index};
   final tasks = [
     for (final project in session.projects)
       if (!project.removing && (projectKey == null || project.checkoutKey == projectKey))
         for (final task in project.tasks)
-          if (!task.archived) (project, task),
+          if (!task.archived) (project, task, _sidebarActivity(session, task)),
   ];
-  final sentAt = {for (final (_, task) in tasks) if (task.running) task.id: taskLastSentAt(task)};
   return tasks..sort((a, b) {
     final pin = (pins[a.$2.id] ?? double.infinity).compareTo(pins[b.$2.id] ?? double.infinity);
     if (pin != 0) return pin;
-    if (a.$2.running != b.$2.running) return a.$2.running ? -1 : 1;
-    if (a.$2.running) {
-      final sent = sentAt[b.$2.id]!.compareTo(sentAt[a.$2.id]!);
+    if (a.$3.running != b.$3.running) return a.$3.running ? -1 : 1;
+    if (a.$3.running) {
+      final sent = b.$3.sentAt.compareTo(a.$3.sentAt);
       return sent != 0 ? sent : a.$2.id.compareTo(b.$2.id);
     }
-    final activity = b.$2.lastActivity.compareTo(a.$2.lastActivity);
+    final activity = b.$3.lastActivity.compareTo(a.$3.lastActivity);
     return activity != 0 ? activity : a.$2.id.compareTo(b.$2.id);
   });
 }
@@ -51,11 +82,11 @@ List<String> sidebarThreadIds(DesktopSession session, {String? projectKey}) {
   final pins = session.pinnedTaskIds.toSet();
   return [
     if (!session.collapsedSidebarSections.contains('pinned'))
-      for (final (_, task) in tasks.where((entry) => pins.contains(entry.$2.id))) task.id,
+      for (final (_, task, _) in tasks.where((entry) => pins.contains(entry.$2.id))) task.id,
     if (!session.collapsedSidebarSections.contains('working'))
-      for (final (_, task) in tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id))) task.id,
+      for (final (_, task, _) in tasks.where((entry) => entry.$3.running && !pins.contains(entry.$2.id))) task.id,
     for (final draft in _sidebarDrafts(session, projectKey)) draft.id,
-    for (final (_, task) in tasks.where((entry) => !entry.$2.running && !pins.contains(entry.$2.id))) task.id,
+    for (final (_, task, _) in tasks.where((entry) => !entry.$3.running && !pins.contains(entry.$2.id))) task.id,
   ];
 }
 
@@ -205,7 +236,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     super.dispose();
   }
 
-  void _revealSelection(List<(Project, DesktopTask)> pinned, List<(String?, Widget)> rows) {
+  void _revealSelection(List<(Project, DesktopTask, _SidebarThreadActivity)> pinned, List<(String?, Widget)> rows) {
     final id = widget.home ? null : session.draftKey;
     final selection = (id, widget.projectKey);
     final pin = session.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((entry) => entry.$2.id == id);
@@ -302,15 +333,11 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         ])));
   }
 
-  Widget _row(Project project, DesktopTask task, {int? reorderIndex}) {
+  Widget _row(Project project, DesktopTask task, _SidebarThreadActivity activity, {int? reorderIndex}) {
     final state = (
       session, project, task, widget.home, session.task == task,
       project.id, project.name, project.branch, project.avatarColor, project.avatarImage, session.projectAvatarStyle,
-      task.title, task.archived, task.archiving, task.running, task.loadError, task.provider, task.model,
-      task.runStartedAt, task.lastActivity, task.questions.isNotEmpty,
-      session.sideChats.values.any((side) => side.sideParentID == task.id && side.questions.isNotEmpty),
-      task.turns.values.lastOrNull?['status'], task.projectionState['summary']?['time']?['busy'],
-      task.projectionState['summary']?['time']?['idle'], session.viewedTasks[task.id],
+      task.title, task.archived, task.archiving, task.provider, task.model, activity,
       session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
       _canStartReorder, reorderIndex, widget.onProjectSettings != null,
     );
@@ -323,7 +350,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) {
       final selected = !widget.home && session.task == task;
       final pinned = session.pinnedTaskIds.contains(task.id);
-      final unread = task.lastActivity > (session.viewedTasks[task.id] ?? -1);
+      final unread = activity.unread;
       final reorderable = reorderIndex != null && renameInput == null && !task.archiving && _canStartReorder;
       final card = Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Material(
         color: selected ? Colors.white : Colors.transparent,
@@ -345,7 +372,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                 Expanded(child: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, color: desktopSecondary))),
                 if (!hovering)
-                  _ThreadStatus(session: session, task: task, showLabel: true),
+                  _ThreadStatus(activity: activity, showLabel: true),
                 IgnorePointer(ignoring: !hovering, child: Align(alignment: Alignment.centerRight,
                   widthFactor: hovering ? 1 : 0, child: Opacity(opacity: hovering ? 1 : 0,
                     alwaysIncludeSemantics: true,
@@ -417,7 +444,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     _rows.removeWhere((id, _) => !ids.contains(id));
     final pins = session.pinnedTaskIds.toSet();
     final pinned = tasks.where((entry) => pins.contains(entry.$2.id)).toList();
-    final working = tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id)).toList();
+    final working = tasks.where((entry) => entry.$3.running && !pins.contains(entry.$2.id)).toList();
     final drafts = _sidebarDrafts(session, widget.projectKey);
     final anchoredIds = {...ids, ...drafts.map((draft) => draft.id)};
     _rowAnchors.removeWhere((id, _) => !anchoredIds.contains(id));
@@ -425,12 +452,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       if (working.isNotEmpty) ...[
         (null, _sectionHeading('working', 'Working', working.length)),
         if (!session.collapsedSidebarSections.contains('working'))
-          for (final (project, task) in working) (task.id, _row(project, task)),
+          for (final (project, task, activity) in working) (task.id, _row(project, task, activity)),
         (null, const Padding(padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Divider(height: 1))),
       ],
       for (final draft in drafts) (draft.id, _draft(draft)),
-      for (final (project, task) in tasks.where((entry) => !entry.$2.running && !pins.contains(entry.$2.id)))
-        (task.id, _row(project, task)),
+      for (final (project, task, activity) in tasks.where((entry) => !entry.$3.running && !pins.contains(entry.$2.id)))
+        (task.id, _row(project, task, activity)),
       (null, const SizedBox(height: 12)),
     ];
     _revealSelection(pinned, rows);
@@ -489,8 +516,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   onReorderItem: _dropReorder,
                   proxyDecorator: _dragProxy,
                   itemBuilder: (context, index) {
-                    final (project, task) = pinned[index];
-                    return _row(project, task, reorderIndex: pinned.length > 1 ? index : null);
+                    final (project, task, activity) = pinned[index];
+                    return _row(project, task, activity, reorderIndex: pinned.length > 1 ? index : null);
                   }),
                 SliverToBoxAdapter(child: _dragBoundary('Threads')),
               ],
@@ -566,7 +593,7 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
               title: renameInput ?? GestureDetector(onDoubleTap: renameTitle,
                 child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
               subtitle: Text(project.name, style: const TextStyle(fontSize: 11, color: desktopTertiary)),
-              trailing: _ThreadStatus(session: widget.session, task: task),
+              trailing: _ThreadStatus(activity: _sidebarActivity(widget.session, task)),
               onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
         })),
       ]))));
@@ -770,35 +797,30 @@ Widget _pinButton(DesktopSession session, DesktopTask task, {bool compact = fals
 }
 
 class _ThreadStatus extends StatelessWidget {
-  const _ThreadStatus({required this.session, required this.task, this.showLabel = false});
-  final DesktopSession session;
-  final DesktopTask task;
+  const _ThreadStatus({required this.activity, this.showLabel = false});
+  final _SidebarThreadActivity activity;
   final bool showLabel;
   @override
   Widget build(BuildContext context) {
-    final status = task.turns.values.lastOrNull?['status'];
-    final needsInput = task.questions.isNotEmpty || session.sideChats.values.any((side) => side.sideParentID == task.id && side.questions.isNotEmpty);
-    final interrupted = !task.running && (status == 'inProgress' || status == 'interrupted' ||
-      task.projectionState['summary']?['time']?['busy'] != null && task.projectionState['summary']?['time']?['idle'] == null);
-    final (label, icon, color) = needsInput ? ('Input', Icons.question_answer_outlined, const Color(0xff4f46e5))
-      : task.running ? ('Working', null, const Color(0xff5876ff))
-      : task.loadError != null || status == 'failed' ? ('Failed', Icons.error_outline, const Color(0xffc44848))
-      : interrupted ? ('Interrupted', Icons.pause_circle_outline, const Color(0xffb67a2a))
-      : session.hasUnseenCompletion(task) ? ('Done', Icons.check_circle_outline, const Color(0xff059669))
+    final (label, icon, color) = activity.needsInput ? ('Input', Icons.question_answer_outlined, const Color(0xff4f46e5))
+      : activity.running ? ('Working', null, const Color(0xff5876ff))
+      : activity.failed ? ('Failed', Icons.error_outline, const Color(0xffc44848))
+      : activity.interrupted ? ('Interrupted', Icons.pause_circle_outline, const Color(0xffb67a2a))
+      : activity.completed ? ('Done', Icons.check_circle_outline, const Color(0xff059669))
       : ('Idle', Icons.circle_outlined, desktopTertiary);
-    final started = task.runStartedAt;
+    final started = activity.runStartedAt;
     final elapsed = started == null ? null : DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(started));
     final duration = elapsed == null ? '' : elapsed.inHours > 0 ? '${elapsed.inHours}h ${elapsed.inMinutes % 60}m'
       : elapsed.inMinutes > 0 ? '${elapsed.inMinutes}m' : '<1m';
-    final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(task.lastActivity));
-    final time = task.lastActivity <= 0 ? '' : age.inDays > 0 ? '${age.inDays}d'
+    final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(activity.lastActivity));
+    final time = activity.lastActivity <= 0 ? '' : age.inDays > 0 ? '${age.inDays}d'
       : age.inHours > 0 ? '${age.inHours}h' : age.inMinutes > 0 ? '${age.inMinutes}m' : 'now';
     return Tooltip(message: label, child: Semantics(label: label, child: Row(mainAxisSize: MainAxisSize.min, children: [
       if (!showLabel || label != 'Idle') SizedBox.square(dimension: 14,
         child: icon == null ? SidebarActivityIndicator(color: color) : Icon(icon, size: 13, color: color)),
       if (showLabel) ...[
         const SizedBox(width: 4),
-        Text(label == 'Idle' ? time : task.running && !needsInput ? duration : label,
+        Text(label == 'Idle' ? time : activity.running && !activity.needsInput && duration.isNotEmpty ? duration : label,
           style: TextStyle(fontSize: 12, color: color, fontFeatures: const [FontFeature.tabularFigures()])),
       ],
     ])));

@@ -305,6 +305,8 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
                 padding: EdgeInsets.zero, icon: const Icon(Icons.close_rounded, size: 14, color: desktopSecondary)),
               const SizedBox(width: 6),
             ]),
+            Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: _QuestionTiming(request: widget.request)),
             if (!draft.minimized) Flexible(fit: FlexFit.loose, child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: (MediaQuery.sizeOf(context).height * .4).clamp(80, 384)),
               child: SingleChildScrollView(controller: _scroll,
@@ -333,5 +335,62 @@ class _SessionQuestionDockState extends State<SessionQuestionDock> {
       action: last ? (questions.length > 1 ? 'Submit answers' : 'Submit answer') : 'Next',
       advance: _next, previous: draft.tab > 0 && available ? () => _jump(draft.tab - 1) : null,
     )));
+  }
+}
+
+class _QuestionTiming extends StatefulWidget {
+  const _QuestionTiming({required this.request});
+  final Json request;
+
+  @override
+  State<_QuestionTiming> createState() => _QuestionTimingState();
+}
+
+class _QuestionTimingState extends State<_QuestionTiming> {
+  Timer? _clock;
+
+  @override
+  void initState() {
+    super.initState();
+    _watch();
+  }
+
+  @override
+  void didUpdateWidget(_QuestionTiming oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.request['createdAt'] != widget.request['createdAt']) _watch();
+  }
+
+  void _watch() {
+    _clock?.cancel();
+    if (widget.request['createdAt'] is int) {
+      _clock = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+    }
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final created = widget.request['createdAt'] as int?;
+    final seconds = created == null ? null : (DateTime.now().millisecondsSinceEpoch - created) ~/ 1000;
+    final elapsed = seconds == null ? null : seconds <= 0 ? '0s'
+      : seconds >= 3600 ? '${seconds ~/ 3600}h ${seconds ~/ 60 % 60}m ${seconds % 60}s'
+      : seconds >= 60 ? '${seconds ~/ 60}m ${seconds % 60}s' : '${seconds}s';
+    final asynchronous = widget.request['async'] == true;
+    final lifetime = asynchronous ? 'Until turn ends' : 'No time limit';
+    return Tooltip(message: asynchronous
+      ? 'You can answer while the agent works. This question closes when the turn ends or is cancelled.'
+      : 'This question stays open until you answer or cancel it.',
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.schedule_outlined, size: 12, color: desktopTertiary),
+        const SizedBox(width: 5),
+        Flexible(child: Text('${elapsed == null ? '' : 'Open $elapsed · '}$lifetime',
+          style: const TextStyle(fontSize: 11, color: desktopSecondary, fontFeatures: [FontFeature.tabularFigures()]))),
+      ]));
   }
 }

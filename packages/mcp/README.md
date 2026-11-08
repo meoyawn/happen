@@ -21,8 +21,10 @@ ChatGPT connectors, enterprise-managed authorization or plugins.
   generation, not the server's display name. Catalog namespaces and cancellation
   remain binding-local. Config retains ownership after a client disconnects.
 - `threadId` on MCP inventory/status/auth/events requests selects that saved
-  thread's cwd without loading or subscribing to the thread. Threadless requests
-  see global config only. Internal agent catalog/call/resource requests carry cwd.
+  thread's cwd without loading or subscribing to the thread. Desktop status,
+  resource discovery and auth requests carry the selected project's cwd.
+  Requests without a thread or cwd see global config only. Internal agent
+  catalog/call/resource requests carry cwd.
 - Invalid reloads retain the last accepted connections and expose a sanitized
   `config_error` on inventory. Removing a project layer restores inheritance.
 - Modern stdio messages, HTTP JSON bodies and SSE events use Codex's 8 MiB wire
@@ -164,6 +166,15 @@ is not sent as an extra draft parameter to the upstream server.
 
 Thread-owned subscriptions and cursors are stored in the thread's existing
 SQLite file and restored at server startup, using its saved project scope.
+The server-wide `server.sqlite` stores shared thread metadata and a recovery index
+with one dedicated writer. Startup queries that index and restores unarchived
+owners independently; opening a desktop tab or starting an agent is unnecessary.
+Fresh installations start with an empty catalog. Startup uses the catalog and
+repairs only journaled incomplete updates, without discovering history folders.
+Index membership commits before
+private subscription/admission state, and survives while acknowledged event input
+is pending even if its watch was removed. Cursor, receipt and inbox authority stay
+in the thread's database, preserving their single-transaction durability.
 Restoring control state does not load a thread or run a model. An occurrence's
 cursor and bounded receipt join its inbox admission transaction; an acknowledged
 event left pending at process death wakes after restart without another event.
@@ -176,3 +187,6 @@ See [the API guide](../../docs/api.md#mcp-events) for configuration and lifetime
 [`test/mcp_test.dart`](../../test/mcp_test.dart) for transport contracts, and
 [`thread_unsubscribe_test.dart`](../server/test/thread_unsubscribe_test.dart)
 for real server/inference/SQLite wake-up and retry coverage.
+[`mcp_events_restart_test.dart`](../server/test/mcp_events_restart_test.dart) exercises
+graceful and killed process restarts, offline polling catch-up,
+archived exclusions, persisted cursors, deduplication, and pending event recovery.

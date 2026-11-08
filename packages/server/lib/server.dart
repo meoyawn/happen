@@ -80,6 +80,12 @@ class AgentServer {
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
   Future<TraceStore>? _traces;
+  late Future<IsolateOwner>? _catalog = null;
+  Future<IsolateOwner> get _serverStore => _catalog ??= startServerStore(directory, cancellation: _lifetime);
+
+  Future<IsolateOwner> _startStore(String id, {bool create = true, bool inMemory = false, Json? fork}) async =>
+    startStore(directory, id, create: create, inMemory: inMemory, fork: fork,
+      catalog: inMemory ? null : (await _serverStore).port, cancellation: _lifetime);
   Future<TraceStore> get traces => _traces ??= TraceStore.open('$directory/telemetry.sqlite', cancellation: _lifetime);
   int _transfers = 0;
 
@@ -1167,7 +1173,7 @@ class AgentServer {
     }
     cancellation.throwIfCancelled();
     return importHistory(targetDirectory, source, operationId: operationId,
-      taskIds: network.port, cancellation: cancellation);
+      taskIds: network.port, catalog: (await _serverStore).port, cancellation: cancellation);
   }
 
   Future<void> _archive(_Task task, bool archived) async {
@@ -1190,7 +1196,7 @@ class AgentServer {
           await _closeSide(side);
         }
       }
-      writer = task.memoryStore ?? task.writer ?? await startStore(directory, task.id, create: false);
+      writer = task.memoryStore ?? task.writer ?? await _startStore(task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       // Publish the committed membership change before draining resources. MCP
@@ -1198,10 +1204,13 @@ class AgentServer {
       _broadcast(task.id, event);
       if (archived) {
         _setMcpSubscriptions(task.id, {});
+        final index = await _serverStore;
+        await callIsolate(index.port, 'mcp.forget', {'threadId': task.id}, cancellation: _lifetime);
         _goals.remove(task.id);
         _clientTools.archive(task.id);
         for (final client in _clients) {
           client.subscriptions.remove(task.id);
+          client.observations.remove(task.id);
           client.contextSnapshots.removeWhere((_, snapshot) => snapshot['sessionID'] == task.id);
           client.sessionTraces.remove(task.id);
         }
@@ -1236,29 +1245,32 @@ class AgentServer {
 
   Future<Json> _maintain() async {
     var checked = 0, archived = 0, removed = 0, errors = 0;
-    final tasks = Directory('$directory/tasks');
-    if (await tasks.exists()) {
-      await for (final entry in tasks.list(followLinks: false)) {
-        _lifetime.throwIfCancelled();
-        if (entry is! Directory) continue;
-        final id = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
-        if (_clients.any((client) => client.id == id)) continue;
-        try { validateTaskId(id); } on FormatException { continue; }
-        if (!await File('${entry.path}/history.sqlite').exists() || _tasks.containsKey(id)) continue;
-        final task = _Task(id, null);
-        final maintenance = task.backgroundMaintenance = Completer<void>();
-        try {
-          final result = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, 'maintain', {}, cancellation: _lifetime)));
-          checked++;
-          if (result['archived'] == true) archived++;
-        } on CancelledException {
-          rethrow;
-        } catch (_) {
-          errors++;
-        } finally {
-          task.backgroundMaintenance = null;
-          maintenance.complete();
-        }
+    await _serverStore;
+    // Only archived histories need checkpointing. Inventory comes from the
+    // catalog, so routine maintenance only visits registered threads.
+    final ids = <String>[];
+    String? cursor;
+    do {
+      final page = await listThreads(directory, {'archived': true, 'cursor': ?cursor, 'limit': 500}, cancellation: _lifetime);
+      ids.addAll((page['data'] as List).map((thread) => thread['id'] as String));
+      cursor = page['nextCursor'] as String?;
+    } while (cursor != null);
+    for (final id in ids) {
+      _lifetime.throwIfCancelled();
+      if (_clients.any((client) => client.id == id) || _tasks.containsKey(id)) continue;
+      final task = _Task(id, null);
+      final maintenance = task.backgroundMaintenance = Completer<void>();
+      try {
+        final result = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, 'maintain', {}, cancellation: _lifetime)));
+        checked++;
+        if (result['archived'] == true) archived++;
+      } on CancelledException {
+        rethrow;
+      } catch (_) {
+        errors++;
+      } finally {
+        task.backgroundMaintenance = null;
+        maintenance.complete();
       }
     }
     final staging = Directory('$directory/staging');
@@ -1390,8 +1402,7 @@ class AgentServer {
     // it commits its terminal event, regardless of the turn's total duration.
     final turnLifetime = CancellationToken();
     try {
-      task.writer ??= task.memoryStore ?? await startStore(
-        directory,
+      task.writer ??= task.memoryStore ?? await _startStore(
         task.id,
         create: task.config != null,
         inMemory: task.config?['ephemeral'] == true,
@@ -1597,8 +1608,7 @@ class AgentServer {
     _tasks[task.id] = task;
     IsolateOwner? writer;
     try {
-      writer = task.memoryStore ?? await startStore(
-        directory,
+      writer = task.memoryStore ?? await _startStore(
         task.id,
         create: false,
       );
@@ -1662,7 +1672,7 @@ class AgentServer {
       }
     }
     for (final client in _clients.toList()) {
-      final receivesAll = client.subscriptions.contains(taskId) ||
+      final receivesAll = client.subscriptions.contains(taskId) || client.observations.contains(taskId) ||
         {'goal.updated', 'goal.cleared', 'task.archived', 'task.unarchived', 'thread.name.updated'}.contains(event['type']);
       for (final notification in notifications) {
         if (receivesAll || {'turn/started', 'turn/completed'}.contains(notification['method'])) {
@@ -1717,6 +1727,10 @@ class AgentServer {
     _mcpSubscriptionOwners.clear();
     unawaited(_mcpActivity.close());
     await network.close();
+    if (_catalog != null) {
+      try { await (await _catalog!).close(); }
+      on CancelledException { /* Shutdown can cancel catalog recovery. */ }
+    }
     _networkEvents.close();
     for (final client in _clients.toList()) {
       await client.close();
@@ -1802,6 +1816,8 @@ class _Client {
   Object? fileSearchId;
   Object? skillSearchId;
   final subscriptions = <String>{};
+  // Transcript watches forward live items without retaining an execution owner.
+  late final observations = <String>{};
   bool initialized = false;
   final optOutNotifications = <String>{};
   bool questions = false;
@@ -2084,16 +2100,16 @@ class AgentClient {
       jsonObject(await _request('skills.search', {'cwd': cwd, 'query': query, 'provider': ?provider},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
-  Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async =>
-      jsonObject(await _request('mcp.inventory', {'verbose': verbose, 'server': ?server},
+  Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async =>
+      jsonObject(await _request('mcp.inventory', {'verbose': verbose, 'server': ?server, 'cwd': ?cwd},
         cancellation: cancellation, timeout: const Duration(seconds: 35)));
 
-  Future<Json> mcpLogin(String server, String loginId, {required CancellationToken cancellation}) async =>
-      jsonObject(await _request('mcp.auth.login', {'server': server, 'login_id': loginId},
+  Future<Json> mcpLogin(String server, String loginId, {String? cwd, required CancellationToken cancellation}) async =>
+      jsonObject(await _request('mcp.auth.login', {'server': server, 'login_id': loginId, 'cwd': ?cwd},
         cancellation: cancellation, timeout: const Duration(minutes: 6)));
 
-  Future<void> mcpLogout(String server, {required CancellationToken cancellation}) async =>
-      _request('mcp.auth.logout', {'server': server}, cancellation: cancellation);
+  Future<void> mcpLogout(String server, {String? cwd, required CancellationToken cancellation}) async =>
+      _request('mcp.auth.logout', {'server': server, 'cwd': ?cwd}, cancellation: cancellation);
 
   Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
       jsonObject(await _request('auth.desktop', {'refresh': refresh}, cancellation: cancellation,

@@ -213,6 +213,7 @@ void main() {
     try {
       await observer.request('thread/resume', {'threadId': id});
       await request('thread/unsubscribe', {'threadId': id});
+      await request('thread/read', {'threadId': id, 'watch': true});
       await noClose(id, 250);
       final closed = notification('thread/closed', id);
       await observer.close(); await closed;
@@ -223,6 +224,22 @@ void main() {
       expect(items.singleWhere((item) => item['type'] == 'userMessage')['content'][0]['text'], 'Saved message');
       expect(items.singleWhere((item) => item['type'] == 'agentMessage')['text'], 'Done');
       expect((await request('thread/loaded/list'))['data'], isEmpty);
+      final emitter = await AgentClient.connect(server.uri);
+      try {
+        final start = received.length, completed = notification('turn/completed', id);
+        await emitter.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'External turn'}]});
+        await completed;
+        final replies = received.skip(start).where((event) => event['method'] == 'item/completed' &&
+          event['params']['item']['type'] == 'agentMessage');
+        expect(replies.single['params']['item']['text'], 'Done',
+          reason: 'A transcript watch survives unloading without retaining the runtime.');
+        await request('thread/read', {'threadId': id, 'watch': false});
+        final detached = received.length, finished = notification('turn/completed', id);
+        await emitter.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Unobserved turn'}]});
+        await finished;
+        expect(received.skip(detached).where((event) => event['method'] == 'item/completed'), isEmpty,
+          reason: 'Stopping a watch leaves only the global lifecycle notifications.');
+      } finally { await emitter.close(); }
     } finally { await observer.close(); }
   });
 

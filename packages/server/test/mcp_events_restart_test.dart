@@ -11,12 +11,62 @@ import 'package:server/server.dart' show AgentClient;
 import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 
-import 'support/thread_names.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
   late _Events peer;
   setUp(() async { peer = await _Events.start(); });
   tearDown(() => peer.close());
+
+  test('startup queries indexed unarchived owners and resumes polling after an offline interval', () async {
+    peer.nextPollMs = const Duration(days: 3).inMilliseconds;
+    var server = await peer.launch();
+    final watching = <String>[];
+    for (var index = 0; index < 2; index++) {
+      final id = await peer.thread(server); watching.add(id);
+      await peer.subscribe(server, id, 'poll');
+    }
+    final archived = await peer.thread(server);
+    await peer.subscribe(server, archived, 'poll');
+    final ordinary = await peer.thread(server);
+    expect(peer.indexedThreads(), unorderedEquals([...watching, archived]),
+      reason: 'The server-wide SQLite catalog must durably identify subscription owners.');
+    await server.request('thread/archive', {'threadId': archived});
+    expect(peer.indexedThreads(), unorderedEquals(watching));
+    final before = peer.responses.length, calls = peer.calls.length;
+    await server.stop(crash: true);
+    // A retained upstream event can predate the new process. The old poll's
+    // three-day sleep is a runtime handle, not a persisted resumption deadline.
+    peer.occurrences.add({...peer.event(1),
+      'timestamp': DateTime.now().subtract(const Duration(days: 2)).toUtc().toIso8601String()});
+    server = await peer.launch();
+    try { await peer.until(() => peer.responses.length == before + watching.length); }
+    catch (error) {
+      final states = <String, Object?>{};
+      for (final id in watching) {
+        states[id] = {'subscriptions': await server.request('mcp.events.subscriptions', {'threadId': id}),
+          'thread': (await server.request('thread/read', {'threadId': id, 'includeTurns': true}))['thread']};
+      }
+      fail('Restart did not wake indexed owners: $error; index: ${peer.indexedThreads()}; '
+        'responses: ${peer.responses.length}/$before; '
+        'calls: ${peer.calls.skip(calls).map((call) => call['method']).toList()}; states: $states');
+    }
+    for (final id in watching) {
+      await peer.until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false);
+      expect((await server.request('thread/read', {'threadId': id, 'includeTurns': true}))['thread']['turns'], hasLength(2));
+      expect(jsonEncode(peer.snapshot(id)), contains('cursor-1'));
+    }
+    expect(peer.calls.skip(calls).where((call) => call['method'] == 'events/poll'), hasLength(watching.length));
+    for (final id in [archived, ordinary]) {
+      expect((await server.request('thread/read', {'threadId': id, 'includeTurns': true}))['thread']['turns'], hasLength(1));
+    }
+    final after = peer.calls.length;
+    await server.stop(); server = await peer.launch();
+    await peer.until(() => peer.calls.skip(after).where((call) => call['method'] == 'events/poll').length == watching.length);
+    expect(peer.calls.skip(after).where((call) => call['method'] == 'events/poll')
+      .map((call) => call['params']['cursor']), everyElement('cursor-1'));
+    expect(peer.responses, hasLength(before + watching.length), reason: 'A later restart must not replay the same event turn.');
+  }, timeout: const Timeout(Duration(seconds: 90)));
 
   for (final mode in ['push', 'poll', 'webhook']) {
     for (final crash in [false, true]) {
@@ -144,7 +194,8 @@ void main() {
     }, timeout: const Timeout(Duration(seconds: 90)));
   }
 
-  test('a webhook acknowledged into a busy inbox wakes after process death without a new occurrence', () async {
+  for (final unsubscribe in [false, true]) {
+  test('a webhook acknowledged into a busy inbox wakes after process death${unsubscribe ? ' even after unsubscribe' : ''} without a new occurrence', () async {
     var server = await peer.launch(); final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
     final registration = peer.registration;
     peer.holdNext = true;
@@ -152,15 +203,18 @@ void main() {
     await peer.held.future;
     expect(await peer.webhook(server, subscription, peer.event(1)), 200);
     expect((await server.request('session.inbox', {'sessionID': id}))['data'], hasLength(1));
+    if (unsubscribe) await server.request('mcp.events.unsubscribe', {'threadId': id, 'subscription_id': subscription['subscription_id']});
+    expect(peer.indexedThreads(), contains(id), reason: 'An acknowledged inbox event still needs a startup recovery owner.');
     final before = peer.responses.length;
     await server.stop(crash: true); server = await peer.launch();
     // Do not resume/read the thread or send another event to make this happen.
     await peer.until(() => peer.responses.length == before + 1);
     expect(jsonEncode(peer.responses.last['input']), contains('evt-1'));
-    expect(await peer.webhook(server, subscription, peer.event(1), registration: registration), 200);
+    expect(await peer.webhook(server, subscription, peer.event(1), registration: registration), unsubscribe ? 410 : 200);
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(peer.responses, hasLength(before + 1));
   }, timeout: const Timeout(Duration(seconds: 60)));
+  }
 
   test('webhook restoration adopts a fresh provider-issued identity after expiry and rejects the retired identity', () async {
     var server = await peer.launch(); final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
@@ -255,6 +309,7 @@ class _Events {
   Json? registration, pollReplay;
   String remoteId = 'remote-subscription';
   bool holdNext = false;
+  int nextPollMs = 1000;
   String get origin => 'http://127.0.0.1:${upstream.port}';
   String get cwd => '${root.path}/project';
   static Future<_Events> start() async {
@@ -271,7 +326,7 @@ class _Events {
     if (!assets.existsSync()) throw StateError('Run the Dart test runner to prepare native assets before the restart fixture.');
     final process = await Process.start(Platform.resolvedExecutable, ['--disable-dart-dev',
       '--packages=${File('.dart_tool/package_config.json').absolute.path}',
-      File('test/fixtures/mcp_event_server.dart').absolute.path,
+      File('packages/server/test/fixtures/mcp_event_server.dart').absolute.path,
       jsonEncode({'directory': root.path, 'endpoint': '$origin/responses'})]);
     processes.add(process);
     final ready = Completer<Json>(), errors = StringBuffer();
@@ -335,6 +390,13 @@ class _Events {
     final response = await request.close(); await response.drain<void>(); return response.statusCode;
   }
   String database(String id) => '${root.path}/tasks/$id/history.sqlite';
+  List<String> indexedThreads() {
+    final file = File('${root.path}/server.sqlite');
+    if (!file.existsSync()) return [];
+    final db = sqlite3.open(file.path, mode: OpenMode.readOnly);
+    try { return db.select('SELECT thread_id FROM mcp_event_threads').map((row) => row['thread_id'] as String).toList(); }
+    finally { db.close(); }
+  }
   Json snapshot(String id) {
     final db = sqlite3.open(database(id), mode: OpenMode.readOnly);
     try { return {for (final row in db.select("SELECT key,value FROM metadata WHERE key IN ('mcp_event_receipts','mcp_event_subscriptions')")) row['key'] as String: row['value'],
@@ -383,7 +445,7 @@ class _Events {
           final after = params['cursor'] == 'seed' ? 0 : int.parse((params['cursor'] as String).split('-').last);
           final events = pollReplay == null ? occurrences.where((e) => int.parse((e['cursor'] as String).split('-').last) > after).toList() : [pollReplay!];
           pollReplay = null;
-          result = {'events': events, 'cursor': events.isEmpty ? params['cursor'] : events.last['cursor'], 'truncated': false, 'hasMore': false, 'nextPollMs': 1000};
+          result = {'events': events, 'cursor': events.isEmpty ? params['cursor'] : events.last['cursor'], 'truncated': false, 'hasMore': false, 'nextPollMs': nextPollMs};
         case 'events/subscribe': registration = params; result = {'id': remoteId, 'cursor': params['cursor'], 'truncated': false,
           'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()};
         case 'events/unsubscribe': result = {};

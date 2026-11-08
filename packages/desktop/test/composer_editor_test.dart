@@ -35,7 +35,7 @@ class _Client extends Fake implements AgentClient {
     {'skills': skills, 'truncated': false};
 
   @override
-  Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) async => inventory;
+  Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async => inventory;
 
   @override
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async => messages;

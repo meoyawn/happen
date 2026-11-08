@@ -1804,7 +1804,7 @@ class _Client implements AgentClient {
     return reply.future;
   }
   final inventories = <({bool verbose, CancellationToken cancellation, Completer<Json> reply})>[];
-  @override Future<Json> mcpInventory({bool verbose = false, String? server, required CancellationToken cancellation}) {
+  @override Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) {
     final reply = Completer<Json>();
     inventories.add((verbose: verbose, cancellation: cancellation, reply: reply));
     return reply.future;
