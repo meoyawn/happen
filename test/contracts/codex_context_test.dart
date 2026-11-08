@@ -21,6 +21,16 @@ import '../support/thread_names.dart';
 final root = Directory.current.absolute;
 final fixtures = Directory('${root.path}/test/fixtures/context_contract');
 const encoder = JsonEncoder.withIndent('  ');
+const scriptErrorMessages = {
+  'js_compile_error': [
+    "SyntaxError: Unexpected token ';'",
+    "SyntaxError: unexpected token in expression: ';'",
+  ],
+  'js_runtime_error': [
+    "TypeError: Cannot read properties of null (reading 'CONTEXT_RUNTIME_FAILURE')",
+    "TypeError: cannot read property 'CONTEXT_RUNTIME_FAILURE' of null",
+  ],
+};
 
 Future<void> save(String path, Object? value) async {
   final file = File(path);
@@ -62,8 +72,9 @@ String text(Json item) => item['content'] is String ? item['content'] as String
   : (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>().map((part) => part['text'] ?? '').join('\n');
 
 /// Every case excludes Codex's client telemetry, removes scoped IDs and normalizes
-/// known timings. All remaining fields, encodings and array positions are strict.
-Json prepareComparison(Json received) {
+/// known timings. The error case additionally validates native diagnostics before
+/// comparing their shared meaning. All other values and array positions are strict.
+Json prepareComparison(Json received, {bool scriptErrors = false}) {
   final request = jsonObject(jsonDecode(jsonEncode(received)));
   void removeTime(Json object, String key) {
     final value = object[key];
@@ -161,6 +172,17 @@ Json prepareComparison(Json received) {
       for (var part = 0; part < output.length; part++) {
         final content = jsonObject(output[part]);
         if (content['type'] == 'input_text') content['text'] = outputText(content['text'] as String);
+        if (scriptErrors && content['type'] == 'input_text') {
+          if (scriptErrorMessages[item['call_id']] case final List<String> messages) {
+            final lines = (content['text'] as String).split('\n');
+            if (lines.length >= 2 && lines.first == 'Script error:' && messages.contains(lines[1])) {
+              // V8 and QuickJS have different wording, frames and source excerpts.
+              // Only these two known diagnostics differ; raw-message gates below
+              // independently require the error details and runtime source frame.
+              content['text'] = 'Script error:\n${messages.first}';
+            }
+          }
+        }
         output[part] = content;
       }
     }
@@ -217,8 +239,8 @@ bool shellIdContract(List<Json> input) {
   return true;
 }
 
-Future<bool> compare(Json reference, Json actual, String path) async {
-  final left = prepareComparison(reference), right = prepareComparison(actual);
+Future<bool> compare(Json reference, Json actual, String path, {bool scriptErrors = false}) async {
+  final left = prepareComparison(reference, scriptErrors: scriptErrors), right = prepareComparison(actual, scriptErrors: scriptErrors);
   final equal = equals(left).matches(right, {});
   final a = encoder.convert(sortedKeys(left)).split('\n'), b = encoder.convert(sortedKeys(right)).split('\n');
   var index = 0;
@@ -617,7 +639,8 @@ apps = false
       }
       checks['happen:admitted_thread_id:run-$iteration'] = b.isNotEmpty && b.first['prompt_cache_key'] == taskID;
       for (var i = 0; i < a.length && i < b.length; i++) {
-        checks['request_equal:$i:run-$iteration'] = await compare(a[i], b[i], '$runPath/request-$i');
+        checks['request_equal:$i:run-$iteration'] = await compare(a[i], b[i], '$runPath/request-$i',
+          scriptErrors: scenario['workflow'] == 'javascript-errors');
         checks['request_protocol_equal:$i:run-$iteration'] = equals(aHeaders[i]).matches(bHeaders[i], {});
         for (final pair in [('codex', aHeaders[i]), ('happen', bHeaders[i])]) {
           checks['${pair.$1}:responses_lite_negotiated:$i:run-$iteration'] =
@@ -692,6 +715,49 @@ apps = false
           checks['$engine:tool_result_delivered:run-$iteration'] = requests.length > 1 && (requests.last['input'] as List).map(jsonObject)
             .where((item) => ['custom_tool_call_output', 'function_call_output', 'tool_search_output'].contains(item['type']))
             .any((item) => jsonEncode(item).contains(marker));
+        }
+      }
+      if (scenario['workflow'] == 'javascript-errors') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          List<Json> receipt(int request, String call) {
+            if (pair.$2.length <= request) return [];
+            final outputs = (pair.$2[request]['input'] as List).map(jsonObject)
+              .where((item) => toolOutput(item) && item['call_id'] == call).toList();
+            return outputs.length == 1 && outputs.single['output'] is List
+              ? (outputs.single['output'] as List).map(jsonObject).toList() : [];
+          }
+          checks['${pair.$1}:continues_after_each_js_error:run-$iteration'] = pair.$2.length == 4;
+          const calls = ['js_compile_error', 'js_runtime_error', 'js_error_recovery'];
+          for (var request = 1; request <= 3; request++) {
+            final received = pair.$2.length <= request ? <Object?>[] : (pair.$2[request]['input'] as List)
+              .map(jsonObject).where(toolOutput).map((item) => item['call_id']).toList();
+            checks['${pair.$1}:js_receipts_once_in_order:$request:run-$iteration'] =
+              equals(calls.take(request).toList()).matches(received, {});
+          }
+          final compilation = receipt(1, calls[0]);
+          checks['${pair.$1}:compilation_error_reaches_next_inference:run-$iteration'] = compilation.length == 2 &&
+            compilation.every((part) => part['type'] == 'input_text') &&
+            (compilation.first['text'] as String).startsWith('Script failed\n') &&
+            scriptErrorMessages[calls[0]]!.any((message) =>
+              (compilation.last['text'] as String).startsWith('Script error:\n$message'));
+          final runtime = receipt(2, calls[1]);
+          final diagnostic = runtime.isEmpty ? '' : runtime.last['text'] as String? ?? '';
+          checks['${pair.$1}:runtime_error_reaches_next_inference:run-$iteration'] = runtime.length == 4 &&
+            runtime.every((part) => part['type'] == 'input_text') &&
+            (runtime.first['text'] as String).startsWith('Script failed\n') &&
+            scriptErrorMessages[calls[1]]!.any((message) => diagnostic.startsWith('Script error:\n$message')) &&
+            diagnostic.contains('failContext') && diagnostic.contains('exec_main.mjs:');
+          checks['${pair.$1}:compilation_had_no_effects:run-$iteration'] = runtime.length == 4 &&
+            runtime[1]['text'] == '{"compileDidNotRun":true}';
+          checks['${pair.$1}:output_before_runtime_error_preserved:run-$iteration'] = runtime.length == 4 &&
+            runtime[2]['text'] == 'BEFORE_RUNTIME_FAILURE' &&
+            !jsonEncode(runtime).contains('UNEXPECTED_AFTER_RUNTIME_FAILURE');
+          final recovery = receipt(3, calls[2]);
+          checks['${pair.$1}:recovers_with_prior_writes:run-$iteration'] = recovery.length == 3 &&
+            recovery.every((part) => part['type'] == 'input_text') &&
+            (recovery.first['text'] as String).startsWith('Script completed\n') &&
+            recovery[1]['text'] == '{"compileDidNotRun":true,"runtimeWrite":37}' &&
+            recovery[2]['text'] == 'JS_ERROR_RECOVERY_RECEIPT';
         }
       }
       if (scenario['workflow'] == 'parallel') {

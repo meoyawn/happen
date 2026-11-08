@@ -111,6 +111,13 @@ commentary with `end_turn: false`. Neither harness may stop there: both must mak
 the next inference, actually read the fixture file through the shell, and return
 its receipt in the final request. The fixture advances past commentary only when
 the next received request retains the commentary item IDs it actually issued.
+The `javascript-errors` case sends an invalid declaration and then an async
+null-property access through the real JavaScript engines. The next inference
+must receive each failed call's error, including its class, diagnostic detail,
+and the runtime source frame. It checks that compilation ran no statements,
+output before the runtime error survives, writes before that error remain
+available, and a subsequent cell succeeds. Receipts must appear exactly once in
+their original order in every following request.
 The web case configures the real Dart MCP server and a metadata-only fixture
 skill alongside directly available web search, with ranked discovery both off
 and on. It replays search, batched open, targeted search, repository
@@ -201,7 +208,12 @@ continuations, tool results, compaction and cold resume. Request counts must
 match; an intermediate mismatch cannot be repaired by a later matching context.
 The comparison excludes the top-level `client_metadata` telemetry field,
 removing explicitly scoped generated protocol/transport IDs and normalizing known
-numeric timing fields:
+numeric timing fields. Only the `javascript-errors` case also maps its two
+explicit V8/QuickJS diagnostic variants to a common message for comparison;
+engine-specific stack frames and source excerpts differ. Independent checks on
+the unmodified requests require the expected diagnostic messages, runtime frame,
+failure status, preceding output and recovery. Unknown error messages are never
+normalized, and raw captures retain the complete native errors:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
 Method, endpoint path, Accept, Content-Type, OpenAI-Beta and

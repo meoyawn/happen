@@ -63,6 +63,24 @@ Map<String, dynamic> terminalShells(Map<String, dynamic> scenario) {
 
 const contextCases = <Map<String, dynamic>>[
   {'id': 'empty', 'prompt': 'Reply READY.', 'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[]},
+  {'id': 'javascript-errors', 'workflow': 'javascript-errors',
+    'prompt': 'Run the JavaScript cells, inspect each failure, then recover and reply READY.',
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[], 'retain_model_items': true,
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'js_compile_error',
+        'input': 'store("compileStarted", true);\ntext("UNEXPECTED_COMPILE_EXECUTION");\nconst malformed = ;'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'js_runtime_error',
+        'input': 'text({compileDidNotRun:load("compileStarted") === undefined});\n'
+          'text("BEFORE_RUNTIME_FAILURE");\nstore("runtimeWrite", 37);\n'
+          'async function failContext() {\n  await Promise.resolve();\n  const value = null;\n'
+          '  value.CONTEXT_RUNTIME_FAILURE();\n}\nawait failContext();\ntext("UNEXPECTED_AFTER_RUNTIME_FAILURE");'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'js_error_recovery',
+        'input': 'text({compileDidNotRun:load("compileStarted") === undefined,runtimeWrite:load("runtimeWrite")});\n'
+          'text("JS_ERROR_RECOVERY_RECEIPT");'}],
+      [_ready],
+    ],
+    'result': 'JS_ERROR_RECOVERY_RECEIPT',
+  },
   {'id': 'default-mode-user-input', 'prompt': 'Check whether blocking questions are available, then reply READY.',
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [

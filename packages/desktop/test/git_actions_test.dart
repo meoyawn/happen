@@ -162,8 +162,13 @@ void main() {
     expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'Save the staged file');
     await tester.runAsync(() async {
       await tester.tap(find.text('Include unstaged changes'));
-      final token = CancellationToken();
-      try { await controller.commitSelection(false, token); } finally { token.cancel(); }
+      await tester.pump();
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (find.descendant(of: find.byType(Dialog), matching: find.byType(CircularProgressIndicator)).evaluate().isNotEmpty) {
+        if (DateTime.now().isAfter(deadline)) throw StateError('Staged changes did not load');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await tester.pump();
+      }
     });
     await tester.pumpAndSettle();
     expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, false);
