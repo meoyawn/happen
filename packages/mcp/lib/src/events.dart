@@ -34,7 +34,7 @@ class McpEventSubscription {
     if (!['push', 'poll', 'webhook'].contains(mode)) {
       throw ArgumentError('Unknown MCP event delivery mode');
     }
-    if (maxAgeMs != null && maxAgeMs! < 0 || ttlMs != null && ttlMs! < 1000) {
+    if (maxAgeMs != null && maxAgeMs! < 0) {
       throw ArgumentError('Invalid MCP event lifetime');
     }
     if (mode == 'webhook') {
@@ -123,15 +123,35 @@ class McpEventSubscription {
     'notification': {'method': method, 'params': params},
   });
 
+  Future<void> _terminate(Json params, CancellationToken cancellation) async {
+    if (_terminated) return;
+    await onTerminated?.call(cancellation);
+    cancellation.throwIfCancelled();
+    _terminated = true;
+    state = 'terminated';
+    _emit('notifications/events/terminated', params);
+    if (!ready.isCompleted) {
+      final error = jsonObject(params['error'] ?? {});
+      ready.completeError(McpFailure(error['message'] as String? ?? 'MCP event subscription ended',
+          code: error['code'] as int?, data: error['data'] is Map ? jsonObject(error['data']) : null));
+    }
+    // Webhook refreshes may be sleeping until their grant expires. Ending the
+    // subscription must release that wait as well as any open push request.
+    lifetime.cancel();
+  }
+
   Future<void> _active(Json params) async {
-    if (params.containsKey('cursor')) cursor = params['cursor'] as String?;
+    final nextCursor = params['cursor'] as String?;
+    await checkpoint?.call({...toSnapshot(), 'cursor': nextCursor}, lifetime);
+    lifetime.throwIfCancelled();
+    cursor = nextCursor;
     state = 'active';
-    await checkpoint?.call(toSnapshot(), lifetime);
+    if (mode == 'webhook' && _restoredRegistration) return;
     _emit('notifications/events/active', params);
     if (!ready.isCompleted) ready.complete();
   }
 
-  Future<void> _event(Json params, CancellationToken cancellation, {bool batchEnd = false, String? batchCursor}) async {
+  Future<void> _event(Json params, CancellationToken cancellation, {bool poll = false, bool batchEnd = false, String? batchCursor}) async {
     if (state != 'active') {
       throw const McpFailure('MCP event arrived before activation');
     }
@@ -143,13 +163,15 @@ class McpEventSubscription {
       throw const McpFailure('Invalid or oversized MCP event');
     }
     final key = sha256.convert(utf8.encode(eventId)).toString();
-    final nextCursor = batchEnd ? batchCursor : params.containsKey('cursor') ? params['cursor'] as String? : cursor;
+    // Poll has one response-level cursor. Do not commit it until the entire
+    // batch is admitted; push/webhook omissions mean null, never "unchanged".
+    final nextCursor = poll ? (batchEnd ? batchCursor : cursor) : params['cursor'] as String?;
     if (_seen.contains(key)) {
       if (cursor != nextCursor) { await checkpoint?.call({...toSnapshot(), 'cursor': nextCursor}, cancellation); cursor = nextCursor; }
       return;
     }
     final pending = _delivering[key];
-    if (pending != null) { await pending.asCancellable(cancellation); return _event(params, cancellation, batchEnd: batchEnd, batchCursor: batchCursor); }
+    if (pending != null) { await pending.asCancellable(cancellation); return _event(params, cancellation, poll: poll, batchEnd: batchEnd, batchCursor: batchCursor); }
     if (_delivering.length >= 32) throw const McpFailure('MCP event delivery backlog is full', status: 503);
     final delivery = () async {
       await acceptEvent?.call(params, {...toSnapshot(), 'cursor': nextCursor}, cancellation);
@@ -175,7 +197,7 @@ class McpEventSubscription {
       }
       state = 'terminated';
     } catch (error) {
-      state = lifetime.isCancelled ? 'stopped' : 'failed';
+      state = _terminated ? 'terminated' : lifetime.isCancelled ? 'stopped' : 'failed';
       if (!ready.isCompleted) {
         ready.completeError(error);
       } else if (!lifetime.isCancelled && !_terminated) {
@@ -256,18 +278,15 @@ class McpEventSubscription {
                       );
                     }
                     heartbeat();
-                    if (params.containsKey('cursor')) {
-                      cursor = params['cursor'] as String?;
-                    }
-                    await checkpoint?.call(toSnapshot(), token);
+                    final nextCursor = params['cursor'] as String?;
+                    await checkpoint?.call({...toSnapshot(), 'cursor': nextCursor}, token);
+                    token.throwIfCancelled();
+                    cursor = nextCursor;
                     _emit(method as String, params);
                   case 'notifications/events/error':
                     _emit(method as String, params);
                   case 'notifications/events/terminated':
-                     await onTerminated?.call(token);
-                     _terminated = true;
-                    _emit(method as String, params);
-                    attempt.cancel();
+                    await _terminate(params, token);
                 }
               } catch (error) {
                 attempt.cancel(
@@ -285,7 +304,11 @@ class McpEventSubscription {
         lifetime.throwIfCancelled();
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
-          rethrow;
+          if (error.code != -32024) rethrow;
+          await _terminate({'error': {
+            'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
+          }}, lifetime);
+          return;
         }
       } finally {
         activation.cancel();
@@ -324,10 +347,12 @@ class McpEventSubscription {
         }
         state = 'active';
         for (final (index, raw) in events.indexed) {
-          await _event(jsonObject(raw), lifetime, batchEnd: index == events.length - 1, batchCursor: result['cursor'] as String?);
+          await _event(jsonObject(raw), lifetime, poll: true, batchEnd: index == events.length - 1, batchCursor: result['cursor'] as String?);
         }
-        cursor = result['cursor'] as String?;
-        await checkpoint?.call(toSnapshot(), lifetime);
+        final nextCursor = result['cursor'] as String?;
+        await checkpoint?.call({...toSnapshot(), 'cursor': nextCursor}, lifetime);
+        lifetime.throwIfCancelled();
+        cursor = nextCursor;
         _emit('notifications/events/heartbeat', {'cursor': cursor});
         failures = 0;
         final delay = result['hasMore'] == true
@@ -341,7 +366,11 @@ class McpEventSubscription {
         lifetime.throwIfCancelled();
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
-          rethrow;
+          if (error.code != -32024) rethrow;
+          await _terminate({'error': {
+            'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
+          }}, lifetime);
+          return;
         }
         if (++failures > 5) rethrow;
         state = 'reconnecting';
@@ -369,30 +398,32 @@ class McpEventSubscription {
           'ttlMs': ttlMs,
         }, cancellation: lifetime);
         final id = requiredString(result, 'id');
+        final refresh = result['refreshBefore'];
+        final expires = refresh is String ? DateTime.tryParse(refresh) : null;
+        if (!result.containsKey('refreshBefore') ||
+            refresh == null && ttlMs != null ||
+            refresh != null && (expires == null || !expires.isAfter(DateTime.now()))) {
+          throw const FormatException('Invalid MCP webhook expiry grant');
+        }
         if (upstreamId != null && upstreamId != id && !_restoredRegistration) {
           throw const McpFailure('Webhook subscription identity changed');
         }
         upstreamId = id;
+        // The authenticated response pins a restored identity and validates its
+        // grant before activation becomes visible to the initiating caller.
+        _restoredRegistration = false;
         await _active({
           'cursor': result['cursor'],
           'truncated': result['truncated'] == true,
+          if (result['deliveryStatus'] != null) 'deliveryStatus': result['deliveryStatus'],
         });
-        // A provider may have expired its old registration while this process
-        // was offline. Its authenticated re-registration response establishes
-        // the new remote identity; ordinary in-process renewal still pins it.
-        _restoredRegistration = false;
         failures = 0;
-        final refresh = result['refreshBefore'];
         if (refresh == null) {
-          if (ttlMs != null) {
-            throw const McpFailure(
-              'MCP server granted an unsolicited indefinite subscription',
-            );
-          }
-          await Completer<void>().future.asCancellable(lifetime);
+          // No-expiry grants still benefit from occasional cursor and delivery
+          // health updates; cancellation owns the whole wait.
+          await cancellableDelay(const Duration(hours: 12), lifetime);
         } else {
-          final expires = DateTime.parse(refresh as String);
-          final wait = expires.difference(DateTime.now()).inMilliseconds;
+          final wait = expires!.difference(DateTime.now()).inMilliseconds;
           if (wait <= 0) {
             throw const McpFailure('MCP webhook subscription already expired');
           }
@@ -403,9 +434,14 @@ class McpEventSubscription {
         }
       } catch (error) {
         lifetime.throwIfCancelled();
+        if (error is FormatException) rethrow;
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
-          rethrow;
+          if (error.code != -32024) rethrow;
+          await _terminate({'error': {
+            'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
+          }}, lifetime);
+          return;
         }
         if (++failures > 5) rethrow;
         await cancellableDelay(
@@ -443,7 +479,9 @@ class McpEventSubscription {
         'webhook-signature',
       ).split(' ')) {
         if (!signature.startsWith('v1,')) continue;
-        final decoded = base64.decode(signature.substring(3));
+        List<int> decoded;
+        try { decoded = base64.decode(signature.substring(3)); }
+        on FormatException { continue; }
         var diff = expected.length ^ decoded.length;
         for (var i = 0; i < expected.length; i++) {
           diff |= expected[i] ^ (i < decoded.length ? decoded[i] : 0);
@@ -460,18 +498,17 @@ class McpEventSubscription {
           'body': {'challenge': requiredString(value, 'challenge')},
         };
       }
-      // A server may deliver before events/subscribe's response arrives. The
-      // signed callback has already proved ownership of this subscription.
+      // Verification precedes the grant. Fresh event delivery waits until its
+      // authenticated response has pinned the identity and validated expiry.
+      // A restored registration can already admit with its saved authority.
+      if (state == 'starting' && !_restoredRegistration) return {'status': 503};
       upstreamId ??= remote;
       if (state == 'starting') await _active({'cursor': cursor});
       switch (value['type']) {
         case 'gap':
           await _active({'cursor': value['cursor'], 'truncated': true});
         case 'terminated':
-          await onTerminated?.call(cancellation.merge(lifetime));
-          _terminated = true;
-          state = 'terminated';
-          _emit('notifications/events/terminated', {'error': value['error']});
+          await _terminate({'error': value['error']}, cancellation.merge(lifetime));
         case null:
           if (value['eventId'] != eventId) return {'status': 400};
           await _event(value, cancellation.merge(lifetime));

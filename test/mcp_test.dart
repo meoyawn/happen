@@ -166,6 +166,7 @@ void main() {
     final requests = <Json>[];
     Json? webhookRegistration;
     var polls = 0;
+    const forbidden = {'code': -32024, 'message': 'Forbidden', 'data': {'reason': 'Access revoked'}};
     Future<void> notify(
       String id,
       String method,
@@ -243,6 +244,12 @@ void main() {
           return;
         case 'events/poll':
           polls++;
+          if (polls == 2) {
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': id, 'error': forbidden}));
+            await request.response.close();
+            return;
+          }
           result = {
             'events': polls == 1 ? [occurrence('polled', 'poll-1')] : <Object?>[],
             'cursor': 'poll-$polls',
@@ -307,12 +314,13 @@ void main() {
       await streamOpened.close();
       await root.delete(recursive: true);
     });
-    Future<Json> subscribe(String mode) async => jsonObject(
+    Future<Json> subscribe(String? mode, {int ttlMs = 300000}) async => jsonObject(
       await client
           .request('mcp.events.subscribe', {
             'server': 'remote',
             'name': 'changed',
-            'mode': mode,
+            if (mode != null) 'mode': mode,
+            'ttl_ms': ttlMs,
           })
           .timeout(
             const Duration(seconds: 5),
@@ -379,7 +387,7 @@ void main() {
     await beat;
     final reopened = streamOpened.stream.first;
     await streams[upstream2]!.response.close();
-    final upstream3 = await reopened.timeout(const Duration(seconds: 5));
+    var upstream3 = await reopened.timeout(const Duration(seconds: 5));
     expect(streams[upstream3]!.body['params']['cursor'], 'resume-position');
     await client.request('mcp.events.unsubscribe', {
       'subscription_id': first['subscription_id'],
@@ -408,6 +416,23 @@ void main() {
       ),
       isFalse,
     );
+    // The draft treats an omitted cursor exactly like null, including on
+    // occurrences, activation/gap notices and quiet-period heartbeats.
+    for (final kind in ['event', 'active', 'heartbeat']) {
+      final positioned = until('notifications/events/heartbeat', second['subscription_id'] as String);
+      await notify(upstream3, 'notifications/events/heartbeat', {'cursor': 'before-$kind'});
+      await positioned;
+      final cleared = until('notifications/events/$kind', second['subscription_id'] as String);
+      final withoutCursor = kind == 'event'
+          ? (occurrence('cursorless-$kind', 'unused')..remove('cursor'))
+          : <String, dynamic>{};
+      await notify(upstream3, 'notifications/events/$kind', withoutCursor);
+      await cleared;
+      final reconnect = streamOpened.stream.first;
+      await streams[upstream3]!.response.close();
+      upstream3 = await reconnect.timeout(const Duration(seconds: 5));
+      expect(streams[upstream3]!.body['params']['cursor'], isNull, reason: kind);
+    }
     final ended = until(
       'notifications/events/terminated',
       second['subscription_id'] as String,
@@ -416,9 +441,12 @@ void main() {
       'error': {'code': -32024, 'message': 'Forbidden'},
     });
     await ended;
+    expect(await client.request('mcp.events.subscriptions'), isEmpty,
+        reason: 'Provider termination removes the local subscription');
 
     final polled = until('notifications/events/event');
-    final polling = await subscribe('poll');
+    final pollEnded = until('notifications/events/terminated');
+    await subscribe('poll');
     expect((await polled)['notification']['params']['eventId'], 'polled');
     while (polls < 2) {
       await Future<void>.delayed(const Duration(milliseconds: 5));
@@ -429,10 +457,11 @@ void main() {
           .last['params']['cursor'],
       'poll-1',
     );
-    await client.request('mcp.events.unsubscribe', {
-      'subscription_id': polling['subscription_id'],
-    });
-    final webhook = await subscribe('webhook');
+    expect((await pollEnded)['notification']['params']['error'], forbidden);
+    expect(await client.request('mcp.events.subscriptions'), isEmpty);
+    final webhook = await subscribe(null, ttlMs: 1);
+    expect(webhook['mode'], 'webhook', reason: 'A configured webhook takes precedence over push and poll');
+    expect(webhookRegistration!['ttlMs'], 1, reason: 'The server clamps short suggestions to its own floor');
     final secret = base64.decode(
       (webhookRegistration!['delivery']['secret'] as String).substring(6),
     );
@@ -440,6 +469,7 @@ void main() {
       Json value, {
       bool valid = true,
       int? stamp,
+      bool rotating = false,
     }) async {
       final bytes = utf8.encode(jsonEncode(value));
       final id = value['eventId'] as String? ?? newId();
@@ -458,7 +488,7 @@ void main() {
       request.headers.set('webhook-timestamp', timestamp);
       request.headers.set(
         'webhook-signature',
-        'v1,${valid ? signature : base64.encode(List.filled(32, 0))}',
+        '${rotating ? 'v1,not-base64 v2,ignored ' : ''}v1,${valid ? signature : base64.encode(List.filled(32, 0))}',
       );
       request.headers.set('x-mcp-subscription-id', 'webhook-peer-id');
       request.add(bytes);
@@ -483,6 +513,10 @@ void main() {
     expect((await deliver(occurrence('signed-event', 'webhook-1'))).$1, 200);
     await delivered;
     await deliver(occurrence('signed-event', 'webhook-1'));
+    final cursorless = occurrence('rotated-signature', 'unused')..remove('cursor');
+    expect((await deliver(cursorless, rotating: true)).$1, 200);
+    final subscriptions = await client.request('mcp.events.subscriptions') as List;
+    expect(subscriptions.singleWhere((dynamic value) => value['subscription_id'] == webhook['subscription_id'])['cursor'], isNull);
     await client.request('mcp.events.unsubscribe', {
       'subscription_id': webhook['subscription_id'],
     });
@@ -501,4 +535,67 @@ void main() {
     expect(jsonEncode(received), isNot(contains('whsec_')));
     expect((await client.request('telemetry') as Map)['active_tasks'], 0);
   });
+
+  for (final (label, ttl, grant, valid) in [
+    ('requested no expiry', null, 'none', true),
+    ('finite grant instead of requested no expiry', null, 'finite', true),
+    ('missing expiry grant', null, 'missing', false),
+    ('unsolicited no expiry', 300000, 'none', false),
+    ('expired grant', 300000, 'expired', false),
+  ]) {
+    test('MCP webhook $label is validated before activation', () async {
+      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final http = HttpClient(), token = CancellationToken(), notifications = <Json>[];
+      final manager = McpManager(http: http, publicUrl: 'https://callback.example', onEvent: (_, event) => notifications.add(event));
+      addTearDown(() async {
+        token.cancel(); await manager.close(); http.close(force: true); await upstream.close(force: true);
+      });
+      upstream.listen((request) async {
+        final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+        expect(request.headers.value('authorization'), 'Bearer test-principal');
+        if (body['method'] == 'events/subscribe' && label == 'requested no expiry') {
+          final delivery = jsonObject(body['params']['delivery']);
+          final secret = base64Decode((delivery['secret'] as String).substring(6));
+          final subscription = Uri.parse(delivery['url'] as String).pathSegments.last;
+          Future<Json> deliver(String id, Json payload) {
+            final bytes = utf8.encode(jsonEncode(payload)), stamp = '${DateTime.now().millisecondsSinceEpoch ~/ 1000}';
+            final signature = base64Encode(Hmac(sha256, secret).convert([...utf8.encode('$id.$stamp.'), ...bytes]).bytes);
+            return manager.webhook(subscription, {
+              'webhook-id': id, 'webhook-timestamp': stamp, 'webhook-signature': 'v1,$signature',
+              'x-mcp-subscription-id': 'stable-subscription',
+            }, bytes, token);
+          }
+          expect(await deliver('msg_verification_nonce', {'type': 'verification', 'challenge': 'nonce'}),
+              {'status': 200, 'body': {'challenge': 'nonce'}});
+          expect((await deliver('early-event', {'eventId': 'early-event', 'name': 'changed',
+            'timestamp': DateTime.now().toUtc().toIso8601String(), 'data': <String, Object?>{}}))['status'], 503);
+          expect(notifications, isEmpty, reason: 'A signed occurrence cannot bypass grant validation');
+        }
+        final result = switch (body['method']) {
+          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
+          'events/list' => {'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+          'events/subscribe' => {
+            'id': 'stable-subscription',
+            if (grant != 'missing') 'refreshBefore': grant == 'none' ? null
+                : DateTime.now().add(Duration(minutes: grant == 'expired' ? -5 : 5)).toUtc().toIso8601String(),
+          },
+          'events/unsubscribe' => <String, Object?>{},
+          _ => throw StateError('Unexpected MCP method ${body['method']}'),
+        };
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
+        await request.response.close();
+      });
+      await manager.configure({'remote': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'headers': {'Authorization': 'Bearer test-principal'}}}, token);
+      final subscribing = manager.subscribe('owner', {'server': 'remote', 'name': 'changed', 'ttl_ms': ttl}, token);
+      if (valid) {
+        expect((await subscribing)['state'], 'active');
+        expect(manager.subscriptions('owner').single['cursor'], isNull, reason: 'The grant may omit cursor');
+      } else {
+        await expectLater(subscribing, throwsA(isA<FormatException>()));
+        expect(notifications, isEmpty, reason: 'An invalid grant must never advertise activation');
+        expect(manager.subscriptions('owner'), isEmpty);
+      }
+    });
+  }
 }

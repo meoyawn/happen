@@ -455,7 +455,7 @@ class McpManager {
     final supported = (definition['delivery'] as List).cast<String>();
     final mode =
         params['mode'] as String? ??
-        ['push', 'poll', 'webhook'].firstWhere(
+        ['webhook', 'push', 'poll'].firstWhere(
           (value) =>
               supported.contains(value) &&
               (value != 'webhook' || publicUrl != null),
@@ -484,8 +484,12 @@ class McpManager {
         if (persistSubscription == null) throw const McpFailure('Durable event subscriptions are unavailable', status: 503);
         await persistSubscription!('save', {'snapshot': snapshot}, token);
       },
-      onTerminated: params['threadId'] == null ? null : (token) async {
-        await persistSubscription?.call('remove', {'threadId': params['threadId'], 'subscription_id': subscription.id}, token);
+      onTerminated: (token) async {
+        if (subscription.threadId != null) {
+          await persistSubscription!('remove', {'threadId': subscription.threadId, 'subscription_id': subscription.id}, token);
+        }
+        _subscriptions.remove(subscription.id);
+        _subscriptionTargets.remove(subscription.id);
       },
       acceptEvent: params['threadId'] == null ? null : (occurrence, snapshot, token) async {
         if (acceptThreadEvent == null) throw const McpFailure('Thread event delivery is unavailable', status: 503);

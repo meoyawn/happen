@@ -107,6 +107,41 @@ pending requests, replies, cancellation, and lifetimes.
   cancellation. A rejected admission is retryable and does not advance its cursor
   or poison deduplication.
 
+Delivery selection follows the draft: configured webhook, then push, then poll,
+intersected with the event's advertised modes; `mode` overrides the preference.
+An omitted cursor clears replay state just like an explicit `null`. Poll commits
+its response cursor only after accepting the whole batch. Provider termination
+removes the subscription and its durable intent, preserving the protocol error.
+Request rejection (`InvalidParams`, `NotFound`, or `Unsupported`) instead leaves
+desired thread state available for explicit repair.
+
+Descriptor-change recovery is incomplete: new subscriptions discover current
+descriptors, but `notifications/events/list_changed` does not refresh a registry,
+and schema-change termination does not automatically rediscover and resubscribe.
+The bridge verification below establishes interoperability, not full draft
+conformance.
+
+Webhook TTLs are suggestions: the server may clamp them to its own floor or cap.
+Every grant must include `refreshBefore`; `null` is accepted only when the caller
+explicitly requested `ttl_ms: null`. Grants are validated before activation.
+No-expiry subscriptions still refresh occasionally for cursor and delivery health.
+Signed verification challenges work before activation; early occurrences receive
+`503` until the initial grant is known, so the server can retry them safely.
+
+Servers may also expose tools such as `poll_events` and `wait_for_event`. These
+are discovered and called through ordinary `tools/list` and `tools/call`;
+Happen's background subscriptions use the draft's `events/*` methods.
+
+To verify against the real [Hookdeck bridge](https://github.com/hookdeck/mcp-events-bridge#github),
+install dependencies in its checkout with `aube install --ignore-scripts`, then run
+`dart tool/verify_mcp_events_bridge.dart /path/to/mcp-events-bridge` from Happen.
+The Dart runner launches the upstream server with `aube exec tsx` and supplies a
+local Event Gateway fixture API and signed synthetic GitHub Actions webhooks.
+It checks discovery, filters, protocol polling, both poll tools, replay and
+cancellation without service credentials. An optional second argument saves its
+JSON report; the recorded [0.10.0 result](../../docs/evidence/mcp-events-bridge-live.json)
+identifies the upstream commit and the fixture boundary.
+
 `packages/server` can bind a subscription to a saved thread and supply the
 `acceptThreadEvent` callback. That owner survives desktop disconnection and
 thread unloading. Occurrences cold-load the thread and enter its durable inbox;

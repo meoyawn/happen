@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-11-08T13:35:32.292885Z",
+  "fixture": "synthetic signed GitHub Actions workflow_run webhooks",
+  "gateway": "local fixture API; bridge and Happen use real HTTP",
+  "launcher": "aube exec tsx",
+  "checks": {
+    "modern_discovery": true,
+    "poll_tools_discovered": true,
+    "github_workflow_event_discovered": true,
+    "initial_poll_starts_now": true,
+    "automatic_poll_selection": true,
+    "invalid_source_signature_rejected": true,
+    "signed_actions_fixture_accepted": true,
+    "actions_failure_delivered": true,
+    "github_filters_applied": true,
+    "protocol_cursor_replay": true,
+    "poll_events_tool": true,
+    "wait_for_event_tool": true,
+    "cursor_prevents_duplicate_replay": true,
+    "subscription_cancelled": true,
+    "invalid_params_preserves_desired_subscription": true
+  },
+  "bridge_commit": "d572e753cffb2ed61475e90e6467a51b733ab831",
+  "bridge_version": "0.10.0",
+  "event": {
+    "eventId": "actions-failed-42",
+    "name": "github.workflow_run",
+    "timestamp": "2026-11-08T13:35:32.997Z",
+    "data": {
+      "event": "workflow_run",
+      "action": "completed",
+      "repository": "happen-fixture/demo",
+      "sender": "github-actions[bot]",
+      "title": "CI",
+      "number": null,
+      "url": "https://github.com/happen-fixture/demo/actions/runs/42",
+      "workflow": "CI",
+      "status": "completed",
+      "conclusion": "failure",
+      "branch": "main"
+    }
+  }
+}
