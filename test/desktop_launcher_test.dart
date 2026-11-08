@@ -10,10 +10,21 @@ import 'package:test/test.dart';
 
 void main() {
   late _Fixture fixture;
+  late Directory native;
+  late File appExecutable;
+  setUpAll(() async {
+    native = await Directory.systemTemp.createTemp('happen-launch-native-');
+    appExecutable = File('${native.path}/app');
+    final compilation = await Process.run(Platform.resolvedExecutable,
+      ['compile', 'exe', '${Directory.current.path}/test/fixtures/desktop_flutter.dart', '-o', appExecutable.path],
+      workingDirectory: native.path);
+    expect(compilation.exitCode, 0, reason: '${compilation.stdout}\n${compilation.stderr}');
+  });
+  tearDownAll(() => native.delete(recursive: true));
   setUp(() async { fixture = await _Fixture.create(); });
   tearDown(() => fixture.dispose());
 
-  test('moon dev strips its context and preserves SDK settings, input and exit status', () async {
+  test('moon dev strips its context and preserves SDK settings and input', () async {
     final (owner, first) = await fixture.launch(moon: true);
     await fixture.waitFor(() => fixture.starts.isNotEmpty);
     final started = fixture.starts.single;
@@ -26,6 +37,14 @@ void main() {
       await owner.send(command);
       expect(await owner.line(), 'received:$command');
     }
+    await owner.send('q');
+    expect(await owner.process.exitCode, 0);
+    expect((await fixture.status())['flutter_pids'], isEmpty);
+  });
+
+  test('Flutter failure exit status is preserved', () async {
+    final (owner, _) = await fixture.launch();
+    await fixture.waitFor(() => fixture.starts.isNotEmpty);
     await owner.send('x');
     expect(await owner.process.exitCode, 42);
     expect((await fixture.status())['flutter_pids'], isEmpty);
@@ -100,9 +119,9 @@ void main() {
 
   for (final configuration in ['Debug', 'Profile', 'Release', 'Applications']) {
     test('reuses an existing app from $configuration', () async {
-      final existing = await fixture.startApp(configuration);
+      final existing = await fixture.startApp(configuration, appExecutable);
       final (reused, report) = await fixture.launch();
-      expect(report['reused'], isTrue);
+      expect(report['reused'], isTrue, reason: jsonEncode(report));
       expect(report['app_pids'], [existing.process.pid]);
       expect(fixture.starts, isEmpty);
       existing.process.kill();
@@ -112,7 +131,7 @@ void main() {
   }
 
   test('apps from different builds refuse another launch', () async {
-    final apps = [await fixture.startApp('Debug'), await fixture.startApp('Applications')];
+    final apps = [await fixture.startApp('Debug', appExecutable), await fixture.startApp('Applications', appExecutable)];
     final (refused, report) = await fixture.launch();
     expect(await refused.process.exitCode, 2);
     expect(report['app_pids'], unorderedEquals(apps.map((child) => child.process.pid)));
@@ -170,7 +189,8 @@ class _Fixture {
   late final environment = Map<String, String>.of(Platform.environment);
 
   static Future<_Fixture> create() async {
-    final fixture = _Fixture(await Directory.systemTemp.createTemp('happen-launch-'));
+    final temporary = await Directory.systemTemp.createTemp('happen-launch-');
+    final fixture = _Fixture(Directory(await temporary.resolveSymbolicLinks()));
     await fixture.copyLauncher(fixture.desktop);
     await fixture.flutter.parent.create(recursive: true);
     await fixture.flutter.writeAsString('#!${Platform.resolvedExecutable} --disable-dart-dev\n'
@@ -206,8 +226,11 @@ class _Fixture {
   }
 
   List<Map<String, dynamic>> get starts {
-    final trace = File('${flutter.parent.path}/starts');
-    return trace.existsSync() ? trace.readAsLinesSync().map((line) => jsonDecode(line) as Map<String, dynamic>).toList() : [];
+    final trace = Directory('${flutter.parent.path}/starts');
+    return trace.existsSync() ? [
+      for (final file in trace.listSync().whereType<File>().where((file) => file.path.endsWith('.json')))
+        jsonDecode(file.readAsStringSync()) as Map<String, dynamic>,
+    ] : [];
   }
 
   Future<_Child> start(String executable, List<String> arguments, String directory) async {
@@ -237,11 +260,11 @@ class _Fixture {
 
   Future<_Child> startFlutter({String mode = 'debug'}) => start(flutter.path, ['run', '-d', 'macos', '--$mode'], desktop.path);
 
-  Future<_Child> startApp(String configuration) async {
+  Future<_Child> startApp(String configuration, File appExecutable) async {
     final executable = File('${temporary.path}/$configuration/$name.app/Contents/MacOS/$name');
     await executable.parent.create(recursive: true);
-    await File('/bin/sleep').copy(executable.path);
-    final child = await start(executable.path, ['1000'], desktop.path);
+    await appExecutable.copy(executable.path);
+    final child = await start(executable.path, [], desktop.path);
     await waitFor(() {
       final result = Process.runSync('/bin/ps', ['-p', '${child.process.pid}', '-o', 'comm=']);
       return (result.stdout as String).contains('/$name.app/Contents/MacOS/$name');
