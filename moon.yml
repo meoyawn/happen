@@ -96,7 +96,7 @@ tasks:
 
   dev:
     description: Run one Flutter desktop using the vendored development SDK
-    command: python3 packages/desktop/tool/run_flutter.py
+    command: dart --disable-dart-dev packages/desktop/tool/run_flutter.dart
     env:
       PATH: '$workspaceRoot/third_party/flutter/bin:$PATH'
       FLUTTER_ROOT: '$workspaceRoot/third_party/flutter'
@@ -122,7 +122,7 @@ tasks:
 
   release-reinstall:
     description: Build/install the release, stopping its old process
-    command: python3 packages/desktop/tool/release_macos.py
+    command: dart --disable-dart-dev packages/desktop/tool/release_macos.dart
     deps:
       - '~:release'
     preset: utility
