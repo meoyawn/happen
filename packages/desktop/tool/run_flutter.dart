@@ -136,7 +136,18 @@ Future<void> main(List<String> arguments) async {
     exitCode = arguments.length == 1 && ['--help', '-h'].contains(arguments.single) ? 0 : 2;
     return;
   }
-  final status = arguments.contains('--status');
+  final cancellation = CancellationToken();
+  final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
+    .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
+  try { await _launch(arguments.contains('--status'), cancellation); }
+  on CancelledException { exitCode = 130; }
+  finally {
+    cancellation.cancel();
+    for (final signal in signals) { await signal.cancel(); }
+  }
+}
+
+Future<void> _launch(bool status, CancellationToken cancellation) async {
   runDirectory.createSync(recursive: true);
   final uid = _libc.lookupFunction<Uint32 Function(), int Function()>('getuid')();
   final shared = launchLock('${Directory.systemTemp.path}/$bundleId.$uid.$app.launch.lock');
@@ -175,6 +186,7 @@ Future<void> main(List<String> arguments) async {
         pending.renameSync('${runDirectory.path}/supervisor.json');
         stdout.writeln(jsonEncode(value));
         await stdout.flush();
+        cancellation.throwIfCancelled();
         Directory.current = desktopRoot;
         exec(flutter.absolute.path, ['run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'], Platform.environment);
       }
@@ -182,16 +194,8 @@ Future<void> main(List<String> arguments) async {
   } finally { closeLaunchLock(shared); }
 
   // Reuse keeps Moon's server task alive without taking over the original tty.
-  final existing = {...apps, ...supervisors}, cancellation = CancellationToken();
-  final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
-    .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
-  try {
-    while (processes('pid=,stat=').any((row) => existing.contains(row.$1) && !row.$2.startsWith('Z'))) {
-      await Future<void>.delayed(const Duration(milliseconds: 250)).asCancellable(cancellation);
-    }
-  } on CancelledException { exitCode = 130; }
-  finally {
-    cancellation.cancel();
-    for (final signal in signals) { await signal.cancel(); }
+  final existing = {...apps, ...supervisors};
+  while (processes('pid=,stat=').any((row) => existing.contains(row.$1) && !row.$2.startsWith('Z'))) {
+    await Future<void>.delayed(const Duration(milliseconds: 250)).asCancellable(cancellation);
   }
 }
