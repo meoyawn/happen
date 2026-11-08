@@ -6,3 +6,4 @@ export 'src/web_search.dart';
 export 'src/tool_interface.dart';
 export 'src/tool_input.dart';
 export 'src/question.dart';
+export 'src/mcp_events.dart';

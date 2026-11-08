@@ -971,6 +971,15 @@ class _Agent {
                         jsonObject(arguments),
                         cancellation: cancellation,
                       );
+                    } else if (service?.startsWith('mcp.events.') == true) {
+                      final definition = mcpEventCatalog.singleWhere((tool) => mcpEventMethods[tool['name']] == service);
+                      validateToolInput(arguments, jsonObject(definition['parameters']), name);
+                      final value = await callIsolate(network, service!, {
+                        ...jsonObject(arguments),
+                        'task_id': taskId, 'cwd': cwd, 'threadId': taskId, 'owner': 'thread:$taskId',
+                      }, cancellation: cancellation);
+                      output = service == 'mcp.events.subscriptions' ? {'subscriptions': value}
+                        : service == 'mcp.events.unsubscribe' ? {'unsubscribed': true} : value;
                     } else if (name.startsWith('client__')) {
                       if (clientTools == null) {
                         throw StateError('Client tools are unavailable');

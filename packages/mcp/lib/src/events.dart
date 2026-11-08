@@ -27,6 +27,7 @@ class McpEventSubscription {
     this.acceptEvent,
     this.checkpoint,
     this.onTerminated,
+    this.rediscover,
     List<int>? restoredSecret,
     String? restoredCallback,
     String? restoredUpstreamId,
@@ -67,6 +68,7 @@ class McpEventSubscription {
   final Future<void> Function(Json event, Json snapshot, CancellationToken cancellation)? acceptEvent;
   final Future<void> Function(Json snapshot, CancellationToken cancellation)? checkpoint;
   final Future<void> Function(CancellationToken cancellation)? onTerminated;
+  final Future<void> Function(CancellationToken cancellation)? rediscover;
   final lifetime = CancellationToken();
   final ready = Completer<void>();
   final _seen = <String>{};
@@ -74,6 +76,7 @@ class McpEventSubscription {
   String? cursor, callback, upstreamId;
   List<int>? secret;
   Future<void>? _running, _stopping;
+  CancellationToken? _webhookRefresh;
   String state = 'starting';
   bool _terminated = false, _webhookAttempted = false;
   bool _restoredRegistration = false;
@@ -138,6 +141,22 @@ class McpEventSubscription {
     // Webhook refreshes may be sleeping until their grant expires. Ending the
     // subscription must release that wait as well as any open push request.
     lifetime.cancel();
+  }
+
+  McpFailure _failure(Json error) => McpFailure(error['message'] as String? ?? 'MCP event subscription ended',
+    code: error['code'] as int?, data: error['data'] is Map ? jsonObject(error['data']) : null);
+
+  bool _schemaChanged(McpFailure error) => error.code == -32026 &&
+    error.data?['reason'] == 'schema_changed' &&
+    {'inputSchema', 'payloadSchema'}.contains(error.data?['feature']);
+
+  Future<bool> _recoverSchema(Object error) async {
+    if (error is! McpFailure || !_schemaChanged(error) || rediscover == null) return false;
+    state = 'reconnecting';
+    await rediscover!(lifetime);
+    if (mode == 'webhook') { upstreamId = null; _webhookAttempted = false; _restoredRegistration = false; }
+    _emit('connection/reconnecting', {'cursor': cursor, 'reason': 'schema_changed'});
+    return true;
   }
 
   Future<void> _active(Json params) async {
@@ -286,6 +305,8 @@ class McpEventSubscription {
                   case 'notifications/events/error':
                     _emit(method as String, params);
                   case 'notifications/events/terminated':
+                    final error = _failure(jsonObject(params['error']));
+                    if (_schemaChanged(error)) throw error;
                     await _terminate(params, token);
                 }
               } catch (error) {
@@ -302,6 +323,7 @@ class McpEventSubscription {
       } catch (error) {
         if (_terminated) return;
         lifetime.throwIfCancelled();
+        if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
           if (error.code != -32024) rethrow;
@@ -342,7 +364,7 @@ class McpEventSubscription {
         if (events is! List || events.length > 50) {
           throw const McpFailure('Invalid MCP poll result');
         }
-        if (!ready.isCompleted || result['truncated'] == true) {
+        if (!ready.isCompleted || state != 'active' || result['truncated'] == true) {
           await _active({'cursor': cursor, 'truncated': result['truncated'] == true});
         }
         state = 'active';
@@ -364,6 +386,7 @@ class McpEventSubscription {
         await cancellableDelay(Duration(milliseconds: delay), lifetime);
       } catch (error) {
         lifetime.throwIfCancelled();
+        if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
           if (error.code != -32024) rethrow;
@@ -385,8 +408,10 @@ class McpEventSubscription {
   Future<void> _webhooks() async {
     var failures = 0;
     while (!lifetime.isCancelled && !_terminated) {
+      final refresh = _webhookRefresh = CancellationToken();
+      final token = lifetime.merge(refresh);
       try {
-        final peer = await connection(lifetime);
+        final peer = await connection(token);
         _webhookAttempted = true;
         final result = await peer.request('events/subscribe', {
           ..._params,
@@ -396,7 +421,7 @@ class McpEventSubscription {
             'secret': 'whsec_${base64.encode(secret!)}',
           },
           'ttlMs': ttlMs,
-        }, cancellation: lifetime);
+        }, cancellation: token);
         final id = requiredString(result, 'id');
         final refresh = result['refreshBefore'];
         final expires = refresh is String ? DateTime.tryParse(refresh) : null;
@@ -421,7 +446,7 @@ class McpEventSubscription {
         if (refresh == null) {
           // No-expiry grants still benefit from occasional cursor and delivery
           // health updates; cancellation owns the whole wait.
-          await cancellableDelay(const Duration(hours: 12), lifetime);
+          await cancellableDelay(const Duration(hours: 12), token);
         } else {
           final wait = expires!.difference(DateTime.now()).inMilliseconds;
           if (wait <= 0) {
@@ -429,11 +454,12 @@ class McpEventSubscription {
           }
           await cancellableDelay(
             Duration(milliseconds: (wait * .8).round().clamp(100, 86400000)),
-            lifetime,
+            token,
           );
         }
       } catch (error) {
         lifetime.throwIfCancelled();
+        if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is FormatException) rethrow;
         if (error is McpFailure &&
             [-32602, -32023, -32024, -32026].contains(error.code)) {
@@ -448,6 +474,9 @@ class McpEventSubscription {
           Duration(milliseconds: 250 * (1 << (failures - 1))),
           lifetime,
         );
+      } finally {
+        if (identical(_webhookRefresh, refresh)) _webhookRefresh = null;
+        refresh.cancel();
       }
     }
   }
@@ -508,7 +537,12 @@ class McpEventSubscription {
         case 'gap':
           await _active({'cursor': value['cursor'], 'truncated': true});
         case 'terminated':
-          await _terminate({'error': value['error']}, cancellation.merge(lifetime));
+          final error = _failure(jsonObject(value['error']));
+          if (_schemaChanged(error) && rediscover != null) {
+            _webhookRefresh?.cancel(error);
+          } else {
+            await _terminate({'error': value['error']}, cancellation.merge(lifetime));
+          }
         case null:
           if (value['eventId'] != eventId) return {'status': 400};
           await _event(value, cancellation.merge(lifetime));

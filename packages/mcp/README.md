@@ -115,11 +115,24 @@ removes the subscription and its durable intent, preserving the protocol error.
 Request rejection (`InvalidParams`, `NotFound`, or `Unsupported`) instead leaves
 desired thread state available for explicit repair.
 
-Descriptor-change recovery is incomplete: new subscriptions discover current
-descriptors, but `notifications/events/list_changed` does not refresh a registry,
-and schema-change termination does not automatically rediscover and resubscribe.
-The bridge verification below establishes interoperability, not full draft
-conformance.
+`notifications/events/list_changed` refreshes the event registry. A typed
+`schema_changed` rejection or termination rediscovers the descriptor, validates
+the saved arguments and reconnects the subscription. Incompatible arguments or
+delivery modes leave desired thread state available for repair. Provider
+termination for event removal or authorization revocation ends the subscription.
+
+Agents can discover event types with `list_mcp_events`, create a saved-thread
+watch with `subscribe_mcp_events`, inspect `list_mcp_event_subscriptions`, and stop
+it with `unsubscribe_mcp_events`. The host supplies thread ownership; the model
+cannot choose another thread. The Happen server maintains subscriptions between
+turns and admits occurrences durably before waking an idle thread.
+
+The server exposes `mcpSubscriptionCount` and `mcpSubscriptionCounts` for saved
+subscriptions on unarchived threads, emits `mcp.subscriptions.changed` with
+per-thread and total counts, and includes `active_mcp_subscriptions` in telemetry.
+Counts change after durable membership commits and include watches awaiting
+reconnect. Desktop holds its local sleep assertion while these watches exist,
+even when their threads are unloaded; removal, archive, and shutdown release it.
 
 Webhook TTLs are suggestions: the server may clamp them to its own floor or cap.
 Every grant must include `refreshBefore`; `null` is accepted only when the caller

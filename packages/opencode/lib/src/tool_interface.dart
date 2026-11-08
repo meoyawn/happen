@@ -36,15 +36,16 @@ class OpenCodeToolInterface extends ToolInterface {
     return parts.isEmpty ? null : parts.join('\n\n');
   }
   @override
-  Map<String, String> get services => const {
+  Map<String, String> get services => {
     'question': 'question.ask',
     'skill': 'skills.read',
     'websearch': 'web.search', 'webfetch': 'web.search', '__fetch': 'web.search',
     '__resource_list': 'resources/list', '__resource_templates': 'resources/templates/list',
     'opencode.read_mcp_resource': 'resources/read',
+    for (final entry in mcpEventMethods.entries) 'opencode.${entry.key}': entry.value,
   };
   @override
-  List<Json> get hostCatalog => const [
+  List<Json> get hostCatalog => [
     {'name': 'opencode.list_mcp_resources', 'nested': true, 'description': 'List documents, records, and other data exposed by MCP servers. Use this when the user refers to something that is not a local file, such as a URI with a custom scheme, then load a match with read_mcp_resource. Each entry names the server to read it from. Templates are resources addressed by a parameter such as a record ID; fill in the uriTemplate placeholders before reading.',
       'parameters': {'type': 'object', 'properties': {'server': {'type': 'string', 'description': 'MCP server name as configured. Omit to list every server.'}}, 'additionalProperties': false}},
     {'name': 'opencode.read_mcp_resource', 'nested': true, 'description': 'Read a discovered MCP resource.',
@@ -52,6 +53,7 @@ class OpenCodeToolInterface extends ToolInterface {
         'server': {'type': 'string', 'description': 'The server field of the discovered resource.'},
         'uri': {'type': 'string', 'description': 'Exact resource URI from discovery, an expanded uriTemplate, or the user.'},
       }, 'required': ['server', 'uri'], 'additionalProperties': false}},
+    for (final tool in mcpEventCatalog) {...tool, 'name': 'opencode.${tool['name']}', 'nested': true},
   ];
   @override
   List<Json> externalCatalog(List<Json> catalog) => [for (final tool in catalog) {

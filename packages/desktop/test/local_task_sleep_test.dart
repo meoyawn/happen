@@ -8,9 +8,10 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
+import '../../../test/support/thread_names.dart';
 
 void main() {
-  test('only embedded task activity holds one macOS assertion until the last task settles', () async {
+  test('local tasks and unarchived MCP watches share idle sleep ownership across disconnect and restart', () async {
     final root = await Directory.systemTemp.createTemp('desktop-sleep-');
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final replies = <String, HttpResponse>{};
@@ -23,7 +24,22 @@ void main() {
     provider.listen((request) async {
       try {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
-        final prompt = (body['input'] as List).lastWhere((item) => item['role'] == 'user')['content'] as String;
+        if (request.uri.path == '/mcp') {
+          final result = switch (body['method']) {
+            'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
+            'events/list' => {'events': [{'name': 'changed', 'delivery': ['poll'],
+              'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+            'events/poll' => {'events': <Object?>[], 'cursor': 'quiet', 'hasMore': false, 'truncated': false, 'nextPollMs': 60000},
+            _ => throw StateError('Unexpected MCP method ${body['method']}'),
+          };
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
+          return;
+        }
+        if (await respondToThreadName(request, body)) return;
+        final content = (body['input'] as List).lastWhere((item) => item['role'] == 'user')['content'];
+        final prompt = content is String ? content
+          : (content as List).map((part) => jsonObject(part)['text'] as String? ?? '').join();
         request.response.headers.contentType = ContentType('text', 'event-stream');
         request.response.bufferOutput = false;
         request.response.write('data: {"type":"response.created"}\n\n');
@@ -37,7 +53,9 @@ void main() {
 
     Future<({AgentServer server, AgentClient client})> open(String name, {bool embedded = false}) async {
       final directory = await Directory('${root.path}/$name').create();
-      await File('${directory.path}/config.yaml').writeAsString('{}');
+      await File('${directory.path}/config.yaml').writeAsString(jsonEncode({'mcp_servers': {
+        'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+      }}));
       await File('${directory.path}/auth.json').writeAsString(jsonEncode({
         'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
         'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
@@ -73,7 +91,7 @@ void main() {
     }
 
     try {
-      final local = await open('local', embedded: true);
+      var local = await open('local', embedded: true);
       // A second server reached over TCP models another machine's task owner.
       final remote = await open('remote');
       final remoteTask = await start(remote.client, 'remote');
@@ -81,7 +99,7 @@ void main() {
       abandoned.add(_createFixtureAssertion('Happen / Running local tasks'));
       abandoned.add(_createFixtureAssertion('Happen / Unrelated operation'));
       expect(await _assertions(), hasLength(1));
-      final owner = watch(local.server);
+      var owner = watch(local.server);
       await _until(() async => (await _assertions()).isEmpty);
       expect(await _assertions('Happen / Unrelated operation'), hasLength(1),
         reason: 'Startup recovery must leave unrelated power assertions alone');
@@ -112,9 +130,53 @@ void main() {
       expect(remote.server.activeTaskCount, 1);
       expect(jsonObject(await remote.client.request('task.subscribe', {'task_id': remoteTask}))['running'], isTrue);
 
-      await start(local.client, 'failure');
+      final thread = jsonObject(await local.client.request('thread/start', {'cwd': root.path,
+        'config': {'thread_unload_delay_secs': 0}}))['thread']['id'] as String;
+      Future<Json> subscribeWatch() async => jsonObject(await local.client.request('mcp.events.subscribe', {
+        'threadId': thread, 'server': 'events', 'name': 'changed',
+      }));
+      final changed = local.client.events.stream.firstWhere((event) => event['method'] == 'mcp.subscriptions.changed');
+      final firstWatch = await subscribeWatch();
+      expect((await changed)['params'], {'threadId': thread, 'count': 1, 'total': 1});
       await _until(() async => (await _assertions()).length == 1);
-      final failed = local.client.events.stream.firstWhere((event) => event['type'] == 'turn.failed');
+      final watchingAssertion = (await _assertions()).single;
+      await subscribeWatch();
+      expect(local.server.mcpSubscriptionCount, 2);
+      expect(await _assertions(), [watchingAssertion]);
+      await local.client.request('mcp.events.unsubscribe', {'threadId': thread, 'subscription_id': firstWatch['subscription_id']});
+      expect(local.server.mcpSubscriptionCount, 1);
+      expect(local.server.activeTaskCount, 0);
+      expect(await _assertions(), [watchingAssertion], reason: 'An idle watch must survive between model turns');
+      final unloaded = local.client.events.stream.firstWhere((event) => event['method'] == 'thread/closed' && event['params']['threadId'] == thread);
+      await local.client.request('thread/unsubscribe', {'threadId': thread}); await unloaded;
+      await local.client.close();
+      expect(await _assertions(), [watchingAssertion], reason: 'Unloading and client disconnect cannot retire a saved watch');
+
+      await local.server.close();
+      await _until(() async => (await _assertions()).isEmpty);
+      local = await open('local', embedded: true);
+      await _until(() => local.server.mcpSubscriptionCount == 1);
+      owner = watch(local.server);
+      await _until(() async => (await _assertions()).length == 1);
+      expect(local.server.activeTaskCount, 0);
+      expect(jsonObject(await local.client.request('telemetry'))['active_mcp_subscriptions'], 1);
+      expect(jsonObject(await local.client.request('thread/loaded/list'))['data'], isEmpty,
+        reason: 'Restoring sleep ownership must not load or run the subscribed thread');
+      await local.client.request('thread/archive', {'threadId': thread});
+      await _until(() async => (await _assertions()).isEmpty);
+      expect(local.server.mcpSubscriptionCount, 0);
+      await local.client.request('thread/unarchive', {'threadId': thread});
+      expect(await _assertions(), isEmpty, reason: 'Unarchiving cannot restore retired subscriptions');
+      final removedWatch = await subscribeWatch();
+      await _until(() async => (await _assertions()).length == 1);
+      await local.client.request('mcp.events.unsubscribe', {'threadId': thread, 'subscription_id': removedWatch['subscription_id']});
+      await _until(() async => (await _assertions()).isEmpty);
+      expect(local.server.mcpSubscriptionCount, 0);
+
+      final failing = await start(local.client, 'failure');
+      await _until(() async => (await _assertions()).length == 1);
+      final failed = local.client.events.stream.firstWhere((event) => event['method'] == 'turn/completed' &&
+        event['params']['threadId'] == failing && event['params']['turn']['status'] == 'failed');
       await reply('failure', fail: true);
       await failed.timeout(const Duration(seconds: 10));
       await _until(() async => (await _assertions()).isEmpty);
@@ -151,7 +213,7 @@ void main() {
       await provider.close(force: true);
       await root.delete(recursive: true);
     }
-  }, skip: !Platform.isMacOS, timeout: const Timeout(Duration(minutes: 1)));
+  }, skip: !Platform.isMacOS, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 Future<List<String>> _assertions([String name = 'Happen / Running local tasks']) async {

@@ -126,6 +126,7 @@ MCP tools return the full CallToolResult envelope. Check `isError` before using 
     // but do not inflate the shared Codex eager declaration on every request.
     ...hostCatalog.where((tool) => tool['name'] != 'shell_command'),
     ...mcpResourceCatalog,
+    ...mcpEventCatalog,
     if (deferredTools) toolSearchCatalog,
     if (imageGeneration) imageGenerationCatalog,
     if (goals) ...goalCatalog,

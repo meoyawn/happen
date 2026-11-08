@@ -47,6 +47,7 @@ class OpenAIToolInterface extends ToolInterface {
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (deferred.isNotEmpty) ...mcpResourceCatalog.map(specs.directDefinition),
+      ...mcpEventCatalog.map(specs.directDefinition),
     ],
     if (requestUserInput) ...[requestUserInputForMode(defaultMode: defaultModeRequestUserInput), requestUserInputAsyncDefinition],
     if (!codeModeOnly) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == 'curr_time')),
@@ -79,10 +80,11 @@ class OpenAIToolInterface extends ToolInterface {
     if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
     for (final tool in historyCatalog) tool['name'] as String: 'history.${(tool['name'] as String).substring(9)}',
     ...mcpResourceMethods,
+    ...mcpEventMethods,
   };
   @override
   List<Json> get hostCatalog => [
-    ...specs.hostCatalog, ...historyCatalog, ...mcpResourceCatalog,
+    ...specs.hostCatalog, ...historyCatalog, ...mcpResourceCatalog, ...mcpEventCatalog,
     if (imageGeneration) imageGenerationCatalog,
     if (goals) ...goalCatalog,
     if (webSearch) webSearchHost,

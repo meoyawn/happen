@@ -72,6 +72,8 @@ void main() {
   });
 
   test('global stdio MCP shares a process, isolates cancellation, and supervises crashes', () async {
+    final root = await Directory.systemTemp.createTemp('mcp-event-registry-');
+    final requestLog = File('${root.path}/requests');
     final http = HttpClient();
     final events = StreamController<Json>.broadcast();
     final manager = McpManager(
@@ -84,11 +86,13 @@ void main() {
       await manager.close();
       http.close(force: true);
       await events.close();
+      await root.delete(recursive: true);
     });
     await manager.configure({
       'local': {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
+        'env': {'MCP_REQUESTS_FILE': requestLog.path},
         'legacy_fallback': false,
       },
     }, lifetime);
@@ -134,6 +138,23 @@ void main() {
         .timeout(const Duration(seconds: 3));
     expect(tick['subscription_id'], second['subscription_id']);
     expect((await probe()), {'pid': initialPid, 'waiting': 0, 'streams': 1});
+    Future<void> discovered(int minimum) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while ((await requestLog.readAsLines()).where((line) => line == 'events/list').length < minimum) {
+        if (DateTime.now().isAfter(deadline)) fail('Event catalog change was not rediscovered');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+    final initialLists = (await requestLog.readAsLines()).where((line) => line == 'events/list').length;
+    await manager.callTool('mcp__local__probe', {'action': 'event_catalog_changed'}, lifetime);
+    await discovered(initialLists + 1);
+    final recovered = events.stream.firstWhere((event) => event['owner'] == 'second' &&
+      event['notification']['method'] == 'notifications/events/event' && event['notification']['params']['data']['revision'] == 3)
+      .timeout(const Duration(seconds: 3));
+    await manager.callTool('mcp__local__probe', {'action': 'event_schema_changed'}, lifetime);
+    expect((await recovered)['subscription_id'], second['subscription_id']);
+    await discovered(initialLists + 2);
+    expect(manager.subscriptions('second').single['state'], 'active');
     await manager.detach('second');
     await expectLater(
       manager.callTool('mcp__local__probe', {'action': 'crash'}, lifetime),
@@ -244,9 +265,11 @@ void main() {
           return;
         case 'events/poll':
           polls++;
-          if (polls == 2) {
+          if (polls == 2 || polls == 3) {
             request.response.headers.contentType = ContentType.json;
-            request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': id, 'error': forbidden}));
+            request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': id, 'error': polls == 2 ? {
+              'code': -32026, 'message': 'Unsupported', 'data': {'feature': 'payloadSchema', 'reason': 'schema_changed'},
+            } : forbidden}));
             await request.response.close();
             return;
           }
@@ -433,6 +456,13 @@ void main() {
       upstream3 = await reconnect.timeout(const Duration(seconds: 5));
       expect(streams[upstream3]!.body['params']['cursor'], isNull, reason: kind);
     }
+    final schemaReconnect = streamOpened.stream.first;
+    final listsBeforeSchema = requests.where((value) => value['method'] == 'events/list').length;
+    await notify(upstream3, 'notifications/events/terminated', {'error': {
+      'code': -32026, 'message': 'Unsupported', 'data': {'feature': 'inputSchema', 'reason': 'schema_changed'},
+    }});
+    upstream3 = await schemaReconnect.timeout(const Duration(seconds: 5));
+    expect(requests.where((value) => value['method'] == 'events/list').length, listsBeforeSchema + 1);
     final ended = until(
       'notifications/events/terminated',
       second['subscription_id'] as String,
@@ -448,7 +478,7 @@ void main() {
     final pollEnded = until('notifications/events/terminated');
     await subscribe('poll');
     expect((await polled)['notification']['params']['eventId'], 'polled');
-    while (polls < 2) {
+    while (polls < 3) {
       await Future<void>.delayed(const Duration(milliseconds: 5));
     }
     expect(
@@ -517,6 +547,16 @@ void main() {
     expect((await deliver(cursorless, rotating: true)).$1, 200);
     final subscriptions = await client.request('mcp.events.subscriptions') as List;
     expect(subscriptions.singleWhere((dynamic value) => value['subscription_id'] == webhook['subscription_id'])['cursor'], isNull);
+    final reactivated = until('notifications/events/active', webhook['subscription_id'] as String);
+    final listsBeforeWebhookSchema = requests.where((value) => value['method'] == 'events/list').length;
+    expect((await deliver({'type': 'terminated', 'error': {
+      'code': -32026, 'message': 'Unsupported', 'data': {'feature': 'payloadSchema', 'reason': 'schema_changed'},
+    }})).$1, 200);
+    await reactivated;
+    expect(requests.where((value) => value['method'] == 'events/list').length, listsBeforeWebhookSchema + 1);
+    final afterSchema = until('notifications/events/event', webhook['subscription_id'] as String);
+    expect((await deliver(occurrence('after-schema', 'webhook-2'))).$1, 200);
+    await afterSchema;
     await client.request('mcp.events.unsubscribe', {
       'subscription_id': webhook['subscription_id'],
     });

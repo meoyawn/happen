@@ -1,6 +1,20 @@
 part of '../server.dart';
 
 extension _McpEvents on AgentServer {
+  void _setMcpSubscriptions(String id, Set<String> subscriptions) {
+    final previous = _mcpSubscriptionOwners[id];
+    _mcpSubscriptionOwners[id] = subscriptions;
+    if (previous == null && subscriptions.isEmpty || previous != null &&
+        previous.length == subscriptions.length && previous.containsAll(subscriptions)) return;
+    final total = mcpSubscriptionCount;
+    _mcpActivity.add(total);
+    for (final client in _clients.toList()) {
+      client.event({'method': 'mcp.subscriptions.changed', 'params': {
+        'threadId': id, 'count': subscriptions.length, 'total': total,
+      }});
+    }
+  }
+
   void _networkEvent(Json message) {
     if (message['method'] == 'cancel') {
       _mcpOperations[message['params']['operation_id']]?.cancel(); return;
@@ -54,13 +68,22 @@ extension _McpEvents on AgentServer {
       if (task.maintenance) { await task.maintenanceDone!.future.asCancellable(cancellation); continue; }
       if (task.finishing) { await task.running!.asCancellable(cancellation); continue; }
       if (task.busy && task.writer == null) { await task.ready!.future.asCancellable(cancellation); continue; }
-      await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation));
+      final subscriptions = await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation));
+      _setMcpSubscriptions(id, (subscriptions as List).cast<String>().toSet());
       return;
     }
   }
 
   Future<void> _restoreMcpEvents() async {
     final owners = await readMcpEventOwners(directory, cancellation: _lifetime);
+    // Seed every saved owner before waiting for any upstream to reconnect.
+    // A committed save/remove/archive racing this scan already owns its entry.
+    for (final owner in owners) {
+      final id = requiredString(owner, 'threadId');
+      if (!_mcpSubscriptionOwners.containsKey(id)) {
+        _setMcpSubscriptions(id, (owner['subscriptions'] as List).map((value) => requiredString(jsonObject(value), 'subscription_id')).toSet());
+      }
+    }
     for (final owner in owners) {
       _lifetime.throwIfCancelled();
       final id = requiredString(owner, 'threadId');

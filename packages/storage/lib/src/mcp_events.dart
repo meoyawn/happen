@@ -28,17 +28,18 @@ extension McpEventStore on TaskStore {
     try { _metadata({'mcp_event_subscriptions': after}); db.execute('COMMIT'); }
     catch (_) { db.execute('ROLLBACK'); rethrow; }
   }
-  Object? mcpSubscription(String action, Json params) {
+  List<String> mcpSubscription(String action, Json params) {
     final previous = _mcpSubscriptions();
     if (action == 'remove') {
-      _writeMcpSubscriptions(previous, {...previous}..remove(requiredString(params, 'subscription_id'))); return null;
+      final next = {...previous}..remove(requiredString(params, 'subscription_id'));
+      _writeMcpSubscriptions(previous, next); return next.keys.toList();
     }
     _checkMcpOwner();
     final snapshot = jsonObject(params['snapshot']), id = requiredString(snapshot, 'subscription_id');
     if (snapshot['threadId'] != taskId) throw StateError('MCP subscription belongs to another thread');
     final next = params['create'] == true ? {...previous, id: snapshot} : _mcpCheckpoint(previous, snapshot);
     if (next.length > 64) throw StateError('MCP event subscription limit reached');
-    _writeMcpSubscriptions(previous, next); return null;
+    _writeMcpSubscriptions(previous, next); return next.keys.toList();
   }
 
   /// Inbox, receipt and resume checkpoint are one durability boundary. No

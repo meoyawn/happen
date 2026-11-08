@@ -67,6 +67,8 @@ class AgentServer {
   final _goalOperations = <String, CancellationToken>{};
   StreamSubscription<Object?>? _goalSubscription;
   final _activity = StreamController<int>.broadcast();
+  final _mcpActivity = StreamController<int>.broadcast();
+  final _mcpSubscriptionOwners = <String, Set<String>>{};
   final _requests = <Future<Object?>>{};
   final _imports = <String, Future<String>>{};
   final _mcpDeliveries = <String, Future<void>>{};
@@ -84,6 +86,11 @@ class AgentServer {
   /// Activity belongs to this server instance, independent of client subscriptions.
   int get activeTaskCount => _tasks.values.where((task) => task.busy).length;
   Stream<int> get activeTaskCounts => _activity.stream;
+
+  /// Durable subscriptions on unarchived threads, including unloaded threads
+  /// and watches awaiting an upstream reconnect. Client-only watches are excluded.
+  int get mcpSubscriptionCount => _mcpSubscriptionOwners.values.fold(0, (count, subscriptions) => count + subscriptions.length);
+  Stream<int> get mcpSubscriptionCounts => _mcpActivity.stream;
 
   static Future<AgentServer> start({
     required String directory,
@@ -709,6 +716,7 @@ class AgentServer {
       case 'telemetry':
         return {
           'active_tasks': activeTaskCount,
+          'active_mcp_subscriptions': mcpSubscriptionCount,
           'resident_tasks': _tasks.length,
           'connected_clients': _clients.length,
           'pending_messages': _tasks.values.fold<int>(0, (count, task) => count + task.pending.length),
@@ -1189,6 +1197,7 @@ class AgentServer {
       // initialization or remote cleanup must not hold the archive UI open.
       _broadcast(task.id, event);
       if (archived) {
+        _setMcpSubscriptions(task.id, {});
         _goals.remove(task.id);
         _clientTools.archive(task.id);
         for (final client in _clients) {
@@ -1705,6 +1714,8 @@ class AgentServer {
     await _goalSubscription?.cancel();
     _goalRequests.close();
     unawaited(_activity.close());
+    _mcpSubscriptionOwners.clear();
+    unawaited(_mcpActivity.close());
     await network.close();
     _networkEvents.close();
     for (final client in _clients.toList()) {

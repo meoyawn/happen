@@ -6,17 +6,20 @@ import 'dart:isolate';
 import 'package:ffi/ffi.dart';
 import 'package:server/server.dart';
 
-/// One desktop-owned assertion for its embedded server, including hidden tasks.
+/// One desktop-owned assertion for local tasks and saved MCP event watches.
 class LocalTaskSleepInhibitor {
   LocalTaskSleepInhibitor(AgentServer server, {required this.onError}) {
     if (Platform.isMacOS) _initializing = _startupCleanup ??= Isolate.run(_clearAbandonedAssertions);
-    _activity = server.activeTaskCounts.listen(_update, onDone: () => unawaited(close()));
-    _update(server.activeTaskCount);
+    void update(int _) => _update(server.activeTaskCount + server.mcpSubscriptionCount);
+    _activity = server.activeTaskCounts.listen(update, onDone: () => unawaited(close()));
+    _mcpActivity = server.mcpSubscriptionCounts.listen(update, onDone: () => unawaited(close()));
+    update(0);
     unawaited(_schedule());
   }
 
   final void Function(Object) onError;
   late final StreamSubscription<int> _activity;
+  late final StreamSubscription<int> _mcpActivity;
   bool _required = false, _closed = false, _failed = false;
   int? _assertion;
   Future<void>? _initializing, _transition, _closing;
@@ -58,6 +61,7 @@ class LocalTaskSleepInhibitor {
     _closed = true;
     _required = false;
     await _activity.cancel();
+    await _mcpActivity.cancel();
     _failed = false;
     // Drain an in-flight native create, then release its ID before closing.
     await _schedule();

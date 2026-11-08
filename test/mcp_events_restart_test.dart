@@ -199,7 +199,8 @@ void main() {
       var server = await peer.launch(); final id = await peer.thread(server), subscription = await peer.subscribe(server, id, 'webhook');
       if (remove == 'archive') await server.request('thread/archive', {'threadId': id});
       else if (remove == 'unsubscribe') await server.request('mcp.events.unsubscribe', {'threadId': id, 'subscription_id': subscription['subscription_id']});
-      else expect(await peer.webhook(server, subscription, {'type': 'terminated', 'eventId': 'provider-termination'}), 200);
+      else expect(await peer.webhook(server, subscription, {'type': 'terminated', 'eventId': 'provider-termination',
+        'error': {'code': -32024, 'message': 'Forbidden'}}), 200);
       final saved = peer.snapshot(id)['mcp_event_subscriptions'];
       if (saved != null) expect(jsonObject(jsonDecode(saved as String)), isNot(contains(subscription['subscription_id'])),
         reason: 'Desired state must be removed durably, not only hidden from an in-memory registry.');

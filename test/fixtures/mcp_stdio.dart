@@ -21,6 +21,7 @@ void main(List<String> arguments) {
   final catalogs = Platform.environment['MCP_CONTRACT_CATALOGS'] == 'true';
   final streams = <String, Timer>{};
   final pending = <String>{};
+  var eventSchema = 1;
   void send(Map<String, dynamic> value) =>
       stdout.writeln(jsonEncode({'jsonrpc': '2.0', ...value}));
   void notification(String id, String method, Map<String, dynamic> params) =>
@@ -178,6 +179,18 @@ void main(List<String> arguments) {
               if (action == 'crash') {
                 exit(7);
               }
+              if (action == 'event_catalog_changed' || action == 'event_schema_changed') {
+                eventSchema++;
+                send({'method': 'notifications/events/list_changed', 'params': <String, Object?>{}});
+                if (action == 'event_schema_changed') {
+                  for (final entry in streams.entries.toList()) {
+                    entry.value.cancel(); streams.remove(entry.key);
+                    notification(entry.key, 'notifications/events/terminated', {'error': {
+                      'code': -32026, 'message': 'Unsupported', 'data': {'feature': 'payloadSchema', 'reason': 'schema_changed'},
+                    }});
+                  }
+                }
+              }
               if (action == 'wait') {
                 pending.add(id!);
                 return;
@@ -237,7 +250,7 @@ void main(List<String> arguments) {
                       'description': 'Process ticks',
                       'delivery': ['push'],
                       'inputSchema': {'type': 'object'},
-                      'payloadSchema': {'type': 'object'},
+                      'payloadSchema': {'type': 'object', 'properties': {'revision': {'type': 'integer', 'const': eventSchema}}},
                     },
                   ],
                 },
@@ -255,7 +268,7 @@ void main(List<String> arguments) {
                   'eventId': '$id:${++tick}',
                   'name': 'tick',
                   'timestamp': DateTime.now().toUtc().toIso8601String(),
-                  'data': {'pid': pid},
+                  'data': {'pid': pid, 'revision': eventSchema},
                   'cursor': '$tick',
                 });
               });

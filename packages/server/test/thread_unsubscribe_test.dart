@@ -86,11 +86,17 @@ void main() {
         requests.add(body);
         final input = body['input'] as List;
         final hasResult = input.any((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'deterministic-wait-call');
+        final hasSubscription = input.any((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'native-subscription-call');
         request.response.headers.contentType = ContentType('text', 'event-stream');
         request.response.write('data: ${jsonEncode({'type': failResponse ? 'response.failed' : 'response.completed', 'response': {
           'id': 'response-${requests.length}', 'status': failResponse ? 'failed' : 'completed',
           if (failResponse) 'error': {'code': 'server_error', 'message': 'simulated failure'}
-          else 'output': [if (jsonEncode(input).contains('run deterministic tool') && !hasResult)
+          else 'output': [if (jsonEncode(input).contains('subscribe native events') && !hasSubscription)
+            {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'native-subscription-call',
+              'input': 'text(await tools.list_mcp_events({})); '
+                'text(await tools.subscribe_mcp_events({server: "comments", name: "comment.created", arguments: {document_id: "doc_123"}, mode: "poll"})); '
+                'text(await tools.list_mcp_event_subscriptions({}));'}
+            else if (jsonEncode(input).contains('run deterministic tool') && !hasResult)
             {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'deterministic-wait-call',
               'input': 'text(await tools.client__deterministic_wait({}));'}
             else {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Done'}]}],
@@ -224,10 +230,14 @@ void main() {
   for (final disconnect in [false, true]) {
     test('MCP $mode events wake an unloaded thread exactly once${disconnect ? ' after the subscribing client disconnects' : ''}', () async {
       await launch(delay: 0);
-      final id = await start(); await turn(id, 'Watch document doc_123 and summarize new comments.');
+      final throughAgent = mode == 'poll' && disconnect;
+      final id = await start(); await turn(id, 'Watch document doc_123 and summarize new comments.${throughAgent ? ' subscribe native events' : ''}');
       final unrelated = await start();
-      final subscription = await request('mcp.events.subscribe', {'threadId': id, 'server': 'comments', 'name': 'comment.created',
-        'arguments': {'document_id': 'doc_123'}, 'mode': mode});
+      final subscription = throughAgent
+        ? jsonObject((await client.request('mcp.events.subscriptions', {'threadId': id}) as List).single)
+        : await request('mcp.events.subscribe', {'threadId': id, 'server': 'comments', 'name': 'comment.created',
+          'arguments': {'document_id': 'doc_123'}, 'mode': mode});
+      final initialRequests = throughAgent ? 2 : 1;
       final http = HttpClient()..findProxy = (_) => 'DIRECT';
       addTearDown(() => http.close(force: true));
       Future<int> webhook(Json event, {bool valid = true}) async {
@@ -266,11 +276,11 @@ void main() {
       }
       await noClose(id, 100);
       expect((await request('thread/loaded/list'))['data'], isNot(contains(id)));
-      expect(requests, hasLength(1), reason: 'Activation, callback verification and invalid signatures never wake a thread.');
+      expect(requests, hasLength(initialRequests), reason: 'Activation, callback verification and invalid signatures never wake a thread.');
       final completed = notification('turn/completed', id);
       await deliver(event);
       await completed;
-      expect(requests, hasLength(2), reason: 'A valid event must cold-load and run the saved thread without a client resume.');
+      expect(requests, hasLength(initialRequests + 1), reason: 'A valid event must cold-load and run the saved thread without a client resume.');
       final input = requests.last['input'] as List;
       expect(jsonEncode(input), contains('Watch document doc_123'));
       final delivered = input.where((item) => jsonEncode(item).contains('evt_456')).single;
@@ -279,7 +289,7 @@ void main() {
       expect(jsonEncode(input), isNot(contains('whsec_')));
       await deliver(event);
       await Future<void>.delayed(Duration(milliseconds: mode == 'poll' ? 1250 : 250));
-      expect(requests, hasLength(2));
+      expect(requests, hasLength(initialRequests + 1));
       expect((await request('thread/read', {'threadId': id, 'includeTurns': true}))['thread']['turns'], hasLength(2));
       expect((await request('thread/read', {'threadId': unrelated, 'includeTurns': true}))['thread']['turns'], isEmpty);
       if (mode == 'webhook' && !disconnect) {

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
+import 'package:ai/ai.dart';
 
 import 'events.dart';
 import 'oauth.dart';
@@ -396,13 +397,17 @@ class McpManager {
       }, cancellation, scope: scope);
     }
     if (params['cursor'] != null) {
-      throw ArgumentError('A resource cursor requires its server name');
+      throw ArgumentError('A catalog cursor requires its server name');
     }
-    final key = method == 'resources/list' ? 'resources' : 'resourceTemplates';
+    final key = switch (method) {
+      'events/list' => 'events',
+      'resources/list' => 'resources',
+      _ => 'resourceTemplates',
+    };
     final values = <Json>[];
     final cursors = <String, String>{};
     for (final entry in _visible(scope).entries) {
-      if (entry.value.connection?.discovery['capabilities']?['resources'] ==
+      if (entry.value.connection?.discovery['capabilities']?[method == 'events/list' ? 'events' : 'resources'] ==
           null) {
         continue;
       }
@@ -415,7 +420,7 @@ class McpManager {
       }
       if (values.length > 1000) {
         throw const McpFailure(
-          'Resource catalog exceeds the result limit; select a server',
+          'MCP catalog exceeds the result limit; select a server',
         );
       }
     }
@@ -452,6 +457,8 @@ class McpManager {
     final candidates = definitions.where((v) => v['name'] == name);
     if (candidates.isEmpty) throw ArgumentError('Unknown MCP event');
     final definition = candidates.single;
+    final arguments = jsonObject(params['arguments'] ?? {});
+    validateToolInput(arguments, jsonObject(definition['inputSchema']), 'MCP event $name arguments');
     final supported = (definition['delivery'] as List).cast<String>();
     final mode =
         params['mode'] as String? ??
@@ -470,7 +477,7 @@ class McpManager {
       owner: owner,
       server: server,
       name: name,
-      arguments: jsonObject(params['arguments'] ?? {}),
+      arguments: arguments,
       mode: mode,
       cursor: params['cursor'] as String?,
       maxAgeMs: params['max_age_ms'] as int?,
@@ -497,6 +504,16 @@ class McpManager {
           'server': server, 'snapshot': snapshot, 'notification': {'method': 'notifications/events/event', 'params': occurrence}}, token);
       },
       connection: target.ready,
+      rediscover: (token) async {
+        target.shared.invalidateEvents();
+        final current = await target.list('events/list', 'events', token);
+        final descriptor = current.where((value) => value['name'] == name).firstOrNull;
+        if (descriptor == null) throw const McpFailure('MCP event was removed', code: -32023);
+        if (!(descriptor['delivery'] as List).contains(mode)) {
+          throw const McpFailure('MCP event no longer supports its delivery mode', code: -32026);
+        }
+        validateToolInput(arguments, jsonObject(descriptor['inputSchema']), 'MCP event $name arguments');
+      },
       onEvent: (event) =>
           onEvent(owner, {if (params['threadId'] != null) 'threadId': params['threadId'], ...event}),
     );
@@ -646,6 +663,7 @@ class _Server {
   }
   Future<List<Json>> list(String method, String key, CancellationToken cancellation) async {
     await ready(cancellation);
+    if (method == 'events/list') return shared.eventDefinitions(cancellation.merge(lifetime));
     return shared.list(method, key, cancellation.merge(lifetime));
   }
   void close() => lifetime.cancel();
@@ -663,6 +681,9 @@ class _Connection {
   final lifetime = CancellationToken();
   final initial = Completer<void>();
   Future<void>? _runner, _refreshing;
+  Future<List<Json>>? _refreshingEvents;
+  List<Json>? _eventTypes;
+  var _eventRevision = 0;
   McpConnection? connection;
   String state = 'starting';
   String? error;
@@ -685,6 +706,7 @@ class _Connection {
         onAuthChallenge: oauth?.challenge, onRecover: oauth?.recover,
         clientCapabilities: clientCapabilities, requestMetadata: requestMetadata);
       connection = current;
+      invalidateEvents();
       try {
         state = 'connecting';
         // OAuth preparation owns its own request deadline, before the MCP
@@ -839,6 +861,24 @@ class _Connection {
 
   Future<void> _refresh() =>
       _refreshing ??= _loadTools().whenComplete(() => _refreshing = null);
+
+  void invalidateEvents() { _eventTypes = null; _eventRevision++; }
+
+  Future<List<Json>> eventDefinitions(CancellationToken cancellation) async {
+    cancellation.throwIfCancelled();
+    if (_eventTypes case final List<Json> cached) return cached;
+    return (_refreshingEvents ??= (() async {
+      final current = connection!;
+      while (true) {
+        final revision = _eventRevision;
+        final values = await list('events/list', 'events', lifetime.merge(current.lifetime), connecting: true);
+        if (!identical(current, connection)) throw const McpFailure('MCP connection changed during event discovery');
+        if (revision != _eventRevision) continue;
+        _eventTypes = values;
+        return values;
+      }
+    })().whenComplete(() => _refreshingEvents = null)).asCancellable(cancellation);
+  }
   Future<void> _loadTools() async {
     final current = connection!;
     if (current.discovery['capabilities']?['tools'] == null) {
@@ -872,6 +912,13 @@ class _Connection {
   }
 
   void _notification(Json notification) {
+    if (notification['method'] == 'notifications/events/list_changed') {
+      invalidateEvents();
+      unawaited(eventDefinitions(lifetime).catchError((Object _) {
+        error = 'MCP event catalog refresh failed';
+        return <Json>[];
+      }));
+    }
     if (notification['method'] == 'notifications/tools/list_changed') {
       unawaited(
         _refresh().catchError((Object _) {
