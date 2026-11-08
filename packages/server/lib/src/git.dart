@@ -12,6 +12,19 @@ typedef GitOutput = ({int code, String output, String error});
 Future<GitOutput> runGit(String cwd, List<String> arguments, CancellationToken cancellation, {
   Map<String, String> environment = const {}, bool write = false,
   Set<int> accepted = const {0}, void Function(String)? onOutput,
+}) => runIsolateEffect(_gitEffect, {'cwd': cwd, 'arguments': arguments,
+    'environment': environment, 'write': write, 'accepted': accepted.toList(), 'progress': onOutput != null},
+  cancellation: cancellation, onEvent: onOutput == null ? null : (event) => onOutput(event['output'] as String));
+
+Future<GitOutput> _gitEffect(Json params, CancellationToken cancellation, void Function(Json) emit) =>
+  _runGit(params['cwd'] as String, (params['arguments'] as List).cast<String>(), cancellation,
+    environment: (params['environment'] as Map).cast<String, String>(), write: params['write'] == true,
+    accepted: (params['accepted'] as List).cast<int>().toSet(),
+    onOutput: params['progress'] == true ? (output) => emit({'output': output}) : null);
+
+Future<GitOutput> _runGit(String cwd, List<String> arguments, CancellationToken cancellation, {
+  Map<String, String> environment = const {}, bool write = false,
+  Set<int> accepted = const {0}, void Function(String)? onOutput,
 }) async {
   cancellation.throwIfCancelled();
   final deadline = TimeoutCancellationToken(Duration(seconds: write ? 120 : 5));

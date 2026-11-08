@@ -5,9 +5,11 @@ import 'dart:math';
 import 'package:cancellation_token/cancellation_token.dart';
 
 const _traceKey = #happenTrace;
-final _random = Random.secure();
+// Trace and flow IDs correlate events; they never authorize access. Generating
+// them must not synchronously read OS entropy on the UI isolate.
+final _correlationRandom = Random();
 String traceId([int bytes = 16]) => List.generate(bytes,
-  (_) => _random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  (_) => _correlationRandom.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
 int traceTime() => DateTime.now().toUtc().microsecondsSinceEpoch;
 
 const traceServices = {

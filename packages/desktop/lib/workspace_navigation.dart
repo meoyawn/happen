@@ -88,7 +88,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   CancellationToken? _reorderCancellation;
   late final _pinnedList = GlobalKey<SliverReorderableListState>();
   late final _threadList = GlobalKey();
-  late final _selectedRow = GlobalKey();
+  late final _rowAnchors = <String, GlobalKey>{};
+  GlobalKey? get _selectedRow => widget.home ? null : _rowAnchors[session.draftKey];
+  GlobalKey _anchor(String id) => _rowAnchors.putIfAbsent(id, () => GlobalKey());
   late final _scroll = ScrollController();
   late final _rows = <String, ({Object state, Widget row})>{};
   (String?, String?)? _selection;
@@ -223,7 +225,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     if (!mounted || revision != _revealRevision || _reordering || !_scroll.hasClients) return;
     final position = _scroll.position;
     if (!position.hasContentDimensions) return;
-    final target = _selectedRow.currentContext?.findRenderObject();
+    final target = _selectedRow?.currentContext?.findRenderObject();
     if (target != null && target.attached) {
       final viewport = RenderAbstractViewport.of(target);
       final top = viewport.getOffsetToReveal(target, 0).offset;
@@ -358,7 +360,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   child: providerIcon(task.provider, size: 14, color: desktopTertiary)),
               ])),
             ])))));
-      final anchored = KeyedSubtree(key: selected ? _selectedRow : null, child: card);
+      final anchored = KeyedSubtree(key: _anchor(task.id), child: card);
       return reorderIndex == null ? anchored : ReorderableDragStartListener(
         index: reorderIndex, enabled: reorderable, child: anchored);
     }));
@@ -380,7 +382,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       borderRadius: BorderRadius.circular(8), child: InkWell(
         mouseCursor: WidgetStateMouseCursor.clickable,
         borderRadius: BorderRadius.circular(8), onTap: () => widget.onDraft(draft),
-        child: KeyedSubtree(key: selected ? _selectedRow : null, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: KeyedSubtree(key: _anchor(draft.id), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               if (project != null) ...[
@@ -411,6 +413,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final pinned = tasks.where((entry) => pins.contains(entry.$2.id)).toList();
     final working = tasks.where((entry) => entry.$2.running && !pins.contains(entry.$2.id)).toList();
     final drafts = _sidebarDrafts(session, widget.projectKey);
+    final anchoredIds = {...ids, ...drafts.map((draft) => draft.id)};
+    _rowAnchors.removeWhere((id, _) => !anchoredIds.contains(id));
     final rows = <(String?, Widget)>[
       if (working.isNotEmpty) ...[
         (null, _sectionHeading('working', 'Working', working.length)),

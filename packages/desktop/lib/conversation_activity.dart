@@ -152,16 +152,16 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
           onTap: _toggle,
           onFocusChange: (focused) => setState(() => _focused = focused),
           borderRadius: BorderRadius.circular(6),
-          hoverColor: const Color(0x0871717b), highlightColor: Colors.transparent,
+          hoverColor: Colors.transparent, focusColor: Colors.transparent,
+          highlightColor: Colors.transparent, splashColor: Colors.transparent,
           child: Container(
             constraints: const BoxConstraints(minHeight: 24),
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            child: Row(children: [
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
               if (widget.icon != null) ...[
-                SizedBox.square(dimension: 24, child: Center(child: widget.icon!)),
-                const SizedBox(width: 6),
+                SizedBox.square(dimension: 16, child: Center(child: widget.icon!)),
+                const SizedBox(width: 4),
               ],
-              Expanded(
+              Flexible(
                 child: widget.labelContent ?? (widget.shimmer ? ThinkingLabel(label: widget.label, fontSize: widget.fontSize)
                 : Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: widget.fontSize, height: 1.625,
@@ -174,8 +174,9 @@ class _ConversationDisclosureState extends State<ConversationDisclosure> {
                     style: const TextStyle(fontSize: 12, color: desktopSecondary,
                       fontFeatures: [FontFeature.tabularFigures()])))),
               const SizedBox(width: 4),
-              Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
-                size: 14, color: color),
+              Opacity(opacity: _hovered || _focused || expanded ? 1 : 0,
+                child: RotatedBox(quarterTurns: expanded ? 1 : 0,
+                  child: Icon(Icons.chevron_right_rounded, size: 14, color: color))),
             ]),
           ),
         )));

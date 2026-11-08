@@ -4,7 +4,21 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
-Future<String?> projectBranch(String path, CancellationToken cancellation) async {
+Future<({String identity, String? branch})?> inspectProject(String path, CancellationToken cancellation) =>
+  runIsolateEffect(_checkoutEffect, {'path': path}, cancellation: cancellation);
+
+Future<({String identity, String? branch})?> _checkoutEffect(
+  Json params, CancellationToken cancellation, void Function(Json) emit,
+) async {
+  final path = params['path'] as String;
+  if (!await Directory(path).exists()) return null;
+  final values = await Future.wait<String?>([
+    _projectIdentity(path, cancellation), _projectBranch(path, cancellation),
+  ]);
+  return (identity: values[0]!, branch: values[1]);
+}
+
+Future<String?> _projectBranch(String path, CancellationToken cancellation) async {
   cancellation.throwIfCancelled();
   final deadline = TimeoutCancellationToken(const Duration(seconds: 3));
   final token = cancellation.merge(deadline);
@@ -34,7 +48,12 @@ Future<String?> projectBranch(String path, CancellationToken cancellation) async
 Future<String> projectIdentity(
   String path,
   CancellationToken cancellation,
-) async {
+) => runIsolateEffect(_identityEffect, {'path': path}, cancellation: cancellation);
+
+Future<String> _identityEffect(Json params, CancellationToken cancellation, void Function(Json) emit) =>
+  _projectIdentity(params['path'] as String, cancellation);
+
+Future<String> _projectIdentity(String path, CancellationToken cancellation) async {
   cancellation.throwIfCancelled();
   final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
   final token = cancellation.merge(deadline);

@@ -42,7 +42,15 @@ List<({String name, String path})> toolSkillReads(ToolActivity call) {
 
 String toolKind(ToolActivity tool) {
   final name = tool.name.split('.').last.split('__').last.toLowerCase();
-  if ({'exec', 'exec_command', 'shell', 'shell_command', 'bash', 'run_command'}.contains(name)) return 'command';
+  if (_isCommand(tool)) {
+    final actions = _commandActions(tool);
+    if (actions.length == 1) {
+      final kind = actions.single['type'];
+      if (kind == 'read' || kind == 'listFiles') return 'read';
+      if (kind == 'search') return 'search';
+    }
+    return 'command';
+  }
   if ({'read', 'read_file', 'read_text_file', 'list_directory'}.contains(name)) return 'read';
   if ({'write', 'write_file', 'edit', 'edit_file', 'apply_patch'}.contains(name)) return 'edit';
   if ({'wait', 'write_stdin', 'sleep'}.contains(name)) return 'wait';
@@ -54,14 +62,36 @@ String toolKind(ToolActivity tool) {
   return 'tool';
 }
 
+bool _isCommand(ToolActivity tool) => {'exec', 'exec_command', 'shell', 'shell_command', 'bash', 'run_command'}
+  .contains(tool.name.split('.').last.split('__').last.toLowerCase());
+
+List<Map<Object?, Object?>> _commandActions(ToolActivity tool) {
+  final input = _decode(tool.rawInput);
+  final actions = input is Map ? input['commandActions'] : null;
+  return actions is List ? actions.whereType<Map<Object?, Object?>>().toList() : const [];
+}
+
+/// Code-mode envelopes retain their data; the transcript shows the operations
+/// they contain. Failed envelopes and image results remain inspectable.
+Iterable<ToolActivity> visibleConversationTools(Iterable<ToolActivity> tools) sync* {
+  for (final tool in tools) {
+    final name = tool.name.split('.').last.split('__').last;
+    if ({'exec', 'wait'}.contains(name) && tool.status != 'failed' && tool.images.isEmpty) {
+      yield* visibleConversationTools(tool.children);
+    } else {
+      yield tool;
+    }
+  }
+}
+
 String? toolCommand(ToolActivity tool) {
   final input = _decode(tool.rawInput);
-  final command = input is Map ? input['cmd'] ?? input['command'] : toolKind(tool) == 'command' ? input : null;
+  final command = input is Map ? input['cmd'] ?? input['command'] : _isCommand(tool) ? input : null;
   return command is String ? command.trim() : null;
 }
 
 String? toolJavaScript(ToolActivity tool) {
-  if (tool.name.split('.').last != 'exec') return null;
+  if (tool.name.split('.').last.split('__').last != 'exec') return null;
   final input = tool.rawInput;
   if (input is String) return input;
   if (input is Map) {
@@ -69,6 +99,27 @@ String? toolJavaScript(ToolActivity tool) {
     if (source is String) return source;
   }
   return null;
+}
+
+String? _commandPreview(ToolActivity tool) {
+  final actions = _commandActions(tool);
+  var source = actions.length == 1 && actions.single['command'] is String
+    ? actions.single['command'] as String : toolCommand(tool);
+  if (source == null || source.trim().isEmpty) return null;
+  source = source.trim();
+  // Native command history quotes argv, including the shell's entire script.
+  // Decode only that known wrapper; never interpret or rewrite shell syntax.
+  final wrapper = RegExp(r'^(?:\S*/)?(?:bash|zsh|sh|dash|ksh|fish)\s+(?:(?:--login|-l)\s+)?-[a-zA-Z]*c[a-zA-Z]*\s+(.+)$',
+    dotAll: true).firstMatch(source);
+  if (wrapper != null) {
+    final body = wrapper[1]!;
+    final quoted = RegExp(r"""^'((?:[^']|'"'"')*)'$""", dotAll: true).firstMatch(body);
+    if (quoted != null) source = quoted[1]!.replaceAll("'\"'\"'", "'");
+    else if (RegExp(r'^[a-zA-Z0-9_/@%+=:,.-]+$').hasMatch(body)) source = body;
+  }
+  final truncated = source.length > 512;
+  final preview = (truncated ? source.substring(0, 512) : source).replaceAll(RegExp(r'\s+'), ' ').trim();
+  return '$preview${truncated ? '…' : ''}';
 }
 
 String _relative(String path, String directory) => directory.isNotEmpty && path.startsWith('$directory/')
@@ -79,11 +130,22 @@ String toolLabel(ToolActivity tool, {String directory = '', bool active = false}
   final name = tool.name.split('.').last.split('__').last;
   final failed = tool.status == 'failed';
   final kind = toolKind(tool);
-  final command = toolCommand(tool);
-  if (kind == 'command') {
-    final program = name == 'exec' ? 'JavaScript' : command == null || command.isEmpty ? 'command'
-      : command.split(RegExp(r'\s+')).first.split('/').last;
-    return '${failed ? 'Failed' : active ? 'Running' : 'Ran'} $program';
+  if (_isCommand(tool)) {
+    if (toolJavaScript(tool) != null) return failed ? 'JavaScript failed' : active ? 'Running JavaScript' : 'Ran JavaScript';
+    final actions = _commandActions(tool);
+    if (actions.length == 1 && !failed && tool.status != 'interrupted') {
+      final action = actions.single;
+      final path = action['displayLabel'] ?? action['name'] ?? action['path'];
+      final target = path is String ? _relative(path, directory) : null;
+      if (action['type'] == 'read') return '${active ? 'Reading' : 'Read'} ${target ?? 'file'}';
+      if (action['type'] == 'listFiles') return '${active ? 'Listing' : 'Listed'} files${target == null ? '' : ' in $target'}';
+      if (action['type'] == 'search') {
+        final query = action['query'];
+        return '${active ? 'Searching' : 'Searched'}${query == null ? ' files' : ' for $query'}${target == null ? '' : ' in $target'}';
+      }
+    }
+    final verb = failed ? 'Failed' : active ? 'Running' : tool.status == 'interrupted' ? 'Stopped' : 'Ran';
+    return '$verb ${_commandPreview(tool) ?? 'command'}';
   }
   if (kind == 'read' || kind == 'edit') {
     final path = input is Map ? input['path'] ?? input['filePath'] ?? input['file_path'] : null;
@@ -137,10 +199,10 @@ String toolGroupSummary(List<ToolActivity> tools) {
   for (final entry in groups.entries.take(2)) {
     final count = entry.value, plural = count == 1 ? '' : 's';
     labels.add(switch (entry.key) {
-      'command' => 'Ran $count command$plural',
-      'read' => 'Read $count file$plural',
-      'edit' => 'Changed $count file$plural',
-      'search' => 'Searched $count ${count == 1 ? 'time' : 'times'}',
+      'command' => count == 1 ? 'Ran a command' : 'Ran commands',
+      'read' => 'Read files',
+      'edit' => count == 1 ? 'Edited a file' : 'Edited files',
+      'search' => 'Searched files',
       'browser' => 'Used browser $count ${count == 1 ? 'time' : 'times'}',
       'skill' => 'Loaded $count skill$plural',
       'wait' => 'Waited for $count ${count == 1 ? 'operation' : 'operations'}',
@@ -166,29 +228,31 @@ class ConversationToolCall extends StatelessWidget {
     if (tool.rawInput case {'changes': final List<Object?> _}) {
       return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
     }
+    final label = toolLabel(tool, directory: directory, active: tool.status == 'running');
     return ConversationDisclosure(
     key: PageStorageKey('tool:${tool.id}'),
-    label: toolLabel(tool, directory: directory, active: tool.status == 'running'),
+    label: label,
     fontSize: 14, shimmer: tool.status == 'running', timestamp: tool.startedAt,
     color: tool.status == 'failed' ? desktopError : desktopSecondary,
     icon: ConversationWorkIcon(kind: toolKind(tool), failed: tool.status == 'failed'),
     onExpand: onExpand,
-    builder: (context) => Padding(padding: const EdgeInsets.only(left: 30, top: 4, bottom: 8),
+    builder: (context) => Padding(padding: const EdgeInsets.only(left: 20, top: 4, bottom: 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         ConversationData(value: tool.rawInput, formatText: true, builder: (context, input) =>
           ConversationData(value: tool.rawOutput, formatText: true, builder: (context, output) {
             final script = toolJavaScript(tool);
-            final source = script ?? toolCommand(tool) ?? input as String? ?? '';
+            final command = toolCommand(tool);
+            final source = script ?? command ?? input as String? ?? '';
             final result = output as String?;
-            if (script != null) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (script != null || _isCommand(tool) && command != null) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Row(children: [
-                const Expanded(child: Text('JavaScript', style: TextStyle(fontSize: 11, color: desktopSecondary))),
-                ConversationCopyButton(text: script, label: 'Copy JavaScript', compact: true),
+                Expanded(child: Text(script == null ? 'Command' : 'JavaScript', style: const TextStyle(fontSize: 11, color: desktopSecondary))),
+                ConversationCopyButton(text: source, label: script == null ? 'Copy command' : 'Copy JavaScript', compact: true),
               ]),
               const SizedBox(height: 4),
               ConstrainedBox(constraints: const BoxConstraints(maxHeight: 256),
                 child: SingleChildScrollView(key: PageStorageKey('tool-script:${tool.id}'),
-                  child: SelectableText.rich(highlightedCode(script, language: 'javascript'),
+                  child: SelectableText.rich(highlightedCode(source, language: script == null ? 'bash' : 'javascript'),
                     style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12,
                       height: 1.625, color: desktopForeground)))),
               if (result?.isNotEmpty == true) ...[
@@ -207,7 +271,7 @@ class ConversationToolCall extends StatelessWidget {
               if (toolImageSource(part) case final String source)
                 ConversationImage(source: source, label: 'Tool image', directory: directory),
           ]))),
-        for (final child in tool.children) ConversationToolCall(
+        for (final child in visibleConversationTools(tool.children)) ConversationToolCall(
           key: ValueKey(child.id), tool: child, onExpand: onExpand, directory: directory),
       ])),
     );

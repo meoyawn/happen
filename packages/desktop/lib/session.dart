@@ -1284,18 +1284,16 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _refreshIdentity(Project target) async {
     // An unavailable checkout must not silently erase its last known remote.
-    if (!await Directory(target.path).exists()) return;
-    final identity = await Future.wait<String?>([
-      projectIdentity(target.path, _lifetime), projectBranch(target.path, _lifetime),
-    ]);
-    if (target.branch != identity[1]) {
-      target.branch = identity[1];
+    final identity = await inspectProject(target.path, _lifetime);
+    if (identity == null) return;
+    if (target.branch != identity.branch) {
+      target.branch = identity.branch;
       if (!_lifetime.isCancelled) {
         if (project == target || !viewingConversation) { notifyListeners(); }
         else { sidebarChanges.notifyListeners(); }
       }
     }
-    final id = identity[0]!;
+    final id = identity.identity;
     if (id == target.id) return;
     await callIsolate(database.port, 'project.identify', {
       'checkout_key': target.checkoutKey,
@@ -2375,7 +2373,9 @@ List<ChatEntry> conversation(DesktopTask task) {
           'sleep' => 'sleep',
           _ => message['tool'] as String? ?? 'Shell',
         };
-        final input = message['arguments'] ?? message['command'] ?? switch (message['type']) {
+        final input = message['type'] == 'commandExecution'
+          ? {'command': message['command'], 'commandActions': message['commandActions']}
+          : message['arguments'] ?? message['command'] ?? switch (message['type']) {
           'fileChange' => {'changes': message['changes']},
           'webSearch' => {'query': message['query'], 'action': message['action']},
           'imageView' => {'path': message['path']},

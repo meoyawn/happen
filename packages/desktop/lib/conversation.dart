@@ -54,6 +54,14 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
 }
 
 List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, Set<String> expandedTurns) {
+  entries = [for (final entry in entries)
+    if (entry.tool case final tool?)
+      for (final visible in visibleConversationTools([tool]))
+        if (identical(visible, tool)) entry
+        else ChatEntry(visible.id, 'Tool', visible.name, tool: visible,
+          timestamp: visible.startedAt ?? entry.timestamp, turnId: entry.turnId)
+    else entry,
+  ];
   final rows = <_TranscriptRow>[];
   // Steering and question replies can split one turn into several segments.
   final lastResponses = {
@@ -516,18 +524,15 @@ class _ActivityGroup extends StatelessWidget {
         : tools.map(toolKind).toSet().length == 1 ? toolKind(tools.first) : 'tool', failed: failed),
       fontSize: 14,
       onExpand: onExpand,
-      builder: (context) => Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 384),
+      builder: (context) => ConstrainedBox(constraints: const BoxConstraints(maxHeight: 224),
           child: SingleChildScrollView(key: PageStorageKey('work-log:${entries.first.id}'),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 4, children: [
               for (final entry in entries)
                 if (entry.tool != null) _ToolRow(key: ValueKey(entry.id),
                   tool: entry.tool!, directory: directory, onExpand: onExpand)
                 else _ReasoningRow(entry: entry, active: active && entry.streaming && identical(entry, entries.last),
                   directory: directory, onExpand: onExpand),
             ]))),
-      ),
     );
   }
 }

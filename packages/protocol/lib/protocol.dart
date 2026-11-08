@@ -14,12 +14,13 @@ typedef Json = Map<String, dynamic>;
 
 final _ids = UuidV7Ids();
 String newUuidV7() => _ids.create();
+final _operationIds = UuidV7Ids(random: Random());
+final _secrets = Random.secure();
 
 // Opaque random IDs also serve as bearer tokens and temporary-file suffixes.
 // Do not replace their entropy with a timestamp/counter-based identity.
 String newId() {
-  final random = Random.secure();
-  return List.generate(16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  return List.generate(4, (_) => _secrets.nextInt(1 << 32).toRadixString(16).padLeft(8, '0')).join();
 }
 
 /// uuid 1.20's ContextV7 contract: millisecond time, a reseeded 42-bit
@@ -213,7 +214,8 @@ Future<Object?> _callIsolate(
   }
   final port = ReceivePort();
   final result = Completer<Object?>();
-  final operationId = newId();
+  // Correlation inside worker mailboxes is not an authentication credential.
+  final operationId = _operationIds.create();
   final deadline = timeout == null ? null : TimeoutCancellationToken(timeout);
   final token = deadline == null ? cancellation!
       : cancellation == null ? deadline : cancellation.merge(deadline);
@@ -341,6 +343,60 @@ class IsolateOwner {
       isolate.kill();
     }
   }
+}
+
+/// Finite I/O effects keep native resource setup and cleanup off their caller's
+/// isolate. Cancellation reaches the effect before the worker is closed.
+Future<T> runIsolateEffect<T>(
+  Future<T> Function(Json, CancellationToken, void Function(Json)) effect,
+  Json params, {
+  required CancellationToken cancellation,
+  void Function(Json)? onEvent,
+}) async {
+  cancellation.throwIfCancelled();
+  final owner = await IsolateOwner.start(_effectMain, {'effect': effect}, service: 'effect');
+  try {
+    return await callIsolate(owner.port, 'run', params,
+      cancellation: cancellation, onEvent: onEvent) as T;
+  } finally { await owner.close(); }
+}
+
+Future<void> _effectMain(List<Object?> arguments) async {
+  final effect = jsonObject(arguments[1])['effect'] as
+    Future<Object?> Function(Json, CancellationToken, void Function(Json));
+  final port = ReceivePort(), cancellation = CancellationToken();
+  Future<void>? pending;
+  var closing = false;
+  (arguments[0] as SendPort).send(port.sendPort);
+  port.listen((raw) {
+    final request = jsonObject(raw), reply = request['reply'] as SendPort?;
+    if (request['method'] == 'cancel') { cancellation.cancel(); return; }
+    if (request['method'] == 'close') {
+      closing = true;
+      cancellation.cancel();
+      unawaited((() async {
+        await pending;
+        reply?.send({'result': null});
+        port.close();
+      })());
+      return;
+    }
+    if (request['method'] != 'run' || pending != null || closing) {
+      reply?.send({'error': 'Worker effect is already running or closed'});
+      return;
+    }
+    pending = traceIncoming(request, () async {
+      try {
+        cancellation.throwIfCancelled();
+        final result = await effect(jsonObject(request['params']), cancellation,
+          (event) => reply?.send({'event': event}));
+        cancellation.throwIfCancelled();
+        reply?.send({'result': result});
+      } catch (error) {
+        reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
+      }
+    }, service: 'effect');
+  });
 }
 
 Future<void> _tracedOwnerMain(List<Object?> arguments) async {
