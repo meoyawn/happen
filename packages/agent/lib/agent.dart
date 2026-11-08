@@ -197,6 +197,7 @@ class _Agent {
   Completer<void>? _toolPreemption;
   bool _accepting = false;
   final _steering = <Json>[];
+  bool get _preempting => _steering.any((message) => message['delivery'] == 'steer');
   Future<void> inject(Json record) async {
     await _restore();
     _record(record);
@@ -204,8 +205,10 @@ class _Agent {
   void steer(Json message) {
     if (_accepting && _cancellation?.isCancelled == false) {
       _steering.add(message);
-      _workCancellation?.cancel();
-      if (_toolPreemption?.isCompleted == false) _toolPreemption!.complete();
+      if (message['delivery'] == 'steer') {
+        _workCancellation?.cancel();
+        if (_toolPreemption?.isCompleted == false) _toolPreemption!.complete();
+      }
     }
   }
 
@@ -756,7 +759,7 @@ class _Agent {
         }
         // Admit pending steering against the committed replacement before
         // sampling again or finishing a manual compaction turn.
-        if (_steering.isNotEmpty) work.cancel();
+        if (_preempting) work.cancel();
         work.throwIfCancelled();
       }
 
@@ -818,6 +821,8 @@ class _Agent {
                   (baseline['compaction_headroom'] as int)) {
             await compactContext('threshold');
           }
+          work.throwIfCancelled();
+          await takeSteering();
           final inferenceTools = deferredTools;
           final modelTime = Stopwatch()..start();
           final ModelReply reply;
@@ -926,7 +931,7 @@ class _Agent {
             final preemption = _toolPreemption = Completer<void>();
             final link = CancellationHook(work, cellCancellation.cancel);
             try {
-              if (_steering.isNotEmpty) throw const CancelledException();
+              if (_preempting) throw const CancelledException();
               result = await host!.execute(call, ToolExecution(
                 catalog: currentRuntimeCatalog,
                 cancellation: cellCancellation,
@@ -1049,7 +1054,7 @@ class _Agent {
                 final preparation = CancellationToken();
                 final preparationLink = CancellationHook(work, preparation.cancel);
                 try {
-                  if (_steering.isNotEmpty) throw const CancelledException();
+                  if (_preempting) throw const CancelledException();
                   images = await interface.prepareImages(separated.$2, cancellation: preparation);
                 } finally {
                   preparationLink.dispose();
@@ -1059,11 +1064,11 @@ class _Agent {
             } on CancelledException {
               // Native JS can observe the server's atomic interrupt before this
               // isolate services the corresponding steering/Stop mailbox message.
-              if (cellCancellation.interrupted && _steering.isEmpty) {
+              if (cellCancellation.interrupted && !_preempting) {
                 await preemption.future.asCancellable(cancellation);
               }
               cancellation.throwIfCancelled();
-              if (_steering.isEmpty) rethrow;
+              if (!_preempting) rethrow;
               result = interface.id == 'openai' && call.namespace == 'clock' && call.name == 'sleep'
                 ? {'output': 'Wall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(4)} seconds\nSleep interrupted by new input.'}
                 : {'error': 'Tool call cancelled by steering. Side effects may have occurred; inspect state before retrying.'};
@@ -1091,7 +1096,7 @@ class _Agent {
           }
         } on CancelledException {
           cancellation.throwIfCancelled();
-          if (_steering.isEmpty) rethrow;
+          if (!_preempting) rethrow;
           await host?.close();
           prefetchedContext = null;
           work = _workCancellation = CancellationToken();

@@ -81,7 +81,7 @@ void main() {
     }
     store.changeSessionInbox('msg_queue', delivery: 'queue'); store.changeSessionInbox('msg_deleted');
     store.close(); store = TaskStore(root.path, 'session', create: false);
-    final records = store.commitSessionSteering(['queue', 'deleted', 'deliver', 'deliver'], effort: 'low', reasoningUpdates: true);
+    final records = store.commitSessionInputs(['queue', 'deleted', 'deliver', 'deliver'], effort: 'low', reasoningUpdates: true);
     expect(records.where((record) => record['type'] == 'input.committed').map((record) => record['data']['message_id']), ['deliver']);
     expect(store.inbox()['data'].single['id'], 'queue');
     expect(store.metadata('effective_reasoning'), 'high');

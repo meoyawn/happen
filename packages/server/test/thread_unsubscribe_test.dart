@@ -21,6 +21,7 @@ void main() {
   Json? registration;
   Json? polledEvent;
   ({HttpResponse response, String id})? eventStream;
+  ({Completer<Json> ready, Completer<void> release})? inferenceGate;
   var failResponse = false;
   int? unloadDelay;
   Future<void> launch({int? delay}) async {
@@ -52,7 +53,7 @@ void main() {
   setUp(() async {
     root = await Directory.systemTemp.createTemp('codex-unsubscribe-');
     received.clear(); requests.clear(); registration = null; failResponse = false;
-    polledEvent = null; eventStream = null;
+    polledEvent = null; eventStream = null; inferenceGate = null;
     await File('${root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture',
       'refresh_token': 'fixture', 'account_id': 'fixture', 'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -84,6 +85,9 @@ void main() {
         request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));
       } else {
         requests.add(body);
+        final gate = inferenceGate;
+        inferenceGate = null;
+        if (gate != null) { gate.ready.complete(body); await gate.release.future; }
         final input = body['input'] as List;
         final hasResult = input.any((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'deterministic-wait-call');
         final hasSubscription = input.any((item) => item['type'] == 'custom_tool_call_output' && item['call_id'] == 'native-subscription-call');
@@ -317,7 +321,7 @@ void main() {
         await request('tools.register', {'task_id': id, 'tools': [{'name': 'deterministic_wait',
           'description': 'Deterministic wait tool', 'inputSchema': {'type': 'object'}}]});
         final called = client.events.stream.firstWhere((event) => event['method'] == 'tools.call');
-        await request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'run deterministic tool'}]});
+        final active = await request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'run deterministic tool'}]});
         final call = await called.timeout(const Duration(seconds: 10));
         for (var i = 0; i < 32; i++) {
           await request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'queued $i'}]});
@@ -326,12 +330,31 @@ void main() {
         expect(await webhook(retry), 503, reason: 'A full inbox must not acknowledge and lose an occurrence.');
         final pending = await request('session.inbox', {'sessionID': id});
         await client.request('session.inbox.cancel', {'sessionID': id, 'inboxID': 'msg_${pending['data'][0]['id']}'});
-        expect(await webhook(retry), 200);
-        expect(await webhook(retry), 200);
-        final admitted = await request('session.inbox', {'sessionID': id});
-        expect((admitted['data'] as List).where((input) => (input['prompt'] as String).contains('evt_retry')), hasLength(1));
-        expect((await request('thread/read', {'threadId': id}))['running'], true);
-        client.socket!.add(jsonEncode({'id': call['id'], 'result': {'success': true, 'contentItems': [{'type': 'inputText', 'text': 'dynamic-ok'}]}}));
+        final gate = (ready: Completer<Json>(), release: Completer<void>());
+        inferenceGate = gate;
+        try {
+          expect(await webhook(retry), 200);
+          expect(await webhook(retry), 200);
+          final admitted = await request('session.inbox', {'sessionID': id});
+          expect((admitted['data'] as List).where((input) => (input['prompt'] as String).contains('evt_retry')), hasLength(1));
+          client.socket!.add(jsonEncode({'id': call['id'], 'result': {'success': true, 'contentItems': [{'type': 'inputText', 'text': 'dynamic-ok'}]}}));
+          final next = await gate.ready.future.timeout(const Duration(seconds: 10));
+          final input = next['input'] as List;
+          final delivered = input.where((item) => jsonEncode(item).contains('evt_retry')).toList();
+          expect(delivered, hasLength(1),
+            reason: 'The next model step must consume background events during this turn.');
+          expect(delivered.single['role'], 'user');
+          expect(jsonEncode(input), contains('dynamic-ok'), reason: 'Background events must let the running tool finish.');
+          expect(jsonEncode(input), isNot(contains('queued 1')), reason: 'Ordinary queued input still waits for a new turn.');
+          final thread = (await request('thread/read', {'threadId': id, 'includeTurns': true}))['thread'];
+          expect(thread['turns'], hasLength(3));
+          expect(thread['turns'].last['id'], active['turn']['id']);
+          expect((await request('thread/read', {'threadId': id}))['running'], true);
+          expect(await webhook(retry), 200);
+          final remaining = (await request('session.inbox', {'sessionID': id}))['data'] as List;
+          expect(remaining, hasLength(31));
+          expect(remaining.where((input) => (input['prompt'] as String).contains('evt_retry')), isEmpty);
+        } finally { gate.release.complete(); }
       }
     });
   }

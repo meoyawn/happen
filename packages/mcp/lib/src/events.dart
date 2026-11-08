@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
+import 'package:telemetry/telemetry.dart' show traceErrorMessage;
 
 import 'transport.dart';
 
@@ -78,6 +79,7 @@ class McpEventSubscription {
   Future<void>? _running, _stopping;
   CancellationToken? _webhookRefresh;
   String state = 'starting';
+  Json? _pollError;
   bool _terminated = false, _webhookAttempted = false;
   bool _restoredRegistration = false;
 
@@ -96,6 +98,7 @@ class McpEventSubscription {
     // restored subscription is not publicly active until its new grant is pinned.
     'state': mode == 'webhook' && _restoredRegistration && state == 'active' ? 'starting' : state,
     'cursor': cursor,
+    'error': ?_pollError,
     if (threadId != null) 'threadId': threadId,
   };
   /// Private host state, deliberately separate from inventory/model output.
@@ -377,6 +380,7 @@ class McpEventSubscription {
         lifetime.throwIfCancelled();
         cursor = nextCursor;
         _emit('notifications/events/heartbeat', {'cursor': cursor});
+        _pollError = null;
         failures = 0;
         final delay = result['hasMore'] == true
             ? 0
@@ -396,10 +400,16 @@ class McpEventSubscription {
           }}, lifetime);
           return;
         }
-        if (++failures > 5) rethrow;
+        failures++;
         state = 'reconnecting';
+        final requested = (error is McpFailure ? error.data : null)?['retryAfterMs'];
+        final delay = max((250 * (1 << min(failures - 1, 8))).clamp(250, 60000),
+          requested is num && requested.isFinite ? requested.round().clamp(0, 86400000) : 0);
+        _pollError = {'message': traceErrorMessage(error), if (error is McpFailure) 'code': ?error.code};
+        _emit('connection/reconnecting', {'cursor': cursor, 'attempt': failures,
+          'retryAfterMs': delay, 'error': _pollError});
         await cancellableDelay(
-          Duration(milliseconds: 250 * (1 << (failures - 1))),
+          Duration(milliseconds: delay),
           lifetime,
         );
       }

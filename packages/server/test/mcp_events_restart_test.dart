@@ -18,6 +18,46 @@ void main() {
   setUp(() async { peer = await _Events.start(); });
   tearDown(() => peer.close());
 
+  test('polling recovers after six upstream failures without losing its watch or cursor', () async {
+    final server = await peer.launch(), id = await peer.thread(server);
+    final subscription = await peer.subscribe(server, id, 'poll');
+    await peer.unload(server, id);
+    final before = peer.calls.length;
+    peer.pollFailures.addAll(List.generate(6, (_) => {'code': -32025, 'message': 'ResourceExhausted',
+      'data': {'limit': 'github_api', 'retryAfterMs': 1000}}));
+    peer.occurrences.add(peer.event(1));
+    final deadline = TimeoutCancellationToken(const Duration(seconds: 45));
+    try {
+      while (peer.pollFailures.isNotEmpty) { await cancellableDelay(const Duration(milliseconds: 20), deadline); }
+      await peer.until(() async {
+        final saved = await server.request('mcp.events.subscriptions', {'threadId': id}) as List;
+        return saved.single['state'] != 'active';
+      });
+      final reconnecting = (await server.request('mcp.events.subscriptions', {'threadId': id}) as List).single;
+      expect(reconnecting['state'], 'reconnecting');
+      expect(reconnecting['subscription_id'], subscription['subscription_id']);
+      expect(reconnecting['cursor'], 'seed');
+      expect(reconnecting['error']['code'], -32025);
+      expect(peer.indexedThreads(), contains(id));
+      expect(jsonEncode(peer.snapshot(id)), contains('seed'));
+      while (peer.responses.length < 2) { await cancellableDelay(const Duration(milliseconds: 20), deadline); }
+    } finally { deadline.cancel(); }
+    await peer.until(() async => (await server.request('thread/read', {'threadId': id}))['running'] == false);
+    final recovered = (await server.request('mcp.events.subscriptions', {'threadId': id}) as List).single;
+    expect(recovered['state'], 'active'); expect(recovered['cursor'], 'cursor-1');
+    expect(recovered, isNot(contains('error')));
+    expect(peer.calls.skip(before).where((call) => call['method'] == 'events/poll').take(7)
+      .map((call) => call['params']['cursor']), everyElement('seed'));
+    expect((await server.request('thread/read', {'threadId': id, 'includeTurns': true}))['thread']['turns'], hasLength(2));
+    peer.pollFailures.add({'code': -32603, 'message': 'temporarily unavailable'});
+    await peer.until(() async => (await server.request('mcp.events.subscriptions', {'threadId': id}) as List).single['state'] == 'reconnecting');
+    await server.request('mcp.events.unsubscribe', {'threadId': id, 'subscription_id': subscription['subscription_id']});
+    final stopped = peer.calls.length;
+    await Future<void>.delayed(const Duration(milliseconds: 1250));
+    expect(peer.calls.skip(stopped).where((call) => call['method'] == 'events/poll'), isEmpty);
+    expect(peer.indexedThreads(), isNot(contains(id)));
+  }, timeout: const Timeout(Duration(seconds: 75)));
+
   test('startup queries indexed unarchived owners and resumes polling after an offline interval', () async {
     peer.nextPollMs = const Duration(days: 3).inMilliseconds;
     var server = await peer.launch();
@@ -307,6 +347,7 @@ class _Events {
   Completer<void>? responseGate, pollGate, pollStarted;
   ({HttpResponse response, String id})? stream;
   Json? registration, pollReplay;
+  final pollFailures = <Json>[];
   String remoteId = 'remote-subscription';
   bool holdNext = false;
   int nextPollMs = 1000;
@@ -437,6 +478,10 @@ class _Events {
         case 'server/discover': result = {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}};
         case 'events/list': result = {'events': [{'name': 'comment.created', 'delivery': ['push', 'poll', 'webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]};
         case 'events/poll':
+          if (pollFailures.isNotEmpty) {
+            request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'error': pollFailures.removeAt(0)}));
+            await request.response.close(); return;
+          }
           final gate = pollGate;
           if (gate != null) {
             if (pollStarted?.isCompleted == false) pollStarted!.complete();

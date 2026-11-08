@@ -875,6 +875,7 @@ class AgentServer {
               if (delivery == null) {
                 task.pending.removeAt(index);
                 task.pendingTraces.remove(sourceID);
+                task.mcpInputs.remove(sourceID);
               } else {
                 final updated = task.pending[index] = {...task.pending[index], 'delivery': delivery};
                 if (task.busy) _offerSteering(task, updated);
@@ -1298,12 +1299,13 @@ class AgentServer {
   }
 
   void _offerSteering(_Task task, Json message) {
+    final id = message['id'] as String, interrupt = message['delivery'] == 'steer';
     if (task.finishing || task.agent == null ||
-        message['delivery'] != 'steer' ||
-        !task.offered.add(message['id'] as String)) {
+        !interrupt && !task.mcpInputs.contains(id) ||
+        !task.offered.add(id)) {
       return;
     }
-    task.codeInterrupt?.interrupt();
+    if (interrupt) task.codeInterrupt?.interrupt();
     withTrace(task.pendingTraces[message['id']] ?? currentTrace, () {
       task.agent!.port.send({'method': 'steer', 'params': message, '_trace': ?traceIsolateCarrier('steer')});
     });
@@ -1315,6 +1317,7 @@ class AgentServer {
     final discarded = writer == null ? await _withWriter(task, discard) : await discard(writer);
     task.pending.clear();
     task.pendingTraces.clear();
+    task.mcpInputs.clear();
     task.offered.clear();
     if (discarded != null) _broadcast(task.id, jsonObject(discarded));
   }
@@ -1433,6 +1436,9 @@ class AgentServer {
         final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
         task.pending.addAll((inbox['data'] as List).map(jsonObject));
       }
+      final receipts = (await callIsolate(task.writer!.port, 'metadata', {'key': 'mcp_event_receipts'},
+        cancellation: turnLifetime) as List? ?? []).cast<String>().toSet();
+      task.mcpInputs.addAll(task.pending.map((message) => message['id'] as String).where(receipts.contains));
       if (!compact && !retry && settings['goalContinuation'] != true && !task.pending.any((message) => message['id'] == settings['message_id'])) {
         final message = <String, dynamic>{
           'id': settings['message_id'], 'prompt': prompt, 'delivery': 'steer',
@@ -1489,6 +1495,7 @@ class AgentServer {
               });
             }
             task.offered.remove(id);
+            task.mcpInputs.remove(id);
           }
           if ([
             'turn.completed',
@@ -1786,6 +1793,7 @@ class _Task {
   CancellationToken? goalContinuation;
   final pending = <Json>[];
   final pendingTraces = <String, TraceContext>{};
+  final mcpInputs = <String>{};
   final offered = <String>{};
 }
 

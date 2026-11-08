@@ -576,6 +576,47 @@ void main() {
     expect((await client.request('telemetry') as Map)['active_tasks'], 0);
   });
 
+  test('restoring a failed poll watch retains its saved ID and cursor without duplicating an active watch', () async {
+    final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0), http = HttpClient();
+    final token = CancellationToken(), events = <Json>[];
+    var broken = true, polls = 0;
+    final manager = McpManager(http: http, onEvent: (_, event) => events.add(event),
+      persistSubscription: (_, _, _) async {}, acceptThreadEvent: (_, _) async {});
+    addTearDown(() async { token.cancel(); await manager.close(); http.close(force: true); await upstream.close(force: true); });
+    upstream.listen((request) async {
+      final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
+      request.response.headers.contentType = ContentType.json;
+      if (body['method'] == 'events/poll') {
+        polls++;
+        expect(body['params']['cursor'], 'saved-cursor');
+        if (broken) {
+          request.response.write(jsonEncode({'jsonrpc':'2.0','id':body['id'],'error':{'code':-32602,'message':'InvalidParams'}}));
+          await request.response.close(); return;
+        }
+      }
+      final result = switch (body['method']) {
+        'server/discover' => {'supportedVersions':['2026-07-28'],'capabilities':{'events':<String,Object?>{}}},
+        'events/list' => {'events':[{'name':'changed','delivery':['poll'],'inputSchema':{'type':'object'},'payloadSchema':{'type':'object'}}]},
+        'events/poll' => {'events':<Object?>[],'cursor':'saved-cursor','nextPollMs':86400000,'hasMore':false,'truncated':false},
+        _ => throw StateError('Unexpected MCP method ${body['method']}'),
+      };
+      request.response.write(jsonEncode({'jsonrpc':'2.0','id':body['id'],'result':result}));
+      await request.response.close();
+    });
+    await manager.configure({'remote':{'url':'http://127.0.0.1:${upstream.port}/mcp','oauth':false}}, token);
+    final snapshot = {'subscription_id':'b' * 32,'threadId':'saved','server':'remote','name':'changed',
+      'mode':'poll','arguments':<String,Object?>{},'cursor':'saved-cursor'};
+    await manager.restore('saved', [snapshot], token);
+    expect(manager.subscriptions('thread:saved').single['state'], 'failed');
+    broken = false;
+    await manager.restore('saved', [snapshot], token);
+    expect(manager.subscriptions('thread:saved').single, containsPair('state','active'));
+    expect(manager.subscriptions('thread:saved').single['subscription_id'], snapshot['subscription_id']);
+    await manager.restore('saved', [snapshot], token);
+    expect(manager.subscriptions('thread:saved'), hasLength(1)); expect(polls, 2);
+    expect(events.where((event) => event['notification']['method'] == 'notifications/events/event'), isEmpty);
+  });
+
   test('restored webhook callbacks wait for a pending grant checkpoint without losing saved authority', () async {
     final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final http = HttpClient(), token = CancellationToken();

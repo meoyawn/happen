@@ -676,8 +676,8 @@ a completed commit; refresh `git/status` to reconcile the checkout.
 | `session.inbox.cancel` | `sessionID`, `inboxID`. Deletes only that pending input and emits `session.inbox.cancelled`, without stopping the active execution. |
 
 Inbox mutations reject inputs that have already started or been delivered.
-The writer rechecks steering offers before committing them, so a late mailbox
-offer cannot deliver an input that was deleted or moved to the queue. Changes
+The writer rechecks offers before committing them, so a late mailbox
+offer cannot deliver a deleted input or ordinary input moved to the queue. Changes
 preserve attachments, creation time, reasoning choice, and admission order.
 
 Each session stores canonical Codex RolloutLines, native projections, and its durable inbox in
@@ -1037,8 +1037,10 @@ ends the subscription. Without `threadId`, subscriptions belong to the connectio
 and disconnect cancels them; these events are display-only. With `threadId`, the
 running server owns the subscription, independently of desktop connections.
 An event occurrence cold-loads its saved thread, durably queues untrusted user
-input, and runs it according to the existing conversation instructions. An active
-turn is not interrupted. Activation, heartbeat, empty polls, gap, verification,
+input, and runs it according to the existing conversation instructions. During an
+active turn, events enter the next model request without cancelling running tools
+or inference. Ordinary queued messages still wait for the next turn.
+Activation, heartbeat, empty polls, gap, verification,
 termination, invalid signatures, and duplicates never start a turn. Normal idle
 unloading applies after event processing. Thread ownership is local metadata,
 not an extra parameter sent to the upstream MCP server. Archive stops the thread's
@@ -1069,6 +1071,13 @@ subscriptions are not restored. Webhook callback IDs and signing secrets remain
 private host state, excluded from inventory, model history and portable exports.
 An expired provider registration may receive a fresh remote ID on restoration;
 the new authenticated grant then pins that identity.
+
+Transient polling failures keep the watch in `reconnecting`, retaining its saved
+cursor. Retries continue with bounded backoff and honor provider `retryAfterMs`
+advice; subscription status exposes the latest sanitized `error` until recovery.
+Unsubscribe cancels a sleeping retry. Provider termination still removes desired
+state. Restoring an already failed runtime replaces that runtime using its saved
+subscription ID and cursor.
 
 Webhook delivery requires the embedding host to pass an HTTPS `publicUrl` to
 `AgentServer.start` or `startEmbedded`, routed to this server's `/mcp-events/...`

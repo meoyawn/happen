@@ -547,7 +547,13 @@ class McpManager {
       cancellation.throwIfCancelled();
       try {
         final id = requiredString(snapshot, 'subscription_id');
-        if (!RegExp(r'^[a-f0-9]{32}$').hasMatch(id) || snapshot['threadId'] != threadId || _subscriptions.containsKey(id)) continue;
+        if (!RegExp(r'^[a-f0-9]{32}$').hasMatch(id) || snapshot['threadId'] != threadId) continue;
+        final previous = _subscriptions[id];
+        if (previous != null) {
+          if (previous.state != 'failed') continue;
+          await previous.stop(preserveRemote: true);
+          _subscriptions.remove(id); _subscriptionTargets.remove(id);
+        }
         await _subscribe('thread:$threadId', snapshot, cancellation, scope: scope, restored: snapshot);
       } on CancelledException { rethrow; }
       catch (_) { /* Retain desired state for a later startup/config repair. */ }

@@ -146,6 +146,11 @@ extension _McpEvents on AgentServer {
         if (admitted['event'] != null) _broadcast(id, jsonObject(admitted['event']));
         return null;
       });
+      final pending = task.pending.where((message) => message['id'] == receipt).firstOrNull;
+      if (pending != null) {
+        task.mcpInputs.add(receipt);
+        _offerSteering(task, pending);
+      }
       if (!task.busy && task.pending.isNotEmpty) {
         final next = task.pending.first;
         _begin(task, next['prompt'] as String, settings: {'message_id': next['id'], 'sent_at': next['created_at']});

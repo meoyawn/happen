@@ -102,7 +102,7 @@ Future<Object?> _storeRequest(TaskStore? store, String method, Json params, Canc
     'native.item.queue' => store!.queueNativeCompletion(params),
     'session.inbox.cancel' => store!.discardSessionInbox(requiredString(params, 'reason')),
     'session.inbox.update' => store!.changeSessionInbox(requiredString(params, 'inboxID'), delivery: params['delivery'] as String?),
-    'session.inbox.commit' => store!.commitSessionSteering((params['ids'] as List).cast<String>(),
+    'session.inbox.commit' => store!.commitSessionInputs((params['ids'] as List).cast<String>(),
       effort: requiredString(params, 'effort'), reasoningUpdates: params['reasoningUpdates'] == true),
     'append' => store!.append(params['type'] as String, jsonObject(params['data']), metadata: jsonObject(params['metadata'] ?? {})),
     'append_batch' => store!.appendBatch((params['events'] as List).map(jsonObject).toList(), metadata: jsonObject(params['metadata'] ?? {})),

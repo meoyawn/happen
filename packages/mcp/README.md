@@ -117,6 +117,13 @@ removes the subscription and its durable intent, preserving the protocol error.
 Request rejection (`InvalidParams`, `NotFound`, or `Unsupported`) instead leaves
 desired thread state available for explicit repair.
 
+Polling retries transient transport, API, and inbox errors for the subscription's
+lifetime, using exponential backoff capped at one minute and honoring the
+provider's longer `retryAfterMs` advice. Reconnecting subscriptions retain their
+cursor and expose the latest sanitized `error`; a successful poll clears it.
+Unsubscribe and shutdown cancel the backoff immediately. Reconnect notifications
+do not wake a thread or start a model turn.
+
 `notifications/events/list_changed` refreshes the event registry. A typed
 `schema_changed` rejection or termination rediscovers the descriptor, validates
 the saved arguments and reconnects the subscription. Incompatible arguments or

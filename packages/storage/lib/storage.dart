@@ -275,19 +275,20 @@ class TaskStore {
     return delivery == null ? append('input.discarded', {'ids': [source], 'reason': 'deleted'}) :
       append('input.delivery', {'id': source, 'delivery': delivery});
   }
-  List<Json> commitSessionSteering(List<String> ids, {required String effort, required bool reasoningUpdates}) {
+  List<Json> commitSessionInputs(List<String> ids, {required String effort, required bool reasoningUpdates}) {
     final events = <Json>[];
+    final receipts = (metadata('mcp_event_receipts') as List? ?? []).cast<String>().toSet();
     var selected = effort;
     for (final entry in jsonObject(state['pendingInputs'] ?? {}).entries) {
       final input = jsonObject(entry.value);
-      if (!ids.contains(entry.key) || input['delivery'] != 'steer') continue;
+      if (!ids.contains(entry.key) || input['delivery'] != 'steer' && !receipts.contains(entry.key)) continue;
       if (input['reasoning'] case final String value when value != selected) {
         if (!reasoningUpdates) throw ArgumentError('Reasoning effort is fixed for this task');
         selected = value;
         events.add({'type': 'configuration.updated', 'data': {'effort': value,
           'item': ConversationItem(kind: 'configuration', settings: {'reasoning': value}).toJson()}});
       }
-      events.add({'type': 'input.committed', 'data': {'message_id': entry.key, 'delivery': 'steer', 'sent_at': input['created_at'],
+      events.add({'type': 'input.committed', 'data': {'message_id': entry.key, 'delivery': input['delivery'], 'sent_at': input['created_at'],
         'item': ConversationItem.user(input['prompt'] as String, attachments: input['attachments']).toJson()}});
     }
     return events.isEmpty ? [] : appendBatch(events, metadata: {'effective_reasoning': selected});
