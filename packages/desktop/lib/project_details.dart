@@ -165,7 +165,8 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
     final settingsReady = actions.state is ProjectActionsReady || actions.state is ProjectActionsFailed;
     final local = actions.local && widget.project.available;
     final scripts = actions.state.value.scripts;
-    final canRun = local && widget.session.task?.archived != true && widget.session.task?.archiving != true;
+    final available = widget.session.connected && widget.project.available && !widget.project.removing;
+    final canRun = available && widget.session.task?.archived != true && widget.session.task?.archiving != true;
     final host = (repo?.host ?? (local ? Platform.localHostname : 'Server')).replaceFirst(RegExp(r'\.local$'), '');
     return Material(key: const ValueKey('project-details-card'), color: Colors.white, clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16),
@@ -197,10 +198,10 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
               ])),
           DetailsRow(icon: Icon(scripts.isEmpty ? Icons.add_rounded : Icons.play_arrow_outlined),
             label: scripts.isEmpty ? 'Add project script' : scripts.first.name,
-            onPressed: !settingsReady || !local ? null : scripts.isEmpty ? _editScript : canRun ? () => _runScript(scripts.first) : null,
+            onPressed: !settingsReady || !available ? null : scripts.isEmpty ? _editScript : canRun ? () => _runScript(scripts.first) : null,
             tooltip: scripts.isEmpty ? 'Save a command for this project' : scripts.first.command,
             trailing: scripts.isEmpty ? null : PopupMenuButton<String>(tooltip: 'Project scripts',
-              icon: detailsChevron, style: detailsMenuStyle, enabled: settingsReady && local,
+              icon: detailsChevron, style: detailsMenuStyle, enabled: settingsReady && available,
               onSelected: (value) {
                 if (value == 'add') { _editScript(); return; }
                 final id = value.substring(value.indexOf(':') + 1);

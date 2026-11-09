@@ -15,7 +15,6 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_markdown_plus: ^1.0.12
-  flutter_pty2: ^3.0.0
   flutter_svg: ^2.2.4
   openai: any
   opencode: any

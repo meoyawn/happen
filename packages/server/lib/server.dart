@@ -22,6 +22,7 @@ import 'src/attachments.dart';
 import 'src/questions.dart';
 import 'src/git.dart';
 import 'src/workspaces.dart';
+import 'src/terminals.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
@@ -56,6 +57,11 @@ class AgentServer {
   late final _taskTools = TaskToolBridge(_broadcast);
   late final _questions = SessionQuestions(_broadcast);
   final _files = FileSearch();
+  late final _terminals = ServerTerminals((owner, event) {
+    for (final client in _clients) {
+      if (client.id == owner && !client.cancellation.isCancelled) client.event(event);
+    }
+  });
   String? socketPath;
   Directory? _socketDirectory;
   FileStat? _socketStat;
@@ -442,6 +448,7 @@ class AgentServer {
       }));
     }
     client.cancellation.cancel();
+    unawaited(_terminals.detach(client.id).catchError((Object _) {}));
     unawaited(client.attachments.close());
     _clientTools.detach(client.id);
     if (!_networkExited) {
@@ -504,7 +511,7 @@ class AgentServer {
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
     final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
-    final preparation = method == 'session.side.create' || method.startsWith('git/') || method.startsWith('workspace.')
+    final preparation = method == 'session.side.create' || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/')
       ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
     try {
       // Export reads must not recursively record their own trace pages.
@@ -568,6 +575,9 @@ class AgentServer {
         params['subdirectory'] as String? ?? '', cancellation);
     }
     if (method.startsWith('git/')) return _gitRequest(method, params, client, requestId);
+    if (method.startsWith('terminal/')) {
+      return _terminals.request(client.id, method, params, client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+    }
     if (method.startsWith('thread/') || method.startsWith('turn/')) return _threadRequest(method, params, client, requestId);
     if (method == 'session.read.cancel') {
       await _cancelSessionRead(client, params['request_id']);
@@ -1715,6 +1725,7 @@ class AgentServer {
     _clientTools.close();
     _questions.close();
     _files.clear();
+    await _terminals.close();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
       await client.attachments.close();
@@ -2062,6 +2073,13 @@ class AgentClient {
     return jsonObject(await _request(method, params, cancellation: cancellation));
   }
 
+  Future<Json> terminalRequest(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!{'terminal/open', 'terminal/write', 'terminal/resize', 'terminal/ack', 'terminal/close'}.contains(method)) {
+      throw ArgumentError('Unknown terminal operation');
+    }
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
   Future<Json> forkThread(String threadID, {required String lastTurnId, required CancellationToken cancellation}) async =>
     jsonObject(await _request('thread/fork', {
       'threadId': threadID, 'lastTurnId': lastTurnId, 'excludeTurns': true, 'threadSource': 'user',
@@ -2243,8 +2261,8 @@ class AgentClient {
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
-      if ({'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
-        'session.side.create', 'workspace.inspect', 'workspace.discover'}.contains(method) && socket!.readyState == WebSocket.open) {
+      if ((method.startsWith('terminal/') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
+        'session.side.create', 'workspace.inspect', 'workspace.discover'}.contains(method)) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {

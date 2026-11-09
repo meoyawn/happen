@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'appearance.dart';
@@ -14,11 +16,14 @@ class ThinkingLabel extends StatefulWidget {
 
 class _ThinkingLabelState extends State<ThinkingLabel>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late final _sweep = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+  late final _sweep = AnimationController(vsync: this, duration: const Duration(seconds: 1));
+  Timer? _first, _cadence;
+  bool? _inTree;
 
   @override
   void initState() {
     super.initState();
+    _inTree = true;
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -34,16 +39,28 @@ class _ThinkingLabelState extends State<ThinkingLabel>
   void _synchronize() {
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     final visible = lifecycle == null || lifecycle == AppLifecycleState.resumed || lifecycle == AppLifecycleState.inactive;
-    if (!visible || !TickerMode.valuesOf(context).enabled || MediaQuery.disableAnimationsOf(context)) {
-      _sweep.reset();
+    if (_inTree == false || !visible || !TickerMode.valuesOf(context).enabled || MediaQuery.disableAnimationsOf(context)) {
+      _first?.cancel(); _first = null;
+      _cadence?.cancel(); _cadence = null;
+      if (_inTree == false) { _sweep.stop(); }
+      else { _sweep.reset(); }
       return;
     }
-    if (!_sweep.isAnimating) _sweep.repeat();
+    if (_first != null || _cadence != null) return;
+    _first = Timer(const Duration(milliseconds: 600), () {
+      _first = null;
+      if (!mounted || _inTree == false) return;
+      _sweep.forward(from: 0);
+      _cadence = Timer.periodic(const Duration(seconds: 4), (_) {
+        if (mounted && _inTree != false) _sweep.forward(from: 0);
+      });
+    });
   }
 
   @override
   void deactivate() {
-    _sweep.stop();
+    _inTree = false;
+    _synchronize();
     WidgetsBinding.instance.removeObserver(this);
     super.deactivate();
   }
@@ -51,7 +68,15 @@ class _ThinkingLabelState extends State<ThinkingLabel>
   @override
   void activate() {
     super.activate();
+    _inTree = true;
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _sweep..duration = const Duration(seconds: 1)..reset();
+    _synchronize();
   }
 
   TextStyle _style(Color color) => TextStyle(fontSize: widget.fontSize,
@@ -60,37 +85,29 @@ class _ThinkingLabelState extends State<ThinkingLabel>
   Widget _text(Color color) => Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: _style(color));
 
   @override
-  Widget build(BuildContext context) {
-    final double ch;
-    {
-      final measure = TextPainter(text: TextSpan(text: '0',
-        style: DefaultTextStyle.of(context).style.merge(_style(desktopForeground))),
-        textDirection: Directionality.of(context))..layout();
-      ch = measure.width;
-      measure.dispose();
-    }
-    return RepaintBoundary(child: Stack(children: [
-    _text(desktopSecondary),
+  Widget build(BuildContext context) => RepaintBoundary(child: Stack(children: [
+    _text(const Color(0x461a1c1f)),
     Positioned.fill(child: ExcludeSemantics(child: IgnorePointer(child: AnimatedBuilder(
       animation: _sweep,
-      child: _text(desktopForeground),
+      child: _text(const Color(0xbfffffff)),
       builder: (context, child) => !_sweep.isAnimating ? const SizedBox.shrink() : ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (rect) {
-          final spread = 5.2 * ch;
-          final gutter = spread + ch;
-          final peak = -gutter + (rect.width + 2 * gutter) * _sweep.value;
-          return const LinearGradient(colors: [Colors.transparent, Colors.black, Colors.transparent], stops: [0, .5, 1])
-            .createShader(Rect.fromLTWH(peak - spread, 0, spread * 2, rect.height));
+          final step = (_sweep.value * 48).floor() / 48;
+          final left = (-.5 + 1.75 * step) * rect.width;
+          return const LinearGradient(colors: [Colors.transparent, Colors.black, Colors.black,
+            Colors.transparent, Colors.transparent], stops: [0, .2, .3, .5, 1])
+            .createShader(Rect.fromLTWH(left, 0, rect.width, rect.height));
         }, child: child,
       ),
     )))),
   ]));
-  }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _first?.cancel();
+    _cadence?.cancel();
     _sweep.dispose();
     super.dispose();
   }

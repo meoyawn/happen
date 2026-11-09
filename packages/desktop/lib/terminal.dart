@@ -3,11 +3,9 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_pty2/flutter_pty2.dart';
 import 'package:protocol/protocol.dart';
+import 'package:server/server.dart';
 import 'package:xterm2/xterm.dart';
-
-import 'terminal_process.dart';
 
 import 'appearance.dart';
 
@@ -16,6 +14,8 @@ bool get terminalHasFocus =>
 
 /// Shells belong to a chat or draft tab, independently of the panel's view.
 class DesktopTerminals extends ChangeNotifier {
+  DesktopTerminals(this.client);
+  final AgentClient client;
   final groups = <(String, String?), TerminalGroup>{};
   final _releasing = <Future<void>>{};
   bool _closed = false;
@@ -36,7 +36,7 @@ class DesktopTerminals extends ChangeNotifier {
   void newShell((String, String?) scope) {
     final group = groups[scope];
     if (_closed || group == null) return;
-    final shell = TerminalShell(group.directory);
+    final shell = TerminalShell(client, group.directory);
     group.sessions.add(shell);
     group.active = shell;
     group.visible = true;
@@ -55,7 +55,7 @@ class DesktopTerminals extends ChangeNotifier {
   void runScript((String, String?) scope, String directory, String name, String command) {
     if (_closed) return;
     final group = groups.putIfAbsent(scope, () => TerminalGroup(directory));
-    final shell = TerminalShell(directory, command: command)..title = name;
+    final shell = TerminalShell(client, directory, command: command)..title = name;
     group.sessions.add(shell); group.active = shell; group.visible = true; group.focusRequest++;
     notifyListeners();
   }
@@ -97,8 +97,7 @@ class DesktopTerminals extends ChangeNotifier {
   }
 
   Future<void> _release(Iterable<TerminalShell> shells) {
-    // close() stops input and kills synchronously; retain its asynchronous
-    // native cleanup so quitting also drains already-closed tabs.
+    // Retain cleanup after removing a tab so quitting drains its remote close.
     final operation = Future.wait(shells.map((shell) => shell.close())).then<void>((_) {});
     _releasing.add(operation);
     unawaited(operation.then<void>((_) { _releasing.remove(operation); }, onError: (Object error, StackTrace stack) {
@@ -136,19 +135,33 @@ class TerminalGroup {
   int focusRequest = 0;
 }
 
+sealed class _ShellState { const _ShellState(); }
+class _Starting extends _ShellState { const _Starting(); }
+class _Running extends _ShellState { const _Running(); }
+class _Exited extends _ShellState { const _Exited(this.code); final int code; }
+class _Failed extends _ShellState { const _Failed(this.message); final String message; }
+class _Closing extends _ShellState { const _Closing(); }
+class _Closed extends _ShellState { const _Closed(); }
+
 class TerminalShell extends ChangeNotifier {
-  TerminalShell(this.directory, {this.command}) {
-    terminal.onOutput = (text) => unawaited(_write(text, _lifetime));
+  TerminalShell(this.client, this.directory, {this.command}) {
+    // Subscribe before spawning: output and exit can precede the open reply.
+    _events = client.events.stream.listen(_event, onDone: () => _fail('Connection closed. Open a new terminal.'));
+    terminal.onOutput = _queueInput;
     terminal.onResize = (columns, rows, _, _) {
       if (columns <= 0 || rows <= 0) return;
-      _size = PtySize(columns: columns, rows: rows);
-      if (running) _pty?.resize(_size);
+      _size = (columns.clamp(1, 1000), rows.clamp(1, 1000));
+      _resizeTimer ??= Timer(const Duration(milliseconds: 16), () {
+        _resizeTimer = null;
+        unawaited(_resize());
+      });
     };
     terminal.onTitleChange = (value) { title = value; notifyListeners(); };
-    _opening = _open(_lifetime);
-    unawaited(_opening.catchError((Object error) { _fail(error); }));
+    _opening = _open();
   }
 
+  final AgentClient client;
+  final id = newId();
   final String directory;
   final String? command;
   final terminal = Terminal(maxLines: 1000,
@@ -159,107 +172,148 @@ class TerminalShell extends ChangeNotifier {
   final _lifetime = CancellationToken();
   late final Future<void> _opening;
   Future<void>? _closing;
-  PtySession? _pty;
-  PtySize _size = const PtySize(columns: 80, rows: 24);
-  StreamSubscription<String>? _output;
+  _ShellState _state = const _Starting();
+  (int, int) _size = (80, 24);
+  (int, int) _resizedSize = (0, 0);
+  late final StreamSubscription<Json> _events;
+  Future<void> _writing = Future<void>.value();
+  Timer? _ackTimer, _resizeTimer;
+  int _sequence = 0, _acknowledged = 0, _queuedInput = 0;
+  bool _acknowledging = false, _resizing = false;
   int _views = 0;
   bool _released = false;
   String title = '';
-  String? error;
-  int? exitCode;
-  bool get running => _pty != null && exitCode == null && error == null && !_lifetime.isCancelled;
+  String? get error => switch (_state) { _Failed(:final message) => message, _ => null };
+  int? get exitCode => switch (_state) { _Exited(:final code) => code, _ => null };
+  bool get running => _state is _Running;
 
-  Future<void> _open(CancellationToken cancellation) async {
+  void _transition(_ShellState next) {
+    final valid = switch ((_state, next)) {
+      (_Starting(), _Running() || _Exited() || _Failed() || _Closing()) => true,
+      (_Running(), _Exited() || _Failed() || _Closing()) => true,
+      (_Exited() || _Failed(), _Closing()) => true,
+      (_Closing(), _Closed()) => true,
+      _ => false,
+    };
+    if (!valid) throw StateError('Invalid shell transition: ${_state.runtimeType} to ${next.runtimeType}');
+    _state = next;
+    notifyListeners();
+  }
+
+  Future<Json> _request(String method, Json params) => client.terminalRequest('terminal/$method',
+    {'terminalId': id, ...params}, cancellation: _lifetime);
+
+  Future<void> _open() async {
     try {
-      final shell = Platform.environment['SHELL'] ?? (Platform.isWindows ? 'powershell.exe' : '/bin/bash');
-      // Do not abandon an in-flight spawn on cancellation: take ownership of
-      // its eventual handle and close it before completing this operation.
-      final pty = _pty = await Pty.spawn(PtySpawnOptions(executable: shell,
-        arguments: command == null ? (Platform.isWindows ? const ['-NoLogo'] : const ['-il'])
-          : Platform.isWindows ? ['-NoLogo', '-Command', command!] : ['-lc', command!],
-        workingDirectory: directory,
-        size: _size,
-        environment: PtyEnvironment.inherit(overrides: const {'TERM': 'xterm-256color'}, remove: {
-          ...Platform.environment.keys.where((key) => key.startsWith('MOON_')),
-          'TERMINFO', 'TERMINFO_DIRS',
-        }),
-      ));
-      if (cancellation.isCancelled) { _kill(pty); await pty.close(); return; }
-      pty.resize(_size);
-      _output = pty.utf8Output().listen(
-        (text) { if (!cancellation.isCancelled) terminal.write(text); },
-        onError: (Object error) => _fail(error),
-      );
-      notifyListeners();
-      unawaited(_watchExit(pty, cancellation).catchError((Object error) { _fail(error); }));
-    } catch (error) {
-      _fail(error);
-      await _pty?.close();
+      await _request('open', {'cwd': directory, 'command': ?command, 'columns': _size.$1, 'rows': _size.$2});
+      if (_state is! _Starting) return;
+      _transition(const _Running());
+      await _resize();
+    } on CancelledException { /* close() releases a spawn that raced cancellation. */ }
+    catch (error) { _fail(error); }
+  }
+
+  Future<void> _resize() async {
+    if (_resizing) return;
+    _resizing = true;
+    try {
+      while (running && _resizedSize != _size) {
+        final size = _size;
+        await _request('resize', {'columns': size.$1, 'rows': size.$2});
+        _resizedSize = size;
+      }
+    } on CancelledException { /* The shell is closing. */ }
+    catch (error) { _fail(error); }
+    finally { _resizing = false; }
+  }
+
+  void _event(Json event) {
+    if (_lifetime.isCancelled) return;
+    if (!(event['method'] as String? ?? '').startsWith('terminal/')) return;
+    if (event['method'] == 'terminal/unavailable') { _fail(event['params']['message'] as String); return; }
+    final params = jsonObject(event['params']);
+    if (params['terminalId'] != id) return;
+    switch (event['method']) {
+      case 'terminal/output':
+        final sequence = params['sequence'] as int;
+        if (sequence <= _sequence) return;
+        terminal.write(params['data'] as String);
+        _sequence = sequence;
+        _ackTimer ??= Timer(const Duration(milliseconds: 16), () {
+          _ackTimer = null;
+          unawaited(_acknowledge());
+        });
+      case 'terminal/exited':
+        if (_state is _Starting || _state is _Running) _transition(_Exited(params['code'] as int));
+      case 'terminal/error': _fail(params['message'] as String);
     }
   }
 
-  Future<void> _write(String text, CancellationToken cancellation) async {
-    if (!running) return;
+  Future<void> _acknowledge() async {
+    if (_acknowledging) return;
+    _acknowledging = true;
     try {
-      await _pty!.input.writeUtf8(text).asCancellable(cancellation);
-    } on CancelledException {
-      // Native close cancels queued writes as well as this observer.
-    } catch (error) { _fail(error); }
+      while (!_lifetime.isCancelled && _acknowledged < _sequence) {
+        final sequence = _sequence;
+        await _request('ack', {'sequence': sequence});
+        _acknowledged = sequence;
+      }
+    } on CancelledException { /* The shell is closing. */ }
+    catch (error) { _fail(error); }
+    finally { _acknowledging = false; }
   }
 
-  Future<void> _watchExit(PtySession pty, CancellationToken cancellation) async {
-    try {
-      final exit = await pty.processExit.asCancellable(cancellation);
-      exitCode = switch (exit) { PtyExitCode(:final code) => code, PtySignalExit(:final signal) => -signal };
-      notifyListeners();
-      await pty.done.asCancellable(cancellation);
-      await pty.close();
-    } on CancelledException {
-      // The owner is awaiting close(), including native workers and handles.
-    } catch (error) {
-      _fail(error);
-      await pty.close();
-    }
+  void _queueInput(String text) {
+    if (!running || text.isEmpty) return;
+    if (_queuedInput + text.length > 1024 * 1024) { _fail('Terminal input queue is full. Open a new terminal.'); return; }
+    _queuedInput += text.length;
+    _writing = _writing.then((_) async {
+      try {
+        for (var start = 0; start < text.length;) {
+          var end = math.min(start + 16384, text.length);
+          if (end < text.length && text.codeUnitAt(end - 1) >= 0xd800 && text.codeUnitAt(end - 1) <= 0xdbff) end--;
+          _lifetime.throwIfCancelled();
+          if (!running) return;
+          await _request('write', {'data': text.substring(start, end)});
+          start = end;
+        }
+      } on CancelledException { /* The shell is closing. */ }
+      catch (error) { _fail(error); }
+      finally { _queuedInput -= text.length; }
+    });
   }
 
   void _fail(Object failure) {
-    if (_lifetime.isCancelled) return;
-    error = failure.toString();
-    notifyListeners();
+    if (_state is! _Starting && _state is! _Running) return;
+    _transition(_Failed(failure.toString()));
   }
 
   Future<void> close() {
     if (_closing case final closing?) return closing;
+    _transition(const _Closing());
     _lifetime.cancel();
+    _ackTimer?.cancel(); _resizeTimer?.cancel();
     terminal.onOutput = null;
     terminal.onResize = null;
     terminal.onTitleChange = null;
-    if (_pty != null && exitCode == null) { _kill(_pty!); }
     return _closing = _release();
   }
 
-  void _kill(PtySession pty) {
-    // Capture background jobs before the shell can exit and orphan them.
-    // Windows's native PTY backend contains the tree in a Job Object.
-    try { killTerminalProcessTree(pty.pid); }
-    catch (error, stack) {
-      FlutterError.reportError(FlutterErrorDetails(exception: error, stack: stack, library: 'terminal process cleanup'));
-    }
-    finally {
-      try { pty.kill(); } on PtyException { /* close() still drains native cleanup. */ }
-    }
-  }
-
   Future<void> _release() async {
+    final cleanup = TimeoutCancellationToken(const Duration(seconds: 10));
     try {
       await _opening;
-    } finally {
-      try { await _pty?.close(); }
-      finally {
-        await _output?.cancel();
-        _released = true;
-        _disposeIfReleased();
-      }
+      await _writing;
+      // Use a fresh token: the panel lifetime has already been cancelled.
+      await client.terminalRequest('terminal/close', {'terminalId': id}, cancellation: cleanup);
+    } on CancelledException { /* Disconnect also releases the server's shells. */ }
+    catch (_) { /* A closed connection releases its shells on the server. */ }
+    finally {
+      cleanup.cancel();
+      await _events.cancel();
+      _transition(const _Closed());
+      _released = true;
+      _disposeIfReleased();
     }
   }
 

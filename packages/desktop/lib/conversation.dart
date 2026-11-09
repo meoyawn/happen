@@ -75,15 +75,12 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   final queued = <ChatEntry>[];
   var response = <ChatEntry>[];
   var segment = 'initial';
-  var hasWorking = false;
   void flush({bool latest = false}) {
     if (response.isEmpty && !(latest && task.running)) return;
     final turnId = response.map((entry) => entry.turnId).whereType<String>().firstOrNull;
     final turn = task.turns[turnId];
     final active = task.running && (turn?['status'] == 'inProgress' || latest && turn == null);
     if (active) {
-      if (!hasWorking) rows.add((id: 'working', kind: 'working', entries: const [], label: null));
-      hasWorking = true;
       rows.addAll(_workRows(response));
     } else {
       final answer = response.where((entry) => entry.role == 'Happen' && entry.phase != 'commentary').lastOrNull;
@@ -123,13 +120,13 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
     }
   }
   flush(latest: true);
-  if (task.running && !hasWorking) rows.add((id: 'working', kind: 'working', entries: const [], label: null));
-  final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
-  if (task.running && latest?.streaming != true && latest?.tool?.status != 'running' &&
-      latest?.compaction?.status != 'running') {
-    rows.add((id: 'thinking', kind: 'thinking', entries: const [], label: null));
-  }
   rows.addAll(_workRows(queued));
+  final latest = entries.where((entry) => !{'You', 'Answer', 'Queued'}.contains(entry.role)).lastOrNull;
+  if (task.running && latest?.compaction?.status != 'running') {
+    final label = latest?.tool?.status == 'running' || latest?.image != null && latest!.streaming ? 'Working'
+      : latest?.role == 'Happen' && latest!.streaming ? 'Responding' : 'Thinking';
+    rows.add((id: 'working', kind: 'working', entries: const [], label: label));
+  }
   return rows;
 }
 
@@ -371,7 +368,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   Widget _buildContent(List<ChatEntry> entries) {
     final task = widget.task;
     _follow();
-    final compacting = entries.any((entry) => entry.compaction?.status == 'running');
     final rows = _transcriptRows(entries, task, _expandedTurns);
     final annotationContexts = <String, List<ResponseAnnotation>>{};
     var annotations = const <ResponseAnnotation>[];
@@ -428,17 +424,11 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                     );
                     final row = rows[count - 1 - index];
                     if (row.kind == 'working') {
-                      if (compacting) return const SizedBox(key: ValueKey('working'));
-                      return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
-                        status: task.retryStatus?['message'] as String?);
-                    }
-                    if (row.kind == 'thinking') {
-                      if (compacting) return const SizedBox(key: ValueKey('thinking'));
                       if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
-                        return _ProviderRetryNotice(key: const ValueKey('thinking'), status: task.retryStatus!);
+                        return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
                       }
-                      return Padding(key: const ValueKey('thinking'), padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: Semantics(liveRegion: true, child: const ThinkingLabel()));
+                      return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
+                        status: task.retryStatus?['message'] as String? ?? row.label);
                     }
                     if (row.kind == 'turn') return Padding(
                       key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 6),
@@ -844,15 +834,17 @@ class _TurnClockState extends State<_TurnClock> {
   @override
   Widget build(BuildContext context) {
     final elapsed = widget.startedAt == null ? null : _duration(widget.startedAt!, DateTime.now());
-    final label = widget.status ?? (elapsed == null ? 'Working...' : 'Working for $elapsed');
-    return Semantics(liveRegion: true,
+    final label = widget.status ?? 'Working';
+    return Semantics(liveRegion: true, label: label, excludeSemantics: true,
       child: Container(
         margin: const EdgeInsets.only(bottom: 6),
         padding: const EdgeInsets.fromLTRB(4, 4, 2, 8),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x99e4e4e7)))),
         alignment: Alignment.centerLeft,
-        child: Text(label, style: const TextStyle(fontSize: 14, height: 1.625, color: desktopSecondary,
-          fontFeatures: [FontFeature.tabularFigures()]))));
+        child: Row(children: [
+          Flexible(child: ThinkingLabel(label: label)),
+          if (elapsed != null) Text(' · $elapsed', style: const TextStyle(fontSize: 14, height: 1.625,
+            color: desktopSecondary, fontFeatures: [FontFeature.tabularFigures()])),
+        ])));
   }
 }
 

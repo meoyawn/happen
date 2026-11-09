@@ -204,7 +204,7 @@ class DesktopSession extends ChangeNotifier {
   }
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
-  final terminals = DesktopTerminals();
+  late final terminals = DesktopTerminals(client);
   late final _git = <String, GitActionsController>{};
   GitActionsController gitForProject(Project project) => _git.putIfAbsent(project.path, () {
     final controller = GitActionsController(client, project.path);
@@ -2590,10 +2590,12 @@ List<ChatEntry> conversation(DesktopTask task) {
         else { result.add(ChatEntry(id, 'Tool', tool.name, tool: tool, timestamp: created,
           turnId: message['turnId'] as String?)); }
       case 'contextCompaction':
+        final turn = task.turns[message['turnId']];
+        final active = task.running && (turn == null || turn['status'] == 'inProgress');
         final activity = CompactionActivity(startedAt: created)
           ..status = switch (message['status']) {'completed' => 'done',
             'interrupted' => 'stopped', 'failed' => 'failed',
-            _ => task.running ? 'running' : 'interrupted'}
+            _ => active ? 'running' : 'interrupted'}
           ..endedAt = at(message['completedAtMs'])
           ..summary = message['summary'] as String? ?? '';
         result.add(ChatEntry(id, 'Compaction', '', compaction: activity,

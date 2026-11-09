@@ -8,6 +8,8 @@ dependencies:
   args: ^2.7.0
   config: any
   crypto: ^3.0.7
+  ffi: ^2.1.4
+  flutter_pty2: ^3.0.0
   path: ^1.9.1
   yaml: ^3.1.4
   protocol: any

@@ -121,8 +121,52 @@ void main() {
     current.retryStatus = null;
     await open(tester, current, size: const Size(420, 800)); await tester.pump();
     expect(find.textContaining('Retrying provider'), findsNothing);
-    expect(find.text('Working'), findsWidgets);
+    expect(find.text('Thinking'), findsWidgets);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('active feedback stays below replies and tools after an unfinished historical compaction', (tester) async {
+    final current = task()..running = true..runStartedAt = DateTime.now().millisecondsSinceEpoch;
+    addTearDown(current.liveText.dispose);
+    current.turns.addAll({
+      'old': {'id': 'old', 'status': 'completed'},
+      'turn': {'id': 'turn', 'status': 'inProgress'},
+    });
+    current.messages.addAll({
+      'old-compaction': {'id': 'old-compaction', 'type': 'contextCompaction', 'turnId': 'old', 'order': 0,
+        'status': 'inProgress', 'startedAtMs': 1000},
+      'old-reply': {...answer('old-reply', 'Earlier work completed', 1), 'turnId': 'old'},
+      'user': {'id': 'user', 'type': 'userMessage', 'order': 2, 'turnId': 'turn',
+        'content': [{'type': 'text', 'text': 'Continue checking'}]},
+    });
+    for (final (message, label) in <(Json, String)>[
+      ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary'}, 'Thinking'),
+      ({'type': 'reasoning', 'summary': ['Inspecting the panel'], 'live': true}, 'Thinking'),
+      ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary', 'live': true}, 'Responding'),
+      ({'type': 'commandExecution', 'command': 'flutter analyze', 'status': 'inProgress', 'live': true}, 'Working'),
+      ({'type': 'commandExecution', 'command': 'flutter analyze', 'status': 'completed'}, 'Thinking'),
+    ]) {
+      current.messages['active'] = {'id': 'active', 'turnId': 'turn', 'order': 3, ...message};
+      await open(tester, current, size: const Size(420, 600)); await tester.pump();
+      expect(find.text(label), findsWidgets, reason: '${message['type']} must leave visible feedback while the turn runs');
+      final spinner = find.byType(CircularProgressIndicator);
+      expect(spinner, findsOneWidget);
+      expect(tester.getCenter(spinner).dy, inExclusiveRange(0, 600));
+      if (message['type'] == 'agentMessage') {
+        expect(tester.getTopLeft(spinner).dy,
+          greaterThan(tester.getBottomLeft(find.text('Checking the desktop panel next', findRichText: true)).dy));
+      }
+      expect(find.text('Compacting context'), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+    current.running = false;
+    current.turns['turn'] = {'id': 'turn', 'status': 'completed'};
+    current.messages['active'] = answer('active', 'Checks completed', 3);
+    await open(tester, current, size: const Size(420, 600)); await tester.pumpAndSettle();
+    expect(find.text('Checks completed', findRichText: true), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('Thinking'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('Markdown, code copying and response copying retain original bytes', (tester) async {

@@ -10,12 +10,14 @@ const cliNativeContracts = <String, ({String assetId, String anchor})>{
   'libcode_mode.dylib': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
   'libsqlite3.dylib': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
   'libpty2_unix.dylib': (assetId: 'package:pty2/src/impl/unix.dart', anchor: 'pty2_spawn_unix'),
+  'libflutter_pty2.dylib': (assetId: 'package:flutter_pty2/flutter_pty2', anchor: 'pty_session_pid'),
 };
 
 const linuxNativeContracts = <String, ({String assetId, String anchor})>{
   'libcode_mode.so': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
   'libsqlite3.so': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
   'libpty2_unix.so': (assetId: 'package:pty2/src/impl/unix.dart', anchor: 'pty2_spawn_unix'),
+  'libflutter_pty2.so': (assetId: 'package:flutter_pty2/flutter_pty2', anchor: 'pty_session_pid'),
 };
 
 @Native<Uint64 Function()>(assetId: 'package:code_mode/src/bindings.dart', symbol: 'embedded_js_thread_id')
@@ -25,6 +27,9 @@ external int _sqliteVersion();
 typedef _PtySpawn = Int32 Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>, Uint16, Uint16, Int32, Pointer<Int32>);
 @Native<_PtySpawn>(assetId: 'package:pty2/src/impl/unix.dart', symbol: 'pty2_spawn_unix')
 external int _ptySpawn(Pointer<Void> executable, Pointer<Void> argv, Pointer<Void> env, Pointer<Void> cwd, int cols, int rows, int raw, Pointer<Int32> master);
+
+@Native<Int64 Function(Pointer<Void>)>(assetId: 'package:flutter_pty2/flutter_pty2', symbol: 'pty_session_pid')
+external int _terminalPid(Pointer<Void> session);
 
 final _process = DynamicLibrary.process();
 final _malloc = _process.lookupFunction<Pointer<Void> Function(Size), Pointer<Void> Function(int)>('malloc');
@@ -138,6 +143,7 @@ Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) 
         'libcode_mode.dylib' || 'libcode_mode.so' => Native.addressOf<NativeFunction<Uint64 Function()>>(_threadId).cast<Void>(),
         'libsqlite3.dylib' || 'libsqlite3.so' => Native.addressOf<NativeFunction<Int32 Function()>>(_sqliteVersion).cast<Void>(),
         'libpty2_unix.dylib' || 'libpty2_unix.so' => Native.addressOf<NativeFunction<_PtySpawn>>(_ptySpawn).cast<Void>(),
+        'libflutter_pty2.dylib' || 'libflutter_pty2.so' => Native.addressOf<NativeFunction<Int64 Function(Pointer<Void>)>>(_terminalPid).cast<Void>(),
         _ => throw StateError('Unknown native asset ${asset.name}'),
       };
       if (_dlsym(handle, symbol) != bound) throw StateError('Native asset binding differs from ${asset.name}');

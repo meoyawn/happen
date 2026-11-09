@@ -548,7 +548,7 @@ class _DesktopViewState extends State<DesktopView> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  bool get _canOpenTerminal => session.client.sharedFilesystem && session.project?.available == true && session.project?.removing != true &&
+  bool get _canOpenTerminal => session.connected && session.project?.available == true && session.project?.removing != true &&
       session.task?.archived != true && session.task?.archiving != true;
 
   (String, String?)? get _terminalScope => _canOpenTerminal ? (session.project!.checkoutKey, session.draftKey) : null;
@@ -1272,9 +1272,9 @@ class _ComposerState extends State<_Composer> {
                 on CancelledException { /* The pending side chat was closed. */ }
                 catch (error) { session.showError(error); }
               }())),
-          if (session.client.sharedFilesystem && _project != null)
+          if (session.connected && _project?.available == true && _project?.removing != true && session.task?.archived != true && session.task?.archiving != true)
             '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
-              (_project!.checkoutKey, session.task?.id), _project!.path)),
+              (_project!.checkoutKey, session.draftKey), _project!.path)),
         },
         child: child,
       );
