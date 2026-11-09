@@ -122,9 +122,8 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   flush(latest: true);
   rows.addAll(_workRows(queued));
   final latest = entries.where((entry) => !{'You', 'Answer', 'Queued'}.contains(entry.role)).lastOrNull;
-  if (task.running && latest?.compaction?.status != 'running') {
-    final label = latest?.tool?.status == 'running' || latest?.image != null && latest!.streaming ? 'Working'
-      : latest?.role == 'Happen' && latest!.streaming ? 'Responding' : 'Thinking';
+  if (task.running && latest?.compaction?.status != 'running' && !(latest?.role == 'Happen' && latest!.streaming)) {
+    final label = latest?.tool?.status == 'running' || latest?.image != null && latest!.streaming ? 'Working' : 'Thinking';
     rows.add((id: 'working', kind: 'working', entries: const [], label: label));
   }
   return rows;

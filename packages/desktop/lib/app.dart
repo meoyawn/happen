@@ -38,6 +38,7 @@ import 'workspace_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
 import 'machines.dart';
+import 'machine_icons.dart';
 import 'thread_machine_picker.dart';
 import 'project_details.dart';
 
@@ -625,6 +626,7 @@ class _DesktopViewState extends State<DesktopView> {
           (task.questions.isNotEmpty || source.hasUnseenCompletion(task)))),
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             sources: _sources,
+            machineIcon: (source) => widget.machines?.iconFor(source.machineAlias) ?? parseMachineIcon(null, remote: source.machineAlias != null),
             machinePicker: widget.machinePicker ?? (widget.machines == null ? null : MachinePicker(machines: widget.machines!,
               onSettings: () => unawaited(_settings(page: 'servers')))),
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
@@ -730,6 +732,7 @@ class _DesktopViewState extends State<DesktopView> {
               ])),
                if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
                  sources: _sources,
+                 machineIcon: (source) => widget.machines?.iconFor(source.machineAlias) ?? parseMachineIcon(null, remote: source.machineAlias != null),
                  onProjectSettings: (project) { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); },
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
                 onArchive: (task, archived) => unawaited(_run(() => _taskSource(task).setArchived(task, archived))),
@@ -744,11 +747,12 @@ class _DesktopViewState extends State<DesktopView> {
     padding: EdgeInsets.only(left: !_sidebar.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
     child: SizedBox(height: 56, child: Row(
       children: [
-        if (widget.machines != null) Padding(padding: const EdgeInsets.only(right: 16), child: SizedBox(width: 156, child: Row(children: [
-          Icon(session.client.sharedFilesystem ? Icons.computer_outlined : Icons.dns_outlined, size: 14, color: desktopSecondary),
+        if (widget.machines != null) Padding(padding: const EdgeInsets.only(right: 16), child: SizedBox(width: 156,
+          child: ListenableBuilder(listenable: widget.machines!, builder: (_, _) => Row(children: [
+          MachineGlyph(widget.machines!.iconFor(session.machineAlias), color: desktopSecondary),
           const SizedBox(width: 6), Expanded(child: Text(widget.machines!.machineFor(session).name,
             maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
-        ]))),
+        ])))),
         Expanded(child: LayoutBuilder(builder: (context, bounds) => Row(children: [
           if (session.project != null) ...[
             ProjectAvatar(project: session.project!, size: 14, generated: session.projectAvatarStyle == 'generated'),

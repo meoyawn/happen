@@ -35,8 +35,9 @@ ProjectActionsState _transition(ProjectActionsState current, ProjectActionsState
 
 /// Durable project preferences are acknowledged only after the storage write.
 class ProjectActionsController extends ChangeNotifier {
-  ProjectActionsController(this.database, this.checkout, this.directory, {required this.local});
+  ProjectActionsController(this.database, this.checkout, this.directory, {required this.local, this.machineAlias});
   final IsolateOwner database;
+  final String? machineAlias;
   final String checkout, directory;
   final bool local;
   final _lifetime = CancellationToken();
@@ -57,7 +58,7 @@ class ProjectActionsController extends ChangeNotifier {
     _loading = true;
     try {
       _openers = List.unmodifiable(await _availableOpeners(_lifetime));
-      final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: _lifetime));
+      final saved = jsonObject(await callIsolate(database.port, 'load', {'machine': machineAlias ?? ''}, cancellation: _lifetime));
       final raw = saved['settings']?['project_actions:$checkout'] as String?;
       final value = raw == null ? <String, dynamic>{} : jsonObject(jsonDecode(raw));
       final scripts = <ProjectScript>[for (final script in value['scripts'] as List? ?? const [])
@@ -75,7 +76,7 @@ class ProjectActionsController extends ChangeNotifier {
     final immutable = (opener: value.opener, scripts: List<ProjectScript>.unmodifiable(value.scripts));
     _set(ProjectActionsSaving(previous, immutable));
     try {
-      await callIsolate(database.port, 'settings.set', {'key': 'project_actions:$checkout',
+      await callIsolate(database.port, 'settings.set', {'machine': machineAlias ?? '', 'key': 'project_actions:$checkout',
         'value': jsonEncode({'opener': immutable.opener,
           'scripts': [for (final script in immutable.scripts) {'id': script.id, 'name': script.name, 'command': script.command}]})},
         cancellation: cancellation.merge(_lifetime));

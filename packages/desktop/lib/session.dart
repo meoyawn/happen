@@ -40,6 +40,7 @@ class Project {
   final String checkoutKey, path;
   String id;
   String? branch, avatarColor, displayName;
+  Json? workspace;
   Uint8List? avatarImage;
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
@@ -164,18 +165,19 @@ class SessionDraft {
   DesktopTask? submission;
 }
 
+String machineLabel(DesktopSession session) => session.machineAlias == null ? 'local' : session.machineName;
+
 /// UI state only. Task execution and durable history stay behind the WebSocket.
 class DesktopSession extends ChangeNotifier {
   DesktopSession(this.client, this.database, {String? attachmentDirectory,
-    this.sidebarOwner, this.machineAlias, this.machineName = 'Local machine'})
+    this.sidebarOwner, this.machineAlias, this.machineName = 'local'})
     : attachmentDirectory = attachmentDirectory ?? '${Directory.systemTemp.path}/happen-attachments-${newId()}' {
     _events = client.events.stream.listen(
       _onEvent,
       onDone: () {
         if (_lifetime.isCancelled || !connected) return;
-        connected = false;
-        unawaited(_dictation?.cancel());
-        showError('Connection closed. Reopen Happen to reconnect.', title: 'Connection lost');
+        _connectionLost();
+        if (machineAlias == null) showError('Connection closed.', title: 'Connection lost');
       },
     );
     _disconnect = CancellationHook(_lifetime, () => unawaited(client.close()));
@@ -183,19 +185,48 @@ class DesktopSession extends ChangeNotifier {
 
   final AgentClient client;
   final IsolateOwner database;
+  Future<Object?> _databaseCall(String method, Json params, {CancellationToken? cancellation}) =>
+    callIsolate(database.port, method, {...params, 'machine': machineAlias ?? ''},
+      cancellation: cancellation ?? _lifetime);
   final DesktopSession? sidebarOwner;
   final String? machineAlias;
-  final String machineName;
+  String machineName;
+  CancellationToken? _recovery;
   DesktopSession get sidebar => sidebarOwner ?? this;
   String sidebarId(String id) => machineAlias == null ? id : jsonEncode([machineAlias, id]);
 
   Future<void> disconnect() async {
-    connected = false;
-    notifyListeners();
+    _connectionLost();
     await client.close();
   }
+
+  void _connectionLost() {
+    connected = false;
+    _recovery?.cancel();
+    for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values]) {
+      target._historyRead?.cancel();
+    }
+    unawaited(_dictation?.cancel());
+    if (!_lifetime.isCancelled) notifyListeners();
+  }
+
+  Future<void> _restoreConnection(CancellationToken cancellation) async {
+    try {
+      await _request('client.capabilities', {'questions': true}).asCancellable(cancellation);
+      cancellation.throwIfCancelled();
+      connected = true;
+      notifyListeners();
+      await refreshProjects(cancellation: cancellation);
+      cancellation.throwIfCancelled();
+      await Future.wait([
+        for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values])
+          if (target.loaded || target.running || identical(target, task)) loadHistory(target, cancellation: cancellation),
+      ]);
+    } on CancelledException { /* A newer transport owns recovery. */ }
+    catch (error) { if (!cancellation.isCancelled) showError(error, title: 'Could not restore remote threads'); }
+  }
   AppearanceController? _appearance;
-  AppearanceController get appearance => _appearance ??= AppearanceController(database);
+  AppearanceController get appearance => sidebarOwner?.appearance ?? (_appearance ??= AppearanceController(database));
   AppIconController? _appIcon;
   AppIconController get appIcon {
     if (_appIcon case final controller?) return controller;
@@ -227,7 +258,7 @@ class DesktopSession extends ChangeNotifier {
   late final _projectActions = <String, ProjectActionsController>{};
   ProjectActionsController actionsForProject(Project project) =>
     _projectActions.putIfAbsent(project.checkoutKey, () => ProjectActionsController(database,
-      project.checkoutKey, project.path, local: client.sharedFilesystem));
+      project.checkoutKey, project.path, local: client.sharedFilesystem, machineAlias: machineAlias));
   final panelLayouts = <String, SessionPanelState>{};
   late final panelSelection = ChangeNotifier();
   late final sidebarChanges = ChangeNotifier();
@@ -381,6 +412,7 @@ class DesktopSession extends ChangeNotifier {
     final existing = {for (final project in owner == null ? projects : [owner])
       for (final target in project.tasks) target.id: (project, target)};
     final seen = <String>{};
+    final ignored = <String>{};
     for (final archived in [false, true]) {
       String? cursor;
       do {
@@ -391,7 +423,8 @@ class DesktopSession extends ChangeNotifier {
       final entries = (page['data'] as List).map(jsonObject).toList();
       for (final info in entries) {
         final folder = info['cwd'] as String?;
-        if (folder == null || folder.isEmpty || info['ephemeral'] == true || info['parentThreadId'] != null) continue;
+        if (folder == null || folder.isEmpty || ignored.contains(key(folder)) ||
+            info['ephemeral'] == true || info['parentThreadId'] != null) { continue; }
         var project = owners[key(folder)];
         if (project == null && owner == null) {
           Json inspected;
@@ -399,14 +432,12 @@ class DesktopSession extends ChangeNotifier {
           on CancelledException { rethrow; }
           catch (_) { inspected = {'available': false}; }
           final canonical = inspected['path'] as String? ?? folder;
-          project = projects.where((item) => key(item.path) == key(canonical)).firstOrNull;
+          if (ignored.contains(key(canonical))) { ignored.add(key(folder)); continue; }
+          project = await _registerProject({...inspected, 'path': canonical},
+            cancellation: operation, discovered: true);
           if (project == null) {
-            final checkout = newId(), identity = inspected['identity'] as String? ?? 'path:$canonical';
-            await callIsolate(database.port, 'project.add', {'checkout_key': checkout, 'identity': identity,
-              'path': canonical}, cancellation: operation);
-            project = Project(checkout, identity, canonical)
-              ..available = inspected['available'] == true ..branch = inspected['branch'] as String?;
-            projects.add(project);
+            ignored.addAll([key(folder), key(canonical)]);
+            continue;
           }
           owners[key(folder)] = project;
           owners[key(canonical)] = project;
@@ -429,7 +460,7 @@ class DesktopSession extends ChangeNotifier {
         if (!target.archiving) target.archived = archived;
         final updated = (info['updatedAt'] as int? ?? info['createdAt'] as int? ?? 0) * 1000;
         if (!target.loaded || updated > target.lastActivity) target.lastActivity = updated;
-        await callIsolate(database.port, 'task.add', {
+        await _databaseCall('task.add', {
           'id': id, 'checkout_key': project.checkoutKey, 'title': target.title,
           'archived': target.archived, 'last_activity': target.lastActivity,
         }, cancellation: operation);
@@ -446,7 +477,7 @@ class DesktopSession extends ChangeNotifier {
       removed.add(entry.key);
       openTabIds.remove(entry.key);
     }
-    if (removed.isNotEmpty) await callIsolate(database.port, 'tasks.remove', {'ids': removed}, cancellation: operation);
+    if (removed.isNotEmpty) await _databaseCall('tasks.remove', {'ids': removed}, cancellation: operation);
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -457,7 +488,7 @@ class DesktopSession extends ChangeNotifier {
     target.title = title;
     final owner = projects.where((project) => project.tasks.contains(target)).firstOrNull;
     if (owner == null) return;
-    unawaited(callIsolate(database.port, 'task.add', {
+    unawaited(_databaseCall('task.add', {
       'id': target.id, 'checkout_key': owner.checkoutKey, 'title': title,
       'archived': target.archived, 'last_activity': target.lastActivity,
     }, cancellation: _lifetime).catchError((Object failure) {
@@ -495,7 +526,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> _setting(String key, String value, {CancellationToken? cancellation}) async {
-    await callIsolate(database.port, 'settings.set', {
+    await _databaseCall('settings.set', {
       'key': key,
       'value': value,
     }, cancellation: cancellation?.merge(_lifetime) ?? _lifetime);
@@ -570,7 +601,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> loadPanelLayouts(CancellationToken cancellation) async {
     if (_panelsLoaded) return;
-    final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: cancellation));
+    final saved = jsonObject(await _databaseCall('load', {}, cancellation: cancellation));
     try {
       final decoded = jsonDecode(saved['settings']?['session_panels'] as String? ?? '{}');
       if (decoded is Map) {
@@ -1270,7 +1301,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> load() async {
     await _request('client.capabilities', {'questions': true});
     final saved = jsonObject(
-      await callIsolate(database.port, 'load', {}, cancellation: _lifetime),
+      await _databaseCall('load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
@@ -1334,7 +1365,6 @@ class DesktopSession extends ChangeNotifier {
         try { projects.last.avatarImage = base64Decode(image); } on FormatException { /* Use the default icon. */ }
       }
     }
-    await _checkProjectAvailability();
     await refreshProjects();
     project = projects.firstOrNull;
     Json restored = {};
@@ -1391,8 +1421,14 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addProject(String path) async {
-    final opened = await ensureProject(path, cancellation: _lifetime);
+  Future<void> addProject(String path, {bool discovered = false}) async {
+    final Project? opened;
+    if (discovered) {
+      final inspected = await client.inspectWorkspace(path, cancellation: _lifetime);
+      if (inspected['available'] != true) throw const FileSystemException('Choose an existing project folder');
+      opened = await _registerProject(inspected, cancellation: _lifetime, discovered: true);
+    } else { opened = await ensureProject(path, cancellation: _lifetime); }
+    if (opened == null) return;
     _navigationRevision++;
     project = opened;
     await refreshSessions(owner: opened);
@@ -1410,31 +1446,52 @@ class DesktopSession extends ChangeNotifier {
     if (inspected['available'] != true) {
       throw const FileSystemException('Choose an existing project folder');
     }
+    return (await _registerProject(inspected, cancellation: token))!;
+  }
+
+  Future<Project?> _registerProject(Json inspected, {required CancellationToken cancellation, bool discovered = false}) async {
+    final token = cancellation.merge(_lifetime);
     final canonical = inspected['path'] as String;
     token.throwIfCancelled();
     var opened = projects.where((p) => p.path == canonical).firstOrNull;
     if (opened == null) {
-      final key = newId();
-      final id = inspected['identity'] as String;
-      await callIsolate(database.port, 'project.add', {
-        'checkout_key': key,
-        'identity': id,
+      final saved = await _databaseCall('project.add', {
+        'checkout_key': newId(),
+        'identity': inspected['identity'] as String? ?? 'path:$canonical',
         'path': canonical,
+        'discovered': discovered,
       }, cancellation: token);
-      opened = Project(key, id, canonical)..branch = inspected['branch'] as String?;
-      projects.add(opened);
-    } else {
-      if (opened.removing) throw StateError('Project is being removed');
+      token.throwIfCancelled();
+      if (saved == null) return null;
+      final row = jsonObject(saved);
+      opened = projects.where((p) => p.checkoutKey == row['checkout_key']).firstOrNull;
+      if (opened == null) {
+        opened = Project(row['checkout_key'] as String, row['identity'] as String, canonical)
+          ..available = inspected['available'] == true ..branch = inspected['branch'] as String?
+          ..workspace = inspected;
+        projects.add(opened);
+      }
+    }
+    if (opened.removing) {
+      if (discovered) return null;
+      throw StateError('Project is being removed');
+    }
+    if (discovered) return opened;
+    if (!opened.available || opened.workspace != inspected) {
       opened.available = true;
-      await _refreshIdentity(opened);
+      await _refreshIdentity(opened, cancellation: token);
     }
     notifyListeners();
     return opened;
   }
 
-  Future<void> _refreshIdentity(Project target) async {
+  Future<void> _refreshIdentity(Project target, {CancellationToken? cancellation}) async {
+    final token = cancellation?.merge(_lifetime) ?? _lifetime;
     // An unavailable checkout must not silently erase its last known remote.
-    final remote = await client.inspectWorkspace(target.path, cancellation: _lifetime);
+    final remote = await client.inspectWorkspace(target.path, cancellation: token);
+    token.throwIfCancelled();
+    target.available = remote['available'] == true;
+    if (target.available) target.workspace = remote;
     final identity = remote['available'] == true ? (identity: remote['identity'] as String, branch: remote['branch'] as String?) : null;
     if (identity == null) return;
     if (target.branch != identity.branch) {
@@ -1446,19 +1503,20 @@ class DesktopSession extends ChangeNotifier {
     }
     final id = identity.identity;
     if (id == target.id) return;
-    await callIsolate(database.port, 'project.identify', {
+    await _databaseCall('project.identify', {
       'checkout_key': target.checkoutKey,
       'identity': id,
-    }, cancellation: _lifetime);
+    }, cancellation: token);
     target.id = id;
   }
 
-  Future<void> refreshProjects() async {
+  Future<void> refreshProjects({CancellationToken? cancellation}) async {
+    final token = cancellation?.merge(_lifetime) ?? _lifetime;
     for (final owner in List.of(projects)) {
-      if (!owner.available || owner.removing) continue;
-      await _refreshIdentity(owner);
+      if (owner.removing) continue;
+      await _refreshIdentity(owner, cancellation: token);
     }
-    await refreshSessions();
+    await refreshSessions(cancellation: token);
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -1478,18 +1536,6 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  Future<void> _checkProjectAvailability() async {
-    var changed = false;
-    for (final owner in List.of(projects)) {
-      final available = jsonObject(await _request('workspace.inspect', {'path': owner.path}))['available'] == true;
-      _lifetime.throwIfCancelled();
-      if (owner.available == available) continue;
-      owner.available = available;
-      changed = true;
-    }
-    if (changed && !_lifetime.isCancelled) notifyListeners();
-  }
-
   Future<void> removeProject(Project target) async {
     if (!projects.contains(target) || target.removing) return;
     if (submitting || target.tasks.any((task) => task.archiving)) {
@@ -1504,7 +1550,7 @@ class DesktopSession extends ChangeNotifier {
       for (final task in target.tasks.where((task) => task.running).toList()) {
         await _request('task.cancel', {'task_id': task.id});
       }
-      await callIsolate(database.port, 'project.remove', {
+      await _databaseCall('project.remove', {
         'checkout_key': target.checkoutKey,
       }, cancellation: _lifetime);
       for (final removed in target.tasks) { releaseHistory(removed); }
@@ -1912,7 +1958,7 @@ class DesktopSession extends ChangeNotifier {
             if (task == created) task = null;
           }
           try {
-            await callIsolate(database.port, 'task.add', {
+            await _databaseCall('task.add', {
               'id': created.id,
               'checkout_key': owner.checkoutKey,
               'title': created.title,
@@ -1990,7 +2036,7 @@ class DesktopSession extends ChangeNotifier {
       _notice('Fork created, but could not be renamed', type: DesktopToastType.warning, description: '$failure');
     }
     try {
-      await callIsolate(database.port, 'task.add', {
+      await _databaseCall('task.add', {
         'id': id, 'checkout_key': owner.checkoutKey, 'title': created.title, 'last_activity': created.lastActivity,
       }, cancellation: _lifetime);
     } on CancelledException {
@@ -2099,7 +2145,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> _saveArchived(DesktopTask target) async {
-    await callIsolate(database.port, 'task.archive', {
+    await _databaseCall('task.archive', {
       'task_id': target.id, 'archived': target._archived,
     }, cancellation: _lifetime);
   }
@@ -2156,6 +2202,16 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (event['method'] == 'connection/closed') {
+      _connectionLost();
+      return;
+    }
+    if (event['method'] == 'connection/ready') {
+      _recovery?.cancel();
+      final token = _recovery = CancellationToken();
+      unawaited(_restoreConnection(token.merge(_lifetime)));
+      return;
+    }
     final trace = event['_trace'] == null ? null : client.eventTrace(event);
     withTrace(trace, () => traceSync('desktop.event.apply', () => _applyIncomingEvent(event),
       attributes: {'event.type': event['type']}));
@@ -2260,7 +2316,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _saveActivity(DesktopTask target) async {
     if (target.sideParentID != null) return;
-    await callIsolate(database.port, 'task.activity', {
+    await _databaseCall('task.activity', {
       'task_id': target.id, 'last_activity': target.lastActivity,
     }, cancellation: _lifetime);
   }
@@ -2379,13 +2435,14 @@ class DesktopSession extends ChangeNotifier {
     _dictation?.dispose();
     _dictation = null;
     _lifetime.cancel();
+    _recovery?.cancel();
     _disconnect.dispose();
     await _events.cancel();
     await _notifications.close();
     _pendingNotices.clear();
     await _notices.close();
     await client.close();
-    await database.close();
+    if (sidebarOwner == null) await database.close();
     for (final side in sideChats.values) { side.liveText.dispose(); }
     sideChats.clear();
     for (final entry in attachmentDrafts.entries) {

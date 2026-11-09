@@ -10,22 +10,48 @@ import 'build_server.dart';
 String quoteRemote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
 Future<void> main(List<String> arguments) async {
-  final alias = arguments.where((value) => !value.startsWith('--')).singleOrNull;
-  if (alias == null || !RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]*$').hasMatch(alias) ||
-      arguments.any((value) => value.startsWith('--') && !{'--skip-build', '--from-codex'}.contains(value))) {
-    throw ArgumentError('Usage: dart tool/deploy_server.dart SSH_ALIAS [--skip-build] [--from-codex]');
+  final root = Directory.fromUri(Platform.script).parent.parent;
+  final aliases = arguments.where((value) => !value.startsWith('--')).toList();
+  final architectures = arguments.where((value) => value.startsWith('--architecture=')).toList();
+  if (aliases.length > 1 || architectures.length > 1 ||
+      arguments.any((value) => value.startsWith('--') && !{
+        '--skip-build', '--from-codex', '--architecture=x64', '--architecture=arm64',
+      }.contains(value))) {
+    throw ArgumentError('Usage: dart tool/deploy_server.dart [SSH_ALIAS] [--skip-build] [--from-codex] [--architecture=x64|arm64]');
+  }
+  final saved = aliases.isNotEmpty ? <String, dynamic>{'host': aliases.single}
+    : await File('${root.path}/.local/deploy-server.json').exists()
+      ? jsonObject(jsonDecode(await File('${root.path}/.local/deploy-server.json').readAsString()))
+      : throw StateError('Set the private target in .local/deploy-server.json (host, optional user, port, identityFile), or pass an SSH alias.');
+  final host = saved['host'], user = saved['user'], port = saved['port'], identity = saved['identityFile'];
+  if (host is! String || !RegExp(r'^[a-zA-Z0-9:][a-zA-Z0-9_.:-]*$').hasMatch(host) ||
+      user != null && (user is! String || !RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(user)) ||
+      port != null && (port is! int || port < 1 || port > 65535) ||
+      identity != null && (identity is! String || identity.isEmpty || RegExp(r'[\x00\r\n]').hasMatch(identity))) {
+    throw const FormatException('Invalid private deployment connection settings');
   }
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
-  final ssh = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '--', alias];
+  final ssh = ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+    '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
+    '-o', 'StrictHostKeyChecking=yes', '-o', 'UpdateHostKeys=no',
+    if (user != null) ...['-l', user as String], if (port != null) ...['-p', '$port'],
+    if (identity != null) ...['-i', identity as String, '-o', 'IdentitiesOnly=yes'], '--', host];
   Future<String> remote(List<String> command) => deployRun('ssh', [...ssh, command.map(quoteRemote).join(' ')], cancellation, capture: true);
   try {
-    final root = Directory.fromUri(Platform.script).parent.parent;
     final machine = await remote(['uname', '-m']);
     final architecture = switch (machine) { 'x86_64' => 'x64', 'aarch64' => 'arm64', _ => throw StateError('Unsupported VPS architecture') };
+    if (architectures.isNotEmpty && architectures.single != '--architecture=$architecture') {
+      throw StateError('The cached build targets another architecture; build and deploy Linux $architecture instead.');
+    }
     if (!arguments.contains('--skip-build')) await buildServer(root, architecture, cancellation);
     final executable = File('${root.path}/build/server/linux-$architecture/happen-server');
     final checksum = sha256.convert(await executable.readAsBytes()).toString();
+    final report = jsonObject(jsonDecode(await File('${executable.parent.path}/build-report.json').readAsString()));
+    if (report['target'] != 'ubuntu-24.04-$architecture' || report['sha256'] != checksum ||
+        (await File('${executable.path}.sha256').readAsString()).trim() != checksum) {
+      throw StateError('The cached server artifact failed integrity or architecture verification; rebuild it before deploying.');
+    }
     final home = await remote(['printenv', 'HOME']);
     if (!home.startsWith('/') || home == '/' || RegExp(r'[\x00-\x1f]').hasMatch(home)) throw StateError('Invalid remote home');
     final releases = '$home/.local/share/happen/releases';
@@ -73,6 +99,6 @@ Future<void> main(List<String> arguments) async {
       }
       rethrow;
     }
-    stdout.writeln('Server ready. Add its SSH hostname or alias in desktop Settings → Servers.');
+    stdout.writeln('Server ready. Existing desktop connections reconnect automatically.');
   } finally { cancellation.cancel(); for (final signal in signals) { await signal.cancel(); } }
 }

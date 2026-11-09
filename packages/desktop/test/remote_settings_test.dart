@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:desktop/database.dart';
 import 'package:desktop/machines.dart';
+import 'package:desktop/machine_icons.dart';
 import 'package:desktop/remote_settings.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
@@ -11,7 +12,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
-  testWidgets('server settings commit SSH options to desktop SQLite and survive relaunch', (tester) async {
+  testWidgets('machine settings commit SSH options and icons to SQLite and survive relaunch', (tester) async {
     late Directory root;
     late DesktopSession session;
     late MachinesController machines;
@@ -28,7 +29,7 @@ void main() {
     }));
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: Padding(padding: const EdgeInsets.all(24),
       child: RemoteSettings(machines: machines)))));
-    await tester.tap(find.text('Connect server'));
+    await tester.tap(find.text('Add environment'));
     await tester.pumpAndSettle();
     Finder field(String label) => find.widgetWithText(TextField, label);
     await tester.enterText(field('Name'), 'Test server');
@@ -48,6 +49,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Test server'), findsOneWidget);
     expect(find.byType(AlertDialog), findsNothing);
+    for (final (alias, name, icon) in [
+      (null, 'local', MachineIcon.apple),
+      (machines.hosts.single.alias, 'Test server', MachineIcon.ubuntu),
+    ]) {
+      await tester.runAsync(() async {
+        await tester.tap(find.byTooltip('Environment settings for $name'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Icon'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(machineIconLabel(icon)));
+        await tester.pumpAndSettle();
+        final saved = Completer<void>();
+        void changed() { if (machines.iconFor(alias) == icon && !saved.isCompleted) saved.complete(); }
+        machines.addListener(changed); changed();
+        try { await saved.future.timeout(const Duration(seconds: 10)); }
+        finally { machines.removeListener(changed); }
+      });
+      await tester.pumpAndSettle();
+      expect(machines.iconFor(alias), icon);
+    }
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.runAsync(() async {
@@ -60,6 +81,9 @@ void main() {
         expect(rows.single['host'], '127.0.0.1'); expect(rows.single['user'], 'fixture');
         expect(rows.single['port'], 1); expect(rows.single['identityFile'], '~/.ssh/fixture-key');
         expect(rows.single['projects'], ['/tmp/workspace']);
+        final loaded = jsonObject(await callIsolate(reopened.port, 'load', {}));
+        expect(loaded['settings']['machine_icon:local'], 'apple');
+        expect(loaded['settings']['machine_icon:${rows.single['alias']}'], 'ubuntu');
         await callIsolate(reopened.port, 'remotes.remove', {'alias': rows.single['alias']});
         expect(await callIsolate(reopened.port, 'remotes.list', {}), isEmpty);
       } finally { await reopened.close(); }

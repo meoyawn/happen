@@ -92,7 +92,7 @@ class _CommandMenuState extends State<CommandMenu> {
         for (final project in projects)
           (id: 'project:${project.checkoutKey}', group: 'Projects', title: project.name,
             description: project.available
-              ? '${sources.firstWhere((source) => source.projects.contains(project)).machineName} · ${project.path}'
+              ? '${machineLabel(sources.firstWhere((source) => source.projects.contains(project)))} · ${project.path}'
               : 'Folder unavailable · ${project.path}',
             icon: null, shortcut: null, project: project, task: null,
             select: () {
@@ -128,7 +128,7 @@ class _CommandMenuState extends State<CommandMenu> {
       for (final (project, task) in tasks)
         (id: (widget.sources ?? [widget.session]).firstWhere((source) => source.projects.contains(project)).sidebarId(task.id),
           group: 'Sessions', title: task.title,
-          description: '${project.name} · ${(widget.sources ?? [widget.session]).firstWhere((source) => source.projects.contains(project)).machineName}', icon: null, shortcut: null,
+          description: '${project.name} · ${machineLabel((widget.sources ?? [widget.session]).firstWhere((source) => source.projects.contains(project)))}', icon: null, shortcut: null,
           project: project, task: task, select: () => _open(project, task)),
     ];
   }

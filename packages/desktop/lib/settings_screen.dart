@@ -24,8 +24,8 @@ import 'notification_preferences.dart';
 import 'window_chrome.dart';
 
 const _pages = [
-  (id: 'servers', label: 'Servers', icon: Icons.dns_outlined,
-    description: 'Connect to the machines where your threads run'),
+  (id: 'servers', label: 'Environments', icon: Icons.dns_outlined,
+    description: 'Manage where your projects and threads run'),
   (id: 'providers', label: 'Providers', icon: Icons.key_outlined,
     description: 'Manage the accounts you use for AI models'),
   (id: 'preferences', label: 'Preferences', icon: Icons.tune,
@@ -149,7 +149,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 const SizedBox(height: 24),
               ],
               switch (_page) {
-                'servers' => widget.machines == null ? const Text('Server connections are unavailable')
+                'servers' => widget.machines == null ? const Text('Environments are unavailable')
                   : RemoteSettings(machines: widget.machines!),
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
@@ -540,7 +540,7 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
         const Padding(padding: EdgeInsets.only(top: 2), child: Icon(Icons.folder_outlined, size: 18, color: desktopSecondary)),
         const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(widget.session.client.sharedFilesystem ? Platform.localHostname.replaceFirst(RegExp(r'\.local$'), '') : 'Server',
+          Text(machineLabel(widget.session),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: desktopForeground)),
           const SizedBox(height: 6),
           SelectableText(widget.project.path, style: const TextStyle(fontSize: 12, color: desktopSecondary)),

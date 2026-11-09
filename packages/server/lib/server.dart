@@ -572,7 +572,8 @@ class AgentServer {
         if (thread['cwd'] is String) paths.add(thread['cwd'] as String);
       }
       return discoverWorkspaces(paths.toList(), params['repository'] as String?,
-        params['subdirectory'] as String? ?? '', cancellation);
+        params['subdirectory'] as String? ?? '', cancellation,
+        subdirectories: (params['subdirectories'] as List? ?? []).cast<String>());
     }
     if (method.startsWith('git/')) return _gitRequest(method, params, client, requestId);
     if (method.startsWith('terminal/')) {
@@ -1974,6 +1975,7 @@ class AgentClient {
   bool _closed = false;
   Future<void>? _closingClient;
   final bool sharedFilesystem;
+  bool get isClosed => _closed || _disconnectRecorded;
   late final StreamSubscription<dynamic> _subscription;
   final events = StreamController<Json>.broadcast();
   final _pending = <int, Completer<Object?>>{};
@@ -2044,6 +2046,7 @@ class AgentClient {
         await socket.close();
         lifetime.throwIfCancelled();
       }
+      socket.pingInterval = const Duration(seconds: 60);
       final client = AgentClient._(socket, sharedFilesystem: sharedFilesystem ?? uri.scheme == 'unix');
       try {
         await client._request('initialize', {'clientInfo': {'name': 'happen', 'version': '0.1.0'},
@@ -2064,8 +2067,9 @@ class AgentClient {
     jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
 
   Future<Json> discoverWorkspaces({required List<String> paths, String? repository, String subdirectory = '',
+    List<String> subdirectories = const [],
     required CancellationToken cancellation}) async => jsonObject(await _request('workspace.discover',
-      {'paths': paths, 'repository': repository, 'subdirectory': subdirectory},
+      {'paths': paths, 'repository': repository, 'subdirectory': subdirectory, 'subdirectories': subdirectories},
       cancellation: cancellation, timeout: const Duration(seconds: 60)));
 
   Future<Json> gitRequest(String method, Json params, {required CancellationToken cancellation}) async {

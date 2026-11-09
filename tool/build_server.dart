@@ -61,8 +61,7 @@ Future<void> buildServer(Directory root, String architecture, CancellationToken 
         await destination.writeAsBytes(bytes);
       }
     }
-    // This package's QuickJS directory is a symlink to the vendored submodule.
-    // Materialize only its native sources, never a host symlink into the build.
+    // Materialize the vendored QuickJS submodule's native sources explicitly.
     final nativeSources = await Directory('${root.path}/packages/code_mode/native/quickjs').list().toList();
     nativeSources.sort((a, b) => a.path.compareTo(b.path));
     for (final file in nativeSources) {

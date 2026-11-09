@@ -127,7 +127,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       _server = await AgentServer.startEmbedded(directory: directory);
       _lifetime.throwIfCancelled();
       _watchLocalTasks();
-      _database = await openDesktopDatabase(directory);
+      _database = await openDesktopDatabase(directory, cancellation: _lifetime);
       _lifetime.throwIfCancelled();
       _client = await AgentClient.connect(
         _server!.uri,

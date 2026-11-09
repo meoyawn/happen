@@ -48,8 +48,9 @@ Future<Json> _checkout(String path, CancellationToken cancellation) async {
 /// T3 discovers projects from registered roots and agent-session cwd metadata,
 /// then groups them by repository identity. It does not walk the whole disk.
 Future<Json> discoverWorkspaces(List<String> paths, String? repository, String subdirectory,
-  CancellationToken cancellation) => runIsolateEffect(_discover,
-    {'paths': paths, 'repository': repository, 'subdirectory': subdirectory}, cancellation: cancellation);
+  CancellationToken cancellation, {List<String> subdirectories = const []}) => runIsolateEffect(_discover,
+    {'paths': paths, 'repository': repository, 'subdirectory': subdirectory,
+      'subdirectories': subdirectories}, cancellation: cancellation);
 
 Future<Json> _discover(Json params, CancellationToken cancellation, void Function(Json) emit) async {
   final deadline = TimeoutCancellationToken(const Duration(seconds: 45));
@@ -57,7 +58,11 @@ Future<Json> _discover(Json params, CancellationToken cancellation, void Functio
   final paths = <String>{...(params['paths'] as List).cast<String>()};
   final registered = Set.of(paths);
   final repository = params['repository'] as String?, subdirectory = params['subdirectory'] as String;
-  if (p.isAbsolute(subdirectory) || p.split(subdirectory).contains('..')) throw ArgumentError('Invalid project subdirectory');
+  final subdirectories = (params['subdirectories'] as List? ?? []).cast<String>().toSet();
+  if (subdirectories.length > 1000) throw ArgumentError('Too many project subdirectories');
+  for (final relative in [subdirectory, ...subdirectories]) {
+    if (p.isAbsolute(relative) || p.split(relative).contains('..')) throw ArgumentError('Invalid project subdirectory');
+  }
   var truncated = false, inspected = 0;
   final results = <String, Json>{}, roots = <String>{}, seen = <String>{};
   final contained = <String>[];
@@ -65,7 +70,7 @@ Future<Json> _discover(Json params, CancellationToken cancellation, void Functio
     // Read only the session metadata prefix, never conversation contents.
     final home = Platform.environment['HOME'];
     final codex = Platform.environment['CODEX_HOME'] ?? (home == null ? null : '$home/.codex');
-    if (codex != null && repository != null) {
+    if (codex != null) {
       final queue = [Directory('$codex/sessions')];
       var files = 0;
       while (queue.isNotEmpty && files < 5000) {
@@ -109,7 +114,7 @@ Future<Json> _discover(Json params, CancellationToken cancellation, void Functio
       if (root != null) roots.add(root);
       // A configured workspace container is a catalog of its immediate Git
       // checkouts. Registered repository roots themselves are never traversed.
-      if (root == null && repository != null && registered.contains(candidate)) {
+      if (root == null && registered.contains(candidate)) {
         await for (final child in Directory(canonical).list(followLinks: false)) {
           token.throwIfCancelled();
           if (child is! Directory) continue;
@@ -126,7 +131,15 @@ Future<Json> _discover(Json params, CancellationToken cancellation, void Functio
       if (!await Directory(path).exists()) return;
       final resolved = await Directory(path).resolveSymbolicLinks();
       // Session cwd aliases never create duplicate choices for one physical path.
-      results[resolved] = {...checkout, 'path': resolved};
+      final locations = <String, String>{};
+      if (root != null) {
+        for (final relative in {'', ...subdirectories}) {
+          token.throwIfCancelled();
+          final folder = Directory(p.join(root, relative));
+          if (await folder.exists()) locations[relative] = await folder.resolveSymbolicLinks();
+        }
+      }
+      results[resolved] = {...checkout, 'path': resolved, 'locations': locations};
     }
     final candidates = paths.toList();
     for (var index = 0; index < candidates.length && index < 5000; index++) {

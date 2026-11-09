@@ -139,22 +139,28 @@ void main() {
       'user': {'id': 'user', 'type': 'userMessage', 'order': 2, 'turnId': 'turn',
         'content': [{'type': 'text', 'text': 'Continue checking'}]},
     });
-    for (final (message, label) in <(Json, String)>[
+    for (final (message, label) in <(Json, String?)>[
       ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary'}, 'Thinking'),
       ({'type': 'reasoning', 'summary': ['Inspecting the panel'], 'live': true}, 'Thinking'),
-      ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary', 'live': true}, 'Responding'),
+      ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary', 'live': true}, null),
       ({'type': 'commandExecution', 'command': 'flutter analyze', 'status': 'inProgress', 'live': true}, 'Working'),
       ({'type': 'commandExecution', 'command': 'flutter analyze', 'status': 'completed'}, 'Thinking'),
     ]) {
       current.messages['active'] = {'id': 'active', 'turnId': 'turn', 'order': 3, ...message};
       await open(tester, current, size: const Size(420, 600)); await tester.pump();
-      expect(find.text(label), findsWidgets, reason: '${message['type']} must leave visible feedback while the turn runs');
       final spinner = find.byType(CircularProgressIndicator);
-      expect(spinner, findsOneWidget);
-      expect(tester.getCenter(spinner).dy, inExclusiveRange(0, 600));
-      if (message['type'] == 'agentMessage') {
-        expect(tester.getTopLeft(spinner).dy,
-          greaterThan(tester.getBottomLeft(find.text('Checking the desktop panel next', findRichText: true)).dy));
+      if (label == null) {
+        expect(find.byKey(const ValueKey('working')), findsNothing);
+        expect(spinner, findsNothing);
+        expect(find.text('Checking the desktop panel next', findRichText: true), findsOneWidget);
+      } else {
+        expect(find.text(label), findsWidgets, reason: '${message['type']} must leave visible feedback while the turn runs');
+        expect(spinner, findsOneWidget);
+        expect(tester.getCenter(spinner).dy, inExclusiveRange(0, 600));
+        if (message['type'] == 'agentMessage') {
+          expect(tester.getTopLeft(spinner).dy,
+            greaterThan(tester.getBottomLeft(find.text('Checking the desktop panel next', findRichText: true)).dy));
+        }
       }
       expect(find.text('Compacting context'), findsNothing);
       expect(tester.takeException(), isNull);

@@ -121,7 +121,7 @@ class NewSessionScreen extends StatelessWidget {
               ListTile(dense: true, minTileHeight: 34, contentPadding: const EdgeInsets.symmetric(horizontal: 18),
                 minLeadingWidth: 16, horizontalTitleGap: 12,
                 leading: const Icon(Icons.computer_outlined, size: 16),
-                title: Text(session.client.sharedFilesystem ? 'Local machine' : 'Remote workspace', style: const TextStyle(fontSize: 13))),
+                title: Text(machineLabel(session), style: const TextStyle(fontSize: 13))),
               if (onOpenFolder != null) ListTile(dense: true, minTileHeight: 34,
                 minLeadingWidth: 16, horizontalTitleGap: 12,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 18), onTap: onOpenFolder,

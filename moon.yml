@@ -2,20 +2,41 @@ $schema: 'https://moonrepo.dev/schemas/project.json'
 language: dart
 toolchains:
   default: system
+fileGroups:
+  server-build:
+    - pubspec.yaml
+    - pubspec.lock
+    - tool/build_server.dart
+    - tool/build_server/**/*
+    - tool/cli_native_bootstrap.dart
+    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/**/*
+    - '!packages/**/test/**'
+    - '!packages/**/*.md'
+    - packages/code_mode/native/quickjs/*.{c,h}
+    - packages/code_mode/native/quickjs/LICENSE
 tasks:
   build-server:
-    description: Build a single-file Ubuntu AOT server with embedded native libraries
-    command: dart tool/build_server.dart
+    description: Build the Linux x64 AOT server with embedded native libraries
+    command: dart tool/build_server.dart x64
     preset: utility
-    inputs: []
+    inputs:
+      - '@group(server-build)'
+    outputs:
+      - build/server/linux-x64/happen-server
+      - build/server/linux-x64/happen-server.sha256
+      - build/server/linux-x64/build-report.json
     options:
-      cache: false
+      cache: true
+      interactive: false
       shell: false
       outputStyle: stream
+      mutex: happen-server-build-x64
 
   deploy-server:
-    description: Build, upload over SSH, and restart the managed VPS daemon
-    command: dart tool/deploy_server.dart
+    description: Deploy the cached Linux server to the private local target and restart its daemon
+    command: dart tool/deploy_server.dart --skip-build --architecture=x64
+    deps:
+      - '~:build-server'
     preset: utility
     inputs: []
     options:

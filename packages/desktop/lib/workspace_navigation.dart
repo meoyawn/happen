@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'machine_icons.dart';
 import 'project_avatar.dart';
 import 'provider_icon.dart';
 import 'rename_state.dart';
@@ -52,7 +53,9 @@ _SidebarThreadActivity _sidebarActivity(DesktopSession session, DesktopTask task
 DesktopSession _projectSource(Iterable<DesktopSession> sources, Project project) =>
   sources.firstWhere((source) => source.projects.contains(project));
 
-String _cardMachineName(DesktopSession source) => source.machineAlias == null ? 'local' : source.machineName;
+Widget _machineBadge(DesktopSession source, MachineIcon Function(DesktopSession)? icon) => Tooltip(
+  message: machineLabel(source), child: MachineGlyph(icon?.call(source) ?? parseMachineIcon(null, remote: source.machineAlias != null),
+    size: 12, color: desktopTertiary));
 
 List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSession session, String? projectKey,
     {List<DesktopSession>? sources}) {
@@ -110,10 +113,11 @@ class ThreadSidebar extends StatefulWidget {
     required this.onHome, required this.onSearch, required this.onNew, required this.onSettings,
     required this.onSelect, required this.onArchive, required this.onDraft,
     required this.onAddProject, required this.onRefresh, required this.onProjectFilter,
-    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.machinePicker, this.sources});
+    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.machinePicker, this.sources, this.machineIcon});
   final Widget? machinePicker;
   final DesktopSession session;
   final List<DesktopSession>? sources;
+  final MachineIcon Function(DesktopSession)? machineIcon;
   final bool home, windowControls;
   final double titlebarInset;
   final String? projectKey;
@@ -363,7 +367,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       task.title, task.archived, task.archiving, task.provider, task.model, activity,
       session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
       _canStartReorder, reorderIndex, widget.onProjectSettings != null,
-      sources.length, source.machineName,
+      sources.length, machineLabel(source), widget.machineIcon?.call(source),
     );
     final cached = _rows[id];
     if (cached?.state == state) return cached!.row;
@@ -410,9 +414,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   color: selected || unread ? desktopForeground : desktopSecondary)))),
               const SizedBox(height: 2),
               SizedBox(height: 16, child: Row(children: [
+                _machineBadge(source, widget.machineIcon), const SizedBox(width: 6),
                 Expanded(child: Text.rich(TextSpan(children: [
-                  if (sources.length > 1) TextSpan(text: '${_cardMachineName(source)}  ',
-                    style: const TextStyle(fontSize: 11, color: desktopTertiary)),
                   if (project.branch case final branch?) TextSpan(text: branch),
                 ]), maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12, height: 1, color: desktopSecondary))),
@@ -455,8 +458,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               ],
               Expanded(child: Text(project?.name ?? 'Draft', maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 12, color: desktopTertiary))),
-              if (sources.length > 1) Padding(padding: const EdgeInsets.only(right: 6),
-                child: Text(_cardMachineName(session), style: const TextStyle(fontSize: 11, color: desktopTertiary))),
+              Padding(padding: const EdgeInsets.only(right: 6), child: _machineBadge(session, widget.machineIcon)),
               const Icon(Icons.edit_outlined, size: 13, color: desktopTertiary),
               const SizedBox(width: 4),
               const Text('Draft', style: TextStyle(fontSize: 11, color: desktopTertiary)),
@@ -528,7 +530,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               for (final source in sources)
               for (final project in source.projects.where((project) => !project.removing))
                 CheckedPopupMenuItem(value: source.sidebarId(project.checkoutKey), checked: widget.projectKey == source.sidebarId(project.checkoutKey),
-                  child: Text('${project.name}${sources.length > 1 ? ' · ${source.machineName}' : ''}')),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    _machineBadge(source, widget.machineIcon), const SizedBox(width: 8), Text(project.name)])),
             ],
             child: MouseRegion(cursor: SystemMouseCursors.click, child: SizedBox.square(dimension: 28,
               child: Center(child: sidebarIcon(SidebarIcon.listFilter))))),
@@ -580,9 +583,10 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
 class WorkspaceHome extends StatefulWidget {
   const WorkspaceHome({super.key, required this.session, required this.focusNode, required this.onSelect,
-    required this.onNew, required this.onAddProject, required this.onArchive, this.onProjectSettings, this.sources});
+    required this.onNew, required this.onAddProject, required this.onArchive, this.onProjectSettings, this.sources, this.machineIcon});
   final DesktopSession session;
   final List<DesktopSession>? sources;
+  final MachineIcon Function(DesktopSession)? machineIcon;
   final FocusNode focusNode;
   final void Function(Project, DesktopTask) onSelect;
   final ValueChanged<Project> onNew;
@@ -637,8 +641,9 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
               ]),
               title: renameInput ?? GestureDetector(onDoubleTap: renameTitle,
                 child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
-              subtitle: Text('${project.name}${sources.length > 1 ? ' · ${_cardMachineName(source)}' : ''}',
-                style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+              subtitle: Row(children: [_machineBadge(source, widget.machineIcon), const SizedBox(width: 6),
+                Flexible(child: Text(project.name, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: desktopTertiary)))]),
               trailing: _ThreadStatus(activity: _sidebarActivity(source, task)),
               onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
         })),

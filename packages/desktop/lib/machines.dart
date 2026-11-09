@@ -6,12 +6,53 @@ import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
-import 'database.dart';
+import 'machine_icons.dart';
 import 'remote_connection.dart';
 import 'session.dart';
 export 'remote_connection.dart' show RemoteMachine;
 
 typedef MachineSession = ({String? alias, String name, DesktopSession session});
+typedef ThreadCheckout = ({MachineSession machine, String path, String? branch, bool worktree});
+typedef _WorkspaceInventory = ({List<Json> checkouts, bool truncated});
+
+class ThreadWorkspaceCatalog {
+  ThreadWorkspaceCatalog(this.repository, List<ThreadCheckout> checkouts, Map<String, String> errors, this.truncated)
+    : checkouts = List.unmodifiable(checkouts), errors = Map.unmodifiable(errors);
+  final String? repository;
+  final List<ThreadCheckout> checkouts;
+  final Map<String, String> errors;
+  final bool truncated;
+}
+
+sealed class _WorkspaceState { const _WorkspaceState(); }
+final class _WorkspaceLoading extends _WorkspaceState {
+  const _WorkspaceLoading(this.previous);
+  final _WorkspaceInventory? previous;
+}
+final class _WorkspaceReady extends _WorkspaceState {
+  const _WorkspaceReady(this.inventory);
+  final _WorkspaceInventory inventory;
+}
+final class _WorkspaceFailed extends _WorkspaceState {
+  const _WorkspaceFailed(this.error, this.previous);
+  final Object error;
+  final _WorkspaceInventory? previous;
+}
+
+_WorkspaceInventory? _inventory(_WorkspaceState? state) => switch (state) {
+  _WorkspaceReady(:final inventory) => inventory,
+  _WorkspaceLoading(:final previous) || _WorkspaceFailed(:final previous) => previous,
+  _ => null,
+};
+
+_WorkspaceState _workspaceTransition(_WorkspaceState? current, _WorkspaceState next) => switch ((current, next)) {
+  (_, _WorkspaceLoading()) => next,
+  (_WorkspaceLoading(), _WorkspaceReady() || _WorkspaceFailed()) => next,
+  _ => throw StateError('Invalid workspace catalog transition'),
+};
+
+bool _sameConnection(RemoteMachine a, RemoteMachine b) =>
+  (a.host, a.user, a.port, a.identityFile) == (b.host, b.user, b.port, b.identityFile);
 
 sealed class MachineState { const MachineState(); }
 final class MachineConnecting extends MachineState {
@@ -64,11 +105,11 @@ DesktopSession? _cachedSession(MachineState? state) => switch (state) {
   _ => null,
 };
 
-/// Sessions cache each server's SQLite catalog. Selecting a machine changes the
-/// workspace; every cached source remains in the shared sidebar.
+/// Sessions discover each server's threads; desktop preferences and project
+/// references share the local database, scoped by machine.
 class MachinesController extends ChangeNotifier {
   MachinesController(this.local, this.directory) {
-    local.addListener(notifyListeners);
+    local.addListener(_sessionChanged);
     local.sidebarChanges.addListener(notifyListeners);
     unawaited(refresh());
     _poll = Timer.periodic(const Duration(seconds: 15), (_) => unawaited(refresh()));
@@ -80,12 +121,15 @@ class MachinesController extends ChangeNotifier {
   final _pending = <String, Future<void>>{};
   List<RemoteMachine> _hosts = const [];
   List<RemoteMachine> get hosts => _hosts;
+  final _icons = <String, MachineIcon>{};
+  Future<void>? _iconsRead;
+  MachineIcon iconFor(String? alias) => _icons[alias ?? 'local'] ?? parseMachineIcon(null, remote: alias != null);
   String? _selected;
   String? get selected => _selected;
   DesktopSession get active => _cachedSession(_states[_selected]) ?? local;
   MachineState? state(String alias) => _states[alias];
   List<MachineSession> get sessions => [
-    (alias: null, name: 'Local machine', session: local),
+    (alias: null, name: 'local', session: local),
     for (final host in hosts)
       if (_cachedSession(_states[host.alias]) case final session?)
         (alias: host.alias, name: host.name, session: session),
@@ -114,6 +158,13 @@ class MachinesController extends ChangeNotifier {
   Timer? _poll;
   final _connections = <String, CancellationToken>{};
   final _catalogRefreshes = <DesktopSession, Future<void>>{};
+  final _retries = <String, Timer>{};
+  final _attempts = <String, int>{};
+  final _workspaces = <DesktopSession, _WorkspaceState>{};
+  final _workspaceSignatures = <DesktopSession, String>{};
+  final _workspaceUpdated = <DesktopSession, DateTime>{};
+  final _workspaceTokens = <DesktopSession, CancellationToken>{};
+  final _workspacePending = <Future<void>>{};
   RemoteWriteState _writeState = const RemoteWriteIdle();
   RemoteWriteState get writeState => _writeState;
   bool get saving => _writeState is RemoteWritePending;
@@ -122,19 +173,148 @@ class MachinesController extends ChangeNotifier {
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
-  void cancelConnection(String alias) => _connections[alias]?.cancel();
+  Future<void> chooseIcon(String? alias, MachineIcon icon, {required CancellationToken cancellation}) async {
+    final key = alias ?? 'local';
+    await (_iconsRead ??= _restoreIcons());
+    if (saving) throw StateError('Machine settings are already being saved');
+    _write(RemoteWritePending(key));
+    try {
+      await callIsolate(local.database.port, 'settings.set', {'key': 'machine_icon:$key', 'value': icon.name},
+        cancellation: cancellation.merge(_lifetime));
+      _lifetime.throwIfCancelled();
+      _icons[key] = icon;
+      _write(RemoteWriteSaved(key));
+    } catch (error) {
+      if (!_lifetime.isCancelled) _write(RemoteWriteFailed(key, error));
+      rethrow;
+    }
+  }
+
+  Future<void> _restoreIcons() async {
+    final saved = jsonObject(await callIsolate(local.database.port, 'load', {}, cancellation: _lifetime));
+    _lifetime.throwIfCancelled();
+    final settings = jsonObject(saved['settings']);
+    _icons.addAll({for (final entry in settings.entries)
+      if (entry.key.startsWith('machine_icon:'))
+        entry.key.substring('machine_icon:'.length): parseMachineIcon(entry.value as String?, remote: entry.key != 'machine_icon:local')});
+  }
+
+  void cancelConnection(String alias) {
+    _retries.remove(alias)?.cancel();
+    _connections[alias]?.cancel();
+  }
+
+  void _sessionChanged() {
+    if (_lifetime.isCancelled) return;
+    _syncWorkspaces();
+    notifyListeners();
+  }
+
+  /// Every connected machine publishes one inventory for all drafts. Opening a
+  /// picker only reads these snapshots; it never starts discovery or SSH.
+  void _syncWorkspaces({bool force = false}) {
+    if (_lifetime.isCancelled) return;
+    final subdirectories = <String>{
+      for (final machine in sessions)
+        for (final project in machine.session.projects)
+          if (project.workspace?['subdirectory'] case final String relative) relative,
+    }.toList()..sort();
+    for (final machine in sessions) {
+      final session = machine.session;
+      if (!session.connected) { _workspaceTokens.remove(session)?.cancel(); continue; }
+      final host = hosts.where((host) => host.alias == machine.alias).firstOrNull;
+      final paths = <String>{
+        for (final project in session.projects) if (!project.removing) project.path,
+        ...?host?.projects,
+      }.toList()..sort();
+      final signature = jsonEncode([paths, subdirectories]);
+      if (!force && _workspaceSignatures[session] == signature &&
+          (_workspaceTokens.containsKey(session) || DateTime.now().difference(_workspaceUpdated[session]!) < const Duration(minutes: 1))) continue;
+      _workspaceTokens.remove(session)?.cancel();
+      final token = _workspaceTokens[session] = CancellationToken();
+      _workspaceSignatures[session] = signature;
+      _workspaceUpdated[session] = DateTime.now();
+      _workspaces[session] = _workspaceTransition(_workspaces[session], _WorkspaceLoading(_inventory(_workspaces[session])));
+      final operation = _loadWorkspaces(session, paths, subdirectories, token);
+      _workspacePending.add(operation);
+      unawaited(operation.whenComplete(() => _workspacePending.remove(operation)));
+    }
+  }
+
+  Future<void> _loadWorkspaces(DesktopSession session, List<String> paths, List<String> subdirectories, CancellationToken token) async {
+    try {
+      final result = await session.client.discoverWorkspaces(paths: paths, subdirectories: subdirectories,
+        cancellation: token.merge(_lifetime));
+      token.throwIfCancelled();
+      if (_lifetime.isCancelled || !identical(_workspaceTokens[session], token)) return;
+      _workspaces[session] = _workspaceTransition(_workspaces[session], _WorkspaceReady((
+        checkouts: List.unmodifiable((result['checkouts'] as List).map(jsonObject)), truncated: result['truncated'] == true)));
+    } on CancelledException { /* Superseded inventories cannot publish. */ }
+    catch (error) {
+      if (!_lifetime.isCancelled && !token.isCancelled && identical(_workspaceTokens[session], token)) {
+        _workspaces[session] = _workspaceTransition(_workspaces[session], _WorkspaceFailed(error, _inventory(_workspaces[session])));
+      }
+    } finally {
+      if (identical(_workspaceTokens[session], token)) {
+        _workspaceTokens.remove(session);
+        _workspaceUpdated[session] = DateTime.now();
+        if (!_lifetime.isCancelled) notifyListeners();
+      }
+      token.cancel();
+    }
+  }
+
+  ThreadWorkspaceCatalog workspaceCatalog(DesktopSession source, Project project) {
+    final original = project.workspace;
+    final repository = original?['repository'] as String?, relative = original?['subdirectory'] as String? ?? '';
+    final choices = <ThreadCheckout>[], errors = <String, String>{};
+    var truncated = false;
+    for (final machine in sessions) {
+      final session = machine.session, state = _workspaces[machine.session], inventory = _inventory(_workspaces[machine.session]);
+      if (!session.connected) errors[machine.name] = 'Reconnecting';
+      else if (state is _WorkspaceFailed) errors[machine.name] = '${state.error}';
+      truncated |= inventory?.truncated == true;
+      final seen = <String>{};
+      void add(String path, String? branch, bool worktree) {
+        if (seen.add(path)) choices.add((machine: machine, path: path, branch: branch, worktree: worktree));
+      }
+      if (identical(session, source) && original?['bare'] != true) {
+        add(project.path, project.branch, original?['worktree'] == true);
+      }
+      if (repository == null) continue;
+      for (final checkout in [
+        for (final saved in session.projects) if (!saved.removing && saved.workspace != null) saved.workspace!,
+        ...?inventory?.checkouts,
+      ]) {
+        if (checkout['repository'] != repository || checkout['bare'] == true || checkout['available'] != true) continue;
+        final path = jsonObject(checkout['locations'] ?? {})[relative] as String? ??
+          (checkout['subdirectory'] == relative ? checkout['path'] as String? : relative.isEmpty ? checkout['repositoryRoot'] as String? : null);
+        if (path != null) add(path, checkout['branch'] as String?, checkout['worktree'] == true);
+      }
+    }
+    choices.sort((a, b) {
+      final machine = (a.machine.alias ?? '').compareTo(b.machine.alias ?? '');
+      return machine != 0 ? machine : a.path.compareTo(b.path);
+    });
+    return ThreadWorkspaceCatalog(repository, choices, errors, truncated);
+  }
 
   Future<void> saveRemote(String alias, Json values, {required CancellationToken cancellation}) async {
     if (saving) throw StateError('An SSH server setting is already being saved');
     _write(RemoteWritePending(alias));
     try {
       final remote = remoteMachine({'alias': alias, ...values});
+      final before = _hosts.where((host) => host.alias == alias).firstOrNull;
       await callIsolate(local.database.port, 'remotes.save', remoteMachineJson(remote), cancellation: cancellation.merge(_lifetime));
       _write(RemoteWriteSaved(alias));
-      cancelConnection(alias);
-      await _pending[alias];
-      final previous = _cachedSession(_states[alias]);
-      if (previous != null) await previous.disconnect();
+      _hosts = [..._hosts.where((host) => host.alias != alias), remote];
+      if (before == null || !_sameConnection(before, remote)) {
+        cancelConnection(alias);
+        await _pending[alias];
+        final previous = _cachedSession(_states[alias]);
+        if (previous != null) await previous.disconnect();
+        else if (_states[alias] is MachineConnecting) _set(alias, const MachineClosed());
+      }
       await refresh();
       unawaited(connect(remote));
     } catch (error) {
@@ -149,15 +329,16 @@ class MachinesController extends ChangeNotifier {
     try {
       await callIsolate(local.database.port, 'remotes.remove', {'alias': alias}, cancellation: cancellation.merge(_lifetime));
       _write(RemoteWriteSaved(alias));
+      final cached = _cachedSession(_states[alias]);
+      _hosts = _hosts.where((host) => host.alias != alias).toList();
       cancelConnection(alias);
       await _pending[alias];
-      final cached = _cachedSession(_states[alias]);
       if (_selected == alias) _selected = null;
       _states.remove(alias);
-      _hosts = _hosts.where((host) => host.alias != alias).toList();
       notifyListeners();
-      cached?.removeListener(notifyListeners);
+      cached?.removeListener(_sessionChanged);
       cached?.sidebarChanges.removeListener(notifyListeners);
+      if (cached != null) _forgetWorkspaces(cached);
       await cached?.close();
       await refresh();
     } catch (error) {
@@ -167,6 +348,7 @@ class MachinesController extends ChangeNotifier {
   }
 
   Future<void> refreshCatalogs() async {
+    _syncWorkspaces();
     await Future.wait([for (final machine in sessions) if (machine.session.connected) _refreshCatalog(machine.session)]);
   }
 
@@ -185,14 +367,18 @@ class MachinesController extends ChangeNotifier {
     if (_lifetime.isCancelled) return;
     try {
       final raw = (await callIsolate(local.database.port, 'remotes.list', {}, cancellation: _lifetime) as List).map(jsonObject);
+      await (_iconsRead ??= _restoreIcons());
       _lifetime.throwIfCancelled();
       _hosts = raw.map(remoteMachine).toList();
+      for (final host in _hosts) {
+        if (_cachedSession(_states[host.alias]) case final session?) session.machineName = host.name;
+      }
       discoveryError = null;
       notifyListeners();
       // Establish availability using a real initialized protocol connection.
       for (final host in _hosts) {
         final state = _states[host.alias];
-        if (state == null || state is MachineReady && !state.session.connected) {
+        if (state == null || state is MachineReady && state.session.client.isClosed) {
           unawaited(connect(host));
         }
       }
@@ -202,18 +388,37 @@ class MachinesController extends ChangeNotifier {
   }
 
   Future<void> connect(RemoteMachine host) => _pending[host.alias] ??= (() {
+    _retries.remove(host.alias)?.cancel();
     final token = _connections[host.alias] = CancellationToken();
     return _connect(host, token.merge(_lifetime)).whenComplete(() {
       _pending.removeWhere((key, _) => key == host.alias); _connections.remove(host.alias); token.cancel();
+      if (_states[host.alias] is MachineFailed) _scheduleRetry(host);
     });
   })();
 
+  void _scheduleRetry(RemoteMachine host) {
+    final current = hosts.where((current) => current.alias == host.alias).firstOrNull;
+    if (_lifetime.isCancelled || current == null || !_sameConnection(current, host) || _retries.containsKey(host.alias)) return;
+    final attempt = _attempts.update(host.alias, (value) => (value + 1).clamp(0, 5), ifAbsent: () => 0);
+    _retries[host.alias] = Timer(Duration(milliseconds: ((1000 << attempt).clamp(1000, 20000)) + host.alias.hashCode.abs() % 501), () {
+      _retries.remove(host.alias);
+      final current = hosts.where((current) => current.alias == host.alias).firstOrNull;
+      if (!_lifetime.isCancelled && current != null) unawaited(connect(current));
+    });
+  }
+
+  void _forgetWorkspaces(DesktopSession session) {
+    _workspaceTokens.remove(session)?.cancel();
+    _workspaces.remove(session);
+    _workspaceSignatures.remove(session);
+    _workspaceUpdated.remove(session);
+  }
+
   Future<void> _connect(RemoteMachine host, CancellationToken cancellation) async {
     final previous = _cachedSession(_states[host.alias]);
-    if (previous?.connected == true) return;
+    if (previous != null && !previous.client.isClosed) return;
     _set(host.alias, MachineConnecting(previous));
     AgentClient? client;
-    IsolateOwner? database;
     DesktopSession? session;
     CancellationHook? cancel;
     try {
@@ -222,56 +427,60 @@ class MachinesController extends ChangeNotifier {
       cancel = CancellationHook(cancellation, () => unawaited(client?.close()));
       final key = sha256.convert(utf8.encode(host.alias)).toString().substring(0, 24);
       final data = '$directory/remotes/$key';
-      database = await openDesktopDatabase(data);
+      await callIsolate(local.database.port, 'machine.import', {'machine': host.alias}, cancellation: cancellation.merge(_lifetime));
       cancellation.throwIfCancelled();
-      session = DesktopSession(client, database, attachmentDirectory: '$data/attachments',
+      session = DesktopSession(client, local.database, attachmentDirectory: '$data/attachments',
         sidebarOwner: local, machineAlias: host.alias, machineName: host.name);
       await session.load();
       await session.adoptSidebarPins();
       for (final path in host.projects) {
         if (session.projects.any((project) => project.path == path)) continue;
-        try { await session.addProject(path); }
+        try { await session.addProject(path, discovered: true); }
         on CancelledException { rethrow; }
         catch (error) { session.showError(error, title: 'Could not open remote project'); }
       }
       cancellation.throwIfCancelled();
-      session.addListener(notifyListeners);
+      session.addListener(_sessionChanged);
       session.sidebarChanges.addListener(notifyListeners);
+      session.machineName = hosts.firstWhere((current) => current.alias == host.alias).name;
+      _attempts.remove(host.alias);
       _set(host.alias, MachineReady(session));
-      previous?.removeListener(notifyListeners);
+      _syncWorkspaces();
+      previous?.removeListener(_sessionChanged);
       previous?.sidebarChanges.removeListener(notifyListeners);
       if (previous != null) {
+        _forgetWorkspaces(previous);
         try { await previous.close(); }
         catch (error) { local.showError(error, title: 'Could not release the previous connection'); }
       }
     } catch (error) {
       if (session != null) { await session.close(); }
-      else { await client?.close(); await database?.close(); }
-      if (!_lifetime.isCancelled) _set(host.alias, MachineFailed(error, previous));
+      else { await client?.close(); }
+      final current = hosts.where((current) => current.alias == host.alias).firstOrNull;
+      if (!_lifetime.isCancelled && current != null && _sameConnection(current, host)) _set(host.alias, MachineFailed(error, previous));
     } finally { cancel?.dispose(); }
   }
 
   Future<void> select(String? alias) async {
     if (alias == null) { _selected = null; notifyListeners(); return; }
-    final host = hosts.where((host) => host.alias == alias).first;
-    await connect(host);
-    if (_lifetime.isCancelled) return;
-    if (_cachedSession(_states[alias]) != null) { _selected = alias; notifyListeners(); }
-    else if (_states[alias] case MachineFailed(:final error)) { active.showError(error); }
+    if (_cachedSession(_states[alias]) case final session? when session.connected) { _selected = alias; notifyListeners(); }
   }
 
   Future<void> close() => _closing ??= _close();
   Future<void> _close() async {
     _poll?.cancel();
     _lifetime.cancel();
-    local.removeListener(notifyListeners);
+    for (final retry in _retries.values) { retry.cancel(); }
+    _retries.clear();
+    local.removeListener(_sessionChanged);
     local.sidebarChanges.removeListener(notifyListeners);
     await _refreshing;
     await Future.wait(_pending.values.toList());
     await Future.wait(_catalogRefreshes.values.toList());
+    await Future.wait(_workspacePending.toList());
     for (final entry in _states.entries.toList()) {
       if (_cachedSession(entry.value) case final session?) {
-        session.removeListener(notifyListeners);
+        session.removeListener(_sessionChanged);
         session.sidebarChanges.removeListener(notifyListeners);
         await session.close();
       }
@@ -296,26 +505,28 @@ class MachinePicker extends StatelessWidget {
         else { unawaited(machines.select(value == 'local' ? null : value)); }
       },
       itemBuilder: (_) => [
-        CheckedPopupMenuItem(value: 'local', checked: selected == null, child: const Text('Local machine')),
+        CheckedPopupMenuItem(value: 'local', checked: selected == null, child: Row(mainAxisSize: MainAxisSize.min, children: [
+          MachineGlyph(machines.iconFor(null)), const SizedBox(width: 8), const Text('local')])),
         for (final host in machines.hosts) CheckedPopupMenuItem(value: host.alias,
           checked: machines.selected == host.alias,
-          enabled: machines.state(host.alias) is! MachineConnecting,
+          enabled: switch (machines.state(host.alias)) { MachineReady(:final session) => session.connected, _ => false },
           child: Tooltip(message: switch (machines.state(host.alias)) { MachineFailed(:final error) => '$error', _ => host.alias },
             child: Row(mainAxisSize: MainAxisSize.min, children: [
+              MachineGlyph(machines.iconFor(host.alias)), const SizedBox(width: 8),
               Text(host.name), const SizedBox(width: 12),
               Text(switch (machines.state(host.alias)) {
-                MachineReady(:final session) => session.connected ? 'Available' : 'Reconnect',
-                MachineFailed() => 'Retry connection', _ => 'Connecting…',
+                MachineReady(:final session) => session.connected ? 'Available' : 'Reconnecting…',
+                MachineFailed() => 'Reconnecting…', _ => 'Connecting…',
               }, style: const TextStyle(fontSize: 11, color: Colors.grey)),
             ]))),
         const PopupMenuDivider(),
-        if (onSettings != null) const PopupMenuItem(value: 'settings', child: Text('Manage servers…')),
+        if (onSettings != null) const PopupMenuItem(value: 'settings', child: Text('Manage environments…')),
         PopupMenuItem(value: 'refresh', child: Text(machines.discoveryError == null ? 'Refresh machines' : 'Discovery failed · retry')),
       ],
       child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(selected == null ? Icons.computer_outlined : Icons.dns_outlined, size: 15),
+        MachineGlyph(machines.iconFor(selected?.alias), size: 15),
         const SizedBox(width: 7),
-        Flexible(child: Text(selected?.name ?? 'Local machine', maxLines: 1, overflow: TextOverflow.ellipsis,
+        Flexible(child: Text(selected?.name ?? 'local', maxLines: 1, overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 12))),
         const SizedBox(width: 4), const Icon(Icons.expand_more, size: 15),
       ])),
