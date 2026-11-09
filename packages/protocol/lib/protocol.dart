@@ -9,6 +9,7 @@ export 'package:cancellation_token/cancellation_token.dart';
 export 'src/attachments.dart';
 export 'src/session.dart';
 export 'src/thread.dart';
+export 'src/repository.dart';
 
 typedef Json = Map<String, dynamic>;
 

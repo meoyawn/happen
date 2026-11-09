@@ -56,3 +56,9 @@ You can also maintain this private file yourself:
 ```
 
 Keep SSH addresses, keys and provider credentials outside the repository. Deployment only persists host registration in the user's configuration directory; no credential file or machine-specific deployment descriptor is generated in the checkout.
+
+New threads have **Run on** and **Workspace** controls beneath the composer, following T3 Code's draft routing. Run on lists machines with the same Git repository; Workspace lists each checkout and registered worktree, showing its branch and full path. When a machine has several matches, choosing it opens its workspace choices. The machine becomes fixed once the thread starts.
+
+Discovery uses registered project roots, recent Happen thread directories and Codex session metadata. A registered workspace container exposes its immediate Git checkouts; repository roots are not recursively scanned. Each matching repository is expanded with `git worktree list --porcelain`, including worktrees outside the original project directory and worktrees belonging to a bare repository. SSH, SCP and HTTPS remote spellings identify the same project. As in T3, `upstream` takes precedence over `origin`, then other fetch remotes in name order. Local folder paths do not group projects across machines. Subdirectory projects resolve to the same relative directory in each checkout.
+
+Changing a draft's machine preserves its prompt, model settings, file references and attachments. The destination draft is committed before the source is removed; attachment caches are copied so one machine's draft cannot delete another's files.

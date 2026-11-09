@@ -9,7 +9,8 @@ import 'project_avatar.dart';
 class NewSessionScreen extends StatelessWidget {
   const NewSessionScreen({super.key, required this.session, required this.composer,
     required this.picking, required this.onSelect, required this.onAddProject,
-    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController});
+    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController, this.machinePicker});
+  final Widget? machinePicker;
   final DesktopSession session;
   final Widget composer;
   final bool picking;
@@ -71,7 +72,7 @@ class NewSessionScreen extends StatelessWidget {
                 composer,
                 Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [
                   Expanded(child: Align(alignment: Alignment.centerLeft,
-                    child: PopupMenuButton<String>(tooltip: 'Checkout options', enabled: project != null,
+                    child: machinePicker ?? PopupMenuButton<String>(tooltip: 'Checkout options', enabled: project != null,
                     onSelected: (value) {
                       if (value == 'trace') session.chooseTracing(!session.currentDraft.tracing);
                       onReturnFocus();
@@ -86,6 +87,12 @@ class NewSessionScreen extends StatelessWidget {
                       Icon(Icons.folder_outlined, size: 13, color: desktopSecondary), SizedBox(width: 6),
                       Text('Current checkout', style: TextStyle(fontSize: 12, color: desktopSecondary)),
                     ])))))),
+                  if (machinePicker != null) SizedBox(width: 28, height: 28, child: PopupMenuButton<String>(tooltip: 'Thread options',
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.more_horiz, size: 16, color: desktopSecondary),
+                    onSelected: (_) { session.chooseTracing(!session.currentDraft.tracing); onReturnFocus(); },
+                    itemBuilder: (_) => [CheckedPopupMenuItem(value: 'trace', checked: session.currentDraft.tracing,
+                      enabled: !session.submitting, child: const Text('Trace this session'))])),
                   if (project?.branch case final branch?) ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: bounds.maxWidth * .3),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [

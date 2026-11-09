@@ -212,6 +212,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
         : DesktopNotificationWindow(notifications: _notifications!, onOpen: _openNotification,
             child: DesktopView(session: _machines?.active ?? _session!,
+              machines: _machines,
               machinePicker: _machines == null ? null : MachinePicker(machines: _machines!))),
   ));
 }

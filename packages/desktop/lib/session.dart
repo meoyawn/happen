@@ -10,7 +10,6 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:telemetry/telemetry.dart';
 
-import 'project_identity.dart';
 import 'dictation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
@@ -27,6 +26,8 @@ import 'pin_state.dart';
 import 'file_change.dart';
 import 'git_actions_state.dart';
 import 'project_actions_state.dart';
+
+part 'draft_routing.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -249,6 +250,7 @@ class DesktopSession extends ChangeNotifier {
   bool sidebarOpen = true;
   bool viewingConversation = true;
   late int _navigationRevision = 0;
+  int get navigationRevision => _navigationRevision;
   final openTabIds = <String>[];
   final viewedTasks = <String, int>{};
   double sidebarWidth = 336;
@@ -1113,6 +1115,8 @@ class DesktopSession extends ChangeNotifier {
 
   void newSession([Project? owner]) => openDraft(_draftForProject((owner ?? project)?.checkoutKey));
 
+  void _notifyDraftChanges() => notifyListeners();
+
   Future<Object?> _request(String method, [Json params = const {}]) async {
     _lifetime.throwIfCancelled();
     if (method == 'task.start') {
@@ -1270,43 +1274,50 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> addProject(String path) async {
-    final inspected = jsonObject(await _request('workspace.inspect', {'path': path}));
+    final opened = await ensureProject(path, cancellation: _lifetime);
+    _navigationRevision++;
+    project = opened;
+    await refreshSessions(owner: opened);
+    task = null;
+    currentDraft.checkoutKey = opened.checkoutKey;
+    _pruneEmptyDrafts();
+    _saveNavigation('open_tabs', jsonEncode(openTabIds));
+    notifyListeners();
+    _notice('Project opened', description: opened.name);
+  }
+
+  Future<Project> ensureProject(String path, {required CancellationToken cancellation}) async {
+    final token = cancellation.merge(_lifetime);
+    final inspected = await client.inspectWorkspace(path, cancellation: token);
     if (inspected['available'] != true) {
       throw const FileSystemException('Choose an existing project folder');
     }
     final canonical = inspected['path'] as String;
-    _lifetime.throwIfCancelled();
-    _navigationRevision++;
-    project = projects.where((p) => p.path == canonical).firstOrNull;
-    if (project == null) {
+    token.throwIfCancelled();
+    var opened = projects.where((p) => p.path == canonical).firstOrNull;
+    if (opened == null) {
       final key = newId();
-      final id = client.sharedFilesystem ? await projectIdentity(canonical, _lifetime) : inspected['identity'] as String;
+      final id = inspected['identity'] as String;
       await callIsolate(database.port, 'project.add', {
         'checkout_key': key,
         'identity': id,
         'path': canonical,
-      }, cancellation: _lifetime);
-      project = Project(key, id, canonical);
-      projects.add(project!);
+      }, cancellation: token);
+      opened = Project(key, id, canonical)..branch = inspected['branch'] as String?;
+      projects.add(opened);
     } else {
-      if (project!.removing) throw StateError('Project is being removed');
-      project!.available = true;
-      await _refreshIdentity(project!);
+      if (opened.removing) throw StateError('Project is being removed');
+      opened.available = true;
+      await _refreshIdentity(opened);
     }
-    await refreshSessions(owner: project);
-    task = null;
-    currentDraft.checkoutKey = project!.checkoutKey;
-    _pruneEmptyDrafts();
-    _saveNavigation('open_tabs', jsonEncode(openTabIds));
     notifyListeners();
-    _notice('Project opened', description: project!.name);
+    return opened;
   }
 
   Future<void> _refreshIdentity(Project target) async {
     // An unavailable checkout must not silently erase its last known remote.
-    final remote = client.sharedFilesystem ? null : jsonObject(await _request('workspace.inspect', {'path': target.path}));
-    final identity = remote == null ? await inspectProject(target.path, _lifetime)
-      : remote['available'] == true ? (identity: remote['identity'] as String, branch: remote['branch'] as String?) : null;
+    final remote = await client.inspectWorkspace(target.path, cancellation: _lifetime);
+    final identity = remote['available'] == true ? (identity: remote['identity'] as String, branch: remote['branch'] as String?) : null;
     if (identity == null) return;
     if (target.branch != identity.branch) {
       target.branch = identity.branch;

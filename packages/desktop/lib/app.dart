@@ -36,12 +36,15 @@ import 'settings_screen.dart';
 import 'workspace_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
+import 'machines.dart';
+import 'thread_machine_picker.dart';
 import 'project_details.dart';
 
 class DesktopView extends StatefulWidget {
-  const DesktopView({super.key, required this.session, this.machinePicker});
+  const DesktopView({super.key, required this.session, this.machinePicker, this.machines});
   final DesktopSession session;
   final Widget? machinePicker;
+  final MachinesController? machines;
 
   @override
   State<DesktopView> createState() => _DesktopViewState();
@@ -654,6 +657,7 @@ class _DesktopViewState extends State<DesktopView> {
                 child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
+                    machinePicker: widget.machines == null ? null : ThreadMachinePicker(machines: widget.machines!, session: session),
                     projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),
@@ -727,7 +731,11 @@ class _DesktopViewState extends State<DesktopView> {
     padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
     child: SizedBox(height: 56, child: Row(
       children: [
-        if (widget.machinePicker != null) SizedBox(width: 172, child: widget.machinePicker),
+        if (widget.machines != null) Padding(padding: const EdgeInsets.only(right: 16), child: SizedBox(width: 156, child: Row(children: [
+          Icon(session.client.sharedFilesystem ? Icons.computer_outlined : Icons.dns_outlined, size: 14, color: desktopSecondary),
+          const SizedBox(width: 6), Expanded(child: Text(widget.machines!.machineFor(session).name,
+            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
+        ]))),
         Expanded(child: LayoutBuilder(builder: (context, bounds) => Row(children: [
           if (session.project != null) ...[
             ProjectAvatar(project: session.project!, size: 14, generated: session.projectAvatarStyle == 'generated'),
@@ -933,7 +941,7 @@ class _ComposerState extends State<_Composer> {
   void didUpdateWidget(_Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.active && !oldWidget.active) _focus.requestFocus();
-    if (_draftKey == _currentDraftKey) return;
+    if (identical(oldWidget.session, widget.session) && _draftKey == _currentDraftKey) return;
     _attachmentLifetime.cancel();
     _attachmentLifetime = CancellationToken();
     _receivingAttachments = false;

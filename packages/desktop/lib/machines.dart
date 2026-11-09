@@ -11,6 +11,7 @@ import 'database.dart';
 import 'session.dart';
 
 typedef RemoteMachine = ({String alias, String name, List<String> projects});
+typedef MachineSession = ({String? alias, String name, DesktopSession session});
 
 sealed class MachineState { const MachineState(); }
 final class MachineConnecting extends MachineState { const MachineConnecting(); }
@@ -49,6 +50,22 @@ class MachinesController extends ChangeNotifier {
   String? get selected => _selected;
   DesktopSession get active => switch (_states[_selected]) { MachineReady(:final session) => session, _ => local };
   MachineState? state(String alias) => _states[alias];
+  List<MachineSession> get sessions => [
+    (alias: null, name: 'Local machine', session: local),
+    for (final host in hosts)
+      if (_states[host.alias] case MachineReady(:final session))
+        (alias: host.alias, name: host.name, session: session),
+  ];
+  MachineSession machineFor(DesktopSession session) => sessions.firstWhere((machine) => identical(machine.session, session));
+
+  void openDraftOn(MachineSession machine, SessionDraft draft) {
+    if (!sessions.any((current) => identical(current.session, machine.session)) || !machine.session.connected) {
+      throw StateError('The target machine disconnected. Refresh the machine list.');
+    }
+    machine.session.openDraft(draft);
+    _selected = machine.alias;
+    notifyListeners();
+  }
   Object? discoveryError;
   Future<void>? _refreshing, _closing;
   Timer? _poll;

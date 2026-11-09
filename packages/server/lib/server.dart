@@ -504,7 +504,7 @@ class AgentServer {
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
     final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
-    final preparation = method == 'session.side.create' || method.startsWith('git/')
+    final preparation = method == 'session.side.create' || method.startsWith('git/') || method.startsWith('workspace.')
       ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
     try {
       // Export reads must not recursively record their own trace pages.
@@ -554,7 +554,18 @@ class AgentServer {
     }
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
     if (method == 'workspace.inspect') {
-      return inspectWorkspace(requiredString(params, 'path'), client.cancellation.merge(_lifetime));
+      return inspectWorkspace(requiredString(params, 'path'), client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+    }
+    if (method == 'workspace.discover') {
+      final cancellation = client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime);
+      final paths = (params['paths'] as List? ?? []).cast<String>().toSet();
+      if (paths.length > 1000) throw ArgumentError('Too many project roots');
+      final history = await listThreads(directory, {'limit': 100}, cancellation: cancellation);
+      for (final thread in (history['data'] as List).map(jsonObject)) {
+        if (thread['cwd'] is String) paths.add(thread['cwd'] as String);
+      }
+      return discoverWorkspaces(paths.toList(), params['repository'] as String?,
+        params['subdirectory'] as String? ?? '', cancellation);
     }
     if (method.startsWith('git/')) return _gitRequest(method, params, client, requestId);
     if (method.startsWith('thread/') || method.startsWith('turn/')) return _threadRequest(method, params, client, requestId);
@@ -2038,6 +2049,14 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
+    jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
+
+  Future<Json> discoverWorkspaces({required List<String> paths, String? repository, String subdirectory = '',
+    required CancellationToken cancellation}) async => jsonObject(await _request('workspace.discover',
+      {'paths': paths, 'repository': repository, 'subdirectory': subdirectory},
+      cancellation: cancellation, timeout: const Duration(seconds: 60)));
+
   Future<Json> gitRequest(String method, Json params, {required CancellationToken cancellation}) async {
     if (!{'git/status', 'git/run', 'git/branches', 'git/diff'}.contains(method)) throw ArgumentError('Unknown Git operation');
     return jsonObject(await _request(method, params, cancellation: cancellation));
@@ -2225,7 +2244,7 @@ class AgentClient {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
       if ({'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
-        'session.side.create'}.contains(method) && socket!.readyState == WebSocket.open) {
+        'session.side.create', 'workspace.inspect', 'workspace.discover'}.contains(method) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {
