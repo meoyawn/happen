@@ -427,6 +427,10 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 if (autocomplete?.completeSelection(completeQuery: true) != true) _code.applyIndent();
                 return null;
               }),
+              CodeShortcutNewLineIntent: _ComposerAction<CodeShortcutNewLineIntent>(_code, enabled: widget.enabled, onInvoke: (_) {
+                autocomplete?.completeSelection();
+                return null;
+              }),
               CodeShortcutDeleteIntent: _ComposerAction<CodeShortcutDeleteIntent>(_code, enabled: widget.enabled, onInvoke: (intent) {
                 final selection = _selection(_code.value, _lines);
                 if (selection.isCollapsed) {
@@ -485,6 +489,10 @@ class _ComposerShortcuts extends DefaultCodeShortcutsActivatorsBuilder {
 
   @override
   List<ShortcutActivator>? build(CodeShortcutType type) => switch (type) {
+    CodeShortcutType.newLine when completing => const [
+      SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false),
+      SingleActivator(LogicalKeyboardKey.numpadEnter, includeRepeats: false),
+    ],
     CodeShortcutType.newLine || CodeShortcutType.esc || CodeShortcutType.lineMoveUp ||
     CodeShortcutType.lineMoveDown || CodeShortcutType.lineDelete || CodeShortcutType.singleLineComment ||
     CodeShortcutType.multiLineComment || CodeShortcutType.save || CodeShortcutType.find ||

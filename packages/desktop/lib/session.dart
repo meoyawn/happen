@@ -1158,7 +1158,7 @@ class DesktopSession extends ChangeNotifier {
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
-    if (supportsAppIconSwitching) await appIcon.ready;
+    if (client.sharedFilesystem && supportsAppIconSwitching) await appIcon.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -1270,17 +1270,17 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> addProject(String path) async {
-    final folder = Directory(path);
-    if (!await folder.exists()) {
+    final inspected = jsonObject(await _request('workspace.inspect', {'path': path}));
+    if (inspected['available'] != true) {
       throw const FileSystemException('Choose an existing project folder');
     }
-    final canonical = await folder.resolveSymbolicLinks();
+    final canonical = inspected['path'] as String;
     _lifetime.throwIfCancelled();
     _navigationRevision++;
     project = projects.where((p) => p.path == canonical).firstOrNull;
     if (project == null) {
       final key = newId();
-      final id = await projectIdentity(canonical, _lifetime);
+      final id = client.sharedFilesystem ? await projectIdentity(canonical, _lifetime) : inspected['identity'] as String;
       await callIsolate(database.port, 'project.add', {
         'checkout_key': key,
         'identity': id,
@@ -1304,7 +1304,9 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _refreshIdentity(Project target) async {
     // An unavailable checkout must not silently erase its last known remote.
-    final identity = await inspectProject(target.path, _lifetime);
+    final remote = client.sharedFilesystem ? null : jsonObject(await _request('workspace.inspect', {'path': target.path}));
+    final identity = remote == null ? await inspectProject(target.path, _lifetime)
+      : remote['available'] == true ? (identity: remote['identity'] as String, branch: remote['branch'] as String?) : null;
     if (identity == null) return;
     if (target.branch != identity.branch) {
       target.branch = identity.branch;
@@ -1350,7 +1352,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> _checkProjectAvailability() async {
     var changed = false;
     for (final owner in List.of(projects)) {
-      final available = await Directory(owner.path).exists();
+      final available = jsonObject(await _request('workspace.inspect', {'path': owner.path}))['available'] == true;
       _lifetime.throwIfCancelled();
       if (owner.available == available) continue;
       owner.available = available;

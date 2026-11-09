@@ -3,6 +3,26 @@ language: dart
 toolchains:
   default: system
 tasks:
+  build-server:
+    description: Build a single-file Ubuntu AOT server with embedded native libraries
+    command: dart tool/build_server.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  deploy-server:
+    description: Build, upload over SSH, and restart the managed VPS daemon
+    command: dart tool/deploy_server.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
   analyze:
     description: Check Dart types and configured lint rules across the workspace
     command: dart --disable-dart-dev tool/test_isolated.dart analyze

@@ -39,8 +39,9 @@ import 'terminal.dart';
 import 'project_details.dart';
 
 class DesktopView extends StatefulWidget {
-  const DesktopView({super.key, required this.session});
+  const DesktopView({super.key, required this.session, this.machinePicker});
   final DesktopSession session;
+  final Widget? machinePicker;
 
   @override
   State<DesktopView> createState() => _DesktopViewState();
@@ -287,6 +288,24 @@ class _DesktopViewState extends State<DesktopView> {
     if (_picking || !mounted) return;
     setState(() => _picking = true);
     try {
+      if (!session.client.sharedFilesystem) {
+        final input = TextEditingController(text: '~/workspace');
+        String? path;
+        try {
+          path = await showDialog<String>(context: context, builder: (context) => AlertDialog(
+            title: const Text('Open remote project'),
+            content: SizedBox(width: 440, child: TextField(controller: input, autofocus: true,
+              decoration: const InputDecoration(labelText: 'Folder on the remote machine'),
+              onSubmitted: (value) => Navigator.pop(context, value.trim()))),
+            actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, input.text.trim()), child: const Text('Open'))]));
+        } finally { input.dispose(); }
+        if (path != null && path.isNotEmpty && mounted) {
+          await session.addProject(path);
+          if (mounted) { setState(() => session.viewingConversation = true); if (!_settingsOpen) _focusComposer(); }
+        }
+        return;
+      }
       final paths = await MacosFilePicker().pick(
         MacosFilePickerMode.folder,
         allowsMultiple: false,
@@ -514,7 +533,7 @@ class _DesktopViewState extends State<DesktopView> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  bool get _canOpenTerminal => session.project?.available == true && session.project?.removing != true &&
+  bool get _canOpenTerminal => session.client.sharedFilesystem && session.project?.available == true && session.project?.removing != true &&
       session.task?.archived != true && session.task?.archiving != true;
 
   (String, String?)? get _terminalScope => _canOpenTerminal ? (session.project!.checkoutKey, session.draftKey) : null;
@@ -592,6 +611,7 @@ class _DesktopViewState extends State<DesktopView> {
         session.sideChats.values.any((task) => !task.archived && !task.archiving &&
           (task.questions.isNotEmpty || session.hasUnseenCompletion(task))),
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
+            machinePicker: widget.machinePicker,
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
             onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
             onBack: _navigationIndex > 0 ? () => _navigateHistory(-1) : null,
@@ -707,6 +727,7 @@ class _DesktopViewState extends State<DesktopView> {
     padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
     child: SizedBox(height: 56, child: Row(
       children: [
+        if (widget.machinePicker != null) SizedBox(width: 172, child: widget.machinePicker),
         Expanded(child: LayoutBuilder(builder: (context, bounds) => Row(children: [
           if (session.project != null) ...[
             ProjectAvatar(project: session.project!, size: 14, generated: session.projectAvatarStyle == 'generated'),
@@ -1228,9 +1249,9 @@ class _ComposerState extends State<_Composer> {
                 on CancelledException { /* The pending side chat was closed. */ }
                 catch (error) { session.showError(error); }
               }())),
-          if (_project case final project?)
+          if (session.client.sharedFilesystem && _project != null)
             '/terminal': (description: 'Open the project terminal', run: () => session.terminals.open(
-              (project.checkoutKey, session.task?.id), project.path)),
+              (_project!.checkoutKey, session.task?.id), _project!.path)),
         },
         child: child,
       );

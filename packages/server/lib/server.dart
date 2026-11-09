@@ -21,6 +21,7 @@ import 'src/file_search.dart';
 import 'src/attachments.dart';
 import 'src/questions.dart';
 import 'src/git.dart';
+import 'src/workspaces.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
@@ -31,6 +32,7 @@ part 'src/mcp_events.dart';
 part 'src/mcp_input.dart';
 part 'src/goals.dart';
 part 'src/git_requests.dart';
+part 'src/ssh.dart';
 
 class AgentServer {
   AgentServer._(
@@ -551,6 +553,9 @@ class AgentServer {
       return {'userAgent': 'happen/0.1.0', 'serverInfo': {'name': 'happen', 'version': '0.1.0'}, 'platformFamily': Platform.operatingSystem};
     }
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
+    if (method == 'workspace.inspect') {
+      return inspectWorkspace(requiredString(params, 'path'), client.cancellation.merge(_lifetime));
+    }
     if (method.startsWith('git/')) return _gitRequest(method, params, client, requestId);
     if (method.startsWith('thread/') || method.startsWith('turn/')) return _threadRequest(method, params, client, requestId);
     if (method == 'session.read.cancel') {
@@ -1887,6 +1892,15 @@ class _Client {
 
 /// Local calls share dispatch and snapshots with desktop's WebSocket client.
 class AgentClient {
+  AgentClient._worker(IsolateOwner owner, ReceivePort port) : socket = null, sharedFilesystem = false {
+    _worker = owner;
+    _workerEvents = port;
+    _subscription = port.listen((event) {
+      if (event == null) { _disconnected(); return; }
+      if (!events.isClosed) events.add(jsonObject(event));
+    });
+    unawaited(owner.done.then((_) => _disconnected()));
+  }
   AgentClient._(WebSocket connection, {required this.sharedFilesystem}) : socket = connection {
     _subscription = connection.listen(
       (raw) {
@@ -1931,6 +1945,8 @@ class AgentClient {
     }, onDone: _disconnected, onError: (Object _) => _disconnected());
   }
   final WebSocket? socket;
+  IsolateOwner? _worker;
+  ReceivePort? _workerEvents;
   AgentServer? _localServer;
   _Client? _localClient;
   bool _closed = false;
@@ -1945,6 +1961,7 @@ class AgentClient {
   final _sessionTraces = <String, TraceContext>{};
   late final _tracedSessions = <String>{};
   bool _disconnectRecorded = false;
+  late final _connectionDone = Completer<void>();
   final _traceLifetime = CancellationToken();
   Future<TraceStore> startTracing(String directory) => _tracing ??=
     TraceStore.open('$directory/telemetry-desktop.sqlite', cancellation: _traceLifetime)
@@ -1974,6 +1991,7 @@ class AgentClient {
   static Future<AgentClient> connect(
     Uri uri, {
     String? token,
+    bool? sharedFilesystem,
     CancellationToken? cancellation,
   }) async {
     cancellation?.throwIfCancelled();
@@ -2004,7 +2022,7 @@ class AgentClient {
         await socket.close();
         lifetime.throwIfCancelled();
       }
-      final client = AgentClient._(socket, sharedFilesystem: uri.scheme == 'unix');
+      final client = AgentClient._(socket, sharedFilesystem: sharedFilesystem ?? uri.scheme == 'unix');
       try {
         await client._request('initialize', {'clientInfo': {'name': 'happen', 'version': '0.1.0'},
           'capabilities': {'experimentalApi': true}}, cancellation: lifetime);
@@ -2152,6 +2170,10 @@ class AgentClient {
     if (_closed || socket != null && socket!.readyState != WebSocket.open) {
       throw StateError('Connection is closed');
     }
+    if (_worker case final worker?) {
+      return callIsolate(worker.port, 'request', {'method': method, 'params': params, 'timeout': timeout.inMilliseconds},
+        cancellation: cancellation, timeout: timeout);
+    }
     if (_localServer case final server?) {
       final state = _localClient!;
       if (state.cancellation.isCancelled) throw StateError('Connection is closed');
@@ -2233,6 +2255,7 @@ class AgentClient {
   void _disconnected() {
     if (_disconnectRecorded) return;
     _disconnectRecorded = true;
+    if (!_connectionDone.isCompleted) _connectionDone.complete();
     for (final context in _sessionTraces.values) {
       if (!_tracedSessions.contains(context.session)) continue;
       withTrace(context, () => traceInstant('websocket.disconnected', category: 'websocket',
@@ -2248,16 +2271,27 @@ class AgentClient {
   Future<void> close() => _closingClient ??= _closeClient();
   Future<void> _closeClient() async {
     _closed = true;
-    if (_localClient case final state?) {
-      _localServer!._detach(state);
-      await state.close();
-    } else { await socket!.close(); }
-    await _subscription.cancel();
-    _disconnected();
-    _traceLifetime.cancel();
-    if (_tracing != null) {
-      try { await (await _tracing!).close(); }
-      on CancelledException { /* Shutdown can cancel recorder startup. */ }
+    try {
+      if (_localClient case final state?) {
+        _localServer!._detach(state);
+        await state.close();
+      } else if (_worker case final worker?) {
+        try { await worker.close(); }
+        finally { _workerEvents?.close(); }
+      } else {
+        await socket!.close();
+        // Keep reading until the peer's close frame (or the WebSocket's bounded
+        // close timeout). Cancelling first strands its close-handshake timer.
+        await _connectionDone.future;
+      }
+    } finally {
+      await _subscription.cancel();
+      _disconnected();
+      _traceLifetime.cancel();
+      if (_tracing != null) {
+        try { await (await _tracing!).close(); }
+        on CancelledException { /* Shutdown can cancel recorder startup. */ }
+      }
     }
   }
 }

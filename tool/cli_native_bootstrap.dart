@@ -12,6 +12,12 @@ const cliNativeContracts = <String, ({String assetId, String anchor})>{
   'libpty2_unix.dylib': (assetId: 'package:pty2/src/impl/unix.dart', anchor: 'pty2_spawn_unix'),
 };
 
+const linuxNativeContracts = <String, ({String assetId, String anchor})>{
+  'libcode_mode.so': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
+  'libsqlite3.so': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
+  'libpty2_unix.so': (assetId: 'package:pty2/src/impl/unix.dart', anchor: 'pty2_spawn_unix'),
+};
+
 @Native<Uint64 Function()>(assetId: 'package:code_mode/src/bindings.dart', symbol: 'embedded_js_thread_id')
 external int _threadId();
 @Native<Int32 Function()>(assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', symbol: 'sqlite3_libversion_number')
@@ -23,7 +29,9 @@ external int _ptySpawn(Pointer<Void> executable, Pointer<Void> argv, Pointer<Voi
 final _process = DynamicLibrary.process();
 final _malloc = _process.lookupFunction<Pointer<Void> Function(Size), Pointer<Void> Function(int)>('malloc');
 final _free = _process.lookupFunction<Void Function(Pointer<Void>), void Function(Pointer<Void>)>('free');
-final _chmod = _process.lookupFunction<Int32 Function(Pointer<Uint8>, Uint16), int Function(Pointer<Uint8>, int)>('chmod');
+final _chmod = Platform.isLinux
+  ? _process.lookupFunction<Int32 Function(Pointer<Uint8>, Uint32), int Function(Pointer<Uint8>, int)>('chmod')
+  : _process.lookupFunction<Int32 Function(Pointer<Uint8>, Uint16), int Function(Pointer<Uint8>, int)>('chmod');
 final _dlopen = _process.lookupFunction<Pointer<Void> Function(Pointer<Uint8>, Int32), Pointer<Void> Function(Pointer<Uint8>, int)>('dlopen');
 final _dlsym = _process.lookupFunction<Pointer<Void> Function(Pointer<Void>, Pointer<Uint8>), Pointer<Void> Function(Pointer<Void>, Pointer<Uint8>)>('dlsym');
 final _libraries = <Pointer<Void>>[];
@@ -103,27 +111,33 @@ Future<bool> _install(Directory root, Directory directory, String id, List<Embed
 }
 
 /// The release main runs this before touching any native package. Warm launches
-/// read only a small marker and file metadata before loading the cached dylibs.
+/// read only a small marker and file metadata before loading the cached libraries.
 /// No subprocess, network request, SDK, or runtime compiler is involved.
 Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) async {
-  if (!Platform.isMacOS) throw UnsupportedError('This executable targets macOS');
+  if (!Platform.isMacOS && !Platform.isLinux) throw UnsupportedError('Embedded native assets require macOS or Linux');
   final started = Stopwatch()..start();
   final home = Platform.environment['HOME'];
   final override = Platform.environment['HAPPEN_NATIVE_CACHE'];
   if (override == null && (home == null || home.isEmpty)) throw StateError('HOME is required for the native cache');
-  final root = Directory(override ?? '$home/Library/Caches/dev.happen/cli/native').absolute;
+  final cache = Platform.isMacOS ? '$home/Library/Caches'
+    : Platform.environment['XDG_CACHE_HOME'] ?? '$home/.cache';
+  final root = Directory(override ?? '$cache/dev.happen/cli/native').absolute;
   if (FileSystemEntity.isLinkSync(root.path)) throw FileSystemException('Native cache must not be a symbolic link', root.path);
   final directory = Directory('${root.path}/$id');
   final installed = _ready(directory, id, assets) ? false : await _install(root, directory, id, assets);
+  final contracts = Platform.isLinux ? linuxNativeContracts : cliNativeContracts;
   for (final asset in assets) {
-    final handle = _withCString('${directory.path}/${asset.name}', (path) => _dlopen(path, 0x2 | 0x4)); // RTLD_NOW | RTLD_LOCAL
+    // Linux assets bind through the process symbol table. Make only these
+    // verified libraries global before the first @Native lookup in any isolate.
+    final flags = Platform.isLinux ? 0x2 | 0x100 : 0x2 | 0x4;
+    final handle = _withCString('${directory.path}/${asset.name}', (path) => _dlopen(path, flags));
     if (handle == nullptr) throw StateError('Cannot load embedded native asset: ${asset.name}');
     _libraries.add(handle); // Process-owned; native work must never outlive its library.
-    _withCString(cliNativeContracts[asset.name]!.anchor, (symbol) {
+    _withCString(contracts[asset.name]!.anchor, (symbol) {
       final bound = switch (asset.name) {
-        'libcode_mode.dylib' => Native.addressOf<NativeFunction<Uint64 Function()>>(_threadId).cast<Void>(),
-        'libsqlite3.dylib' => Native.addressOf<NativeFunction<Int32 Function()>>(_sqliteVersion).cast<Void>(),
-        'libpty2_unix.dylib' => Native.addressOf<NativeFunction<_PtySpawn>>(_ptySpawn).cast<Void>(),
+        'libcode_mode.dylib' || 'libcode_mode.so' => Native.addressOf<NativeFunction<Uint64 Function()>>(_threadId).cast<Void>(),
+        'libsqlite3.dylib' || 'libsqlite3.so' => Native.addressOf<NativeFunction<Int32 Function()>>(_sqliteVersion).cast<Void>(),
+        'libpty2_unix.dylib' || 'libpty2_unix.so' => Native.addressOf<NativeFunction<_PtySpawn>>(_ptySpawn).cast<Void>(),
         _ => throw StateError('Unknown native asset ${asset.name}'),
       };
       if (_dlsym(handle, symbol) != bound) throw StateError('Native asset binding differs from ${asset.name}');

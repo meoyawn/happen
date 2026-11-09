@@ -11,6 +11,7 @@ import 'database.dart';
 import 'desktop_notifications.dart';
 import 'lifecycle.dart';
 import 'local_task_sleep.dart';
+import 'machines.dart';
 import 'panel_state.dart';
 import 'session.dart';
 
@@ -33,6 +34,8 @@ class _HappenDesktopState extends State<HappenDesktop> {
   IsolateOwner? _database;
   AgentClient? _client;
   DesktopSession? _session;
+  late MachinesController? _machines = null;
+  late DesktopSession? _displayedSession = null;
   DesktopNotifications? _notifications;
   LocalTaskSleepInhibitor? _sleep;
   StreamSubscription<int>? _activity;
@@ -63,12 +66,26 @@ class _HappenDesktopState extends State<HappenDesktop> {
   void reassemble() {
     super.reassemble();
     _watchLocalTasks();
+    _watchMachines();
+  }
+
+  void _watchMachines() {
+    if (_lifetime.isCancelled || _session == null || _machines != null) return;
+    _machines = MachinesController(_session!, File(_session!.attachmentDirectory).parent.path);
+    _displayedSession = _session;
+    _machines!.addListener(_machineChanged);
+  }
+
+  void _machineChanged() {
+    if (!mounted || _lifetime.isCancelled || identical(_displayedSession, _machines?.active)) return;
+    setState(() => _displayedSession = _machines?.active);
   }
 
   Future<void> _refreshProjects() async {
     try {
-      await _session?.refreshProjects();
-      await _session?.refreshProviders();
+      final session = _machines?.active ?? _session;
+      await session?.refreshProjects();
+      await session?.refreshProviders();
     } on CancelledException {
       // Application exit owns cancellation.
     } catch (error) {
@@ -84,6 +101,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
     if (parent == null) return;
     final project = session.projects.where((project) => project.tasks.contains(parent)).firstOrNull;
     if (project == null) return;
+    unawaited(_machines?.select(null));
     _navigator.currentState?.popUntil((route) => route.isFirst);
     unawaited(() async {
       try {
@@ -119,6 +137,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
       final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
       _notifications = DesktopNotifications(session);
       await session.load();
+      _watchMachines();
       _lifetime.throwIfCancelled();
       if (mounted) setState(() {});
     } on CancelledException {
@@ -135,6 +154,8 @@ class _HappenDesktopState extends State<HappenDesktop> {
     _lifetime.cancel();
     await _opening;
     await _activity?.cancel();
+    _machines?.removeListener(_machineChanged);
+    await _machines?.close();
     try {
       await _notifications?.close();
     } finally {
@@ -190,6 +211,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
         : _session == null
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
         : DesktopNotificationWindow(notifications: _notifications!, onOpen: _openNotification,
-            child: DesktopView(session: _session!)),
+            child: DesktopView(session: _machines?.active ?? _session!,
+              machinePicker: _machines == null ? null : MachinePicker(machines: _machines!))),
   ));
 }
