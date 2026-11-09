@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -11,6 +12,9 @@ import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 import 'appearance.dart';
 import 'desktop_toast.dart';
 import 'file_reference.dart';
+import 'browser_annotation_script.dart';
+import 'conversation_annotations.dart';
+import 'response_annotation.dart';
 
 /// Bare local addresses use HTTP; other bare hosts use HTTPS.
 /// Text without a host opens as a web search, like OpenCode's address bar.
@@ -132,6 +136,114 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   String? _error;
   bool _back = false, _forward = false, _loading = false;
   int _progress = 0, _generation = 0, _navigation = 0;
+  late final _pageKey = GlobalKey();
+  late bool _commenting = false, _annotationBridge = false, _annotationReady = false;
+  String? _annotationDocument;
+  CancellationToken? _annotationOperation;
+  ConversationAnnotationScope? _annotations;
+  late final _annotationSelections = <int>{};
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scope = ConversationAnnotationScope.maybeOf(context);
+    if (scope != _annotations) {
+      _annotations?.changes.removeListener(_reconcileAnnotations);
+      _annotations = scope;
+      _annotations?.changes.addListener(_reconcileAnnotations);
+    }
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    if (_controller != null && !_loading) _annotationEffect(_installAnnotations);
+  }
+
+  void _resetAnnotations() {
+    _annotationOperation?.cancel();
+    _annotationOperation = CancellationToken();
+    _annotationDocument = newId();
+    _annotationSelections.clear();
+    _annotationReady = false;
+  }
+
+  void _annotationEffect(Future<void> Function() effect) {
+    unawaited(() async {
+      try { await effect(); }
+      on CancelledException { /* Navigation or closing the tab owns cancellation. */ }
+      catch (_) {
+        if (mounted && !_lifetime.isCancelled && widget.active) {
+          showDesktopToast(context, 'This page could not be annotated. Reload it and try again.', type: DesktopToastType.error);
+        }
+      }
+    }());
+  }
+
+  Future<void> _installAnnotations() async {
+    final controller = _controller;
+    if (!mounted || controller == null || !widget.toolbar || !widget.navigationEnabled || _annotations?.enabled != true || _loading) return;
+    if (!_annotationBridge) {
+      await controller.addJavaScriptChannel('HappenAnnotation', onMessageReceived: _annotationMessage).asCancellable(_lifetime);
+      _annotationBridge = true;
+    }
+    if (_annotationDocument == null) _resetAnnotations();
+    final document = _annotationDocument;
+    final cancellation = _annotationOperation!.merge(_lifetime);
+    await controller.runJavaScript(browserAnnotationScript.replaceAll('__HAPPEN_DOCUMENT__', document!)).asCancellable(cancellation);
+    if (!mounted || document != _annotationDocument) return;
+    _annotationReady = true;
+    await controller.runJavaScript('__happenBrowserAnnotations.setMode(${widget.active && _commenting});').asCancellable(cancellation);
+    _reconcileAnnotations();
+    if (mounted) setState(() {});
+  }
+
+  void _reconcileAnnotations() {
+    if (!_annotationReady || _controller == null || _annotations == null) return;
+    final ids = _annotations!.readAnnotations().map((annotation) => annotation.id).toList();
+    final cancellation = _annotationOperation!.merge(_lifetime);
+    _annotationEffect(() => _controller!.runJavaScript('__happenBrowserAnnotations.reconcile(${jsonEncode(ids)});')
+      .asCancellable(cancellation));
+  }
+
+  void _annotationMessage(JavaScriptMessage message) {
+    if (!mounted || !widget.active || _loading || !_annotationReady || _annotations?.enabled != true || message.message.length > 96 * 1024) return;
+    try {
+      final value = jsonObject(jsonDecode(message.message));
+      if (value['document'] != _annotationDocument) return;
+      if (value['type'] == 'escape') {
+        setState(() => _commenting = false);
+        return;
+      }
+      if (value['type'] != 'selection' || value['serial'] is! int || value['target'] is! Map) return;
+      final serial = value['serial'] as int;
+      if (serial < 1 || !_annotationSelections.add(serial)) return;
+      final browser = BrowserAnnotation(jsonObject(value['target']));
+      if (browser.pageUrl != _location?.toString()) return;
+      final annotation = ResponseAnnotation(id: newId(), text: browser.label, browser: browser);
+      final scope = _annotations!, document = _annotationDocument;
+      final cancellation = _annotationOperation!.merge(_lifetime);
+      _annotationEffect(() async {
+        final number = scope.readAnnotations().length + 1;
+        await _controller!.runJavaScript('__happenBrowserAnnotations.commit(${jsonEncode(annotation.id)},$number,$serial);')
+          .asCancellable(cancellation);
+        if (!mounted || !widget.active || document != _annotationDocument || scope != _annotations) return;
+        final rect = browser.target['rect'] as Map?;
+        final box = _pageKey.currentContext?.findRenderObject();
+        final anchor = box is RenderBox && box.hasSize ? box.localToGlobal(Offset(
+          ((rect?['x'] as num?)?.toDouble() ?? 16).clamp(0, box.size.width),
+          ((rect?['y'] as num?)?.toDouble() ?? 16).clamp(0, box.size.height))) : const Offset(24, 80);
+        scope.onAdd(annotation, anchor);
+      });
+    } catch (_) { /* Page messages are optional, untrusted evidence. */ }
+  }
+
+  void _toggleAnnotations() {
+    if (!_annotationReady || _controller == null) return;
+    setState(() => _commenting = !_commenting);
+    final cancellation = _annotationOperation!.merge(_lifetime);
+    _annotationEffect(() => _controller!.runJavaScript('__happenBrowserAnnotations.setMode($_commenting);').asCancellable(cancellation));
+  }
 
   @override
   void initState() {
@@ -156,6 +268,10 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     super.didUpdateWidget(oldWidget);
     if (widget.active && !oldWidget.active && _controller == null && _opening == null && _location != null) {
       _start();
+    }
+    if (!widget.active && oldWidget.active && _commenting && _annotationReady) {
+      _commenting = false;
+      _annotationEffect(() => _controller!.runJavaScript('__happenBrowserAnnotations.setMode(false);').asCancellable(_lifetime));
     }
   }
 
@@ -210,6 +326,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       onNavigationRequest: _onNavigationRequest,
       onPageStarted: (url) {
         if (!mounted || _lifetime.isCancelled) return;
+        _resetAnnotations();
         _generation++;
         setState(() { _location = Uri.tryParse(url) ?? _location; _loading = true; _progress = 0; _error = null; });
         _setAddress();
@@ -227,6 +344,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         if (!mounted || _lifetime.isCancelled) return;
         setState(() { _loading = false; _progress = 100; });
         _run(_updatePage);
+        _annotationEffect(_installAnnotations);
       },
       onWebResourceError: (error) {
         if (!mounted || _lifetime.isCancelled || error.isForMainFrame == false ||
@@ -348,6 +466,8 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
 
   @override
   void dispose() {
+    _annotations?.changes.removeListener(_reconcileAnnotations);
+    _annotationOperation?.cancel();
     _lifetime.cancel();
     final controller = _controller;
     if (controller != null) unawaited(controller.runJavaScript('window.stop();').catchError((Object _) {}));
@@ -391,6 +511,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       },
       const SingleActivator(LogicalKeyboardKey.escape): () {
         if (_addressFocus.hasFocus) { _addressFocus.unfocus(); _setAddress(); }
+        else if (_commenting) { _toggleAnnotations(); }
         else if (_loading) { _run(_stop); }
       },
     }, child: Column(children: [
@@ -413,10 +534,17 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
               _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length);
             })),
           const SizedBox(width: 6),
+          if (widget.navigationEnabled && _annotations?.enabled == true) _button(
+            _commenting ? 'Stop annotating' : 'Annotate page', Icons.add_comment_outlined,
+            _annotationReady && !blank && !_loading ? _toggleAnnotations : null),
           _button('Copy link', Icons.link_rounded, blank ? null : () => _run(() =>
             Clipboard.setData(ClipboardData(text: _location.toString())).asCancellable(_lifetime))),
           _button('Open in system browser', Icons.open_in_new_rounded, blank ? null : () => _run(_external)),
         ])),
+      if (_commenting) Container(width: double.infinity, color: desktopMuted,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: const Text('Click an element or drag an area · Shift adds selections · Hold Space to browse',
+          style: TextStyle(fontSize: 11, color: desktopSecondary))),
       if (_loading) LinearProgressIndicator(minHeight: 2,
         value: _progress > 0 ? _progress / 100 : null, color: desktopSecondary, backgroundColor: desktopMuted),
       Expanded(child: _error != null
@@ -424,7 +552,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         : blank ? _message(Icons.language_rounded, 'Open a page', 'Preview your app, read docs, or browse the web.')
         : _controller == null ? const Center(child: SizedBox.square(dimension: 20,
             child: CircularProgressIndicator(strokeWidth: 2)))
-        : WebViewWidget(key: const ValueKey('browser-webview'), controller: _controller!)),
+        : SizedBox(key: _pageKey, child: WebViewWidget(key: const ValueKey('browser-webview'), controller: _controller!))),
     ]));
   }
 }

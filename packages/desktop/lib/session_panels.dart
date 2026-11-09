@@ -10,6 +10,7 @@ import 'appearance.dart';
 import 'browser.dart';
 import 'context_window.dart';
 import 'conversation.dart';
+import 'conversation_annotations.dart';
 import 'conversation_data.dart';
 import 'conversation_changes.dart';
 import 'diff_viewer.dart';
@@ -115,7 +116,10 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   }
 
   @override
-  Widget build(BuildContext context) => ConversationBrowserScope(onOpen: _openBrowser,
+  Widget build(BuildContext context) => AnnotationWorkspace(session: widget.session,
+    draftKey: widget.task?.draftKey ?? widget.session.draftKey, onReturnFocus: widget.onReturnFocus,
+    active: widget.task?.archived != true && widget.session.connected,
+    child: ConversationBrowserScope(onOpen: _openBrowser,
     child: ConversationDiffScope(onOpen: _openDiff, child: ConversationFileScope(onOpen: _openFile,
     child: ListenableBuilder(listenable: Listenable.merge([widget.session, widget.session.panelSelection]),
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
@@ -193,7 +197,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             },
             onCancel: () => setState(() => _dragWidth = null))),
       ]);
-    })))));
+    }))))));
 
   Widget _strip(SessionPanelState state) => DesktopWindowDragRegion(child: Container(
     height: 48,
@@ -312,10 +316,11 @@ class _SideChatPanelState extends State<_SideChatPanel> {
   }
 
   @override
-  Widget build(BuildContext context) => Column(children: [
+  Widget build(BuildContext context) => AnnotationWorkspace(session: widget.session,
+    draftKey: widget.task.draftKey, active: widget.active, child: Column(children: [
     Expanded(child: _body),
     widget.composer(widget.task, widget.active),
-  ]);
+  ]));
 
   Widget _content() {
     final side = widget.task;

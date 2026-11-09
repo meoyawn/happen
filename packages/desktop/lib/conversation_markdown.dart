@@ -14,6 +14,8 @@ import 'inline_reference.dart';
 import 'image_preview.dart';
 import 'inline_image.dart';
 import 'conversation_data.dart';
+import 'conversation_annotations.dart';
+import 'response_annotation_reference.dart';
 import 'desktop_toast.dart';
 
 class ConversationMarkdown extends StatelessWidget {
@@ -40,7 +42,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
   final _lifetime = CancellationToken();
   Object? _styleState;
   late MarkdownStyleSheet _styleSheet;
-  var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax()];
+  var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
 
   @override
   void dispose() { _lifetime.cancel(); super.dispose(); }
@@ -49,7 +51,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
   void reassemble() {
     super.reassemble();
     _styleState = null;
-    _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax()];
+    _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
   }
 
   @override
@@ -105,8 +107,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         ),
       );
     }
-    return ConversationImageGroup(child: SelectionArea(
-      child: MarkdownBody(
+    final body = MarkdownBody(
         key: ValueKey((directory, fitContent)),
         data: text,
         extensionSet: md.ExtensionSet.gitHubFlavored,
@@ -114,7 +115,8 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         fitContent: fitContent,
         softLineBreak: fitContent,
         styleSheet: _styleSheet,
-        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory, _lifetime)},
+        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory, _lifetime),
+          'codex-annotation': ResponseAnnotationBuilder()},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
           label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory, markdown: true,
@@ -129,8 +131,8 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
             unawaited(openDesktopLink(context, href, directory: directory, cancellation: _lifetime));
           }
         },
-      ),
-    ));
+      );
+    return ConversationImageGroup(child: ConversationAnnotationSelection.contains(context) ? body : SelectionArea(child: body));
   }
 }
 
@@ -256,16 +258,18 @@ class _ConversationCodeState extends State<ConversationCode> {
         ),
         const Divider(height: 1, color: desktopBorder),
         LayoutBuilder(builder: (context, constraints) {
-          final code = SelectableText.rich(
-            TextSpan(children: [
+          final span = TextSpan(children: [
               highlightedCode(widget.source, language: widget.language),
               if (widget.output case final output?) TextSpan(text: '\n\n$output'),
-            ]),
+            ]);
+          const style = TextStyle(fontFamily: desktopMonoFamily, fontSize: 13,
+            height: 1.625, letterSpacing: 0, color: desktopForeground);
+          final code = ConversationAnnotationSelection.contains(context)
+            ? Text.rich(span, style: style)
+            : SelectableText.rich(span,
             // ExpansionTile saves a bool; this text saves its own scroll offset.
             key: const PageStorageKey('code-selection'),
-            style: TextStyle(fontFamily: desktopMonoFamily, fontSize: 13,
-              height: 1.625, letterSpacing: 0,
-              color: desktopForeground),
+            style: style,
           );
           return Scrollbar(
             controller: _scroll,

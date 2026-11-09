@@ -15,6 +15,9 @@ import 'conversation_response.dart';
 import 'conversation_changes.dart';
 import 'conversation_images.dart';
 import 'conversation_event.dart';
+import 'conversation_annotations.dart';
+import 'response_annotation.dart';
+import 'response_annotation_reference.dart';
 
 typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, String? label});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
@@ -349,7 +352,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       _contentState = contentState;
       _content = _buildContent(entries);
     }
-    return Stack(children: [
+    final annotationScope = ConversationAnnotationScope.maybeOf(context);
+    return ConversationAnnotationSelection(onAdd: annotationScope?.enabled == true ? annotationScope!.onAdd : null,
+      child: Stack(children: [
       _content!,
       if (_showLatest) Positioned(
         bottom: 12, left: 0, right: 0,
@@ -360,7 +365,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
           style: FilledButton.styleFrom(elevation: 1, backgroundColor: const Color(0xfff1f1f3), foregroundColor: desktopForeground),
         )),
       ),
-    ]);
+    ]));
   }
 
   Widget _buildContent(List<ChatEntry> entries) {
@@ -368,6 +373,13 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     _follow();
     final compacting = entries.any((entry) => entry.compaction?.status == 'running');
     final rows = _transcriptRows(entries, task, _expandedTurns);
+    final annotationContexts = <String, List<ResponseAnnotation>>{};
+    var annotations = const <ResponseAnnotation>[];
+    for (final entry in entries) {
+      if (entry.role == 'Queued') continue;
+      if (entry.role == 'You') annotations = entry.annotations;
+      annotationContexts[entry.id] = annotations;
+    }
     final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
     final count = rows.length;
     _visibleRows = count;
@@ -471,6 +483,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         'Error' => _ErrorMessage(entry: entry,
                           onRetry: !task.running && !task.archived && entry.id == latest?.id ? widget.onRetryTurn : null),
                         _ => Padding(padding: EdgeInsets.symmetric(horizontal: entry.role == 'You' || entry.role == 'Queued' ? 0 : 4),
+                          child: ResponseAnnotationContext(annotations: annotationContexts[entry.id] ?? const [],
                           child: _Message(entry: entry, directory: widget.directory,
                           running: task.running,
                           onExpand: () => _following = false,
@@ -480,7 +493,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                           onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
                               task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
                             : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
-                          liveText: entry.streaming ? task.liveText : null)),
+                          liveText: entry.streaming ? task.liveText : null))),
                       },
                     );
                   },
@@ -648,14 +661,17 @@ class _MessageState extends State<_Message> {
       ]),
     );
     final user = entry.role == 'You' || pending;
-    final body = user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
-      : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText);
+    final body = ConversationAnnotationTarget(messageId: entry.id, annotatable: !user && !entry.streaming,
+      child: user ? ConversationMarkdown(text: entry.text, directory: widget.directory, fitContent: true)
+      : SmoothConversationText(text: entry.text, directory: widget.directory, streaming: entry.streaming, source: widget.liveText));
     return ConversationImageGroup(child: MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: Focus(onFocusChange: (value) => setState(() => _focused = value), child: Column(
       crossAxisAlignment: user ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
+        if (user && entry.annotations.isNotEmpty) Align(alignment: Alignment.centerRight,
+          child: FractionallySizedBox(widthFactor: .8, child: ResponseAnnotationAttachments(annotations: entry.annotations))),
         if (user && entry.attachments.isNotEmpty) ...[
           LayoutBuilder(builder: (context, constraints) => Align(alignment: Alignment.centerRight,
             child: ConstrainedBox(constraints: BoxConstraints(maxWidth: constraints.maxWidth * .8),
@@ -682,8 +698,8 @@ class _MessageState extends State<_Message> {
         if (!user && entry.attachments.isNotEmpty)
           ConversationImageParts(parts: entry.attachments, directory: widget.directory),
         if (!user) ...[
-          if (entry.response != null) ConversationResponseFooter(entry: entry, visible: _hovered || _focused,
-            onFork: widget.onFork == null ? null : _fork, forking: _forking),
+          if (entry.response != null) SelectionContainer.disabled(child: ConversationResponseFooter(entry: entry, visible: _hovered || _focused,
+            onFork: widget.onFork == null ? null : _fork, forking: _forking)),
         ] else ...[
         const SizedBox(height: 4),
         Opacity(opacity: _hovered || _focused || pending ? 1 : 0,

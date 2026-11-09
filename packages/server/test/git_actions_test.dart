@@ -23,8 +23,8 @@ void main() {
   }
   Future<Json> status([String? cwd]) => client.gitRequest('git/status', {'cwd': cwd ?? repo.path}, cancellation: lifetime);
   Future<Json> run(String action, {String message = '', List<String>? files, CancellationToken? cancellation,
-    bool includeUnstaged = true, String? newBranch}) =>
-    client.gitRequest('git/run', {'cwd': repo.path, 'actionId': newId(), 'action': action,
+    bool includeUnstaged = true, String? newBranch, String? cwd}) =>
+    client.gitRequest('git/run', {'cwd': cwd ?? repo.path, 'actionId': newId(), 'action': action,
       'commitMessage': message, 'filePaths': ?files, 'provider': 'openai', 'model': 'gpt-6.1-sol',
       'includeUnstaged': includeUnstaged, 'newBranch': ?newBranch},
       cancellation: cancellation ?? lifetime);
@@ -161,6 +161,100 @@ void main() {
     expect(input, contains('selected change')); expect(input, isNot(contains('EXCLUDED_CONTENT')));
     expect(progress, containsAllInOrder(['generating', 'creating_branch', 'committing', 'pushing']));
     expect(jsonObject(await client.request('thread/list', {'cwd': repo.path}))['data'], isEmpty);
+  });
+
+  for (final base in ['main', 'master']) {
+    test('pull fast-forwards a worktree from remote $base and preserves local work on failure', () async {
+      final remote = '${root.path}/upstream.git', writer = '${root.path}/writer', linked = '${root.path}/thread checkout';
+      await git(['init', '--bare', '--initial-branch=$base', remote]);
+      await git(['remote', 'add', 'upstream', remote]);
+      await git(['remote', 'add', 'origin', '${root.path}/unavailable-fork.git']);
+      await git(['push', 'upstream', 'HEAD:refs/heads/$base']);
+      await git(['clone', remote, writer]);
+      await git(['config', 'user.name', 'Fixture'], cwd: writer);
+      await git(['config', 'user.email', 'fixture@example.invalid'], cwd: writer);
+      await git(['worktree', 'add', '-b', 'new-thread', linked]);
+      final original = await git(['rev-parse', 'HEAD']);
+      await File('$linked/keep.txt').writeAsString('Unrelated local work\n');
+      Future<String> publish(String contents) async {
+        await File('$writer/tracked.txt').writeAsString(contents);
+        await git(['commit', '-am', 'Update $base'], cwd: writer);
+        await git(['push'], cwd: writer);
+        return git(['rev-parse', 'HEAD'], cwd: writer);
+      }
+      final latest = await publish('Latest $base\n');
+      final result = await run('pull', cwd: linked);
+      expect(result['status'], 'completed', reason: '${result['message']}');
+      expect(result['message'], 'Pulled');
+      expect(await git(['rev-parse', 'HEAD'], cwd: linked), latest);
+      expect(await git(['rev-parse', 'HEAD']), original, reason: 'Other worktrees keep their branch');
+      expect(await File('$linked/keep.txt').readAsString(), 'Unrelated local work\n');
+      expect((await status(linked))['branch'], 'new-thread');
+      expect((await status(linked))['pullRemote'], 'upstream');
+      expect((await status(linked))['pullBranch'], base);
+      expect((await run('pull', cwd: linked))['message'], 'Already up to date');
+      expect(progress, contains('pulling'));
+      expect(requests, isEmpty, reason: 'Pull never starts a model or thread');
+
+      await File('$linked/tracked.txt').writeAsString('Staged work\n');
+      await git(['add', 'tracked.txt'], cwd: linked);
+      await File('$linked/tracked.txt').writeAsString('Unstaged work\n');
+      await git(['config', 'merge.autostash', 'true']);
+      await git(['config', 'pull.autostash', 'true']);
+      final index = await git(['write-tree'], cwd: linked);
+      await publish('Another upstream update\n');
+      expect((await run('pull', cwd: linked))['status'], 'failed');
+      expect(await git(['rev-parse', 'HEAD'], cwd: linked), latest);
+      expect(await git(['write-tree'], cwd: linked), index);
+      expect(await File('$linked/tracked.txt').readAsString(), 'Unstaged work\n');
+      expect(await File('$linked/keep.txt').readAsString(), 'Unrelated local work\n');
+      expect(await git(['stash', 'list'], cwd: linked), isEmpty);
+
+      await git(['reset', '--hard', 'HEAD'], cwd: linked);
+      await File('$linked/feature.txt').writeAsString('Committed feature\n');
+      await git(['add', 'feature.txt'], cwd: linked);
+      await git(['commit', '-m', 'Feature work'], cwd: linked);
+      final diverged = await git(['rev-parse', 'HEAD'], cwd: linked);
+      expect((await run('pull', cwd: linked))['status'], 'failed');
+      expect(await git(['rev-parse', 'HEAD'], cwd: linked), diverged);
+      expect(await git(['status', '--porcelain'], cwd: linked), '?? keep.txt');
+      await git(['checkout', '--detach'], cwd: linked);
+      expect((await run('pull', cwd: linked))['message'], contains('Check out a branch'));
+      expect(await git(['rev-parse', 'HEAD'], cwd: linked), diverged);
+    });
+  }
+
+  test('cancelling a remote pull releases the repository lock across worktrees', () async {
+    final linked = '${root.path}/linked';
+    await git(['worktree', 'add', '-b', 'new-thread', linked]);
+    final remote = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => remote.close(force: true));
+    final arrived = Completer<void>();
+    remote.listen((request) { if (!arrived.isCompleted) arrived.complete(); });
+    await git(['remote', 'add', 'origin', 'http://127.0.0.1:${remote.port}/repository.git']);
+    final head = await git(['rev-parse', 'HEAD']);
+    final token = CancellationToken();
+    final operation = run('pull', cwd: linked, cancellation: token);
+    final stopped = expectLater(operation, throwsA(isA<CancelledException>()));
+    Future<Json> createBranch() => client.gitRequest('git/run', {'cwd': repo.path, 'actionId': newId(),
+      'action': 'create_branch', 'branch': 'after-pull'}, cancellation: lifetime);
+    await arrived.future.timeout(const Duration(seconds: 10));
+    await expectLater(createBranch(), throwsA(isA<StateError>().having((error) => error.message,
+      'message', contains('already running'))));
+    token.cancel(); await stopped;
+    // Cancellation reaches the worker asynchronously; wait for its owned Git
+    // process to exit and release the shared worktree lock.
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    Json? result;
+    while (result == null) {
+      try { result = await createBranch(); }
+      on StateError catch (error) {
+        if (!error.message.contains('already running') || DateTime.now().isAfter(deadline)) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+    expect(result['status'], 'completed', reason: '${result['message']}');
+    expect(await git(['rev-parse', 'HEAD'], cwd: linked), head);
   });
 
   test('staged-only totals, generation and commit preserve unstaged edits in the same file', () async {

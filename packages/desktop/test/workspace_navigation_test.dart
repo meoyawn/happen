@@ -13,8 +13,8 @@ import 'package:server/server.dart';
 
 void main() {
   Widget sidebar(DesktopSession session, {void Function(Project, DesktopTask)? select,
-      void Function(DesktopTask, bool)? archive}) => MaterialApp(home: Scaffold(body: SizedBox(width: 276,
-    child: ThreadSidebar(session: session, home: true, windowControls: false,
+      void Function(DesktopTask, bool)? archive, List<DesktopSession>? sources, bool home = true}) => MaterialApp(home: Scaffold(body: SizedBox(width: 276,
+    child: ThreadSidebar(session: session, sources: sources, home: home, windowControls: false,
       onHome: () {}, onSearch: () {}, onNew: () {}, onSettings: () {}, onDraft: (_) {},
       onAddProject: () {}, onRefresh: () {}, onProjectFilter: (_) {},
       onSelect: select ?? (_, _) {}, onArchive: archive ?? (_, _) {}))));
@@ -48,6 +48,7 @@ void main() {
     expect(find.byKey(const ValueKey('thread:archived')), findsNothing);
     expect(find.text('Settled'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('thread:interrupted')));
+    await tester.pump(const Duration(milliseconds: 350));
     expect(opened, same(interrupted)); expect(interrupted.running, false);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -67,7 +68,6 @@ void main() {
     final newer = DesktopTask('newer', 'Newer user message')..running = true..loaded = true..lastActivity = now + 2000;
     newer.messages['second'] = {'id': 'second', 'type': 'userMessage', 'startedAtMs': now + 2000};
     session.projects.add(Project('project', '/project', '/project', [older, newer]));
-    session.pinnedTaskIds.add(older.id);
     await tester.pumpWidget(ListenableBuilder(listenable: session, builder: (_, _) => sidebar(session)));
     expect(sidebarThreadIds(session), [newer.id, older.id]);
 
@@ -104,6 +104,53 @@ void main() {
     event(older, 'turn/started', {'turn': {'id': 'continuation', 'status': 'inProgress'}}, 11000);
     await tester.pump();
     expect(sidebarThreadIds(session), [newer.id, older.id]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('switching the active server retains both sidebars and scopes equal thread IDs', (tester) async {
+    late DesktopSession local, remote;
+    late Directory root;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('shared-sidebar-');
+      local = DesktopSession(_Client(), await openDesktopDatabase('${root.path}/local'));
+      remote = DesktopSession(_Client(), await openDesktopDatabase('${root.path}/remote'),
+        sidebarOwner: local, machineAlias: 'other-server', machineName: 'Other server');
+    });
+    addTearDown(() => tester.runAsync(() async {
+      await local.close(); await remote.close(); await root.delete(recursive: true);
+    }));
+    final first = DesktopTask('same-id', 'Local thread')..loaded = true;
+    final second = DesktopTask('same-id', 'Remote thread')..loaded = true;
+    final left = Project('same-project', 'repo', '/checkout', [first]);
+    final right = Project('same-project', 'repo', '/checkout', [second]);
+    local.projects.add(left); local.project = left; local.task = first;
+    remote.projects.add(right); remote.project = right; remote.task = second;
+    final sources = [local, remote];
+    final opened = <DesktopTask>[];
+    Widget view(DesktopSession active) => sidebar(active, sources: sources, home: false,
+      select: (_, task) => opened.add(task));
+    await tester.pumpWidget(view(local));
+    expect(find.text('Local thread'), findsOneWidget);
+    expect(find.text('Remote thread'), findsOneWidget);
+    expect(find.byKey(const ValueKey('thread:same-id')), findsOneWidget);
+    final remoteRow = find.byKey(ValueKey('thread:${remote.sidebarId(second.id)}'));
+    expect(remoteRow, findsOneWidget);
+    expect(sidebarThreadIds(local, sources: sources).toSet(), {first.id, remote.sidebarId(second.id)});
+    await tester.pumpWidget(view(remote));
+    expect(find.text('Local thread'), findsOneWidget);
+    expect(find.text('Remote thread'), findsOneWidget);
+    await tester.tap(remoteRow);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(opened, [second]);
+    await tester.runAsync(() => remote.pinTask(second, true));
+    await tester.pump();
+    expect(local.pinnedTaskIds, [remote.sidebarId(second.id)]);
+    expect(remote.pinnedTaskIds, [second.id]);
+    expect(sidebarThreadIds(remote, sources: sources).first, remote.sidebarId(second.id));
+    remote.connected = false; remote.notifyListeners();
+    await tester.pumpWidget(view(local));
+    expect(find.text('Remote thread'), findsOneWidget, reason: 'A disconnected server retains its cached threads');
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

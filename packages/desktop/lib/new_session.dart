@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'appearance.dart';
+import 'checkout_pull.dart';
 import 'session.dart';
 import 'project_avatar.dart';
 
@@ -87,6 +88,7 @@ class NewSessionScreen extends StatelessWidget {
                       Icon(Icons.folder_outlined, size: 13, color: desktopSecondary), SizedBox(width: 6),
                       Text('Current checkout', style: TextStyle(fontSize: 12, color: desktopSecondary)),
                     ])))))),
+                  if (machinePicker == null && project != null) Flexible(child: CheckoutPullControl(session: session)),
                   if (machinePicker != null) SizedBox(width: 28, height: 28, child: PopupMenuButton<String>(tooltip: 'Thread options',
                     padding: EdgeInsets.zero,
                     icon: const Icon(Icons.more_horiz, size: 16, color: desktopSecondary),

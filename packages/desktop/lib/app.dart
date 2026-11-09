@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import 'conversation.dart';
+import 'conversation_annotations.dart';
 import 'command_menu.dart';
 import 'archived_sessions.dart';
 import 'conversation_data.dart';
@@ -52,7 +53,11 @@ class DesktopView extends StatefulWidget {
 
 class _DesktopViewState extends State<DesktopView> {
   static const _desktop = MethodChannel('happen/desktop');
-  DesktopSession get session => widget.session;
+  DesktopSession get session => widget.machines?.active ?? widget.session;
+  DesktopSession get _sidebar => widget.machines?.local ?? session.sidebar;
+  List<DesktopSession> get _sources => widget.machines?.sessions.map((machine) => machine.session).toList() ?? [session];
+  DesktopSession _source(Project project) => _sources.firstWhere((source) => source.projects.contains(project));
+  DesktopSession _taskSource(DesktopTask task) => _sources.firstWhere((source) => source.projects.any((project) => project.tasks.contains(task)));
   bool _picking = false, _settingsOpen = false;
   bool _commandMenuOpen = false;
   bool get _homeOpen => !session.viewingConversation;
@@ -79,7 +84,7 @@ class _DesktopViewState extends State<DesktopView> {
     _syncWindowChrome();
   }
 
-  Listenable get _viewChanges => Listenable.merge([session, _windowChrome]);
+  Listenable get _viewChanges => Listenable.merge([session, _windowChrome, if (_homeOpen) widget.machines]);
   double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
 
   void _applyWindowChrome(Object? value) {
@@ -106,9 +111,6 @@ class _DesktopViewState extends State<DesktopView> {
     if (oldWidget.session == session) return;
     oldWidget.session.removeListener(_syncWindowChrome);
     oldWidget.session.removeListener(_rememberNavigation);
-    _navigationHistory.clear();
-    _navigationIndex = -1;
-    _sidebarProjectKey = null;
     _bindNavigation();
     session.addListener(_syncWindowChrome);
     _syncWindowChrome();
@@ -135,9 +137,10 @@ class _DesktopViewState extends State<DesktopView> {
         transitionDuration: Duration.zero,
         reverseTransitionDuration: Duration.zero,
         pageBuilder: (context, _, _) => ListenableBuilder(
-          listenable: _viewChanges,
+          listenable: Listenable.merge([_viewChanges, widget.machines]),
           builder: (context, _) => DesktopSettingsScreen(
             session: session, run: _run,
+            machines: widget.machines,
             initialPage: page, initialProject: project,
             addProject: _addProject,
             openProject: (project) async {
@@ -171,6 +174,7 @@ class _DesktopViewState extends State<DesktopView> {
         barrierColor: const Color(0x22000000),
         builder: (context) => CommandMenu(
           session: session,
+          sources: _sources,
           pickProject: pickProject,
           onNewThread: (project) => unawaited(_run(() => _newChat(project))),
           onAddProject: () => unawaited(_addProject()),
@@ -189,7 +193,7 @@ class _DesktopViewState extends State<DesktopView> {
                 shortcut: mac ? '⌘ J' : 'Ctrl J', run: _toggleTerminal),
               (title: 'Toggle sidebar', keywords: 'show hide navigation', icon: Icons.view_sidebar_outlined,
                 shortcut: mac ? '⌘ B' : 'Ctrl B',
-                run: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen)))),
+                run: () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen)))),
             if (task != null && !_homeOpen) ...[
               (title: 'Open browser', keywords: 'web url page preview', icon: Icons.language_rounded,
                 shortcut: mac ? '⌘ ⇧ J' : 'Ctrl Shift J', run: _toggleBrowserPanel),
@@ -355,7 +359,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _rememberNavigation() {
-    final location = _homeOpen ? 'home' : session.draftKey;
+    final location = _homeOpen ? 'home' : session.sidebarId(session.draftKey);
     if (_navigationIndex >= 0 && _navigationHistory[_navigationIndex] == location) return;
     _navigationHistory.removeRange(_navigationIndex + 1, _navigationHistory.length);
     _navigationHistory.add(location);
@@ -365,9 +369,10 @@ class _DesktopViewState extends State<DesktopView> {
   void _navigateHistory(int offset) {
     for (var index = _navigationIndex + offset; index >= 0 && index < _navigationHistory.length; index += offset) {
       final id = _navigationHistory[index];
-      final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
-      final thread = [for (final project in session.projects.where((project) => !project.removing))
-        for (final task in project.tasks) if (task.id == id && !task.archived) (project, task)].firstOrNull;
+      final draft = [for (final source in _sources) for (final draft in source.sessionDrafts)
+        if (source.sidebarId(draft.id) == id) draft].firstOrNull;
+      final thread = [for (final source in _sources) for (final project in source.projects.where((project) => !project.removing))
+        for (final task in project.tasks) if (source.sidebarId(task.id) == id && !task.archived) (project, task)].firstOrNull;
       if (id != 'home' && draft == null && thread == null) continue;
       _navigationIndex = index;
       if (id == 'home') { _showHome(); }
@@ -405,7 +410,7 @@ class _DesktopViewState extends State<DesktopView> {
     final panels = task == null ? null : session.panelLayouts[task.id];
     final terminalFocused = terminalHasFocus;
     final bindings = <ShortcutActivator, VoidCallback>{
-      shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
+      shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
       shortcut(LogicalKeyboardKey.keyJ, shift: true): _toggleBrowserPanel,
@@ -459,24 +464,25 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _selectAdjacentTask(int offset) {
-    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
-    final index = _homeOpen ? -1 : ids.indexOf(session.draftKey);
+    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey, sources: _sources);
+    final index = _homeOpen ? -1 : ids.indexOf(session.sidebarId(session.draftKey));
     final next = index < 0 ? (offset > 0 ? 0 : ids.length - 1) : index + offset;
     if (next >= 0 && next < ids.length) _selectThread(ids[next]);
   }
 
   void _selectThreadAt(int index) {
-    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey);
+    final ids = sidebarThreadIds(session, projectKey: _sidebarProjectKey, sources: _sources);
     if (index < 0 || index >= ids.length) return;
     _selectThread(ids[index]);
   }
 
   void _selectThread(String id) {
-    final draft = session.sessionDrafts.where((draft) => draft.id == id).firstOrNull;
+    final draft = [for (final source in _sources) for (final draft in source.sessionDrafts)
+      if (source.sidebarId(draft.id) == id) draft].firstOrNull;
     if (draft != null) { _activateDraft(draft); }
     else {
-      for (final project in session.projects) {
-        final task = project.tasks.where((task) => task.id == id).firstOrNull;
+      for (final source in _sources) for (final project in source.projects) {
+        final task = project.tasks.where((task) => source.sidebarId(task.id) == id).firstOrNull;
         if (task != null) {
           _openTask(project, task);
           _focusComposer();
@@ -495,7 +501,9 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
-    return session.select(project, task);
+    final source = _source(project);
+    widget.machines?.activate(source);
+    return source.select(project, task);
   }
 
   Future<void> _newChat([Project? owner]) async {
@@ -503,8 +511,10 @@ class _DesktopViewState extends State<DesktopView> {
       await _commandMenu(pickProject: true);
       return;
     }
-    if (owner.removing || !owner.available || !session.projects.contains(owner)) return;
-    session.newSession(owner);
+    final source = _source(owner);
+    if (owner.removing || !owner.available) return;
+    widget.machines?.activate(source);
+    source.newSession(owner);
     if (mounted) _focusComposer();
   }
 
@@ -514,7 +524,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _openTask(Project project, DesktopTask task) {
-    unawaited(_run(() => session.select(project, task)));
+    unawaited(_run(() => _selectProject(project, task)));
   }
 
   void _openDraft(Project project) {
@@ -525,7 +535,9 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _activateDraft(SessionDraft draft) {
-    session.openDraft(draft);
+    final source = _sources.firstWhere((source) => source.sessionDrafts.contains(draft));
+    widget.machines?.activate(source);
+    source.openDraft(draft);
     _focusComposer();
   }
 
@@ -598,34 +610,34 @@ class _DesktopViewState extends State<DesktopView> {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
     final minSidebarWidth = 280.0;
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0);
-    final savedWidth = session.sidebarWidth;
+    final savedWidth = _sidebar.sidebarWidth;
     final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth);
     final pane = _conversationPane(context, tasks);
-    return ListenableBuilder(listenable: session.sidebarChanges, child: pane,
+    return ListenableBuilder(listenable: Listenable.merge([_sidebar, _sidebar.sidebarChanges, widget.machines]), child: pane,
       builder: (context, pane) => ColoredBox(color: desktopSidebar, child: DesktopSidebarFrame(
-      open: session.sidebarOpen, width: sidebarWidth,
+      open: _sidebar.sidebarOpen, width: sidebarWidth,
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
-      onToggle: () => unawaited(_run(() => session.chooseSidebarOpen(!session.sidebarOpen))),
-      unread: session.projects.where((project) => !project.removing).expand((project) => project.tasks)
-        .any(session.hasUnseenCompletion) ||
-        session.projects.where((project) => !project.removing).expand((project) => project.tasks)
-          .any((task) => !task.archived && task.questions.isNotEmpty) ||
-        session.sideChats.values.any((task) => !task.archived && !task.archiving &&
-          (task.questions.isNotEmpty || session.hasUnseenCompletion(task))),
+      onToggle: () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
+      unread: _sources.any((source) => source.projects.where((project) => !project.removing).expand((project) => project.tasks)
+        .any((task) => source.hasUnseenCompletion(task) || !task.archived && task.questions.isNotEmpty) ||
+        source.sideChats.values.any((task) => !task.archived && !task.archiving &&
+          (task.questions.isNotEmpty || source.hasUnseenCompletion(task)))),
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
-            machinePicker: widget.machinePicker,
+            sources: _sources,
+            machinePicker: widget.machinePicker ?? (widget.machines == null ? null : MachinePicker(machines: widget.machines!,
+              onSettings: () => unawaited(_settings(page: 'servers')))),
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
             onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
             onBack: _navigationIndex > 0 ? () => _navigateHistory(-1) : null,
             onForward: _navigationIndex < _navigationHistory.length - 1 ? () => _navigateHistory(1) : null,
             onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
             onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
-            onProjectSettings: (project) => unawaited(_settings(project: project)),
+            onProjectSettings: (project) { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); },
             onAddProject: () => unawaited(_addProject()),
-            onRefresh: () => unawaited(_run(session.refreshProjects)),
+            onRefresh: () => unawaited(_run(widget.machines?.refreshCatalogs ?? session.refreshProjects)),
             onSelect: _openTask, onDraft: _activateDraft,
-            onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))))
+            onArchive: (task, archived) => unawaited(_run(() => _taskSource(task).setArchived(task, archived))))
         ,
       resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
       child: pane!,
@@ -637,7 +649,7 @@ class _DesktopViewState extends State<DesktopView> {
       min: minSidebarWidth, max: maxSidebarWidth,
       onResize: (width) => setState(() => _dragSidebarWidth = width),
       onResizeEnd: (width) {
-        unawaited(_run(() => session.chooseSidebarWidth(width)));
+        unawaited(_run(() => _sidebar.chooseSidebarWidth(width)));
         setState(() => _dragSidebarWidth = null);
       },
       onCancel: () => setState(() => _dragSidebarWidth = null));
@@ -717,9 +729,10 @@ class _DesktopViewState extends State<DesktopView> {
                 ],
               ])),
                if (home) WorkspaceHome(session: session, focusNode: _sessionSearchFocus,
-                 onProjectSettings: (project) => unawaited(_settings(project: project)),
+                 sources: _sources,
+                 onProjectSettings: (project) { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); },
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
-                onArchive: (task, archived) => unawaited(_run(() => session.setArchived(task, archived))),
+                onArchive: (task, archived) => unawaited(_run(() => _taskSource(task).setArchived(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
            ),
@@ -728,7 +741,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   Widget _header(BuildContext context, bool detailsOpen, VoidCallback toggleDetails) => DesktopWindowDragRegion(child: AnimatedPadding(
     duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
-    padding: EdgeInsets.only(left: !session.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
+    padding: EdgeInsets.only(left: !_sidebar.sidebarOpen ? (_trafficInset == 0 ? 50 : _trafficInset + 40) : 16, right: 12),
     child: SizedBox(height: 56, child: Row(
       children: [
         if (widget.machines != null) Padding(padding: const EdgeInsets.only(right: 16), child: SizedBox(width: 156, child: Row(children: [
@@ -1107,6 +1120,7 @@ class _ComposerState extends State<_Composer> {
     final draft = _text.text;
     final prompt = _text.serializePrompt();
     final attachments = List<ComposerAttachment>.of(_attachments);
+    final annotations = widget.session.annotationsFor(draftKey);
     void restore() {
       if (mounted && identical(_text, controller) && _text.text.isEmpty) {
         controller.value = value;
@@ -1114,7 +1128,7 @@ class _ComposerState extends State<_Composer> {
       }
     }
     try {
-      final submission = widget.session.send(prompt, attachments: attachments, target: widget.target);
+      final submission = widget.session.send(prompt, attachments: attachments, annotations: annotations, target: widget.target);
       if (_submitting) {
         _autocomplete.currentState?.dismiss();
         // Keep the saved draft until acknowledgement so a failed send can be
@@ -1215,6 +1229,7 @@ class _ComposerState extends State<_Composer> {
         session.connected &&
         !_receivingAttachments &&
         !_submitting &&
+        !(newThread && session.pullingCheckout) &&
         _target?.sidePreparing != true &&
         _target?.archived != true && _target?.archiving != true &&
         _target?.loading != true &&
@@ -1264,7 +1279,7 @@ class _ComposerState extends State<_Composer> {
         child: child,
       );
     }
-    return DropTarget(
+    return ListenableBuilder(listenable: session.annotationChanges, builder: (context, _) => DropTarget(
       enabled: answer == null && hasProject && session.connected && !_submitting && !_receivingAttachments,
       acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
       onDrop: _drop,
@@ -1325,6 +1340,10 @@ class _ComposerState extends State<_Composer> {
                   padding: EdgeInsets.fromLTRB(8, 0, 8, 0),
                   child: Column(
                     children: [
+                      if (answer == null && !_submitting && session.annotationsFor(_draftKey).isNotEmpty)
+                        ResponseAnnotationAttachments(annotations: session.annotationsFor(_draftKey),
+                          onEdit: ConversationAnnotationScope.maybeOf(context)?.onEdit,
+                          onRemove: (id) => session.removeAnnotation(_draftKey, id)),
                       if (_draggingAttachments) const Padding(padding: EdgeInsets.all(8), child: Text('Drop images or files to attach')),
                       if (answer == null && _attachments.isNotEmpty) Align(
                         alignment: Alignment.centerLeft,
@@ -1439,7 +1458,7 @@ class _ComposerState extends State<_Composer> {
                                 ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 1.5))
                                 : Text(answer.action, style: const TextStyle(fontSize: 12)))
                           else ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
-                            final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty;
+                            final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty || session.annotationsFor(_draftKey).isNotEmpty;
                             final stopWorking = running && !hasContent && !_dictating;
                             final dictationCanSend = _dictating && _voice.state is DictationRecording && !_finishingVoice;
                             return IconButton.filled(
@@ -1482,7 +1501,7 @@ class _ComposerState extends State<_Composer> {
         ),
       ),
       ),
-    );
+    ));
   }
 }
 

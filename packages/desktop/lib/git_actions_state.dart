@@ -8,13 +8,15 @@ import 'file_change.dart';
 
 typedef GitFile = ({String path, String? previousPath, String status, bool conflicted, int additions, int deletions, bool binary});
 typedef GitRepository = ({bool isRepo, String? root, String? branch, String? remote, String? upstream,
-  String? head, String? host, int ahead, int behind, int additions, int deletions, List<GitFile> files});
+  String? head, String? host, String? pullRemote, String? pullBranch,
+  int ahead, int behind, int additions, int deletions, List<GitFile> files});
 typedef GitBranch = ({String ref, String name, bool remote});
 
 GitRepository _repository(Json value) => (
   isRepo: value['isRepo'] == true, root: value['root'] as String?, branch: value['branch'] as String?,
   remote: value['remote'] as String?, upstream: value['upstream'] as String?, head: value['head'] as String?,
   host: value['host'] as String?,
+  pullRemote: value['pullRemote'] as String?, pullBranch: value['pullBranch'] as String?,
   ahead: value['ahead'] as int? ?? 0, behind: value['behind'] as int? ?? 0,
   additions: value['additions'] as int? ?? 0, deletions: value['deletions'] as int? ?? 0,
   files: List.unmodifiable([for (final raw in value['files'] as List) (
@@ -31,7 +33,7 @@ sealed class GitState {
 final class GitLoading extends GitState { const GitLoading(super.repository); }
 final class GitReady extends GitState { const GitReady(GitRepository super.repository); }
 enum GitAction {
-  commit('commit'), push('push'), commitPush('commit_push'), switchBranch('switch'), createBranch('create_branch');
+  commit('commit'), push('push'), commitPush('commit_push'), switchBranch('switch'), createBranch('create_branch'), pull('pull');
   const GitAction(this.wire);
   final String wire;
 }
@@ -46,9 +48,10 @@ sealed class GitRunning extends GitState {
     GitCreatingBranch() => 'Creating branch…',
     GitCommitting() => 'Committing…', GitPushing() => 'Pushing…',
     GitSwitching() => operation.action == GitAction.createBranch ? 'Creating branch…' : 'Switching branch…',
+    GitPulling() => 'Pulling latest changes…',
   };
   String? get output => switch (this) {
-    GitCommitting(:final progress) || GitPushing(:final progress) || GitSwitching(:final progress) => progress,
+    GitCommitting(:final progress) || GitPushing(:final progress) || GitSwitching(:final progress) || GitPulling(:final progress) => progress,
     _ => null,
   };
 }
@@ -68,14 +71,19 @@ final class GitSwitching extends GitRunning {
   const GitSwitching(super.repository, super.operation, {this.progress});
   final String? progress;
 }
+final class GitPulling extends GitRunning {
+  const GitPulling(super.repository, super.operation, {this.progress});
+  final String? progress;
+}
 final class GitCancelling extends GitState {
   GitCancelling(this.operation) : super(operation.repository);
   final GitRunning operation;
 }
 sealed class GitOutcome { const GitOutcome(); }
 final class GitSucceeded extends GitOutcome {
-  const GitSucceeded(this.commit);
+  const GitSucceeded(this.commit, {this.message, this.detail});
   final GitCommit? commit;
+  final String? message, detail;
 }
 final class GitRejected extends GitOutcome {
   const GitRejected(this.message, this.commit);
@@ -95,10 +103,11 @@ final class GitCompleted extends GitState {
   const GitCompleted(super.repository, this.operation, this.result);
   final GitOperation operation;
   final GitSucceeded result;
-  String get message => switch (operation.action) {
+  String get message => result.message ?? switch (operation.action) {
     GitAction.commit => 'Changes committed', GitAction.push => 'Changes pushed',
     GitAction.switchBranch => 'Branch switched', GitAction.createBranch => 'Branch created',
     GitAction.commitPush => 'Changes committed and pushed',
+    GitAction.pull => 'Pulled',
   };
 }
 final class GitFailed extends GitState {
@@ -121,6 +130,7 @@ GitState _transition(GitState current, GitState next) => switch ((current, next)
   (GitStarting(operation: (:final action, id: _)), GitGenerating() || GitCreatingBranch() || GitCommitting())
     when action == GitAction.commit || action == GitAction.commitPush => next,
   (GitStarting(operation: (action: GitAction.push, id: _)), GitPushing()) => next,
+  (GitStarting(operation: (action: GitAction.pull, id: _)), GitPulling()) => next,
   (GitStarting(operation: (:final action, id: _)), GitSwitching())
     when action == GitAction.switchBranch || action == GitAction.createBranch => next,
   (GitGenerating(), GitCreatingBranch() || GitCommitting()) => next,
@@ -129,6 +139,7 @@ GitState _transition(GitState current, GitState next) => switch ((current, next)
   (GitCommitting(operation: (action: GitAction.commitPush, id: _)), GitPushing()) => next,
   (GitPushing(), GitPushing()) => next,
   (GitSwitching(), GitSwitching()) => next,
+  (GitPulling(), GitPulling()) => next,
   (GitRunning(), GitCancelling() || GitRefreshing()) => next,
   (GitCancelling(), GitRefreshing()) => next,
   (GitRefreshing(), GitCompleted() || GitFailed() || GitCancelled()) => next,
@@ -152,6 +163,7 @@ class GitActionsController extends ChangeNotifier {
         'pushing' => GitPushing(repo, operation, commit: _commit(value['commit']) ?? (current is GitPushing ? current.commit : null),
           progress: output ?? (current is GitPushing ? current.progress : null)),
         'switching' => GitSwitching(repo, operation, progress: output ?? (current is GitSwitching ? current.progress : null)),
+        'pulling' => GitPulling(repo, operation, progress: output ?? (current is GitPulling ? current.progress : null)),
         _ => null,
       };
       if (next != null) _set(next);
@@ -172,6 +184,11 @@ class GitActionsController extends ChangeNotifier {
   GitState _state = const GitLoading(null);
   GitState get state => _state;
   bool get busy => _state is GitRunning || _state is GitCancelling || _state is GitRefreshing;
+  bool get pulling => busy && switch (_state) {
+    GitRunning(:final operation) || GitRefreshing(:final operation) => operation.action == GitAction.pull,
+    GitCancelling(:final operation) => operation.operation.action == GitAction.pull,
+    _ => false,
+  };
   DateTime? _refreshed;
 
   void _set(GitState next) {
@@ -249,7 +266,8 @@ class GitActionsController extends ChangeNotifier {
       final commit = _commit(result['commit']);
       if (commit != null && _commitMessage.trim() == message.trim()) _commitMessage = '';
       outcome = result['status'] == 'failed' ? GitRejected(
-        '${commit == null ? '' : 'Committed ${commit.sha.substring(0, 7)}. '}${result['message']}', commit) : GitSucceeded(commit);
+        '${commit == null ? '' : 'Committed ${commit.sha.substring(0, 7)}. '}${result['message']}', commit)
+        : GitSucceeded(commit, message: result['message'] as String?, detail: result['detail'] as String?);
     } on CancelledException {
       final active = _state is GitCancelling ? (_state as GitCancelling).operation : _state;
       outcome = GitStopped(active is GitPushing ? active.commit : null);

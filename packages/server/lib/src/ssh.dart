@@ -1,16 +1,22 @@
 part of '../server.dart';
 
-List<String> sshOptions(String alias) {
-  if (!RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]*$').hasMatch(alias)) throw ArgumentError('Choose an SSH config alias');
+List<String> sshOptions(String host, {String? user, int? port, String? identityFile}) {
+  if (!RegExp(r'^[a-zA-Z0-9:][a-zA-Z0-9_.:-]*$').hasMatch(host)) throw ArgumentError('Enter an SSH hostname or config alias');
+  if (user != null && !RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(user)) throw ArgumentError('Invalid SSH username');
+  if (port != null && (port < 1 || port > 65535)) throw ArgumentError('SSH port must be between 1 and 65535');
+  if (identityFile != null && (identityFile.isEmpty || RegExp(r'[\x00\r\n]').hasMatch(identityFile))) throw ArgumentError('Invalid SSH key path');
   return ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-    '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3'];
+    '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3',
+    if (user != null) ...['-l', user], if (port != null) ...['-p', '$port'],
+    if (identityFile != null) ...['-i', identityFile, '-o', 'IdentitiesOnly=yes']];
 }
 
 /// SSH, the forward, the WebSocket and all cleanup stay in this worker.
-Future<AgentClient> connectSsh(String alias, {required CancellationToken cancellation}) async {
-  sshOptions(alias);
+Future<AgentClient> connectSsh(String alias, {String? user, int? port, String? identityFile, required CancellationToken cancellation}) async {
+  sshOptions(alias, user: user, port: port, identityFile: identityFile);
   final events = ReceivePort();
-  final owner = await IsolateOwner.start(_sshMain, {'alias': alias, 'events': events.sendPort}, service: 'ssh');
+  final owner = await IsolateOwner.start(_sshMain, {'alias': alias, 'user': user, 'port': port,
+    'identityFile': identityFile, 'events': events.sendPort}, service: 'ssh');
   try {
     await callIsolate(owner.port, 'connect', {}, cancellation: cancellation, timeout: const Duration(seconds: 60));
     cancellation.throwIfCancelled();
@@ -21,7 +27,10 @@ Future<AgentClient> connectSsh(String alias, {required CancellationToken cancell
 Future<void> _sshMain(List<Object?> arguments) async {
   final config = jsonObject(arguments[1]), port = ReceivePort();
   final alias = config['alias'] as String, events = config['events'] as SendPort;
-  final options = sshOptions(alias), operations = <String, CancellationToken>{};
+  var identity = config['identityFile'] as String?;
+  if (identity?.startsWith('~/') == true) identity = '${Platform.environment['HOME']}/${identity!.substring(2)}';
+  final options = sshOptions(alias, user: config['user'] as String?, port: config['port'] as int?, identityFile: identity);
+  final operations = <String, CancellationToken>{};
   AgentClient? client;
   Directory? directory;
   Process? tunnel;

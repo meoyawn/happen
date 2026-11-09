@@ -18,8 +18,9 @@ typedef _Entry = ({
 class CommandMenu extends StatefulWidget {
   const CommandMenu({super.key, required this.session, required this.actions,
     required this.onOpen, required this.onNewThread, required this.onAddProject,
-    this.pickProject = false});
+    this.pickProject = false, this.sources});
   final DesktopSession session;
+  final List<DesktopSession>? sources;
   final List<CommandMenuAction> actions;
   final void Function(Project, DesktopTask) onOpen;
   final ValueChanged<Project> onNewThread;
@@ -71,9 +72,11 @@ class _CommandMenuState extends State<CommandMenu> {
     bool matches(String value) => words.every(value.toLowerCase().contains);
     if (_projectsOpen) {
       final session = widget.session;
-      final projects = session.projects.where((project) => !project.removing &&
+      final sources = widget.sources ?? [session];
+      final allProjects = sources.expand((source) => source.projects).toList();
+      final projects = allProjects.where((project) => !project.removing &&
         matches('${project.name} ${project.path}')).toList();
-      final order = {for (final (index, project) in session.projects.indexed) project: index};
+      final order = {for (final (index, project) in allProjects.indexed) project: index};
       int latest(Project project) => project.tasks.fold(0,
         (value, task) => task.lastActivity > value ? task.lastActivity : value);
       projects.sort((a, b) {
@@ -89,7 +92,7 @@ class _CommandMenuState extends State<CommandMenu> {
         for (final project in projects)
           (id: 'project:${project.checkoutKey}', group: 'Projects', title: project.name,
             description: project.available
-              ? '${session.client.sharedFilesystem ? 'Local' : 'Remote'} · ${project.path}'
+              ? '${sources.firstWhere((source) => source.projects.contains(project)).machineName} · ${project.path}'
               : 'Folder unavailable · ${project.path}',
             icon: null, shortcut: null, project: project, task: null,
             select: () {
@@ -101,7 +104,8 @@ class _CommandMenuState extends State<CommandMenu> {
       ];
     }
     final tasks = [
-      for (final project in widget.session.projects)
+      for (final source in widget.sources ?? [widget.session])
+      for (final project in source.projects)
         if (!project.removing)
           for (final task in project.tasks)
             if (!task.archived && matches('${task.title} ${project.name} ${project.path}'))
@@ -122,8 +126,9 @@ class _CommandMenuState extends State<CommandMenu> {
             description: '', icon: action.icon, shortcut: action.shortcut,
             project: null, task: null, select: () => _close(action.run)),
       for (final (project, task) in tasks)
-        (id: task.id, group: 'Sessions', title: task.title,
-          description: project.name, icon: null, shortcut: null,
+        (id: (widget.sources ?? [widget.session]).firstWhere((source) => source.projects.contains(project)).sidebarId(task.id),
+          group: 'Sessions', title: task.title,
+          description: '${project.name} · ${(widget.sources ?? [widget.session]).firstWhere((source) => source.projects.contains(project)).machineName}', icon: null, shortcut: null,
           project: project, task: task, select: () => _open(project, task)),
     ];
   }

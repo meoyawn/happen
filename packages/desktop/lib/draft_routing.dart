@@ -1,12 +1,13 @@
 part of 'session.dart';
 
 typedef _DraftContents = ({String text, TextSelection? selection,
-  List<ComposerFileReference> files, List<ComposerAttachment> attachments});
+  List<ComposerFileReference> files, List<ComposerAttachment> attachments, List<ResponseAnnotation> annotations});
 
 _DraftContents _draftContents(DesktopSession session, String id) => (
   text: session.drafts[id] ?? '', selection: session.draftSelections[id],
   files: List.of(session.fileDrafts[id] ?? const []),
   attachments: List.of(session.attachmentDrafts[id] ?? const []),
+  annotations: session.annotationsFor(id),
 );
 
 List<ComposerFileReference> _retargetReferences(List<ComposerFileReference> files, String from, String to) => [
@@ -51,6 +52,7 @@ extension DraftRouting on DesktopSession {
     if (contents.selection != null) draftSelections[draft.id] = contents.selection!;
     fileDrafts[draft.id] = files;
     attachmentDrafts[draft.id] = attachments;
+    if (contents.annotations.isNotEmpty) _annotationDrafts[draft.id] = contents.annotations;
     try {
       await _persistDrafts();
       token.throwIfCancelled();
@@ -68,6 +70,7 @@ extension DraftRouting on DesktopSession {
     draftSelections.remove(draft.id);
     fileDrafts.remove(draft.id);
     attachmentDrafts.remove(draft.id);
+    _annotationDrafts.remove(draft.id);
     if (_activeDraftId == draft.id) _activeDraftId = null;
     try { await _persistDrafts(); }
     catch (_) {
@@ -78,6 +81,7 @@ extension DraftRouting on DesktopSession {
       if (contents.selection != null) draftSelections[draft.id] = contents.selection!;
       fileDrafts[draft.id] = contents.files;
       attachmentDrafts[draft.id] = contents.attachments;
+      if (contents.annotations.isNotEmpty) _annotationDrafts[draft.id] = contents.annotations;
       rethrow;
     }
     if (discardAttachments) {

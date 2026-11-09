@@ -43,21 +43,19 @@ Commands return JSON with `backend: "pid"`, status, PID and socket path. Start i
 
 The default data directory is `~/.local/share/agent-server` (`AGENT_DATA_DIR` or `--data-dir` overrides it). It contains `daemon.json`, `daemon.log`, `server.sock` and thread storage. The directory is private to the user and the socket is mode `0600`. Global server configuration remains in `~/.config/happen/config.yaml` on the VPS.
 
-After a successful deployment, the tool registers the SSH alias in **`~/.config/happen/remotes.json`** (`XDG_CONFIG_HOME` is respected). The desktop discovers this file, verifies the remote protocol connection and shows the host as **Available** in the machine picker in its sidebar and thread header. Select it to open remote projects and run threads on the VPS. Each host retains its own desktop database, project list and drafts; discovery leaves the current machine and thread selected. After redeployment, select **Reconnect** if an existing SSH connection was closed.
+After deployment, open desktop **Settings → Servers → Connect server**. Enter a hostname or an SSH config alias and a display name. User, port and identity-file path are optional; blank values inherit SSH configuration and the SSH agent. Optional workspace directories seed checkout discovery. The desktop verifies the protocol connection and shows the server as **Available** in the machine picker. Use **Manage servers…** in that picker to edit, reconnect or remove a connection.
 
-You can also maintain this private file yourself:
+Remote connections are desktop-owned settings in `desktop.sqlite`. Deployment provisions the server; adding a connection is a desktop Settings action. SSH keys remain with SSH, and model credentials remain on the server where they are used. Connection settings and credential values are kept outside this repository.
 
-```json
-{
-  "hosts": [
-    {"alias": "my-vps", "name": "Development VPS", "projects": ["/home/agent/workspace"]}
-  ]
-}
-```
+The sidebar combines threads and invested drafts from every connected server, regardless of which machine is selected. Cards show their machine; opening one routes to that server. Switching machines retains the sidebar's pins, project filter, disclosure and scroll state. A disconnected server retains its cached rows while reconnecting.
 
-Keep SSH addresses, keys and provider credentials outside the repository. Deployment only persists host registration in the user's configuration directory; no credential file or machine-specific deployment descriptor is generated in the checkout.
+Each server owns its durable SQLite thread catalog (`server.sqlite`) and per-thread history (`tasks/<id>/history.sqlite`). Desktop project/thread rows are a disposable cache: synchronization discovers folders from the server catalog, replaces stale titles and archive state, and removes stale references. Rebuilding that cache also recovers histories whose checkout directory is unavailable. Connection settings, drafts and presentation preferences are retained separately from the cached rows in desktop SQLite.
 
 New threads have **Run on** and **Workspace** controls beneath the composer, following T3 Code's draft routing. Run on lists machines with the same Git repository; Workspace lists each checkout and registered worktree, showing its branch and full path. When a machine has several matches, choosing it opens its workspace choices. The machine becomes fixed once the thread starts.
+
+Before sending the first message, click **Pull** beside these controls to bring the selected checkout to the latest remote `main` or `master`. The selected machine runs Git with its own remote configuration and credentials. The action prefers `upstream`, then `origin`, then another remote in name order. It prefers the remote's default when that branch is `main` or `master`, otherwise `main` then `master`. Its tooltip names the source; progress can be cancelled, and success briefly shows **Pulled** or **Already up to date**, matching T3's Pull feedback. Thread creation and workspace switching wait until the pull finishes.
+
+Pull is fast-forward only, with autostash disabled. Unrelated local edits are preserved; conflicting edits, diverged history and detached HEAD stop the action with an error. A worktree without a configured upstream can still update from the repository's mainline. Git writes serialize across worktrees sharing a common repository, while separate clones remain independent.
 
 Discovery uses registered project roots, recent Happen thread directories and Codex session metadata. A registered workspace container exposes its immediate Git checkouts; repository roots are not recursively scanned. Each matching repository is expanded with `git worktree list --porcelain`, including worktrees outside the original project directory and worktrees belonging to a bare repository. SSH, SCP and HTTPS remote spellings identify the same project. As in T3, `upstream` takes precedence over `origin`, then other fetch remotes in name order. Local folder paths do not group projects across machines. Subdirectory projects resolve to the same relative directory in each checkout.
 

@@ -73,21 +73,6 @@ Future<void> main(List<String> arguments) async {
       }
       rethrow;
     }
-    // This private, durable alias is the desktop discovery source. No credentials
-    // or deployment descriptors are generated anywhere in the checkout.
-    final localHome = Platform.environment['HOME']!;
-    final configRoot = Platform.environment['XDG_CONFIG_HOME'] ?? '$localHome/.config';
-    final config = File('$configRoot/happen/remotes.json');
-    await config.parent.create(recursive: true);
-    final document = await config.exists() ? jsonObject(jsonDecode(await config.readAsString())) : <String, dynamic>{};
-    final hosts = (document['hosts'] as List? ?? []).map(jsonObject).toList();
-    if (!hosts.any((host) => host['alias'] == alias)) {
-      hosts.add({'alias': alias, 'name': alias, 'projects': ['$home/workspace']});
-    }
-    final pending = File('${config.path}.pending');
-    await pending.writeAsString('${const JsonEncoder.withIndent('  ').convert({...document, 'hosts': hosts})}\n', flush: true);
-    await Process.run('chmod', ['600', pending.path]);
-    await pending.rename(config.path);
-    stdout.writeln('Registered $alias for desktop discovery in ${config.path}.');
+    stdout.writeln('Server ready. Add its SSH hostname or alias in desktop Settings → Servers.');
   } finally { cancellation.cancel(); for (final signal in signals) { await signal.cancel(); } }
 }

@@ -11,6 +11,7 @@ import 'package:server/server.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'dictation.dart';
+import 'response_annotation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance.dart';
@@ -28,6 +29,7 @@ import 'git_actions_state.dart';
 import 'project_actions_state.dart';
 
 part 'draft_routing.dart';
+part 'annotation_drafts.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -164,12 +166,13 @@ class SessionDraft {
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
 class DesktopSession extends ChangeNotifier {
-  DesktopSession(this.client, this.database, {String? attachmentDirectory})
+  DesktopSession(this.client, this.database, {String? attachmentDirectory,
+    this.sidebarOwner, this.machineAlias, this.machineName = 'Local machine'})
     : attachmentDirectory = attachmentDirectory ?? '${Directory.systemTemp.path}/happen-attachments-${newId()}' {
     _events = client.events.stream.listen(
       _onEvent,
       onDone: () {
-        if (_lifetime.isCancelled) return;
+        if (_lifetime.isCancelled || !connected) return;
         connected = false;
         unawaited(_dictation?.cancel());
         showError('Connection closed. Reopen Happen to reconnect.', title: 'Connection lost');
@@ -180,6 +183,17 @@ class DesktopSession extends ChangeNotifier {
 
   final AgentClient client;
   final IsolateOwner database;
+  final DesktopSession? sidebarOwner;
+  final String? machineAlias;
+  final String machineName;
+  DesktopSession get sidebar => sidebarOwner ?? this;
+  String sidebarId(String id) => machineAlias == null ? id : jsonEncode([machineAlias, id]);
+
+  Future<void> disconnect() async {
+    connected = false;
+    notifyListeners();
+    await client.close();
+  }
   AppearanceController? _appearance;
   AppearanceController get appearance => _appearance ??= AppearanceController(database);
   AppIconController? _appIcon;
@@ -192,8 +206,24 @@ class DesktopSession extends ChangeNotifier {
   final sideChats = <String, DesktopTask>{};
   final terminals = DesktopTerminals();
   late final _git = <String, GitActionsController>{};
-  GitActionsController gitForProject(Project project) =>
-    _git.putIfAbsent(project.path, () => GitActionsController(client, project.path));
+  GitActionsController gitForProject(Project project) => _git.putIfAbsent(project.path, () {
+    final controller = GitActionsController(client, project.path);
+    var pulling = controller.pulling;
+    controller.addListener(() {
+      if (pulling == controller.pulling) return;
+      pulling = controller.pulling;
+      if (!_lifetime.isCancelled && task == null && this.project?.path == project.path) { notifyListeners(); }
+    });
+    return controller;
+  });
+  bool get pullingCheckout => task == null && _git[project?.path]?.pulling == true;
+
+  Future<void> pullCheckout() async {
+    final owner = project;
+    if (owner == null || !owner.available || owner.removing || !connected || submitting ||
+        task != null || currentDraft.submission != null) { return; }
+    await gitForProject(owner).run('pull');
+  }
   late final _projectActions = <String, ProjectActionsController>{};
   ProjectActionsController actionsForProject(Project project) =>
     _projectActions.putIfAbsent(project.checkoutKey, () => ProjectActionsController(database,
@@ -204,6 +234,10 @@ class DesktopSession extends ChangeNotifier {
   final _changedPanelLayouts = <String>{};
   bool _panelsLoaded = false;
   final drafts = <String, String>{};
+  late final _annotationDrafts = <String, List<ResponseAnnotation>>{};
+  late final annotationChanges = ValueNotifier<int>(0);
+  late _AnnotationWriteState _annotationWrite = const _AnnotationWriteIdle();
+  late int _annotationWriteRevision = 0;
   late final sessionDrafts = <SessionDraft>[];
   late final draftSelections = <String, TextSelection>{};
   String? _activeDraftId;
@@ -255,10 +289,20 @@ class DesktopSession extends ChangeNotifier {
   final viewedTasks = <String, int>{};
   double sidebarWidth = 336;
   final collapsedSidebarSections = <String>{};
-  final pinnedTaskIds = <String>[];
+  final _pinnedTaskIds = <String>[];
+  List<String> get pinnedTaskIds => sidebarOwner == null ? _pinnedTaskIds : [
+    for (final key in sidebarOwner!._pinnedTaskIds)
+      if (key.startsWith('[')) ...(() {
+        try {
+          final value = jsonDecode(key);
+          return value is List && value.length == 2 && value[0] == machineAlias && value[1] is String
+            ? [value[1] as String] : <String>[];
+        } on FormatException { return <String>[]; }
+      })(),
+  ];
   final pinnedProjectKeys = <String>[];
   late final _pinWrites = <String, PinWriteState>{};
-  bool get savingTaskPins => _pinWrites['sidebar_pinned_tasks'] is PinWritePending;
+  bool get savingTaskPins => sidebar._pinWrites['sidebar_pinned_tasks'] is PinWritePending;
   Project? project;
   DesktopTask? task;
   String? error;
@@ -330,40 +374,79 @@ class DesktopSession extends ChangeNotifier {
   }
 
   /// Sidebar references are a presentation cache of native thread metadata.
-  Future<void> refreshSessions({Project? owner}) async {
+  Future<void> refreshSessions({Project? owner, CancellationToken? cancellation}) async {
+    final operation = cancellation?.merge(_lifetime) ?? _lifetime;
     String key(String path) => Directory(path).absolute.uri.normalizePath().toString();
     final owners = {for (final project in owner == null ? projects : [owner]) key(project.path): project};
+    final existing = {for (final project in owner == null ? projects : [owner])
+      for (final target in project.tasks) target.id: (project, target)};
+    final seen = <String>{};
     for (final archived in [false, true]) {
       String? cursor;
       do {
-      _lifetime.throwIfCancelled();
+      operation.throwIfCancelled();
       final page = await client.sessionRead('thread/list', {
         'limit': 200, 'archived': archived, if (owner != null) 'cwd': owner.path, 'cursor': ?cursor,
-      }, cancellation: _lifetime);
+      }, cancellation: operation);
       final entries = (page['data'] as List).map(jsonObject).toList();
       for (final info in entries) {
         final folder = info['cwd'] as String?;
-        final project = folder == null ? null : owners[key(folder)];
+        if (folder == null || folder.isEmpty || info['ephemeral'] == true || info['parentThreadId'] != null) continue;
+        var project = owners[key(folder)];
+        if (project == null && owner == null) {
+          Json inspected;
+          try { inspected = await client.inspectWorkspace(folder, cancellation: operation); }
+          on CancelledException { rethrow; }
+          catch (_) { inspected = {'available': false}; }
+          final canonical = inspected['path'] as String? ?? folder;
+          project = projects.where((item) => key(item.path) == key(canonical)).firstOrNull;
+          if (project == null) {
+            final checkout = newId(), identity = inspected['identity'] as String? ?? 'path:$canonical';
+            await callIsolate(database.port, 'project.add', {'checkout_key': checkout, 'identity': identity,
+              'path': canonical}, cancellation: operation);
+            project = Project(checkout, identity, canonical)
+              ..available = inspected['available'] == true ..branch = inspected['branch'] as String?;
+            projects.add(project);
+          }
+          owners[key(folder)] = project;
+          owners[key(canonical)] = project;
+        }
         if (project == null || project.removing || !projects.contains(project)) continue;
         final id = requiredString(info, 'id');
-        final existing = project.tasks.where((task) => task.id == id).firstOrNull;
+        seen.add(id);
+        final previous = projects.expand((item) => item.tasks).where((task) => task.id == id).firstOrNull;
         final title = _threadTitle(info);
-        final target = existing ?? DesktopTask(id, title);
+        final target = previous ?? DesktopTask(id, title);
         target.title = title;
-        if (existing == null) project.tasks.add(target);
+        if (!project.tasks.contains(target)) {
+          for (final other in projects) { other.tasks.remove(target); }
+          project.tasks.add(target);
+        }
         if (!target.loaded) target.running = info['status']?['type'] == 'active';
+        target.provider = info['modelProvider'] as String? ?? target.provider;
+        target.model = info['model'] as String? ?? target.model;
         target.projectionState['summary'] = info;
         if (!target.archiving) target.archived = archived;
         final updated = (info['updatedAt'] as int? ?? info['createdAt'] as int? ?? 0) * 1000;
-        if (updated > target.lastActivity) target.lastActivity = updated;
+        if (!target.loaded || updated > target.lastActivity) target.lastActivity = updated;
         await callIsolate(database.port, 'task.add', {
           'id': id, 'checkout_key': project.checkoutKey, 'title': target.title,
           'archived': target.archived, 'last_activity': target.lastActivity,
-        }, cancellation: _lifetime);
+        }, cancellation: operation);
       }
       cursor = page['nextCursor'] as String?;
       } while (cursor != null);
     }
+    final removed = <String>[];
+    for (final entry in existing.entries) {
+      final (project, target) = entry.value;
+      if (seen.contains(entry.key) || target == task || target.running || target.loading || target.archiving) continue;
+      project.tasks.remove(target);
+      releaseHistory(target);
+      removed.add(entry.key);
+      openTabIds.remove(entry.key);
+    }
+    if (removed.isNotEmpty) await callIsolate(database.port, 'tasks.remove', {'ids': removed}, cancellation: operation);
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -692,6 +775,7 @@ class DesktopSession extends ChangeNotifier {
     drafts.remove(side.draftKey);
     draftSelections.remove(side.draftKey);
     fileDrafts.remove(side.draftKey);
+    _annotationDrafts.remove(side.draftKey);
     final attachments = attachmentDrafts.remove(side.draftKey) ?? const <ComposerAttachment>[];
     for (final attachment in attachments) { await attachment.discard(); }
   }
@@ -834,10 +918,21 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> pinTask(DesktopTask target, bool pinned) async {
     if (target.archived || target.archiving || !projects.any((project) => !project.removing && project.tasks.contains(target))) return;
-    await _pin('sidebar_pinned_tasks', pinnedTaskIds, target.id, pinned);
+    await sidebar._pin('sidebar_pinned_tasks', sidebar._pinnedTaskIds, sidebarId(target.id), pinned);
+  }
+
+  Future<void> adoptSidebarPins() async {
+    if (sidebarOwner == null || _pinnedTaskIds.isEmpty) return;
+    final order = {...sidebar._pinnedTaskIds, ..._pinnedTaskIds.map(sidebarId)}.toList();
+    await sidebar._savePins('sidebar_pinned_tasks', sidebar._pinnedTaskIds, order);
+    _pinnedTaskIds.clear();
+    await _setting('sidebar_pinned_tasks', '[]');
   }
 
   Future<void> reorderPinnedTasks(List<String> order, {required CancellationToken cancellation}) async {
+    if (sidebarOwner != null) {
+      return sidebar.reorderPinnedTasks(order.map(sidebarId).toList(), cancellation: cancellation);
+    }
     cancellation.throwIfCancelled();
     final visible = order.toSet();
     if (visible.length != order.length || !visible.every(pinnedTaskIds.contains)) {
@@ -1033,23 +1128,39 @@ class DesktopSession extends ChangeNotifier {
     });
   }
 
-  Future<void> _persistDrafts() => _setting('session_drafts', jsonEncode({
-    'recent': {'provider': _provider, 'model': _model, 'reasoning': _reasoning},
-    'active': viewingConversation ? task?.id ?? _activeDraftId : 'home',
-    'tabs': openTabIds,
-    'drafts': [for (final draft in sessionDrafts) {
-      'id': draft.id, 'project': draft.checkoutKey,
-      'provider': draft.provider, 'model': draft.model, 'reasoning': draft.reasoning,
-      'tracing': draft.tracing,
-      'text': drafts[draft.id] ?? '',
-      if (draftSelections[draft.id] case final selection?)
-        'selection': [selection.baseOffset, selection.extentOffset],
-      'files': [for (final file in fileDrafts[draft.id] ?? const <ComposerFileReference>[])
-        {'offset': file.offset, 'path': file.path, 'skill': file.skillName, 'title': file.title, 'prompt': file.prompt}],
-      'attachments': [for (final attachment in attachmentDrafts[draft.id] ?? const <ComposerAttachment>[])
-        {...attachment.toJson(), 'owned_directory': attachment.ownedDirectory}],
-    }],
-  }));
+  Future<void> _persistDrafts() async {
+    final revision = ++_annotationWriteRevision;
+    _annotationWrite = _transitionAnnotationWrite(_annotationWrite, _AnnotationWritePending(revision));
+    try {
+      await _setting('session_drafts', jsonEncode({
+        'recent': {'provider': _provider, 'model': _model, 'reasoning': _reasoning},
+        'active': viewingConversation ? task?.id ?? _activeDraftId : 'home',
+        'tabs': openTabIds,
+        'annotations': {for (final entry in _annotationDrafts.entries)
+          entry.key: entry.value.map((annotation) => annotation.toJson()).toList()},
+        'drafts': [for (final draft in sessionDrafts) {
+          'id': draft.id, 'project': draft.checkoutKey,
+          'provider': draft.provider, 'model': draft.model, 'reasoning': draft.reasoning,
+          'tracing': draft.tracing,
+          'text': drafts[draft.id] ?? '',
+          if (draftSelections[draft.id] case final selection?)
+            'selection': [selection.baseOffset, selection.extentOffset],
+          'files': [for (final file in fileDrafts[draft.id] ?? const <ComposerFileReference>[])
+            {'offset': file.offset, 'path': file.path, 'skill': file.skillName, 'title': file.title, 'prompt': file.prompt}],
+          'attachments': [for (final attachment in attachmentDrafts[draft.id] ?? const <ComposerAttachment>[])
+            {...attachment.toJson(), 'owned_directory': attachment.ownedDirectory}],
+        }],
+      }));
+      if (revision == _annotationWriteRevision) {
+        _annotationWrite = _transitionAnnotationWrite(_annotationWrite, _AnnotationWriteSaved(revision));
+      }
+    } catch (error) {
+      if (revision == _annotationWriteRevision) {
+        _annotationWrite = _transitionAnnotationWrite(_annotationWrite, _AnnotationWriteFailed(revision, error));
+      }
+      rethrow;
+    }
+  }
 
   void openDraft(SessionDraft draft) {
     if (!sessionDrafts.contains(draft)) return;
@@ -1068,7 +1179,7 @@ class DesktopSession extends ChangeNotifier {
   bool _emptyDraft(SessionDraft draft) => draft.submission == null &&
     (drafts[draft.id] ?? '').trim().isEmpty &&
     (fileDrafts[draft.id]?.isEmpty ?? true) &&
-    (attachmentDrafts[draft.id]?.isEmpty ?? true);
+    (attachmentDrafts[draft.id]?.isEmpty ?? true) && annotationsFor(draft.id).isEmpty;
 
   int _pruneEmptyDrafts() {
     bool unused(SessionDraft draft) => _emptyDraft(draft) &&
@@ -1095,6 +1206,7 @@ class DesktopSession extends ChangeNotifier {
       draftSelections.remove(id);
       fileDrafts.remove(id);
       attachmentDrafts.remove(id);
+      _annotationDrafts.remove(id);
     }
     _saveNavigation('open_tabs', jsonEncode(openTabIds));
     saveDrafts();
@@ -1193,7 +1305,7 @@ class DesktopSession extends ChangeNotifier {
     }
     collapsedSidebarSections..clear()..addAll(savedIds('sidebar_collapsed')
       .where((section) => section == 'pinned' || section == 'working'));
-    pinnedTaskIds..clear()..addAll(savedIds('sidebar_pinned_tasks'));
+    _pinnedTaskIds..clear()..addAll(savedIds('sidebar_pinned_tasks'));
     pinnedProjectKeys..clear()..addAll(savedIds('sidebar_pinned_projects'));
     for (final raw in saved['projects'] as List) {
       final value = jsonObject(raw);
@@ -1229,6 +1341,12 @@ class DesktopSession extends ChangeNotifier {
     try {
       restored = jsonObject(jsonDecode(settings['session_drafts'] as String? ?? '{}'));
     } on FormatException { /* Optional composer state. */ }
+    for (final entry in jsonObject(restored['annotations'] ?? {}).entries) {
+      try {
+        _annotationDrafts[entry.key] = List.unmodifiable((entry.value as List).map((value) =>
+          ResponseAnnotation.fromJson(jsonObject(value))));
+      } catch (_) { /* A malformed optional draft must not prevent startup. */ }
+    }
     final recent = jsonObject(restored['recent'] ?? {});
     _provider = recent['provider'] as String?;
     _model = recent['model'] as String?;
@@ -1411,6 +1529,7 @@ class DesktopSession extends ChangeNotifier {
       for (final key in [target.checkoutKey, ...target.tasks.map((task) => task.id)]) {
         drafts.remove(key);
         fileDrafts.remove(key);
+        _annotationDrafts.remove(key);
         attachments.addAll(attachmentDrafts.remove(key) ?? const []);
       }
       if (!_lifetime.isCancelled) notifyListeners();
@@ -1627,18 +1746,23 @@ class DesktopSession extends ChangeNotifier {
     }
   }
 
-  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target}) {
+  Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [],
+      List<ResponseAnnotation> annotations = const [], DesktopTask? target}) {
     final enabled = (target ?? task)?.tracing ?? currentDraft.tracing;
-    return _send(prompt, attachments: attachments, target: target, tracing: enabled);
+    return _send(prompt, attachments: attachments, annotations: List.unmodifiable(annotations), target: target, tracing: enabled);
   }
 
-  Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [], DesktopTask? target,
+  Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [],
+      List<ResponseAnnotation> annotations = const [], DesktopTask? target,
       required bool tracing}) async {
     final owner = target == null ? project : projects.where((project) =>
       project.tasks.any((task) => task.id == target.sideParentID)).firstOrNull;
     final existing = target ?? task;
     final draft = existing == null ? currentDraft : null;
     final wasRunning = existing?.running == true;
+    final annotationDraft = target?.draftKey ?? existing?.draftKey ?? draft!.id;
+    final inputPrompt = promptWithResponseAnnotations(prompt, annotations);
+    String? adoptedDraft;
     final sideCommand = target == null ? RegExp(r'^\s*/side(?:\s|$)').firstMatch(prompt) : null;
     if (sideCommand != null && existing == null) {
       showError('Send a message in the main session before starting a side chat.');
@@ -1647,8 +1771,9 @@ class DesktopSession extends ChangeNotifier {
     if (owner == null ||
         !owner.available ||
         owner.removing ||
-        (prompt.trim().isEmpty && attachments.isEmpty) ||
+        (prompt.trim().isEmpty && attachments.isEmpty && annotations.isEmpty) ||
         (target?.sideSubmitting ?? submitting) ||
+        existing == null && pullingCheckout ||
         target?.sidePreparing == true ||
         target != null && sideChats[target.id] != target ||
         !connected ||
@@ -1680,11 +1805,11 @@ class DesktopSession extends ChangeNotifier {
     final inboxID = messageID == null ? null : 'msg_$messageID';
     final sentAt = DateTime.now();
     final local = sideCommand != null ? null : existing ?? (draft!.submission =
-      DesktopTask(draft.id, prompt.trim().split('\n').first, tracing: tracing)..loaded = true);
+      DesktopTask(draft.id, prompt.trim().isEmpty ? annotations.isEmpty ? attachments.first.name : annotations.first.text : prompt.trim().split('\n').first, tracing: tracing)..loaded = true);
     if (local != null) {
       local.lastSentID = messageID;
       local.pending[inboxID!] = {
-        'prompt': prompt, 'attachments': attachments.map((attachment) => attachment.toJson()).toList(),
+        'prompt': inputPrompt, 'attachments': attachments.map((attachment) => attachment.toJson()).toList(),
         'delivery': wasRunning ? deliveryMode : 'steer',
         'created_at': sentAt.toIso8601String(), 'sending': true,
       };
@@ -1735,7 +1860,7 @@ class DesktopSession extends ChangeNotifier {
           final reply = jsonObject(
             await _request('task.start', {
               'cwd': owner.path,
-              'prompt': prompt,
+              'prompt': inputPrompt,
               'message_id': messageID,
               if (input.isNotEmpty) 'attachments': input,
               'provider': provider,
@@ -1744,7 +1869,7 @@ class DesktopSession extends ChangeNotifier {
               'tracing': tracing,
             }),
           );
-          final title = prompt.trim().isEmpty ? attachments.first.name : prompt.trim().split('\n').first;
+          final title = prompt.trim().isEmpty ? annotations.isEmpty ? attachments.first.name : annotations.first.text : prompt.trim().split('\n').first;
           final created = DesktopTask(
             requiredString(reply, 'sessionID'),
             title.length > 72 ? '${title.substring(0, 72)}…' : title,
@@ -1763,6 +1888,7 @@ class DesktopSession extends ChangeNotifier {
           created.pending.addAll(local!.pending);
           created.lastSentID = messageID;
           owner.tasks.insert(0, created);
+          adoptedDraft = created.draftKey;
           _rememberTab(created);
           terminals.adoptDraft(owner.checkoutKey, created.id, draft: draft?.id);
           if (draft != null) {
@@ -1801,14 +1927,14 @@ class DesktopSession extends ChangeNotifier {
             _notice('Thread started, but could not be saved', type: DesktopToastType.warning, description: '$failure');
           }
         } else if (sideCommand != null) {
-          await openSideChat(existing, prompt: prompt.substring(sideCommand.end).trimLeft(), attachments: input);
+          await openSideChat(existing, prompt: promptWithResponseAnnotations(prompt.substring(sideCommand.end).trimLeft(), annotations), attachments: input);
         } else {
           // Mark admission before awaiting: a very short turn can finish before
           // the caller resumes from the WebSocket acknowledgement.
           existing.running = true;
           await _request('task.send', {
             'task_id': existing.id,
-            'prompt': prompt,
+            'prompt': inputPrompt,
             'message_id': messageID,
             if (input.isNotEmpty) 'attachments': input,
             'delivery': deliveryMode,
@@ -1816,6 +1942,7 @@ class DesktopSession extends ChangeNotifier {
           });
         }
         admitted = true;
+        _consumeAnnotations(annotationDraft, annotations, adopt: adoptedDraft);
         return true;
       }));
     } on CancelledException {
@@ -1993,6 +2120,7 @@ class DesktopSession extends ChangeNotifier {
     drafts.remove(target.id);
     draftSelections.remove(target.id);
     fileDrafts.remove(target.id);
+    _annotationDrafts.remove(target.id);
     final attachments = attachmentDrafts.remove(target.id) ?? const <ComposerAttachment>[];
     panelLayouts.remove(target.id);
     _savePanels(target);
@@ -2267,6 +2395,7 @@ class DesktopSession extends ChangeNotifier {
     attachmentDrafts.clear();
     panelSelection.dispose();
     sidebarChanges.dispose();
+    annotationChanges.dispose();
     dispose();
   }
 }
@@ -2338,7 +2467,7 @@ class ChatEntry {
   const ChatEntry(this.id, this.role, this.text, {
     this.tool, this.compaction, this.timestamp, this.startedAt, this.streaming = false, this.attachments = const [],
     this.response, this.turnId, this.phase, this.questionAnswers = const [], this.image,
-    this.event,
+    this.event, this.annotations = const [],
   });
   final String id, role, text;
   final String? turnId, phase;
@@ -2351,6 +2480,7 @@ class ChatEntry {
   final List<ChatQuestionAnswer> questionAnswers;
   final Json? image;
   final ChatEvent? event;
+  final List<ResponseAnnotation> annotations;
 }
 
 class CompactionActivity {
@@ -2386,7 +2516,9 @@ List<ChatEntry> conversation(DesktopTask task) {
         final content = (message['content'] as List? ?? []).map(jsonObject).toList();
         final text = content.where((part) => part['type'] == 'text').map((part) => part['text']).join('\n');
         final answers = _questionReplyAnswers(text);
-        result.add(ChatEntry(id, answers.isEmpty ? 'You' : 'Answer', answers.isEmpty ? text : '',
+        final annotated = readResponseAnnotations(text);
+        result.add(ChatEntry(id, answers.isEmpty ? 'You' : 'Answer', answers.isEmpty ? annotated?.text ?? text : '',
+          annotations: annotated?.annotations ?? const [],
           attachments: content.where((part) => part['type'] != 'text').toList(), timestamp: created,
           turnId: message['turnId'] as String?, questionAnswers: answers, event: _mcpEventInput(text)));
       case 'agentMessage':
@@ -2480,8 +2612,10 @@ List<ChatEntry> conversation(DesktopTask task) {
     final queued = item['delivery'] == 'queue';
     final text = item['prompt'] as String? ?? '';
     final answers = _questionReplyAnswers(text);
+    final annotated = readResponseAnnotations(text);
     result.add(ChatEntry(queued ? 'pending:${entry.key}' : entry.key, answers.isNotEmpty ? 'Answer' : queued ? 'Queued' : 'You',
-      answers.isEmpty ? text : '', questionAnswers: answers,
+      answers.isEmpty ? annotated?.text ?? text : '', questionAnswers: answers,
+      annotations: annotated?.annotations ?? const [],
       event: _mcpEventInput(text),
       attachments: (item['attachments'] as List? ?? []).map(jsonObject).toList(),
       timestamp: DateTime.tryParse(item['created_at'] as String? ?? '')));

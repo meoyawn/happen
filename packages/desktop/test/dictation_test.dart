@@ -7,6 +7,8 @@ import 'package:desktop/app.dart';
 import 'package:desktop/composer_dictation.dart';
 import 'package:desktop/composer_editor.dart';
 import 'package:desktop/composer_text_controller.dart';
+import 'package:desktop/conversation_annotations.dart';
+import 'package:desktop/response_annotation.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/dictation.dart';
 import 'package:desktop/dictation_state.dart';
@@ -99,8 +101,9 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> record(WidgetTester tester) async {
-    await tester.tap(find.byTooltip('Dictate'));
+  Future<void> record(WidgetTester tester, {Finder? within}) async {
+    await tester.tap(within == null ? find.byTooltip('Dictate')
+      : find.descendant(of: within, matching: find.byTooltip('Dictate')));
     await tester.pump();
     expect(session.dictation.state, isA<DictationRecording>());
     await tester.runAsync(() async {
@@ -119,9 +122,10 @@ void main() {
     expect(find.byType(DictationLevelWaveform), findsOneWidget);
   }
 
-  Future<void> stop(WidgetTester tester) async {
+  Future<void> stop(WidgetTester tester, {Finder? within}) async {
     // The trailing stop slot remains visible while the pill expands leftward.
-    await tester.tapAt(tester.getTopRight(find.byType(DictationButton)) + const Offset(-14, 14));
+    await tester.tapAt(tester.getTopRight(within == null ? find.byType(DictationButton)
+      : find.descendant(of: within, matching: find.byType(DictationButton))) + const Offset(-14, 14));
     await tester.pump();
   }
 
@@ -174,6 +178,103 @@ void main() {
     session.task!.questions['question'] = request;
     return session.task!.questionDrafts['question'] = QuestionDraft.fromRequest(request);
   }
+
+  testWidgets('annotation dictation inserts and saves its comment while preserving the main draft', (tester) async {
+    session.dictationMode = 'live';
+    await liveBackend(tester);
+    await open(tester);
+    await enterText(tester, 'Unsent main draft');
+    final mainEditor = editor(tester);
+    final composer = tester.element(find.byKey(const ValueKey('conversation-composer')));
+    final scope = ConversationAnnotationScope.maybeOf(composer)!;
+    scope.onAdd(const ResponseAnnotation(id: 'response-comment', text: 'Selected response',
+      messageId: 'response', startOffset: 0, endOffset: 17), const Offset(400, 300));
+    await tester.pumpAndSettle();
+    final popover = find.byType(ResponseAnnotationEditor);
+    final field = find.descendant(of: popover, matching: find.byType(TextField));
+    expect(tester.getSize(popover), const Size(294, 44));
+    await record(tester, within: popover);
+    expect(tester.widget<TextField>(field).controller!.text, 'live words');
+    expect(mainEditor.text, 'Unsent main draft');
+    await stop(tester, within: popover);
+    for (var i = 0; i < 100 && session.dictation.active; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(field).controller!.text, 'live words.');
+    expect(popover, findsOneWidget, reason: 'Stopping dictation must retain the comment editor');
+    expect(client.sent, isEmpty);
+    await tester.tap(find.byTooltip('Save annotation'));
+    await tester.pumpAndSettle();
+    expect(popover, findsNothing);
+    expect(session.annotationsFor('task').single.annotation, 'live words.');
+    expect(mainEditor.text, 'Unsent main draft');
+    expect(client.sent, isEmpty, reason: 'Saving an annotation must not submit a turn');
+
+    scope.onEdit(session.annotationsFor('task').single);
+    await tester.pumpAndSettle();
+    await record(tester, within: popover);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(popover, findsNothing);
+    expect(session.dictation.active, isFalse);
+    expect(session.dictation.owner, isNull);
+    expect(session.annotationsFor('task').single.annotation, contains('live words.'));
+    expect(mainEditor.text, 'Unsent main draft');
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await close(tester);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  test('annotation submission retains failures and edits made before acknowledgement', () async {
+    const original = ResponseAnnotation(id: 'comment', text: 'Selected response', annotation: 'First comment',
+      messageId: 'response', startOffset: 0, endOffset: 17);
+    session.putAnnotation('task', original);
+    client.turnReply = Completer<Object?>();
+    final first = session.send('', annotations: session.annotationsFor('task'));
+    await Future<void>.delayed(Duration.zero);
+    expect(session.annotationsFor('task'), [original]);
+    client.turnReply!.completeError(StateError('Offline'));
+    expect(await first, isFalse);
+    expect(session.annotationsFor('task'), [original]);
+
+    client.turnReply = Completer<Object?>();
+    final second = session.send('Fix this', annotations: session.annotationsFor('task'));
+    await Future<void>.delayed(Duration.zero);
+    final edited = original.withComment('Updated before acknowledgement');
+    session.putAnnotation('task', edited);
+    client.turnReply!.complete(<String, dynamic>{});
+    expect(await second, isTrue);
+    expect(session.annotationsFor('task'), [edited]);
+    final input = (client.sent.last['input'] as List).single as Json;
+    final projected = DesktopTask('projection', 'Projection')..loaded = true;
+    projected.messages['user'] = {'id': 'user', 'type': 'userMessage', 'order': 0, 'content': [input]};
+    final entry = conversation(projected).single;
+    expect(entry.text, 'Fix this');
+    expect(entry.annotations.single.annotation, 'First comment');
+    expect(entry.annotations.single.messageId, 'response');
+
+    session.task!.running = false;
+    client.turnReply = null;
+    expect(await session.send('Finish', annotations: session.annotationsFor('task')), isTrue);
+    expect(session.annotationsFor('task'), isEmpty);
+
+    session.putAnnotation('task', edited.withComment('Next request'));
+    await session.close();
+    closed = true;
+    final reopened = await openDesktopDatabase(root.path);
+    final cancellation = CancellationToken();
+    try {
+      final saved = jsonObject(await callIsolate(reopened.port, 'load', {}, cancellation: cancellation));
+      final drafts = jsonObject(jsonDecode(jsonObject(saved['settings'])['session_drafts'] as String));
+      expect(drafts['annotations'], {'task': [{
+        'id': 'comment', 'text': 'Selected response', 'annotation': 'Next request',
+        'source': {'messageId': 'response', 'startOffset': 0, 'endOffset': 17},
+      }]});
+    } finally { cancellation.cancel(); await reopened.close(); }
+  });
 
   testWidgets('question dictation inserts into answers and finishes before advancing or submitting', (tester) async {
     final draft = askQuestions();
@@ -500,6 +601,7 @@ class _Client implements AgentClient {
   final recordings = <Uint8List>[];
   late Completer<String> reply;
   int? streamPort;
+  Completer<Object?>? turnReply;
   @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
     {'access_token': 'fixture', 'account_id': 'account'};
   @override Future<void> answerQuestion(String sessionID, String requestID, List<List<String>>? answers, {
@@ -509,7 +611,7 @@ class _Client implements AgentClient {
     this.answers.add(answers);
   }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
-    if (method == 'turn/start') { sent.add(params); return <String, dynamic>{}; }
+    if (method == 'turn/start') { sent.add(params); return turnReply == null ? <String, dynamic>{} : await turnReply!.future; }
     throw StateError('Unexpected request: $method');
   }
   @override Future<void> close() => events.close();

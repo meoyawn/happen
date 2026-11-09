@@ -17,11 +17,15 @@ import 'project_avatar.dart';
 import 'project_actions_state.dart';
 import 'project_script_dialog.dart';
 import 'session.dart';
+import 'machines.dart';
+import 'remote_settings.dart';
 import 'desktop_notifications.dart';
 import 'notification_preferences.dart';
 import 'window_chrome.dart';
 
 const _pages = [
+  (id: 'servers', label: 'Servers', icon: Icons.dns_outlined,
+    description: 'Connect to the machines where your threads run'),
   (id: 'providers', label: 'Providers', icon: Icons.key_outlined,
     description: 'Manage the accounts you use for AI models'),
   (id: 'preferences', label: 'Preferences', icon: Icons.tune,
@@ -38,8 +42,9 @@ const _pages = [
 class DesktopSettingsScreen extends StatefulWidget {
   const DesktopSettingsScreen({super.key, required this.session, required this.accounts,
     required this.archived, required this.run, this.addProject, this.openProject,
-    this.removeProject, this.windowControls = true, this.initialPage = 'preferences', this.initialProject});
+    this.removeProject, this.windowControls = true, this.initialPage = 'preferences', this.initialProject, this.machines});
   final DesktopSession session;
+  final MachinesController? machines;
   final Widget accounts, archived;
   final Future<void> Function(Future<void> Function()) run;
   final Future<void> Function()? addProject;
@@ -144,6 +149,8 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 const SizedBox(height: 24),
               ],
               switch (_page) {
+                'servers' => widget.machines == null ? const Text('Server connections are unavailable')
+                  : RemoteSettings(machines: widget.machines!),
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
                 'projects' => project == null ? _projects() : _ProjectSettings(

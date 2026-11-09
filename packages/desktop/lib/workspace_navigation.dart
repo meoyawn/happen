@@ -49,24 +49,35 @@ _SidebarThreadActivity _sidebarActivity(DesktopSession session, DesktopTask task
     completed: completed, unread: unread, lastActivity: lastActivity, sentAt: sentAt, runStartedAt: runStartedAt);
 }
 
-List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSession session, String? projectKey) {
-  final pins = {for (final (index, id) in session.pinnedTaskIds.indexed) id: index};
+DesktopSession _projectSource(Iterable<DesktopSession> sources, Project project) =>
+  sources.firstWhere((source) => source.projects.contains(project));
+
+String _cardMachineName(DesktopSession source) => source.machineAlias == null ? 'local' : source.machineName;
+
+List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSession session, String? projectKey,
+    {List<DesktopSession>? sources}) {
+  final owners = sources ?? [session];
+  final pins = {for (final (index, id) in session.sidebar.pinnedTaskIds.indexed) id: index};
+  final keys = {for (final source in owners) for (final project in source.projects)
+    for (final task in project.tasks) task: source.sidebarId(task.id)};
   final tasks = [
-    for (final project in session.projects)
-      if (!project.removing && (projectKey == null || project.checkoutKey == projectKey))
+    for (final source in owners)
+    for (final project in source.projects)
+      if (!project.removing && (projectKey == null || source.sidebarId(project.checkoutKey) == projectKey))
         for (final task in project.tasks)
-          if (!task.archived) (project, task, _sidebarActivity(session, task)),
+          if (!task.archived) (project, task, _sidebarActivity(source, task)),
   ];
   return tasks..sort((a, b) {
-    final pin = (pins[a.$2.id] ?? double.infinity).compareTo(pins[b.$2.id] ?? double.infinity);
+    final left = keys[a.$2]!, right = keys[b.$2]!;
+    final pin = (pins[left] ?? double.infinity).compareTo(pins[right] ?? double.infinity);
     if (pin != 0) return pin;
     if (a.$3.running != b.$3.running) return a.$3.running ? -1 : 1;
     if (a.$3.running) {
       final sent = b.$3.sentAt.compareTo(a.$3.sentAt);
-      return sent != 0 ? sent : a.$2.id.compareTo(b.$2.id);
+      return sent != 0 ? sent : left.compareTo(right);
     }
     final activity = b.$3.lastActivity.compareTo(a.$3.lastActivity);
-    return activity != 0 ? activity : a.$2.id.compareTo(b.$2.id);
+    return activity != 0 ? activity : left.compareTo(right);
   });
 }
 
@@ -77,16 +88,20 @@ List<SessionDraft> _sidebarDrafts(DesktopSession session, String? projectKey) =>
       (session.fileDrafts[draft.id]?.isNotEmpty ?? false) ||
       (session.attachmentDrafts[draft.id]?.isNotEmpty ?? false))).toList().reversed.toList();
 
-List<String> sidebarThreadIds(DesktopSession session, {String? projectKey}) {
-  final tasks = _sidebarTasks(session, projectKey);
-  final pins = session.pinnedTaskIds.toSet();
+List<String> sidebarThreadIds(DesktopSession session, {String? projectKey, List<DesktopSession>? sources}) {
+  final owners = sources ?? [session], preferences = session.sidebar;
+  final tasks = _sidebarTasks(session, projectKey, sources: owners);
+  final pins = preferences.pinnedTaskIds.toSet();
+  String key(Project project, DesktopTask task) => _projectSource(owners, project).sidebarId(task.id);
   return [
-    if (!session.collapsedSidebarSections.contains('pinned'))
-      for (final (_, task, _) in tasks.where((entry) => pins.contains(entry.$2.id))) task.id,
-    if (!session.collapsedSidebarSections.contains('working'))
-      for (final (_, task, _) in tasks.where((entry) => entry.$3.running && !pins.contains(entry.$2.id))) task.id,
-    for (final draft in _sidebarDrafts(session, projectKey)) draft.id,
-    for (final (_, task, _) in tasks.where((entry) => !entry.$3.running && !pins.contains(entry.$2.id))) task.id,
+    if (!preferences.collapsedSidebarSections.contains('pinned'))
+      for (final (project, task, _) in tasks.where((entry) => pins.contains(key(entry.$1, entry.$2)))) key(project, task),
+    if (!preferences.collapsedSidebarSections.contains('working'))
+      for (final (project, task, _) in tasks.where((entry) => entry.$3.running && !pins.contains(key(entry.$1, entry.$2)))) key(project, task),
+    for (final source in owners)
+      for (final draft in _sidebarDrafts(source, projectKey == null ? null :
+        source.projects.where((p) => source.sidebarId(p.checkoutKey) == projectKey).firstOrNull?.checkoutKey ?? '')) source.sidebarId(draft.id),
+    for (final (project, task, _) in tasks.where((entry) => !entry.$3.running && !pins.contains(key(entry.$1, entry.$2)))) key(project, task),
   ];
 }
 
@@ -95,9 +110,10 @@ class ThreadSidebar extends StatefulWidget {
     required this.onHome, required this.onSearch, required this.onNew, required this.onSettings,
     required this.onSelect, required this.onArchive, required this.onDraft,
     required this.onAddProject, required this.onRefresh, required this.onProjectFilter,
-    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.machinePicker});
+    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.machinePicker, this.sources});
   final Widget? machinePicker;
   final DesktopSession session;
+  final List<DesktopSession>? sources;
   final bool home, windowControls;
   final double titlebarInset;
   final String? projectKey;
@@ -115,13 +131,17 @@ class ThreadSidebar extends StatefulWidget {
 
 class _ThreadSidebarState extends State<ThreadSidebar> {
   DesktopSession get session => widget.session;
+  DesktopSession get preferences => session.sidebar;
+  List<DesktopSession> get sources => widget.sources ?? [session];
+  DesktopSession _source(Project project) => _projectSource(sources, project);
+  String _taskKey(Project project, DesktopTask task) => _source(project).sidebarId(task.id);
   Timer? _clock;
   late ThreadReorderState _reorder = const ThreadReorderIdle();
   CancellationToken? _reorderCancellation;
   late final _pinnedList = GlobalKey<SliverReorderableListState>();
   late final _threadList = GlobalKey();
   late final _rowAnchors = <String, GlobalKey>{};
-  GlobalKey? get _selectedRow => widget.home ? null : _rowAnchors[session.draftKey];
+  GlobalKey? get _selectedRow => widget.home ? null : _rowAnchors[session.sidebarId(session.draftKey)];
   GlobalKey _anchor(String id) => _rowAnchors.putIfAbsent(id, () => GlobalKey());
   late final _scroll = ScrollController();
   late final _rows = <String, ({Object state, Widget row})>{};
@@ -132,7 +152,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   late final _reorderFocus = FocusNode(debugLabel: 'Pinned thread reorder');
   bool get _reordering => _reorder is ThreadReorderDragging || _reorder is ThreadReorderDropping;
   bool get _canStartReorder => switch (_reorder) {
-    ThreadReorderIdle() || ThreadReorderSaved() || ThreadReorderFailed() || ThreadReorderCancelled() => !session.savingTaskPins,
+    ThreadReorderIdle() || ThreadReorderSaved() || ThreadReorderFailed() || ThreadReorderCancelled() => !preferences.savingTaskPins,
     _ => false,
   };
 
@@ -176,7 +196,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
   Future<void> _persistReorder(ThreadReorderSaving pending, CancellationToken cancellation) async {
     try {
-      await session.reorderPinnedTasks(pending.drop.order, cancellation: cancellation);
+      await preferences.reorderPinnedTasks(pending.drop.order, cancellation: cancellation);
       if (!mounted || cancellation.isCancelled || !identical(_reorder, pending)) return;
       setState(() => _transitionReorder(ThreadReorderSaved(pending)));
     } catch (error) {
@@ -211,8 +231,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   @override
   void didUpdateWidget(covariant ThreadSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session != session || oldWidget.projectKey != widget.projectKey ||
-        session.collapsedSidebarSections.contains('pinned')) {
+    if (oldWidget.projectKey != widget.projectKey || preferences.collapsedSidebarSections.contains('pinned')) {
       _cancelReorder(ThreadReorderCancelReason.changed);
       return;
     }
@@ -222,8 +241,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       _ => null,
     };
     if (order != null) {
-      final pins = _sidebarTasks(session, widget.projectKey)
-        .where((entry) => session.pinnedTaskIds.contains(entry.$2.id)).map((entry) => entry.$2.id).toList();
+      final pins = _sidebarTasks(session, widget.projectKey, sources: sources)
+        .where((entry) => preferences.pinnedTaskIds.contains(_taskKey(entry.$1, entry.$2)))
+        .map((entry) => _taskKey(entry.$1, entry.$2)).toList();
       if (!listEquals(order, pins)) _cancelReorder(ThreadReorderCancelReason.changed);
     }
   }
@@ -238,9 +258,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   }
 
   void _revealSelection(List<(Project, DesktopTask, _SidebarThreadActivity)> pinned, List<(String?, Widget)> rows) {
-    final id = widget.home ? null : session.draftKey;
+    final id = widget.home ? null : session.sidebarId(session.draftKey);
     final selection = (id, widget.projectKey);
-    final pin = session.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((entry) => entry.$2.id == id);
+    final pin = preferences.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((entry) => _taskKey(entry.$1, entry.$2) == id);
     final index = pin >= 0 ? pin : rows.indexWhere((entry) => entry.$1 == id);
     final list = pin >= 0 ? _pinnedList : _threadList;
     if (_selection == selection && _selectionList == list && _selectionIndex == index) return;
@@ -321,10 +341,10 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         child: child));
 
   Widget _sectionHeading(String section, String title, int count) {
-    final expanded = !session.collapsedSidebarSections.contains(section);
+    final expanded = !preferences.collapsedSidebarSections.contains(section);
     return InkWell(key: ValueKey('$section-section'),
       mouseCursor: WidgetStateMouseCursor.clickable,
-      onTap: () => unawaited(_run(session, () => session.chooseSidebarSection(section, expanded))),
+      onTap: () => unawaited(_run(preferences, () => preferences.chooseSidebarSection(section, expanded))),
       borderRadius: BorderRadius.circular(6), child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(children: [
           Expanded(child: Text(title, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
@@ -335,21 +355,24 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   }
 
   Widget _row(Project project, DesktopTask task, _SidebarThreadActivity activity, {int? reorderIndex}) {
+    final source = _source(project), session = _source(project);
+    final id = source.sidebarId(task.id), active = identical(widget.session, source);
     final state = (
-      session, project, task, widget.home, session.task == task,
+      source, project, task, widget.home, active && session.task == task,
       project.id, project.name, project.branch, project.avatarColor, project.avatarImage, session.projectAvatarStyle,
       task.title, task.archived, task.archiving, task.provider, task.model, activity,
       session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
       _canStartReorder, reorderIndex, widget.onProjectSettings != null,
+      sources.length, source.machineName,
     );
-    final cached = _rows[task.id];
+    final cached = _rows[id];
     if (cached?.state == state) return cached!.row;
     final row = _ThreadRow(
-    key: ValueKey('thread-row:${task.id}'), session: session, task: task,
+    key: ValueKey('thread-row:$id'), session: session, task: task,
     onArchive: (task, archived) => widget.onArchive(task, archived),
     onProjectSettings: widget.onProjectSettings == null ? null : () => widget.onProjectSettings!(project),
     builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) {
-      final selected = !widget.home && session.task == task;
+      final selected = !widget.home && active && session.task == task;
       final pinned = session.pinnedTaskIds.contains(task.id);
       final unread = activity.unread;
       final reorderable = reorderIndex != null && renameInput == null && !task.archiving && _canStartReorder;
@@ -358,7 +381,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6),
           side: BorderSide(color: selected ? desktopBorder : Colors.transparent)),
         clipBehavior: Clip.antiAlias,
-        child: InkWell(key: ValueKey('thread:${task.id}'), borderRadius: BorderRadius.circular(6),
+        child: InkWell(key: ValueKey('thread:$id'), borderRadius: BorderRadius.circular(6),
           mouseCursor: WidgetStateMouseCursor.clickable,
           hoverColor: desktopMuted,
           onTap: renameInput == null ? () => widget.onSelect(project, task) : null,
@@ -387,22 +410,28 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                   color: selected || unread ? desktopForeground : desktopSecondary)))),
               const SizedBox(height: 2),
               SizedBox(height: 16, child: Row(children: [
-                if (project.branch case final branch?) Expanded(child: Text(branch, maxLines: 1,
-                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary)))
-                else const Spacer(),
-                if (task.provider != null) Tooltip(message: '${task.provider}${task.model == null ? '' : ' · ${task.model}'}',
-                  child: providerIcon(task.provider, size: 14, color: desktopTertiary)),
+                Expanded(child: Text.rich(TextSpan(children: [
+                  if (sources.length > 1) TextSpan(text: '${_cardMachineName(source)}  ',
+                    style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+                  if (project.branch case final branch?) TextSpan(text: branch),
+                ]), maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, height: 1, color: desktopSecondary))),
+                if (task.provider != null) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(message: '${task.provider}${task.model == null ? '' : ' · ${task.model}'}',
+                    child: SizedBox.square(dimension: 14, child: providerIcon(task.provider, size: 14, color: desktopTertiary))),
+                ],
               ])),
             ])))));
-      final anchored = KeyedSubtree(key: _anchor(task.id), child: card);
+      final anchored = KeyedSubtree(key: _anchor(id), child: card);
       return reorderIndex == null ? anchored : ReorderableDragStartListener(
         index: reorderIndex, enabled: reorderable, child: anchored);
     }));
-    _rows[task.id] = (state: state, row: row);
+    _rows[id] = (state: state, row: row);
     return row;
   }
 
-  Widget _draft(SessionDraft draft) {
+  Widget _draft(DesktopSession session, SessionDraft draft) {
     final project = session.projects.where((project) => project.checkoutKey == draft.checkoutKey).firstOrNull;
     var text = session.drafts[draft.id] ?? '';
     for (final file in (session.fileDrafts[draft.id] ?? []).reversed) {
@@ -411,12 +440,13 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     }
     text = text.trim().split('\n').first;
     final count = (session.fileDrafts[draft.id]?.length ?? 0) + (session.attachmentDrafts[draft.id]?.length ?? 0);
-    final selected = !widget.home && session.task == null && session.currentDraft == draft;
-    return Material(key: ValueKey('draft:${draft.id}'), color: selected ? const Color(0xffeeeef0) : Colors.transparent,
+    final selected = !widget.home && identical(widget.session, session) && session.task == null && session.currentDraft == draft;
+    final id = session.sidebarId(draft.id);
+    return Material(key: ValueKey('draft:$id'), color: selected ? const Color(0xffeeeef0) : Colors.transparent,
       borderRadius: BorderRadius.circular(8), child: InkWell(
         mouseCursor: WidgetStateMouseCursor.clickable,
         borderRadius: BorderRadius.circular(8), onTap: () => widget.onDraft(draft),
-        child: KeyedSubtree(key: _anchor(draft.id), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: KeyedSubtree(key: _anchor(id), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               if (project != null) ...[
@@ -425,6 +455,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
               ],
               Expanded(child: Text(project?.name ?? 'Draft', maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 12, color: desktopTertiary))),
+              if (sources.length > 1) Padding(padding: const EdgeInsets.only(right: 6),
+                child: Text(_cardMachineName(session), style: const TextStyle(fontSize: 11, color: desktopTertiary))),
               const Icon(Icons.edit_outlined, size: 13, color: desktopTertiary),
               const SizedBox(width: 4),
               const Text('Draft', style: TextStyle(fontSize: 11, color: desktopTertiary)),
@@ -436,29 +468,33 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(listenable: session.sidebarChanges,
+  Widget build(BuildContext context) => ListenableBuilder(listenable: Listenable.merge([
+    preferences, for (final source in sources) ...[source, source.sidebarChanges],
+  ]),
     builder: (context, _) => _buildSidebar(context));
 
   Widget _buildSidebar(BuildContext context) {
-    final tasks = _sidebarTasks(session, widget.projectKey);
-    final ids = tasks.map((entry) => entry.$2.id).toSet();
+    final tasks = _sidebarTasks(session, widget.projectKey, sources: sources);
+    final ids = tasks.map((entry) => _taskKey(entry.$1, entry.$2)).toSet();
     _rows.removeWhere((id, _) => !ids.contains(id));
-    final pins = session.pinnedTaskIds.toSet();
-    final pinned = tasks.where((entry) => pins.contains(entry.$2.id)).toList();
-    final working = tasks.where((entry) => entry.$3.running && !pins.contains(entry.$2.id)).toList();
-    final drafts = _sidebarDrafts(session, widget.projectKey);
-    final anchoredIds = {...ids, ...drafts.map((draft) => draft.id)};
+    final pins = preferences.pinnedTaskIds.toSet();
+    final pinned = tasks.where((entry) => pins.contains(_taskKey(entry.$1, entry.$2))).toList();
+    final working = tasks.where((entry) => entry.$3.running && !pins.contains(_taskKey(entry.$1, entry.$2))).toList();
+    final drafts = [for (final source in sources)
+      for (final draft in _sidebarDrafts(source, widget.projectKey == null ? null :
+        source.projects.where((p) => source.sidebarId(p.checkoutKey) == widget.projectKey).firstOrNull?.checkoutKey ?? '')) (source, draft)];
+    final anchoredIds = {...ids, ...drafts.map((entry) => entry.$1.sidebarId(entry.$2.id))};
     _rowAnchors.removeWhere((id, _) => !anchoredIds.contains(id));
     final rows = <(String?, Widget)>[
       if (working.isNotEmpty) ...[
         (null, _sectionHeading('working', 'Working', working.length)),
-        if (!session.collapsedSidebarSections.contains('working'))
-          for (final (project, task, activity) in working) (task.id, _row(project, task, activity)),
+        if (!preferences.collapsedSidebarSections.contains('working'))
+          for (final (project, task, activity) in working) (_taskKey(project, task), _row(project, task, activity)),
         (null, const Padding(padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Divider(height: 1))),
       ],
-      for (final draft in drafts) (draft.id, _draft(draft)),
-      for (final (project, task, activity) in tasks.where((entry) => !entry.$3.running && !pins.contains(entry.$2.id)))
-        (task.id, _row(project, task, activity)),
+      for (final (source, draft) in drafts) (source.sidebarId(draft.id), _draft(source, draft)),
+      for (final (project, task, activity) in tasks.where((entry) => !entry.$3.running && !pins.contains(_taskKey(entry.$1, entry.$2))))
+        (_taskKey(project, task), _row(project, task, activity)),
       (null, const SizedBox(height: 12)),
     ];
     _revealSelection(pinned, rows);
@@ -489,9 +525,10 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
             itemBuilder: (_) => [
               CheckedPopupMenuItem(value: '*', checked: widget.projectKey == null, child: const Text('All projects')),
               const PopupMenuDivider(),
-              for (final project in session.projects.where((project) => !project.removing))
-                CheckedPopupMenuItem(value: project.checkoutKey, checked: widget.projectKey == project.checkoutKey,
-                  child: Text(project.name)),
+              for (final source in sources)
+              for (final project in source.projects.where((project) => !project.removing))
+                CheckedPopupMenuItem(value: source.sidebarId(project.checkoutKey), checked: widget.projectKey == source.sidebarId(project.checkoutKey),
+                  child: Text('${project.name}${sources.length > 1 ? ' · ${source.machineName}' : ''}')),
             ],
             child: MouseRegion(cursor: SystemMouseCursors.click, child: SizedBox.square(dimension: 28,
               child: Center(child: sidebarIcon(SidebarIcon.listFilter))))),
@@ -510,9 +547,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 8), sliver: SliverMainAxisGroup(slivers: [
             if (pinned.isNotEmpty) ...[
               SliverToBoxAdapter(child: _sectionHeading('pinned', 'Pinned', pinned.length)),
-              if (!session.collapsedSidebarSections.contains('pinned')) ...[
+              if (!preferences.collapsedSidebarSections.contains('pinned')) ...[
                 SliverReorderableList(key: _pinnedList, itemCount: pinned.length,
-                  onReorderStart: (index) => _startReorder(index, pinned.map((entry) => entry.$2.id).toList()),
+                  onReorderStart: (index) => _startReorder(index, pinned.map((entry) => _taskKey(entry.$1, entry.$2)).toList()),
                   onReorderEnd: _endReorder,
                   onReorderItem: _dropReorder,
                   proxyDecorator: _dragProxy,
@@ -543,8 +580,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
 class WorkspaceHome extends StatefulWidget {
   const WorkspaceHome({super.key, required this.session, required this.focusNode, required this.onSelect,
-    required this.onNew, required this.onAddProject, required this.onArchive, this.onProjectSettings});
+    required this.onNew, required this.onAddProject, required this.onArchive, this.onProjectSettings, this.sources});
   final DesktopSession session;
+  final List<DesktopSession>? sources;
   final FocusNode focusNode;
   final void Function(Project, DesktopTask) onSelect;
   final ValueChanged<Project> onNew;
@@ -562,12 +600,15 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
   @override
   Widget build(BuildContext context) {
     final query = _search.text.trim().toLowerCase();
-    final pins = {for (final (index, id) in widget.session.pinnedTaskIds.indexed) id: index};
-    final entries = [for (final project in widget.session.projects.where((project) => !project.removing))
+    final sources = widget.sources ?? [widget.session];
+    final pins = {for (final (index, id) in widget.session.sidebar.pinnedTaskIds.indexed) id: index};
+    String key(Project project, DesktopTask task) => _projectSource(sources, project).sidebarId(task.id);
+    final entries = [for (final source in sources)
+      for (final project in source.projects.where((project) => !project.removing))
       for (final task in project.tasks)
         if (!task.archived && '${task.title} ${project.name} ${project.path}'.toLowerCase().contains(query)) (project, task)]
       ..sort((a, b) {
-        final pin = (pins[a.$2.id] ?? double.infinity).compareTo(pins[b.$2.id] ?? double.infinity);
+        final pin = (pins[key(a.$1, a.$2)] ?? double.infinity).compareTo(pins[key(b.$1, b.$2)] ?? double.infinity);
         return pin != 0 ? pin : b.$2.lastActivity.compareTo(a.$2.lastActivity);
       });
     return Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 800),
@@ -582,21 +623,23 @@ class _WorkspaceHomeState extends State<WorkspaceHome> {
         const SizedBox(height: 16),
         Expanded(child: ListView.builder(itemCount: entries.length, itemBuilder: (context, index) {
           final (project, task) = entries[index];
-          return _ThreadRow(key: ValueKey('home-row:${task.id}'),
-            session: widget.session, task: task, onArchive: widget.onArchive,
+          final source = _projectSource(sources, project), id = key(project, task);
+          return _ThreadRow(key: ValueKey('home-row:$id'),
+            session: source, task: task, onArchive: widget.onArchive,
             onProjectSettings: widget.onProjectSettings == null ? null : () => widget.onProjectSettings!(project),
             builder: (renameInput, renameTitle) => SidebarHover(builder: (context, hovering) => ListTile(
-              key: ValueKey('home:${task.id}'), leading: Row(mainAxisSize: MainAxisSize.min, children: [
+              key: ValueKey('home:$id'), leading: Row(mainAxisSize: MainAxisSize.min, children: [
                 ProjectAvatar(project: project),
                 const SizedBox(width: 6),
-                Visibility(visible: hovering || pins.containsKey(task.id),
+                Visibility(visible: hovering || pins.containsKey(id),
                   maintainSize: true, maintainAnimation: true, maintainState: true,
-                  child: _pinButton(widget.session, task)),
+                  child: _pinButton(source, task)),
               ]),
               title: renameInput ?? GestureDetector(onDoubleTap: renameTitle,
                 child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
-              subtitle: Text(project.name, style: const TextStyle(fontSize: 11, color: desktopTertiary)),
-              trailing: _ThreadStatus(activity: _sidebarActivity(widget.session, task)),
+              subtitle: Text('${project.name}${sources.length > 1 ? ' · ${_cardMachineName(source)}' : ''}',
+                style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+              trailing: _ThreadStatus(activity: _sidebarActivity(source, task)),
               onTap: renameInput == null ? () => widget.onSelect(project, task) : null)));
         })),
       ]))));

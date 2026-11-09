@@ -42,6 +42,15 @@ Hover a finished response and choose **Fork from this response** to open a new
 conversation containing history through that turn. The new chat is named with a
 “fork” suffix; the original conversation and its unsent draft are preserved.
 
+Select response text and choose **Add to chat** to attach an annotation. Add an
+optional comment with the keyboard or microphone; stopping dictation inserts
+the words into that comment, and **Save** attaches it to the draft. **Escape**
+closes the editor and releases its microphone while retaining the comment.
+Edit or remove annotations above the composer. They survive navigation and
+failed sends; the next accepted message includes their selections, comments,
+and source ranges. Inline **Annotation N** references preview the submitted
+context and comment.
+
 Questions appear above the composer. Choose an option, select several when
 allowed, or type your own answer. **Back** and **Next** move between questions;
 draft answers survive switching tabs. On macOS, use the microphone to dictate an
@@ -237,6 +246,13 @@ Bare localhost and loopback addresses use HTTP. **⌘L** selects the address,
 tab. Open browser tabs and their last addresses are saved per session.
 Conversation web links open inside Happen; authentication still uses the system
 browser.
+
+Use **Annotate page** in the browser toolbar to pick an element or drag an area.
+Hold **Shift** to collect several targets in one comment, **Space** to browse
+temporarily, or **Escape** to leave annotation mode. Selecting ordinary page text
+also offers **Add to chat**. Browser comments use the same editor and dictation
+controls, and include the page URL, selector, nearby text, and selection geometry
+in the next message. They do not capture screenshots.
 
 Local **HTML** and **PDF** links open in the file panel using the same macOS
 WebView. HTML starts in Preview, with a Source toggle and line navigation.

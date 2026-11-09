@@ -191,10 +191,17 @@ class _Client implements AgentClient {
     'client.capabilities' => <String, Object?>{},
     'providers.list' => {'providers': <Object?>[]},
     'thread/list' => {'data': <Object?>[], 'nextCursor': null},
+    'workspace.inspect' => {'available': true, 'identity': 'path:${params['path']}',
+      'path': params['path'], 'branch': null},
     _ => throw StateError('Unexpected client request: $method'),
   };
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     jsonObject(await request(method, params));
+  @override Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
+    jsonObject(await request('workspace.inspect', {'path': path}));
+  @override Future<Json> gitRequest(String method, Json params, {required CancellationToken cancellation}) async =>
+    method == 'git/status' ? {'isRepo': false, 'files': <Object?>[]}
+      : throw StateError('Unexpected Git request: $method');
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');
 }

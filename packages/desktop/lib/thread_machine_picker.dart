@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'checkout_pull.dart';
 import 'machines.dart';
 import 'session.dart';
 
@@ -133,12 +134,12 @@ class ThreadMachineController extends ChangeNotifier {
   }
 
   Future<bool> choose(ThreadCheckout checkout) {
-    if (_state is! ThreadMachineReady || !_current) return Future.value(false);
+    if (_state is! ThreadMachineReady || !_current || source.pullingCheckout) return Future.value(false);
     return _selection = _choose(checkout);
   }
 
   Future<bool> _choose(ThreadCheckout checkout) async {
-    if (_state is! ThreadMachineReady || !_current) return false;
+    if (_state is! ThreadMachineReady || !_current || source.pullingCheckout) return false;
     final previous = _state as ThreadMachineReady;
     final navigation = source.navigationRevision;
     final token = _operation = CancellationToken();
@@ -279,7 +280,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final targetMachine = _pendingMachine ?? machine;
     final workspaceChoices = checkouts.where((choice) => identical(choice.machine.session, targetMachine.session)).toList();
     final selected = checkouts.where((choice) => identical(choice.machine.session, widget.session) && choice.path == _project?.path).firstOrNull;
-    final busy = state is ThreadMachineSelecting || widget.session.submitting;
+    final busy = state is ThreadMachineSelecting || widget.session.submitting || widget.session.pullingCheckout;
     final machines = {for (final choice in checkouts) choice.machine.alias: choice.machine};
     return Row(mainAxisSize: MainAxisSize.min, children: [
       Flexible(child: MenuAnchor(controller: _machineMenu, style: _menuStyle, onOpen: _retryUnavailable,
@@ -324,6 +325,9 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
         builder: (_, controller, _) => _control(selected?.worktree == true ? Icons.account_tree_outlined : Icons.folder_outlined,
           selected?.worktree == true ? 'Worktree' : 'Current checkout', _controller == null || busy ? null
             : () => controller.isOpen ? controller.close() : controller.open(), 'Workspace'))),
+      const SizedBox(width: 2),
+      Flexible(child: CheckoutPullControl(session: widget.session,
+        enabled: state is! ThreadMachineSelecting && !widget.session.submitting)),
     ]);
   }
 }

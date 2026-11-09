@@ -1,8 +1,11 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:convert';
 
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
+
+import 'remote_connection.dart';
 
 /// One isolate owns the desktop's only SQLite connection, including all reads.
 Future<IsolateOwner> openDesktopDatabase(String directory) =>
@@ -19,7 +22,7 @@ Future<void> _databaseMain(List<Object?> args) async {
     db.execute('PRAGMA foreign_keys=ON');
     final version =
         db.select('PRAGMA user_version').single.values.single as int;
-    if (version > 5) {
+    if (version > 6) {
       throw StateError('Desktop database is from a newer version');
     }
     db.execute('''
@@ -39,6 +42,10 @@ Future<void> _databaseMain(List<Object?> args) async {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS remote_servers (
+        alias TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL,
+        username TEXT, port INTEGER, identity_file TEXT, projects TEXT NOT NULL
+      );
     ''');
     if (!db.select('PRAGMA table_info(tasks)').any((row) => row['name'] == 'archived')) {
       db.execute('ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
@@ -53,7 +60,7 @@ Future<void> _databaseMain(List<Object?> args) async {
       db.execute('UPDATE tasks SET last_activity = rowid WHERE last_activity = 0');
     }
     db.execute("DELETE FROM settings WHERE key = 'conversation_view'");
-    db.execute('PRAGMA user_version=5');
+    db.execute('PRAGMA user_version=6');
     (args[0] as SendPort).send(port.sendPort);
     await for (final raw in port) {
       final request = jsonObject(raw);
@@ -65,6 +72,19 @@ Future<void> _databaseMain(List<Object?> args) async {
       try {
         Object? result;
         switch (request['method']) {
+          case 'remotes.list':
+            result = [for (final row in db.select('SELECT * FROM remote_servers ORDER BY rowid')) {
+              'alias': row['alias'], 'name': row['name'], 'host': row['host'], 'user': row['username'],
+              'port': row['port'], 'identityFile': row['identity_file'], 'projects': jsonDecode(row['projects'] as String),
+            }];
+          case 'remotes.save':
+            final remote = remoteMachine(params);
+            db.execute('''INSERT INTO remote_servers(alias,name,host,username,port,identity_file,projects)
+              VALUES(?,?,?,?,?,?,?) ON CONFLICT(alias) DO UPDATE SET name=excluded.name,host=excluded.host,
+              username=excluded.username,port=excluded.port,identity_file=excluded.identity_file,projects=excluded.projects''',
+              [remote.alias, remote.name, remote.host, remote.user, remote.port, remote.identityFile, jsonEncode(remote.projects)]);
+          case 'remotes.remove':
+            db.execute('DELETE FROM remote_servers WHERE alias IS ?', [params['alias']]);
           case 'load':
             result = {
               'settings': {
@@ -119,6 +139,8 @@ Future<void> _databaseMain(List<Object?> args) async {
             );
           case 'task.activity':
             db.execute('UPDATE tasks SET last_activity = MAX(last_activity, ?) WHERE id IS ?', [params['last_activity'], params['task_id']]);
+          case 'tasks.remove':
+            for (final id in params['ids'] as List) { db.execute('DELETE FROM tasks WHERE id IS ?', [id]); }
           case 'task.archive':
             db.execute('UPDATE tasks SET archived = ? WHERE id IS ?', [params['archived'] == true ? 1 : 0, params['task_id']]);
           case 'close':

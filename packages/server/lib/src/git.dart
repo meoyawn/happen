@@ -96,6 +96,44 @@ result=$?
 exit "$result"
 ''';
 
+// Draft checkouts are updated from the repository's mainline, including worktrees
+// without an upstream. Read cached refs for the toolbar; query the remote on Pull.
+Future<({String remote, String? branch})?> gitPullTarget(String root, CancellationToken cancellation,
+    {bool fresh = false}) async {
+  final remotes = (await runGit(root, ['remote'], cancellation)).output.trim().split('\n')
+    .where((name) => name.isNotEmpty).toList()..sort();
+  final remote = ['upstream', 'origin', ...remotes].where(remotes.contains).firstOrNull;
+  if (remote == null) return null;
+  final refs = <String>{};
+  String? defaultBranch;
+  if (fresh) {
+    final result = await runGit(root, ['ls-remote', '--symref', '--', remote, 'HEAD',
+      'refs/heads/main', 'refs/heads/master'], cancellation, write: true);
+    for (final line in const LineSplitter().convert(result.output)) {
+      final fields = line.split('\t');
+      if (fields.length != 2) continue;
+      if (fields[0].startsWith('ref: refs/heads/') && fields[1] == 'HEAD') {
+        defaultBranch = fields[0].substring('ref: refs/heads/'.length);
+      } else if (fields[1].startsWith('refs/heads/')) {
+        refs.add(fields[1].substring('refs/heads/'.length));
+      }
+    }
+  } else {
+    final prefix = 'refs/remotes/$remote/';
+    final result = await runGit(root, ['for-each-ref', '--format=%(refname)%00%(symref)',
+      '${prefix}HEAD', '${prefix}main', '${prefix}master'], cancellation);
+    for (final line in const LineSplitter().convert(result.output)) {
+      if (line.split('\u0000') case [final ref, final target]) {
+        if (target.startsWith(prefix)) defaultBranch = target.substring(prefix.length);
+        if (target.isEmpty && ref.startsWith(prefix)) refs.add(ref.substring(prefix.length));
+      }
+    }
+  }
+  final branch = [if (defaultBranch == 'main' || defaultBranch == 'master') defaultBranch!, 'main', 'master']
+    .where(refs.contains).firstOrNull;
+  return (remote: remote, branch: branch);
+}
+
 Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool includeUnstaged = true}) async {
   final discovery = await runGit(cwd, ['rev-parse', '--show-toplevel'], cancellation, accepted: {0, 128});
   if (discovery.code == 128) return {'isRepo': false, 'host': Platform.localHostname, 'files': <Json>[]};
@@ -167,7 +205,9 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
     if (includeUnstaged && (file['status'] == '??' || head == null)) count = await _newFileCount(p.join(root, path), cancellation);
     file.addAll({'additions': count.$1, 'deletions': count.$2, 'binary': count.$3});
   }
+  final pullTarget = await gitPullTarget(root, cancellation);
   return {'isRepo': true, 'host': Platform.localHostname, 'root': root, 'branch': branch, 'head': head, 'upstream': upstream,
+    'pullRemote': pullTarget?.remote, 'pullBranch': pullTarget?.branch,
     'remote': remote, 'ahead': ahead, 'behind': behind, 'files': files,
     'additions': files.fold<int>(0, (sum, file) => sum + (file['additions'] as int)),
     'deletions': files.fold<int>(0, (sum, file) => sum + (file['deletions'] as int))};

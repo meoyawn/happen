@@ -35,6 +35,7 @@ final class _GitSwitching extends _GitWriteState {
   const _GitSwitching(this.branch);
   final String branch;
 }
+final class _GitPulling extends _GitWriteState { const _GitPulling(); }
 final class _GitWriteCompleted extends _GitWriteState {
   const _GitWriteCompleted(this.receipt);
   final _GitCommitReceipt? receipt;
@@ -63,13 +64,13 @@ _GitCommitReceipt? _gitReceipt(_GitWriteState state) => switch (state) {
 };
 
 _GitWriteState _gitWriteTransition(_GitWriteState current, _GitWriteState next) => switch ((current, next)) {
-  (_GitPreparing(), _GitGenerating() || _GitCommitting() || _GitPushing() || _GitSwitching()) => next,
+  (_GitPreparing(), _GitGenerating() || _GitCommitting() || _GitPushing() || _GitSwitching() || _GitPulling()) => next,
   (_GitPreparing() || _GitGenerating(), _GitCreatingBranch()) => next,
   (_GitGenerating() || _GitCreatingBranch(), _GitCommitting()) => next,
   (_GitCommitting(), _GitCommitted()) => next,
   (_GitCommitted(), _GitPushing() || _GitWriteCompleted()) => next,
-  (_GitPushing() || _GitSwitching(), _GitWriteCompleted()) => next,
-  (_GitPreparing() || _GitGenerating() || _GitCreatingBranch() || _GitCommitting() || _GitCommitted() || _GitPushing() || _GitSwitching(),
+  (_GitPushing() || _GitSwitching() || _GitPulling(), _GitWriteCompleted()) => next,
+  (_GitPreparing() || _GitGenerating() || _GitCreatingBranch() || _GitCommitting() || _GitCommitted() || _GitPushing() || _GitSwitching() || _GitPulling(),
     _GitWriteFailed() || _GitWriteCancelling()) => next,
   (_GitWriteCancelling(), _GitWriteCancelled()) => next,
   _ => throw StateError('Invalid Git write transition: ${current.runtimeType} → ${next.runtimeType}'),
@@ -87,10 +88,12 @@ extension _GitRequests on AgentServer {
     if (method == 'git/diff') return gitFileDiff(status, requiredString(params, 'path'), parent);
     if (method != 'git/run') throw const FormatException('Unknown Git operation');
     final action = requiredString(params, 'action'), actionId = requiredString(params, 'actionId');
-    if (!{'commit', 'push', 'commit_push', 'switch', 'create_branch'}.contains(action)) throw const FormatException('Unknown Git action');
+    if (!{'commit', 'push', 'commit_push', 'switch', 'create_branch', 'pull'}.contains(action)) throw const FormatException('Unknown Git action');
     final root = requiredString(status, 'root');
-    if (_gitActions.containsKey(root)) throw StateError('A Git action is already running for this checkout');
-    _gitActions[root] = actionId;
+    final common = (await runGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'], parent)).output.trim();
+    final lock = await Directory(common).resolveSymbolicLinks();
+    if (_gitActions.containsKey(lock)) throw StateError('A Git action is already running for this repository');
+    _gitActions[lock] = actionId;
     final cancellation = CancellationToken();
     _GitWriteState state = const _GitPreparing();
     void progress({String? output}) {
@@ -101,6 +104,7 @@ extension _GitRequests on AgentServer {
         _GitCommitting() => ('committing', 'Committing…'),
         _GitPushing() => ('pushing', 'Pushing…'),
         _GitSwitching() => ('switching', action == 'switch' ? 'Switching branch…' : 'Creating branch…'),
+        _GitPulling() => ('pulling', 'Pulling latest changes…'),
         _ => null,
       };
       if (phase == null) return;
@@ -122,6 +126,29 @@ extension _GitRequests on AgentServer {
     final cancelHook = CancellationHook(parent, cancel);
     try {
       parent.throwIfCancelled();
+      if (action == 'pull') {
+        if (status['branch'] == null || status['head'] == null) throw StateError('Check out a branch before pulling');
+        advance(const _GitPulling());
+        final target = await gitPullTarget(root, cancellation, fresh: true);
+        if (target == null) throw StateError('Configure a Git remote before pulling');
+        final base = target.branch;
+        if (base == null) throw StateError('${target.remote} has no main or master branch');
+        final current = await gitStatus(root, cancellation);
+        if (current['branch'] != status['branch'] || current['head'] != status['head']) {
+          throw StateError('The checkout changed. Review the branch and pull again');
+        }
+        // The common-directory lock also covers other worktrees' FETCH_HEAD.
+        // Disable autostash even when enabled in the user's Git configuration.
+        await runGit(root, ['pull', '--ff-only', '--no-rebase', '--no-autostash',
+          '--no-recurse-submodules', '--no-stat', '--', target.remote, 'refs/heads/$base'],
+          cancellation, write: true, onOutput: (output) => progress(output: output));
+        final head = (await runGit(root, ['rev-parse', 'HEAD'], cancellation)).output.trim();
+        final changed = head != status['head'];
+        advance(const _GitWriteCompleted(null));
+        return {'status': 'completed', 'action': action, 'changed': changed,
+          'message': changed ? 'Pulled' : 'Already up to date',
+          'detail': '${status['branch']} · ${target.remote}/$base'};
+      }
       if (action == 'switch' || action == 'create_branch') {
         final branch = requiredString(params, 'branch');
         advance(_GitSwitching(branch));
@@ -259,7 +286,7 @@ extension _GitRequests on AgentServer {
         if (receipt != null) 'commit': {'sha': receipt.sha, 'subject': receipt.subject}};
     } finally {
       cancelHook.dispose(); cancellation.cancel();
-      if (_gitActions[root] == actionId) _gitActions.remove(root);
+      if (_gitActions[lock] == actionId) _gitActions.remove(lock);
     }
   }
 }
