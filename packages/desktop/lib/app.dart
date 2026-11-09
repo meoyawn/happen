@@ -43,9 +43,8 @@ import 'thread_machine_picker.dart';
 import 'project_details.dart';
 
 class DesktopView extends StatefulWidget {
-  const DesktopView({super.key, required this.session, this.machinePicker, this.machines});
+  const DesktopView({super.key, required this.session, this.machines});
   final DesktopSession session;
-  final Widget? machinePicker;
   final MachinesController? machines;
 
   @override
@@ -627,8 +626,6 @@ class _DesktopViewState extends State<DesktopView> {
       sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             sources: _sources,
             machineIcon: (source) => widget.machines?.iconFor(source.machineAlias) ?? parseMachineIcon(null, remote: source.machineAlias != null),
-            machinePicker: widget.machinePicker ?? (widget.machines == null ? null : MachinePicker(machines: widget.machines!,
-              onSettings: () => unawaited(_settings(page: 'servers')))),
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
             onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
             onBack: _navigationIndex > 0 ? () => _navigateHistory(-1) : null,

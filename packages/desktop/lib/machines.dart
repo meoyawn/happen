@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
@@ -125,7 +125,6 @@ class MachinesController extends ChangeNotifier {
   Future<void>? _iconsRead;
   MachineIcon iconFor(String? alias) => _icons[alias ?? 'local'] ?? parseMachineIcon(null, remote: alias != null);
   String? _selected;
-  String? get selected => _selected;
   DesktopSession get active => _cachedSession(_states[_selected]) ?? local;
   MachineState? state(String alias) => _states[alias];
   List<MachineSession> get sessions => [
@@ -461,11 +460,6 @@ class MachinesController extends ChangeNotifier {
     } finally { cancel?.dispose(); }
   }
 
-  Future<void> select(String? alias) async {
-    if (alias == null) { _selected = null; notifyListeners(); return; }
-    if (_cachedSession(_states[alias]) case final session? when session.connected) { _selected = alias; notifyListeners(); }
-  }
-
   Future<void> close() => _closing ??= _close();
   Future<void> _close() async {
     _poll?.cancel();
@@ -488,48 +482,4 @@ class MachinesController extends ChangeNotifier {
     }
     dispose();
   }
-}
-
-class MachinePicker extends StatelessWidget {
-  const MachinePicker({super.key, required this.machines, this.onSettings});
-  final MachinesController machines;
-  final VoidCallback? onSettings;
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(listenable: machines, builder: (context, _) {
-    final selected = machines.hosts.where((host) => host.alias == machines.selected).firstOrNull;
-    return PopupMenuButton<String>(
-      tooltip: 'Run threads on',
-      onSelected: (value) {
-        if (value == 'settings') { onSettings?.call(); }
-        else if (value == 'refresh') { unawaited(machines.refresh()); }
-        else { unawaited(machines.select(value == 'local' ? null : value)); }
-      },
-      itemBuilder: (_) => [
-        CheckedPopupMenuItem(value: 'local', checked: selected == null, child: Row(mainAxisSize: MainAxisSize.min, children: [
-          MachineGlyph(machines.iconFor(null)), const SizedBox(width: 8), const Text('local')])),
-        for (final host in machines.hosts) CheckedPopupMenuItem(value: host.alias,
-          checked: machines.selected == host.alias,
-          enabled: switch (machines.state(host.alias)) { MachineReady(:final session) => session.connected, _ => false },
-          child: Tooltip(message: switch (machines.state(host.alias)) { MachineFailed(:final error) => '$error', _ => host.alias },
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              MachineGlyph(machines.iconFor(host.alias)), const SizedBox(width: 8),
-              Text(host.name), const SizedBox(width: 12),
-              Text(switch (machines.state(host.alias)) {
-                MachineReady(:final session) => session.connected ? 'Available' : 'Reconnecting…',
-                MachineFailed() => 'Reconnecting…', _ => 'Connecting…',
-              }, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-            ]))),
-        const PopupMenuDivider(),
-        if (onSettings != null) const PopupMenuItem(value: 'settings', child: Text('Manage environments…')),
-        PopupMenuItem(value: 'refresh', child: Text(machines.discoveryError == null ? 'Refresh machines' : 'Discovery failed · retry')),
-      ],
-      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), child: Row(mainAxisSize: MainAxisSize.min, children: [
-        MachineGlyph(machines.iconFor(selected?.alias), size: 15),
-        const SizedBox(width: 7),
-        Flexible(child: Text(selected?.name ?? 'local', maxLines: 1, overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12))),
-        const SizedBox(width: 4), const Icon(Icons.expand_more, size: 15),
-      ])),
-    );
-  });
 }

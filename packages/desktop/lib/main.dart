@@ -102,7 +102,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
     if (parent == null) return;
     final project = session.projects.where((project) => project.tasks.contains(parent)).firstOrNull;
     if (project == null) return;
-    unawaited(_machines?.select(null));
+    _machines?.activate(session);
     _navigator.currentState?.popUntil((route) => route.isFirst);
     unawaited(() async {
       try {

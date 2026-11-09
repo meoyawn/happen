@@ -113,8 +113,7 @@ class ThreadSidebar extends StatefulWidget {
     required this.onHome, required this.onSearch, required this.onNew, required this.onSettings,
     required this.onSelect, required this.onArchive, required this.onDraft,
     required this.onAddProject, required this.onRefresh, required this.onProjectFilter,
-    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.machinePicker, this.sources, this.machineIcon});
-  final Widget? machinePicker;
+    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.sources, this.machineIcon});
   final DesktopSession session;
   final List<DesktopSession>? sources;
   final MachineIcon Function(DesktopSession)? machineIcon;
@@ -566,8 +565,6 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
             SliverList.list(key: _threadList, children: [for (final row in rows) row.$2]),
           ])),
         ]))))),
-        if (widget.machinePicker != null) Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-          child: Align(alignment: Alignment.centerLeft, child: SizedBox(width: 220, child: widget.machinePicker))),
         Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 12), child: Row(children: [
           _button('App settings', const Icon(Icons.settings_outlined), widget.onSettings),
           const SizedBox(width: 4),

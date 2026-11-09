@@ -9,9 +9,9 @@ fileGroups:
     - tool/build_server.dart
     - tool/build_server/**/*
     - tool/cli_native_bootstrap.dart
-    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/**/*
-    - '!packages/**/test/**'
-    - '!packages/**/*.md'
+    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/pubspec.yaml
+    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/{bin,catalog,hook,lib}/**/*
+    - packages/code_mode/native/*.{c,h}
     - packages/code_mode/native/quickjs/*.{c,h}
     - packages/code_mode/native/quickjs/LICENSE
 tasks:
@@ -29,7 +29,7 @@ tasks:
       cache: true
       interactive: false
       shell: false
-      outputStyle: stream
+      outputStyle: buffer-only-failure
       mutex: happen-server-build-x64
 
   deploy-server:
