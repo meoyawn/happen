@@ -86,10 +86,10 @@ class _ThinkingLabelState extends State<ThinkingLabel>
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(child: Stack(children: [
-    _text(const Color(0x461a1c1f)),
+    _text(desktopSecondary),
     Positioned.fill(child: ExcludeSemantics(child: IgnorePointer(child: AnimatedBuilder(
       animation: _sweep,
-      child: _text(const Color(0xbfffffff)),
+      child: _text(desktopForeground),
       builder: (context, child) => !_sweep.isAnimating ? const SizedBox.shrink() : ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (rect) {
