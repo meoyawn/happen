@@ -6,7 +6,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
 
-import 'cli_native_bootstrap.dart' show cliNativeContracts;
+import 'native_contracts.dart' show cliNativeContracts;
 
 Future<void> main(List<String> arguments) async {
   if (arguments.isNotEmpty) throw ArgumentError('This target takes no arguments');
@@ -56,7 +56,7 @@ Future<void> main(List<String> arguments) async {
     try {
       final bootstrap = File('${root.path}/tool/cli_native_bootstrap.dart').uri;
       final payload = File('${work.path}/payload.dart').openWrite();
-      payload.writeln("import '$bootstrap';\nconst nativeId = '$nativeId';\nconst assets = <EmbeddedNativeAsset>[");
+      payload.writeln("import 'dart:convert';\nimport 'dart:io';\nimport '$bootstrap';\nconst nativeId = '$nativeId';\nconst assets = <EmbeddedNativeAsset>[");
       for (var i = 0; i < manifest.length; i++) {
         final asset = manifest[i];
         payload.writeln('  (name: ${jsonEncode(asset['name'])}, sha256: ${jsonEncode(asset['sha256'])}, length: ${asset['length']}, payload: _payload$i),');
@@ -67,11 +67,11 @@ Future<void> main(List<String> arguments) async {
         final compressed = GZipCodec(level: 6).encode(await libraries[i].readAsBytes());
         compressedBytes += compressed.length;
         final encoded = base64.encode(compressed);
-        payload.writeln('String _payload$i() =>');
+        payload.writeln('List<int> _payload$i() => gzip.decode(base64.decode(');
         for (var offset = 0; offset < encoded.length; offset += 4096) {
           payload.writeln('  ${jsonEncode(encoded.substring(offset, (offset + 4096).clamp(0, encoded.length)))}');
         }
-        payload.writeln(';');
+        payload.writeln('));');
       }
       await payload.close();
       final main = File('${work.path}/main.dart');

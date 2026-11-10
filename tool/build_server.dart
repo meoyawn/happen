@@ -6,7 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:yaml/yaml.dart';
 
 import 'build_server/common.dart';
-import 'cli_native_bootstrap.dart' show linuxNativeContracts;
+import 'native_contracts.dart' show linuxNativeContracts;
 
 // Freeze only the server's Dart workspace packages. Neither local credentials,
 // Flutter, build output nor .git are ever mounted into the Linux builder.
@@ -80,7 +80,7 @@ Future<void> compileServer(Directory root, String architecture, CancellationToke
       await destination.parent.create(recursive: true);
       await File('${output.path}/native/$library').copy(destination.path);
     }
-    for (final relative in ['tool/cli_native_bootstrap.dart', 'tool/build_server/embed.dart']) {
+    for (final relative in ['tool/cli_native_bootstrap.dart', 'tool/native_contracts.dart', 'tool/build_server/embed.dart']) {
       final bytes = await File('${root.path}/$relative').readAsBytes();
       digest..addAll(utf8.encode('$relative\x00'))..addAll(sha256.convert(bytes).bytes);
       final destination = File('${source.path}/$relative');

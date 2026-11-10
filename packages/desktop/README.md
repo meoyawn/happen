@@ -15,11 +15,6 @@ Release app RAM measurements will be added to the
 
 ## Using Happen
 
-On macOS and Windows, **Settings → Appearance → App icon** shows **Default**
-and **Toilet paper** as selectable icon previews. The choice is saved on this device and restored
-when Happen opens. macOS updates the Dock icon; Windows updates the running
-window's large and small icons. Default restores the icon bundled with the build.
-
 **Settings → Appearance → Project icons** switches between **Letters** (the
 default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
 **Settings → Projects** lists added folders and opens each project's settings.
@@ -431,9 +426,11 @@ tests, then update the submodule commit. Use the vendored `bin/flutter` for dire
 development commands. An already-running supervisor switches SDKs on the next
 development launch; an already-frozen process needs a restart to reset its state.
 
-Debug builds use the amber app icon and bundle ID `com.adelnz.happen.debug`.
-Release and Profile use the teal icon and `com.adelnz.happen`. Separate IDs keep
-macOS from reusing the installed release's Dock icon for development. Changes
+Debug builds use the amber Relay tile and bundle ID `com.adelnz.happen.debug`.
+Release and Profile use lime on deep green and `com.adelnz.happen`. The
+[icon design and generation guide](design/README.md) covers all three surfaces.
+Separate IDs keep macOS from reusing the installed release's Dock icon for
+development. Changes
 to native icons or bundle IDs require quitting and rerunning `moonx dev`;
 Flutter hot reload and hot restart do not update the macOS app bundle.
 

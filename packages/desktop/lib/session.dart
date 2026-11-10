@@ -17,8 +17,6 @@ import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance_preferences.dart';
 import 'archive_state.dart';
-import 'app_icon.dart';
-import 'native_app_icon.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
@@ -32,6 +30,7 @@ import 'local_project_icons.dart';
 
 part 'draft_routing.dart';
 part 'annotation_drafts.dart';
+part 'project_identity.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -265,12 +264,6 @@ class DesktopSession extends ChangeNotifier {
   }
   AppearanceController? _appearance;
   AppearanceController get appearance => sidebarOwner?.appearance ?? (_appearance ??= AppearanceController(database));
-  AppIconController? _appIcon;
-  AppIconController get appIcon {
-    if (_appIcon case final controller?) return controller;
-    final native = DesktopIconEffects(File(attachmentDirectory).parent.path);
-    return _appIcon = AppIconController(database, apply: native.apply, release: native.close);
-  }
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
   late final terminals = DesktopTerminals(client);
@@ -627,27 +620,22 @@ class DesktopSession extends ChangeNotifier {
   /// One desktop project identity shares its local icon across every machine.
   void resolveProjectIcons(Iterable<DesktopSession> sources) {
     if (!localProjectIcons || _lifetime.isCancelled) return;
-    (String, String)? identity(Project project) {
-      final repository = project.workspace?['repository'] as String? ??
-        (project.id.startsWith('https://') ? project.id : null);
-      return repository == null ? null : (repository, project.workspace?['subdirectory'] as String? ?? '');
-    }
     final candidates = projects.where((project) => !project.removing).toList()..sort((a, b) {
       final configured = (a._iconState.value.icon == null ? 1 : 0).compareTo(b._iconState.value.icon == null ? 1 : 0);
       if (configured != 0) return configured;
       final worktree = (a.workspace?['worktree'] == true ? 1 : 0).compareTo(b.workspace?['worktree'] == true ? 1 : 0);
       return worktree != 0 ? worktree : a.path.compareTo(b.path);
     });
-    final owners = <(String, String), Project>{};
+    final owners = <String, Project>{};
     for (final project in candidates) {
-      if (identity(project) case final key?) { owners.putIfAbsent(key, () => project); }
+      owners.putIfAbsent(projectIdentity(this, project), () => project);
     }
     // Detach new owners before rebinding their peers, so ownership stays acyclic.
     for (final owner in owners.values) { owner._bindIcon(null); }
     for (final source in sources) {
       if (source._lifetime.isCancelled) continue;
       for (final project in source.projects) {
-        final owner = owners[identity(project)];
+        final owner = owners[projectIdentity(source, project)];
         project._bindIcon(identical(owner, project) ? null : owner);
       }
     }
@@ -1468,7 +1456,6 @@ class DesktopSession extends ChangeNotifier {
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
-    if (client.sharedFilesystem && supportsAppIconSwitching) unawaited(appIcon.ready);
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -2574,7 +2561,6 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> close() async {
     _draftSave?.cancel();
-    await _appIcon?.close();
     await _appearance?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();

@@ -9,6 +9,7 @@ import 'package:desktop/composer_editor.dart';
 import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/settings_screen.dart';
+import 'package:desktop/workspace_navigation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,6 +18,121 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('project selection groups machines and worktrees by project identity', (tester) async {
+    late DesktopSession local, remote;
+    late Directory root;
+    Future<void>? closing;
+    Future<void> close() => closing ??= (() async {
+      await remote.close(); await local.close(); await root.delete(recursive: true);
+    })();
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-project-identity-');
+      local = DesktopSession(_Client(), await openDesktopDatabase('${root.path}/local'));
+      remote = DesktopSession(_Client(), local.database,
+        sidebarOwner: local, machineAlias: 'vps', machineName: 'VPS');
+    });
+    addTearDown(() => tester.runAsync(close));
+    const repository = 'https://github.com/example/agent';
+    final checkout = Project('local-agent', repository, '/local/agent')
+      ..workspace = {'repository': repository, 'subdirectory': ''};
+    final worktree = Project('worktree', repository, '/worktrees/agent')
+      ..workspace = {'repository': repository, 'subdirectory': '', 'worktree': true};
+    final peer = Project('local-agent', repository, '/remote/agent')
+      ..workspace = {'repository': repository, 'subdirectory': ''};
+    final unrelated = Project('other-agent', 'https://github.com/other/agent', '/other/agent');
+    local.projects.addAll([checkout, worktree, unrelated]); local.project = checkout;
+    remote.projects.add(peer); remote.project = peer;
+    for (final source in [local, remote]) {
+      source.projects.addAll([
+        Project('app', repository, '${source.machineAlias == null ? '/local' : '/remote'}/agent/packages/app')
+          ..workspace = {'repository': repository, 'subdirectory': 'packages/app'},
+        Project('scratch', '/scratch', '/scratch'),
+      ]);
+    }
+    final sources = [local, remote];
+    Project? selected;
+    Widget menu() => MaterialApp(home: Builder(builder: (context) => TextButton(
+      onPressed: () => unawaited(showDialog<void>(context: context, builder: (_) => CommandMenu(
+        session: local, sources: sources, actions: const [], pickProject: true,
+        onOpen: (_, _) {}, onNewThread: (project) => selected = project, onAddProject: () {}))),
+      child: const Text('Choose project'))));
+    await tester.pumpWidget(menu());
+    await tester.tap(find.text('Choose project'));
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: find.byType(CommandMenu), matching: find.text('agent')), findsNWidgets(2),
+      reason: 'One project spans local, remote, and worktree checkouts; another repository stays separate');
+    final search = find.byKey(const ValueKey('command-menu-search'));
+    for (final (query, name, count) in [('packages/app', 'app', 1), ('/scratch', 'scratch', 2)]) {
+      await tester.enterText(search, query);
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: find.byType(CommandMenu), matching: find.text(name)), findsNWidgets(count),
+        reason: 'Project subfolders share identity; unrelated folders with equal paths stay separate');
+    }
+    await tester.enterText(search, '/remote/agent');
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: find.byType(CommandMenu), matching: find.text('agent')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(selected, same(checkout), reason: 'Searching a remote path still selects the project on the current machine');
+
+    checkout.available = false;
+    worktree.available = false;
+    selected = null;
+    await tester.pumpWidget(menu());
+    await tester.tap(find.text('Choose project'));
+    await tester.pumpAndSettle();
+    await tester.enterText(search, '/local/agent');
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(selected, same(peer), reason: 'An unavailable checkout must not disable a project available on another machine');
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: NewSessionScreen(
+      session: local, sources: sources, composer: const SizedBox(height: 80), picking: false,
+      onSelect: (project) => selected = project, onAddProject: () {},
+      onRemoveProject: (_) {}, onReturnFocus: () {},
+    ))));
+    await tester.tap(find.byTooltip('Select project'));
+    await tester.pumpAndSettle();
+    final picker = find.byType(ListView);
+    expect(find.descendant(of: picker, matching: find.text('agent')), findsNWidgets(2));
+    await tester.enterText(find.byKey(const ValueKey('project-search')), '/worktrees/agent');
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: picker, matching: find.text('agent')));
+    await tester.pumpAndSettle();
+    expect(selected, same(peer));
+
+    checkout.tasks.add(DesktopTask('local-thread', 'Local session'));
+    worktree.tasks.add(DesktopTask('worktree-thread', 'Worktree session'));
+    peer.tasks.add(DesktopTask('remote-thread', 'Remote session'));
+    unrelated.tasks.add(DesktopTask('unrelated-thread', 'Unrelated session'));
+    local.sessionDrafts.add(SessionDraft('local-draft', worktree.checkoutKey));
+    local.drafts['local-draft'] = 'Local draft';
+    remote.sessionDrafts.add(SessionDraft('remote-draft', peer.checkoutKey));
+    remote.drafts['remote-draft'] = 'Remote draft';
+    String? filter;
+    await tester.pumpWidget(MaterialApp(home: StatefulBuilder(builder: (context, setState) => Scaffold(
+      body: SizedBox(width: 276, child: ThreadSidebar(session: local, sources: sources, home: true,
+        windowControls: false, projectKey: filter, onProjectFilter: (value) => setState(() => filter = value),
+        onHome: () {}, onSearch: () {}, onNew: () {}, onSettings: () {}, onDraft: (_) {},
+        onAddProject: () {}, onRefresh: () {}, onSelect: (_, _) {}, onArchive: (_, _) {}))))));
+    await tester.tap(find.byTooltip('Filter by project'));
+    await tester.pumpAndSettle();
+    final choices = find.widgetWithText(CheckedPopupMenuItem<String>, 'agent');
+    expect(choices, findsNWidgets(2));
+    await tester.tap(choices.first);
+    await tester.pumpAndSettle();
+    expect(sidebarThreadIds(local, projectKey: filter, sources: sources), unorderedEquals([
+      'local-thread', 'worktree-thread', remote.sidebarId('remote-thread'),
+      'local-draft', remote.sidebarId('remote-draft'),
+    ]));
+    expect(find.text('Remote session'), findsOneWidget);
+    expect(find.text('Unrelated session'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(close);
+    await tester.pump();
+  });
+
   testWidgets('new thread waits for a project and cancellation preserves the current conversation', (tester) async {
     late DesktopSession session;
     late Directory root;

@@ -10,9 +10,10 @@ import 'project_avatar.dart';
 class NewSessionScreen extends StatelessWidget {
   const NewSessionScreen({super.key, required this.session, required this.composer,
     required this.picking, required this.onSelect, required this.onAddProject,
-    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController, this.machinePicker});
+    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController, this.machinePicker, this.sources});
   final Widget? machinePicker;
   final DesktopSession session;
+  final List<DesktopSession>? sources;
   final Widget composer;
   final bool picking;
   final ValueChanged<Project> onSelect, onRemoveProject;
@@ -23,7 +24,8 @@ class NewSessionScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final project = session.project;
-    final hasProjects = session.projects.any((project) => !project.removing);
+    final projects = desktopProjects(sources ?? [session], preferred: session);
+    final hasProjects = projects.isNotEmpty;
     return LayoutBuilder(builder: (context, bounds) {
       final narrow = bounds.maxWidth < 600;
       final heading = TextStyle(fontSize: narrow ? 24 : 30, height: 1.25,
@@ -38,7 +40,7 @@ class NewSessionScreen extends StatelessWidget {
           shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(10),
             side: const BorderSide(color: desktopBorder)))),
         menuChildren: [Builder(builder: (context) => _ProjectPicker(
-          projects: session.projects.where((project) => !project.removing).toList(), selected: project,
+          projects: projects, selected: project == null ? null : projectIdentity(session, project),
           generated: session.projectAvatarStyle == 'generated',
           onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
           onRemove: (project) { MenuController.maybeOf(context)?.close(); onRemoveProject(project); },
@@ -144,8 +146,8 @@ class NewSessionScreen extends StatelessWidget {
 class _ProjectPicker extends StatefulWidget {
   const _ProjectPicker({required this.projects, required this.selected, required this.onSelect, required this.onAdd,
     required this.onRemove, required this.generated});
-  final List<Project> projects;
-  final Project? selected;
+  final List<DesktopProject> projects;
+  final String? selected;
   final ValueChanged<Project> onSelect, onRemove;
   final VoidCallback onAdd;
   final bool generated;
@@ -159,17 +161,16 @@ class _ProjectPickerState extends State<_ProjectPicker> {
   final _scroll = ScrollController();
   int _active = 0;
 
-  List<Project> get _projects {
+  List<DesktopProject> get _projects {
     final query = _search.text.trim().toLowerCase();
-    return widget.projects.where((project) => '${project.name} ${project.path}'.toLowerCase().contains(query)).toList()
-      ..sort((a, b) => b.tasks.fold(0, (latest, task) => task.lastActivity > latest ? task.lastActivity : latest)
-        .compareTo(a.tasks.fold(0, (latest, task) => task.lastActivity > latest ? task.lastActivity : latest)));
+    return widget.projects.where((project) => desktopProjectSearchText(project).toLowerCase().contains(query)).toList()
+      ..sort((a, b) => desktopProjectActivity(b).compareTo(desktopProjectActivity(a)));
   }
 
   @override
   void initState() {
     super.initState();
-    _active = _projects.indexWhere((project) => project == widget.selected).clamp(0, widget.projects.length);
+    _active = _projects.indexWhere((project) => project.id == widget.selected).clamp(0, widget.projects.length);
   }
 
   @override
@@ -180,14 +181,14 @@ class _ProjectPickerState extends State<_ProjectPicker> {
     final projects = _projects;
     void select() {
       if (_active == projects.length) { widget.onAdd(); }
-      else if (projects[_active].available) { widget.onSelect(projects[_active]); }
+      else if (projects[_active].preferred.project.available) { widget.onSelect(projects[_active].preferred.project); }
     }
     return SizedBox(width: 360, child: Focus(onKeyEvent: (_, event) {
       if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
       final key = event.logicalKey;
       if ((key == LogicalKeyboardKey.backspace || key == LogicalKeyboardKey.delete) &&
           SingleActivator(key, meta: true).accepts(event, HardwareKeyboard.instance)) {
-        if (event is KeyDownEvent && _active < projects.length) widget.onRemove(projects[_active]);
+        if (event is KeyDownEvent && _active < projects.length) widget.onRemove(projects[_active].preferred.project);
         return KeyEventResult.handled;
       }
       if (key == LogicalKeyboardKey.enter) { select(); return KeyEventResult.handled; }
@@ -195,7 +196,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
       setState(() {
         do {
           _active = (_active + (key == LogicalKeyboardKey.arrowDown ? 1 : -1)) % (projects.length + 1);
-        } while (_active < projects.length && !projects[_active].available);
+        } while (_active < projects.length && !projects[_active].preferred.project.available);
       });
       if (_scroll.hasClients) _scroll.jumpTo((_active * 48.0 - 144).clamp(0.0, _scroll.position.maxScrollExtent));
       return KeyEventResult.handled;
@@ -215,10 +216,11 @@ class _ProjectPickerState extends State<_ProjectPicker> {
         : SizedBox(height: (projects.length * 48.0 + 8).clamp(0.0, 288.0),
           child: ListView(controller: _scroll, padding: const EdgeInsets.all(4), itemExtent: 48, children: [
               for (var index = 0; index < projects.length; index++)
-                _row(projects[index].name, projects[index].available ? projects[index].path : 'Folder unavailable · ${projects[index].path}',
-                  ProjectAvatar(project: projects[index], size: 20, generated: widget.generated), active: _active == index,
-                  selected: projects[index] == widget.selected, enabled: projects[index].available,
-                  onTap: () => widget.onSelect(projects[index])),
+                _row(projects[index].preferred.project.name, projects[index].preferred.project.available
+                    ? desktopProjectDescription(projects[index]) : 'Folder unavailable · ${desktopProjectDescription(projects[index])}',
+                  ProjectAvatar(project: projects[index].preferred.project, size: 20, generated: widget.generated), active: _active == index,
+                  selected: projects[index].id == widget.selected, enabled: projects[index].preferred.project.available,
+                  onTap: () => widget.onSelect(projects[index].preferred.project)),
             ]))),
       const Divider(height: 1),
       Padding(padding: const EdgeInsets.all(4), child: _row('Add project', null,

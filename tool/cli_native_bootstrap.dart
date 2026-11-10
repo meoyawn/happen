@@ -4,19 +4,9 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
-typedef EmbeddedNativeAsset = ({String name, String sha256, int length, String Function() payload});
+import 'native_contracts.dart';
 
-const cliNativeContracts = <String, ({String assetId, String anchor})>{
-  'libcode_mode.dylib': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
-  'libsqlite3.dylib': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
-  'libflutter_pty2.dylib': (assetId: 'package:flutter_pty2/flutter_pty2', anchor: 'pty_session_pid'),
-};
-
-const linuxNativeContracts = <String, ({String assetId, String anchor})>{
-  'libcode_mode.so': (assetId: 'package:code_mode/src/bindings.dart', anchor: 'embedded_js_thread_id'),
-  'libsqlite3.so': (assetId: 'package:sqlite3/src/ffi/libsqlite3.g.dart', anchor: 'sqlite3_libversion_number'),
-  'libflutter_pty2.so': (assetId: 'package:flutter_pty2/flutter_pty2', anchor: 'pty_session_pid'),
-};
+typedef EmbeddedNativeAsset = ({String name, String sha256, int length, List<int> Function() payload});
 
 @Native<Uint64 Function()>(assetId: 'package:code_mode/src/bindings.dart', symbol: 'embedded_js_thread_id')
 external int _threadId();
@@ -89,7 +79,7 @@ Future<bool> _install(Directory root, Directory directory, String id, List<Embed
     final staging = await directory.createTemp('.install-');
     try {
       for (final asset in assets) {
-        final bytes = gzip.decode(base64.decode(asset.payload()));
+        final bytes = asset.payload();
         if (bytes.length != asset.length || sha256.convert(bytes).toString() != asset.sha256) {
           throw StateError('Embedded native payload checksum failed: ${asset.name}');
         }

@@ -10,6 +10,9 @@ import 'build_server/common.dart' show runBuildProcess;
 
 String quoteRemote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
+// Rsync parses --rsh itself: embedded quotes are doubled, not shell-escaped.
+String quoteRsyncShell(String value) => '"${value.replaceAll('"', '""')}"';
+
 Future<void> main(List<String> arguments) async {
   final root = Directory.fromUri(Platform.script).parent.parent;
   final aliases = arguments.where((value) => !value.startsWith('--')).toList();
@@ -37,8 +40,8 @@ Future<void> main(List<String> arguments) async {
     '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
     '-o', 'StrictHostKeyChecking=yes', '-o', 'UpdateHostKeys=no',
     if (user != null) ...['-l', user as String], if (port != null) ...['-p', '$port'],
-    if (identity != null) ...['-i', identity as String, '-o', 'IdentitiesOnly=yes'], '--', host];
-  Future<String> remote(List<String> command) => runBuildProcess('ssh', [...ssh, command.map(quoteRemote).join(' ')], cancellation, capture: true);
+    if (identity != null) ...['-i', identity as String, '-o', 'IdentitiesOnly=yes']];
+  Future<String> remote(List<String> command) => runBuildProcess('ssh', [...ssh, '--', host, command.map(quoteRemote).join(' ')], cancellation, capture: true);
   try {
     final machine = await remote(['uname', '-m']);
     final architecture = switch (machine) { 'x86_64' => 'x64', 'aarch64' => 'arm64', _ => throw StateError('Unsupported VPS architecture') };
@@ -57,29 +60,28 @@ Future<void> main(List<String> arguments) async {
     if (!home.startsWith('/') || home == '/' || RegExp(r'[\x00-\x1f]').hasMatch(home)) throw StateError('Invalid remote home');
     final releases = '$home/.local/share/happen/releases';
     final release = '$releases/$checksum';
+    final pending = '$release/pending';
     final current = '$home/.local/share/happen/current';
     final bin = '$home/.local/bin/happen-server';
-    await remote(['mkdir', '-p', release, '$home/.local/bin']);
-    stdout.writeln('Uploading the single AOT executable over SSH.');
-    final upload = await Process.start('ssh', [...ssh, ['dd', 'of=$release/happen-server.pending', 'status=none'].map(quoteRemote).join(' ')]);
-    final uploadHook = CancellationHook(cancellation, () => upload.kill());
-    try {
-      final streams = Future.wait([upload.stdout.drain<void>(), upload.stderr.forEach(stderr.add)]);
-      await upload.stdin.addStream(executable.openRead());
-      await upload.stdin.close();
-      final code = await upload.exitCode;
-      await streams;
-      cancellation.throwIfCancelled();
-      if (code != 0) throw StateError('SSH upload failed ($code)');
-    } finally { uploadHook.dispose(); }
-    if ((await remote(['sha256sum', '$release/happen-server.pending'])).split(' ').first != checksum) throw StateError('Uploaded executable checksum mismatch');
-    await remote(['chmod', '755', '$release/happen-server.pending']);
-    await remote(['mv', '-f', '$release/happen-server.pending', '$release/happen-server']);
+    final previous = await remote(['readlink', '-m', current]);
+    final previousExecutable = await remote(['readlink', '-m', bin]);
+    await remote(['mkdir', '-p', pending, '$home/.local/bin']);
+    stdout.writeln('Uploading the AOT executable with rsync delta transfer over SSH.');
+    final shell = ['ssh', ...ssh, '--'].map(quoteRsyncShell).join(' ');
+    final destinationHost = host.contains(':') ? '[$host]' : host;
+    await runBuildProcess('rsync', [
+      '--checksum', '--times', '--compress', '--partial', '--no-whole-file', '--stats',
+      // Relative to releases/<checksum>/pending, with the same source basename.
+      if (previous != current) '--copy-dest=../../../current',
+      '--rsh=$shell', '--', executable.path, '$destinationHost:${quoteRemote('$pending/')}',
+    ], cancellation);
+    if ((await remote(['sha256sum', '$pending/happen-server'])).split(' ').first != checksum) throw StateError('Uploaded executable checksum mismatch');
+    await remote(['chmod', '755', '$pending/happen-server']);
+    await remote(['mv', '-f', '$pending/happen-server', '$release/happen-server']);
+    await remote(['rmdir', pending]);
     // The bootstrap extracts and binds every native asset before --version.
     await remote(['$release/happen-server', '--version']);
     if ((await remote(['ldd', '$release/happen-server'])).contains('not found')) throw StateError('The VPS is missing a system library required by the AOT executable');
-    final previous = await remote(['readlink', '-m', current]);
-    final previousExecutable = await remote(['readlink', '-m', bin]);
     await remote(['ln', '-sfn', release, '$current.pending']);
     await remote(['mv', '-Tf', '$current.pending', current]);
     await remote(['ln', '-sfn', '$current/happen-server', '$bin.pending']);

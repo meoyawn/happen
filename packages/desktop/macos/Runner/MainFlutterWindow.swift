@@ -110,21 +110,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
 
   private func createStatusItem() {
     let item = NSStatusBar.system.statusItem(withLength: 22)
-    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-      NSColor.black.setStroke()
-      let path = NSBezierPath()
-      path.lineWidth = 2.5
-      path.lineCapStyle = .round
-      path.move(to: NSPoint(x: 4, y: 3))
-      path.line(to: NSPoint(x: 4, y: 15))
-      path.move(to: NSPoint(x: 14, y: 3))
-      path.line(to: NSPoint(x: 14, y: 15))
-      path.move(to: NSPoint(x: 4, y: 9))
-      path.line(to: NSPoint(x: 14, y: 9))
-      path.stroke()
-      return true
-    }
-    image.isTemplate = true
+    let image = NSImage(named: "HappenStatus")
+    image?.size = NSSize(width: 18, height: 18)
+    image?.isTemplate = true
     item.button?.image = image
     item.button?.setAccessibilityLabel("Happen")
     let menu = NSMenu()

@@ -66,7 +66,7 @@ List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSessio
   final tasks = [
     for (final source in owners)
     for (final project in source.projects)
-      if (!project.removing && (projectKey == null || source.sidebarId(project.checkoutKey) == projectKey))
+      if (!project.removing && (projectKey == null || projectIdentity(source, project) == projectKey))
         for (final task in project.tasks)
           if (!task.archived) (project, task, _sidebarActivity(source, task)),
   ];
@@ -86,7 +86,8 @@ List<(Project, DesktopTask, _SidebarThreadActivity)> _sidebarTasks(DesktopSessio
 
 List<SessionDraft> _sidebarDrafts(DesktopSession session, String? projectKey) =>
   session.sessionDrafts.where((draft) => draft.submission == null &&
-    (projectKey == null || draft.checkoutKey == projectKey) &&
+    (projectKey == null || session.projects.any((project) => !project.removing &&
+      project.checkoutKey == draft.checkoutKey && projectIdentity(session, project) == projectKey)) &&
     ((session.drafts[draft.id] ?? '').trim().isNotEmpty ||
       (session.fileDrafts[draft.id]?.isNotEmpty ?? false) ||
       (session.attachmentDrafts[draft.id]?.isNotEmpty ?? false))).toList().reversed.toList();
@@ -102,8 +103,7 @@ List<String> sidebarThreadIds(DesktopSession session, {String? projectKey, List<
     if (!preferences.collapsedSidebarSections.contains('working'))
       for (final (project, task, _) in tasks.where((entry) => entry.$3.running && !pins.contains(key(entry.$1, entry.$2)))) key(project, task),
     for (final source in owners)
-      for (final draft in _sidebarDrafts(source, projectKey == null ? null :
-        source.projects.where((p) => source.sidebarId(p.checkoutKey) == projectKey).firstOrNull?.checkoutKey ?? '')) source.sidebarId(draft.id),
+      for (final draft in _sidebarDrafts(source, projectKey)) source.sidebarId(draft.id),
     for (final (project, task, _) in tasks.where((entry) => !entry.$3.running && !pins.contains(key(entry.$1, entry.$2)))) key(project, task),
   ];
 }
@@ -482,8 +482,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final pinned = tasks.where((entry) => pins.contains(_taskKey(entry.$1, entry.$2))).toList();
     final working = tasks.where((entry) => entry.$3.running && !pins.contains(_taskKey(entry.$1, entry.$2))).toList();
     final drafts = [for (final source in sources)
-      for (final draft in _sidebarDrafts(source, widget.projectKey == null ? null :
-        source.projects.where((p) => source.sidebarId(p.checkoutKey) == widget.projectKey).firstOrNull?.checkoutKey ?? '')) (source, draft)];
+      for (final draft in _sidebarDrafts(source, widget.projectKey)) (source, draft)];
     final anchoredIds = {...ids, ...drafts.map((entry) => entry.$1.sidebarId(entry.$2.id))};
     _rowAnchors.removeWhere((id, _) => !anchoredIds.contains(id));
     final rows = <(String?, Widget)>[
@@ -526,11 +525,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
             itemBuilder: (_) => [
               CheckedPopupMenuItem(value: '*', checked: widget.projectKey == null, child: const Text('All projects')),
               const PopupMenuDivider(),
-              for (final source in sources)
-              for (final project in source.projects.where((project) => !project.removing))
-                CheckedPopupMenuItem(value: source.sidebarId(project.checkoutKey), checked: widget.projectKey == source.sidebarId(project.checkoutKey),
+              for (final project in desktopProjects(sources, preferred: session))
+                CheckedPopupMenuItem(value: project.id, checked: widget.projectKey == project.id,
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    _machineBadge(source, widget.machineIcon), const SizedBox(width: 8), Text(project.name)])),
+                    ProjectAvatar(project: project.preferred.project, size: 14,
+                      generated: session.projectAvatarStyle == 'generated'),
+                    const SizedBox(width: 8), Text(project.preferred.project.name)])),
             ],
             child: MouseRegion(cursor: SystemMouseCursors.click, child: SizedBox.square(dimension: 28,
               child: Center(child: sidebarIcon(SidebarIcon.listFilter))))),

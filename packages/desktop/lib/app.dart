@@ -60,6 +60,7 @@ class _DesktopViewState extends State<DesktopView> {
   DesktopSession _source(Project project) => _sources.firstWhere((source) => source.projects.contains(project));
   DesktopSession _taskSource(DesktopTask task) => _sources.firstWhere((source) => source.projects.any((project) => project.tasks.contains(task)));
   bool _picking = false, _settingsOpen = false;
+  ThreadMachineController? _projectSelection;
   bool _commandMenuOpen = false;
   bool get _homeOpen => !session.viewingConversation;
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
@@ -85,7 +86,7 @@ class _DesktopViewState extends State<DesktopView> {
     _syncWindowChrome();
   }
 
-  Listenable get _viewChanges => Listenable.merge([session, _windowChrome, if (_homeOpen) widget.machines]);
+  Listenable get _viewChanges => Listenable.merge([session, _windowChrome, if (_homeOpen || session.task == null) widget.machines]);
   double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
 
   void _applyWindowChrome(Object? value) {
@@ -119,6 +120,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   @override
   void dispose() {
+    _cancelProjectSelection();
     FocusManager.instance.removeEarlyKeyEventHandler(_navigateKey);
     session.removeListener(_syncWindowChrome);
     session.removeListener(_rememberNavigation);
@@ -338,7 +340,7 @@ class _DesktopViewState extends State<DesktopView> {
         ],
       ),
     );
-    if (confirmed == true && mounted) await session.removeProject(project);
+    if (confirmed == true && mounted) await _source(project).removeProject(project);
   }
 
   void _bindNavigation() {
@@ -492,6 +494,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
+    _cancelProjectSelection();
     final source = _source(project);
     widget.machines?.activate(source);
     return source.select(project, task);
@@ -502,6 +505,7 @@ class _DesktopViewState extends State<DesktopView> {
       await _commandMenu(pickProject: true);
       return;
     }
+    _cancelProjectSelection();
     final source = _source(owner);
     if (owner.removing || !owner.available) return;
     widget.machines?.activate(source);
@@ -510,6 +514,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _showHome() {
+    _cancelProjectSelection();
     session.showHome();
     unawaited(_run(session.refreshSessions));
   }
@@ -518,14 +523,42 @@ class _DesktopViewState extends State<DesktopView> {
     unawaited(_run(() => _selectProject(project, task)));
   }
 
+  void _cancelProjectSelection() {
+    if (_projectSelection case final controller?) unawaited(controller.close());
+  }
+
   void _openDraft(Project project) {
     unawaited(_run(() async {
-      await _selectProject(project);
+      if (_picking || session.submitting || project.removing || !project.available) return;
+      final source = session, target = _source(project);
+      if (identical(source, target)) {
+        await _selectProject(project);
+        if (mounted) _focusComposer();
+        return;
+      }
+      final machines = widget.machines;
+      if (machines == null) return;
+      _cancelProjectSelection();
+      final controller = _projectSelection = ThreadMachineController(machines, source);
+      setState(() => _picking = true);
+      try {
+        final changed = await controller.chooseProject((source: target, project: project));
+        if (controller.state case ThreadMachineFailed(:final error) when !changed && mounted) {
+          source.showError(error, title: 'Could not change project');
+        }
+      } finally {
+        if (identical(_projectSelection, controller)) {
+          _projectSelection = null;
+          if (mounted) setState(() => _picking = false);
+        }
+        await controller.close();
+      }
       if (mounted) _focusComposer();
     }));
   }
 
   void _activateDraft(SessionDraft draft) {
+    _cancelProjectSelection();
     final source = _sources.firstWhere((source) => source.sessionDrafts.contains(draft));
     widget.machines?.activate(source);
     source.openDraft(draft);
@@ -658,7 +691,7 @@ class _DesktopViewState extends State<DesktopView> {
                 header: (opened, toggle) => _header(context, opened, toggle),
                 child: Column(children: [
                 if (transcript == null)
-                  Expanded(child: NewSessionScreen(session: session, picking: _picking,
+                  Expanded(child: NewSessionScreen(session: session, sources: _sources, picking: _picking,
                     machinePicker: ThreadMachinePicker(machines: widget.machines, session: session),
                     projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),

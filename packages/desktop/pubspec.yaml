@@ -48,9 +48,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/app-icons/
-    - macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png
-    - macos/Runner/Assets.xcassets/AppIconDebug.appiconset/app_icon_256.png
-    - macos/Runner/Assets.xcassets/AppIconToiletPaper.appiconset/app_icon_1024.png
     - assets/notifications/
     - assets/file-types/
     - assets/machine-icons/

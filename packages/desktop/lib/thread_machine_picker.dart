@@ -40,13 +40,13 @@ ThreadMachineState _transition(ThreadMachineState current, ThreadMachineState ne
 /// An unsent draft reads the application-owned machine catalog synchronously.
 class ThreadMachineController extends ChangeNotifier {
   ThreadMachineController(this.machines, this.source)
-    : project = source.project!, draft = source.currentDraft {
+    : project = source.project, draft = source.currentDraft {
     _state = _snapshot();
     machines.addListener(_machinesChanged);
   }
   final MachinesController machines;
   final DesktopSession source;
-  final Project project;
+  final Project? project;
   final SessionDraft draft;
   final _lifetime = CancellationToken();
   CancellationToken? _operation;
@@ -58,6 +58,8 @@ class ThreadMachineController extends ChangeNotifier {
     source.sessionDrafts.contains(draft) && identical(source.project, project) && source.currentDraft.id == draft.id;
 
   ThreadMachineReady _snapshot() {
+    final project = this.project;
+    if (project == null) return ThreadMachineReady(null, const [], const {}, false);
     final catalog = machines.workspaceCatalog(source, project);
     return ThreadMachineReady(catalog.repository, catalog.checkouts, catalog.errors, catalog.truncated);
   }
@@ -74,10 +76,17 @@ class ThreadMachineController extends ChangeNotifier {
 
   Future<bool> choose(ThreadCheckout checkout) {
     if (_state is! ThreadMachineReady || !_current || source.pullingCheckout) return Future.value(false);
-    return _selection = _choose(checkout);
+    return _selection = _choose(checkout, (_state as ThreadMachineReady).repository);
   }
 
-  Future<bool> _choose(ThreadCheckout checkout) async {
+  Future<bool> chooseProject(ProjectCheckout checkout) {
+    if (_state is! ThreadMachineReady || !_current || source.pullingCheckout ||
+        checkout.project.removing || !checkout.project.available) { return Future.value(false); }
+    return _selection = _choose((machine: machines.machineFor(checkout.source), path: checkout.project.path,
+      branch: checkout.project.branch, worktree: checkout.project.workspace?['worktree'] == true), projectRepository(checkout.project));
+  }
+
+  Future<bool> _choose(ThreadCheckout checkout, String? repository) async {
     if (_state is! ThreadMachineReady || !_current || source.pullingCheckout) return false;
     final previous = _state as ThreadMachineReady;
     final navigation = source.navigationRevision;
@@ -89,7 +98,7 @@ class ThreadMachineController extends ChangeNotifier {
       final target = checkout.machine.session;
       final inspected = await target.client.inspectWorkspace(checkout.path, cancellation: cancellation);
       cancellation.throwIfCancelled();
-      if (!_current || inspected['available'] != true || inspected['repository'] != previous.repository) {
+      if (!_current || inspected['available'] != true || inspected['repository'] != repository) {
         throw StateError('The checkout changed. Refresh the machine list.');
       }
       final destination = await target.ensureProject(checkout.path, cancellation: cancellation);

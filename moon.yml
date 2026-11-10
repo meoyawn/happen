@@ -11,15 +11,15 @@ fileGroups:
     - tool/build_server/embed.dart
     - tool/build_server/Dockerfile
     - tool/cli_native_bootstrap.dart
+    - tool/native_contracts.dart
     - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/pubspec.yaml
     - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/{bin,catalog,lib}/**/*
   server-native:
-    - pubspec.yaml
     - pubspec.lock
     - tool/build_server/common.dart
     - tool/build_server/native.dart
     - tool/build_server/Dockerfile
-    - tool/cli_native_bootstrap.dart
+    - tool/native_contracts.dart
   server-quickjs:
     - packages/code_mode/pubspec.yaml
     - packages/code_mode/hook/build.dart
@@ -142,11 +142,17 @@ tasks:
     description: Deploy the cached Linux server to the private local target and restart its daemon
     command: dart tool/deploy_server.dart --skip-build --architecture=x64
     deps:
-      - '~:build-server'
+      - target: '~:build-server'
+        cacheStrategy: outputs
     preset: utility
-    inputs: []
+    inputs:
+      - tool/deploy_server.dart
+      - tool/build_server/common.dart
+      - file: .local/deploy-server.json
+        optional: true
     options:
       cache: false
+      interactive: false
       shell: false
       outputStyle: stream
 
@@ -187,6 +193,7 @@ tasks:
       - pubspec.lock
       - tool/build_cli.dart
       - tool/cli_native_bootstrap.dart
+      - tool/native_contracts.dart
       - tool/dart2native.json
       - packages/cli/**/*
       - packages/agent/**/*

@@ -73,27 +73,26 @@ class _CommandMenuState extends State<CommandMenu> {
     if (_projectsOpen) {
       final session = widget.session;
       final sources = widget.sources ?? [session];
-      final allProjects = sources.expand((source) => source.projects).toList();
-      final projects = allProjects.where((project) => !project.removing &&
-        matches('${project.name} ${project.path}')).toList();
-      final order = {for (final (index, project) in allProjects.indexed) project: index};
-      int latest(Project project) => project.tasks.fold(0,
-        (value, task) => task.lastActivity > value ? task.lastActivity : value);
+      final allProjects = desktopProjects(sources, preferred: session);
+      final projects = allProjects.where((project) => matches(desktopProjectSearchText(project))).toList();
+      final order = {for (final (index, project) in allProjects.indexed) project.id: index};
+      bool current(DesktopProject project) => project.checkouts.any((checkout) => identical(checkout.project, session.project));
+      bool pinned(DesktopProject project) => project.checkouts.any((checkout) =>
+        checkout.source.pinnedProjectKeys.contains(checkout.project.checkoutKey));
       projects.sort((a, b) {
-        final preferred = (b == session.project ? 1 : 0).compareTo(a == session.project ? 1 : 0);
+        final preferred = (current(b) ? 1 : 0).compareTo(current(a) ? 1 : 0);
         if (preferred != 0) return preferred;
-        final pinned = (session.pinnedProjectKeys.contains(b.checkoutKey) ? 1 : 0)
-          .compareTo(session.pinnedProjectKeys.contains(a.checkoutKey) ? 1 : 0);
-        if (pinned != 0) return pinned;
-        final activity = latest(b).compareTo(latest(a));
-        return activity != 0 ? activity : order[a]!.compareTo(order[b]!);
+        final pin = (pinned(b) ? 1 : 0).compareTo(pinned(a) ? 1 : 0);
+        if (pin != 0) return pin;
+        final activity = desktopProjectActivity(b).compareTo(desktopProjectActivity(a));
+        return activity != 0 ? activity : order[a.id]!.compareTo(order[b.id]!);
       });
       return [
-        for (final project in projects)
-          (id: 'project:${project.checkoutKey}', group: 'Projects', title: project.name,
-            description: project.available
-              ? '${machineLabel(sources.firstWhere((source) => source.projects.contains(project)))} · ${project.path}'
-              : 'Folder unavailable · ${project.path}',
+        for (final group in projects)
+          for (final project in [group.preferred.project])
+          (id: 'project:${group.id}', group: 'Projects', title: project.name,
+            description: project.available ? desktopProjectDescription(group)
+              : 'Folder unavailable · ${desktopProjectDescription(group)}',
             icon: null, shortcut: null, project: project, task: null,
             select: () {
               if (project.available && !project.removing) _close(() => widget.onNewThread(project));
@@ -221,7 +220,7 @@ class _CommandMenuState extends State<CommandMenu> {
         child: SizedBox(width: 576, child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 420),
           child: ListenableBuilder(
-            listenable: Listenable.merge([widget.session, _search]),
+            listenable: Listenable.merge([for (final source in widget.sources ?? [widget.session]) source, _search]),
             builder: (context, _) {
               final entries = _entries;
               final activeIndex = _activeIndex(entries);

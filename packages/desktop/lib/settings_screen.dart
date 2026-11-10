@@ -1,13 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'appearance_settings.dart';
-import 'app_icon.dart';
-import 'native_app_icon.dart';
 import 'project_avatar.dart';
 import 'project_actions_state.dart';
 import 'project_icon_picker.dart';
@@ -55,6 +52,8 @@ class DesktopSettingsScreen extends StatefulWidget {
 }
 
 class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
+  List<DesktopSession> get _sources => widget.machines?.sessions.map((machine) => machine.session).toList() ?? [widget.session];
+  DesktopSession _source(Project project) => _sources.firstWhere((source) => source.projects.contains(project));
   late String _page = widget.initialProject == null ? widget.initialPage : 'projects';
   late Project? _project = widget.initialProject;
   String _projectQuery = '';
@@ -88,7 +87,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final page = _pages.firstWhere((page) => page.id == _page);
-    final project = widget.session.projects.contains(_project) && _project?.removing != true ? _project : null;
+    final project = _sources.any((source) => source.projects.contains(_project)) && _project?.removing != true ? _project : null;
     return Focus(autofocus: true, onKeyEvent: (_, event) {
       if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.escape) return KeyEventResult.ignored;
       unawaited(Navigator.maybePop(context));
@@ -133,7 +132,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                     const SizedBox(height: 4),
                     Text(page.description, style: const TextStyle(fontSize: 11, height: 16 / 11, color: desktopSecondary)),
                   ])),
-                  if (_page == 'projects' && widget.session.projects.isNotEmpty && widget.addProject != null)
+                  if (_page == 'projects' && _sources.any((source) => source.projects.isNotEmpty) && widget.addProject != null)
                     TextButton.icon(onPressed: widget.addProject, style: _navStyle(),
                       icon: const Icon(Icons.add, size: 16), label: const Text('Add project')),
                 ]),
@@ -151,7 +150,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
                 'projects' => project == null ? _projects() : _ProjectSettings(
-                  key: ValueKey(project.checkoutKey), project: project, session: widget.session, run: widget.run,
+                  key: ValueKey(projectIdentity(_source(project), project)), project: project, session: _source(project), run: widget.run,
                   removeProject: widget.removeProject),
                 _ => _preferences(),
               },
@@ -214,36 +213,6 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
 
   Widget _appearance() => _settingsList([
     DesktopAccentSettings(controller: widget.session.appearance, run: widget.run),
-    if (supportsAppIconSwitching)
-      ListenableBuilder(listenable: widget.session.appIcon, builder: (context, _) {
-        final state = widget.session.appIcon.state;
-        final enabled = state is AppIconReady || state is AppIconFailed;
-        final description = switch (state) {
-          AppIconFailed() => 'Could not update the app icon. Try choosing it again.',
-          AppIconLoading() || AppIconSaving() => 'Updating app icon…',
-          _ => Platform.isMacOS ? 'Choose the icon shown in the Dock.' : 'Choose the icon shown for Happen windows.',
-        };
-        void choose(AppIconChoice? choice) {
-          final current = widget.session.appIcon.state;
-          if ((current is AppIconReady || current is AppIconFailed) && choice != null) {
-            unawaited(widget.run(() => widget.session.appIcon.choose(choice)));
-          }
-        }
-        return Padding(padding: const EdgeInsets.symmetric(vertical: 20),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('App icon', style: TextStyle(fontSize: 13, height: 16 / 13,
-              fontWeight: FontWeight.w500, color: desktopForeground)),
-            const SizedBox(height: 4),
-            Text(description, style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopSecondary)),
-            const SizedBox(height: 16),
-            RadioGroup<AppIconChoice>(groupValue: state.value, onChanged: choose,
-              child: Wrap(spacing: 12, runSpacing: 12, children: [
-                for (final choice in AppIconChoice.values)
-                  _appIconChoice(choice, selected: state.value == choice, enabled: enabled,
-                    onSelected: () => choose(choice)),
-              ])),
-          ]));
-      }),
     _settingsRow('Project icons', 'Choose the marks shown beside your projects.',
       Row(mainAxisSize: MainAxisSize.min, children: [
         if (widget.session.project case final project?) ...[
@@ -273,10 +242,10 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
     ]);
 
   Widget _projects() {
-    final projects = widget.session.projects.where((project) => !project.removing).toList();
+    final projects = desktopProjects(_sources, preferred: widget.session);
     final query = _projectQuery.trim().toLowerCase();
     final filtered = projects.where((project) => query.isEmpty ||
-      project.name.toLowerCase().contains(query) || project.path.toLowerCase().contains(query)).toList();
+      desktopProjectSearchText(project).toLowerCase().contains(query)).toList();
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (projects.length > 7 || query.isNotEmpty) ...[
         TextField(decoration: _settingsInput('Search projects').copyWith(
@@ -304,7 +273,8 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         Padding(padding: const EdgeInsets.symmetric(vertical: 48), child: Text('No projects match “${_projectQuery.trim()}”.',
           textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: desktopSecondary)))
       else
-        _settingsList([for (final project in filtered)
+        _settingsList([for (final group in filtered)
+          for (final project in [group.preferred.project])
           Row(children: [
             Expanded(child: TextButton(
               onPressed: () => _editProject(project),
@@ -316,7 +286,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                   Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: desktopForeground)),
                   const SizedBox(height: 2),
-                  Text(project.path, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  Text(desktopProjectDescription(group), maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11, color: desktopSecondary)),
                 ])),
                 if (!project.available) const Tooltip(message: 'Project folder is unavailable',
@@ -638,25 +608,3 @@ Widget _choice(String label, String value, Map<String, String> options, ValueCha
       items: [for (final entry in options.entries) DropdownMenuItem(value: entry.key, child: Text(entry.value))],
       onChanged: (value) { if (value != null) onChanged(value); },
     ))));
-
-Widget _appIconChoice(AppIconChoice choice, {required bool selected, required bool enabled,
-  required VoidCallback onSelected}) => MergeSemantics(child: Opacity(opacity: enabled ? 1 : .55,
-  child: Material(color: selected ? const Color(0xfff0f0f0) : Colors.white,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8),
-      side: BorderSide(color: selected ? desktopForeground : desktopBorder, width: selected ? 1.5 : .5)),
-    clipBehavior: Clip.antiAlias,
-    child: InkWell(onTap: enabled ? onSelected : null, canRequestFocus: false, excludeFromSemantics: true,
-      mouseCursor: WidgetStateMouseCursor.clickable,
-      child: SizedBox(width: 144, child: Padding(padding: const EdgeInsets.all(12),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ExcludeSemantics(child: Image.asset(appIconPreviewAsset(choice), width: 88, height: 88,
-            filterQuality: FilterQuality.medium)),
-          const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Radio<AppIconChoice>(value: choice, enabled: enabled, activeColor: desktopForeground,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap, visualDensity: VisualDensity.compact),
-            const SizedBox(width: 4),
-            Flexible(child: Text(choice.label,
-              style: const TextStyle(fontSize: 13, height: 16 / 13, color: desktopForeground))),
-          ]),
-        ])))))));

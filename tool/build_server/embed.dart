@@ -7,7 +7,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
 
-import '../cli_native_bootstrap.dart' show linuxNativeContracts;
+import '../native_contracts.dart' show linuxNativeContracts;
 
 // Runs inside the Linux build environment with Moon's cached native libraries.
 // The same extraction and anchor checks serve the macOS CLI and Linux daemon.
@@ -23,32 +23,47 @@ Future<void> main(List<String> arguments) async {
     throw StateError('Native assets changed; update the explicit Linux binding contracts: $names');
   }
   final assets = <Json>[];
+  final payloads = <List<int>>[];
   for (final library in libraries) {
     final name = library.uri.pathSegments.last, bytes = await library.readAsBytes();
     assets.add({'name': name, 'asset_id': linuxNativeContracts[name]!.assetId,
       'length': bytes.length, 'sha256': sha256.convert(bytes).toString()});
+    payloads.add(bytes);
   }
   final nativeId = sha256.convert(utf8.encode(jsonEncode(assets))).toString();
+  final runtime = await File('${sdk.path}/bin/dartaotruntime').readAsBytes();
+  final executable = BytesBuilder(copy: false)..add(runtime);
+  // Keep each raw library outside the AOT snapshot, at a 64 KiB aligned
+  // offset. Dart-only rebuilds leave these contiguous regions byte-for-byte equal.
+  for (var i = 0; i < assets.length; i++) {
+    executable.add(Uint8List((-executable.length) & 65535));
+    assets[i]['offset'] = executable.length;
+    executable.add(payloads[i]);
+  }
   final work = await Directory('${root.path}/release').createTemp('embed-');
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
   try {
     final bootstrap = File('${root.path}/tool/cli_native_bootstrap.dart').uri;
     final payload = File('${work.path}/payload.dart').openWrite();
-    payload.writeln("import '$bootstrap';\nconst nativeId = '$nativeId';\nconst assets = <EmbeddedNativeAsset>[");
+    payload.writeln("import 'dart:io';\nimport '$bootstrap';\nconst nativeId = '$nativeId';\nconst assets = <EmbeddedNativeAsset>[");
     for (var i = 0; i < assets.length; i++) {
       final asset = assets[i];
       payload.writeln('  (name: ${jsonEncode(asset['name'])}, sha256: ${jsonEncode(asset['sha256'])}, length: ${asset['length']}, payload: _payload$i),');
     }
     payload.writeln('];');
-    for (var i = 0; i < libraries.length; i++) {
-      final compressed = base64.encode(GZipCodec(level: 6).encode(await libraries[i].readAsBytes()));
-      payload.writeln('String _payload$i() =>');
-      for (var offset = 0; offset < compressed.length; offset += 4096) {
-        payload.writeln('  ${jsonEncode(compressed.substring(offset, (offset + 4096).clamp(0, compressed.length)))}');
-      }
-      payload.writeln(';');
+    for (var i = 0; i < assets.length; i++) {
+      payload.writeln('List<int> _payload$i() => _readPayload(${assets[i]['offset']}, ${assets[i]['length']});');
     }
+    payload.writeln('''
+List<int> _readPayload(int offset, int length) {
+  final executable = File(Platform.resolvedExecutable).openSync();
+  try {
+    executable.setPositionSync(offset);
+    return executable.readSync(length);
+  } finally { executable.closeSync(); }
+}
+''');
     await payload.close();
     final main = File('${work.path}/main.dart');
     await main.writeAsString("import '${File('${root.path}/packages/server/bin/happen_server.dart').uri}' as server;\n"
@@ -69,11 +84,11 @@ Future<void> main(List<String> arguments) async {
     await _run('${sdk.path}/bin/utils/gen_snapshot', ['--snapshot-kind=app-aot-elf', '--elf=$snapshot', '--strip', kernel], cancellation);
     // Stock Dart ELF trailer format, from SDK pkg/dart2native/lib/dart2native.dart:
     // a 64 KiB aligned snapshot, its little-endian offset, and the VM magic.
-    final runtime = await File('${sdk.path}/bin/dartaotruntime').readAsBytes();
-    final aligned = (runtime.length + 65535) & ~65535;
+    // The native payloads precede the snapshot and are never VM snapshot objects.
+    final aligned = (executable.length + 65535) & ~65535;
     final offset = ByteData(8)..setUint64(0, aligned, Endian.little);
-    final executable = BytesBuilder(copy: false)
-      ..add(runtime)..add(Uint8List(aligned - runtime.length))..add(await File(snapshot).readAsBytes())
+    executable
+      ..add(Uint8List(aligned - executable.length))..add(await File(snapshot).readAsBytes())
       ..add(offset.buffer.asUint8List())..add([0xdc, 0xdc, 0xf6, 0xf6, 0, 0, 0, 0]);
     await output.writeAsBytes(executable.takeBytes(), flush: true);
     await _run('chmod', ['755', output.path], cancellation);
@@ -82,7 +97,9 @@ Future<void> main(List<String> arguments) async {
       await _run(output.path, ['--version'], cancellation,
         environment: {'HAPPEN_NATIVE_CACHE': cache.path, 'HAPPEN_BOOTSTRAP_REPORT': '1'});
     }
-    await File('${output.path}.native.json').writeAsString('${jsonEncode({'nativeId': nativeId, 'nativeAssets': assets})}\n');
+    await File('${output.path}.native.json').writeAsString('${jsonEncode({
+      'nativeId': nativeId, 'nativeAssets': assets, 'snapshotOffset': aligned,
+    })}\n');
   } finally {
     cancellation.cancel();
     for (final signal in signals) { await signal.cancel(); }

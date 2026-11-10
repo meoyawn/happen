@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:yaml/yaml.dart';
 
-import '../cli_native_bootstrap.dart' show linuxNativeContracts;
+import '../native_contracts.dart' show linuxNativeContracts;
 import 'common.dart';
 
 const _libraries = {

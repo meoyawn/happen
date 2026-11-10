@@ -22,8 +22,8 @@ extension DraftRouting on DesktopSession {
     {required CancellationToken cancellation}) async {
     final token = cancellation.merge(_lifetime);
     if (original.submission != null || source.submitting) throw StateError('This thread has already started');
-    final contents = _draftContents(source, original.id), from = source.project!.path;
-    final files = _retargetReferences(contents.files, from, destination.path);
+    final contents = _draftContents(source, original.id), from = source.project?.path;
+    final files = from == null ? contents.files : _retargetReferences(contents.files, from, destination.path);
     if (identical(source, this)) {
       final previous = original.checkoutKey;
       original.checkoutKey = destination.checkoutKey;
