@@ -1,5 +1,7 @@
 # "Happen" AI coding agent
 
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+
 ## Rules
 
 - Never use Python. Use Dart for everything.

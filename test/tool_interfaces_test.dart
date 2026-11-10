@@ -59,6 +59,56 @@ void main() {
     expect(native['truncated'], isFalse);
   });
 
+  test('Codex nested patches expose missing context, verify before writing, and recover on correction', () async {
+    const interface = OpenAIToolInterface();
+    final runtime = interface.createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    final context = ToolExecution(call: runtime.call, catalog: (_) async => interface.hostCatalog,
+      values: const {}, cancellation: cancellation);
+    final target = File('${root.path}/file.txt'), receipt = File('${root.path}/receipt.txt');
+    const original = 'summary: before\n  - Ran the production product\n';
+    await target.writeAsString(original);
+    const badPatch = '*** Begin Patch\n*** Add File: receipt.txt\n+created\n'
+      '*** Update File: file.txt\n@@\n-summary: before\n+summary: after\n'
+      '@@\n-  Ran the production product\n+  Ran the production product\n*** End Patch';
+    Future<Json> exec(String patch) => runtime.execute(ToolCall(id: newId(), namespace: 'functions',
+      name: 'exec', format: 'text', input: 'text(await tools.apply_patch(${jsonEncode(patch)}));'), context);
+    final failed = await exec(badPatch);
+    expect(failed['error'], contains('Failed to find expected lines in ${target.path}:\n  Ran the production product'));
+    expect((failed['output'] as List).join('\n'), contains('Ran the production product'));
+    expect(await target.readAsString(), original);
+    expect(await receipt.exists(), isFalse, reason: 'Codex verifies the whole tool proposal before committing any file');
+    const goodPatch = '*** Begin Patch\n*** Add File: receipt.txt\n+created\n'
+      '*** Update File: file.txt\n@@\n-summary: before\n+summary: after\n'
+      '@@\n-  - Ran the production product\n+  - Ran the production product reliably\n*** End Patch';
+    final completed = await exec(goodPatch);
+    expect(completed['error'], isNull);
+    expect(await target.readAsString(), 'summary: after\n  - Ran the production product reliably\n');
+    expect(await receipt.readAsString(), 'created\n');
+  });
+
+  test('Codex direct patch receipts use the applied plan for lenient patch syntax', () async {
+    const interface = OpenAIToolInterface(codeModeOnly: false);
+    final runtime = interface.createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    final result = await runtime.execute(ToolCall(id: newId(), namespace: 'functions', name: 'apply_patch',
+      format: 'text', input: '<<\'EOF\'\n  *** Begin Patch\n  *** Add File: file.txt\n+hello\n  *** End Patch\nEOF\n'),
+      ToolExecution(call: runtime.call, catalog: (_) async => interface.hostCatalog, values: const {}, cancellation: cancellation));
+    expect(result['output'], endsWith('Success. Updated the following files:\nA file.txt\n'));
+    expect(await File('${root.path}/file.txt').readAsString(), 'hello\n');
+  });
+
+  test('Codex rejects multiple operations on the same source before writing', () async {
+    final runtime = const OpenAIToolInterface().createRuntime(root.path, cancellation);
+    addTearDown(runtime.close);
+    final target = File('${root.path}/file.txt');
+    await target.writeAsString('before\n');
+    await expectLater(runtime.call('apply_patch', '*** Begin Patch\n*** Add File: file.txt\n+first\n'
+      '*** Update File: file.txt\n@@\n-before\n+second\n*** End Patch', cancellation: cancellation),
+      throwsA(predicate<Object>((error) => error.toString().contains('multiple operations target ${target.path}'))));
+    expect(await target.readAsString(), 'before\n');
+  });
+
   test('OpenCode file tools use upstream path keys, paging, exact replacement, and search', () async {
     final runtime = const OpenCodeToolInterface().createRuntime(root.path, cancellation);
     addTearDown(runtime.close);

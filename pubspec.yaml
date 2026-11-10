@@ -31,6 +31,7 @@ dependencies:
   code_mode: any
   telemetry: any
 dev_dependencies:
+  tool_runtime: any
   cancellation_token: ^2.0.1
   yaml: ^3.1.4
   ffi: ^2.1.4

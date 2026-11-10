@@ -72,9 +72,9 @@ String text(Json item) => item['content'] is String ? item['content'] as String
   : (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>().map((part) => part['text'] ?? '').join('\n');
 
 /// Every case excludes Codex's client telemetry, removes scoped IDs and normalizes
-/// known timings. The error case additionally validates native diagnostics before
+/// known timings. Error cases additionally validate native diagnostics before
 /// comparing their shared meaning. All other values and array positions are strict.
-Json prepareComparison(Json received, {bool scriptErrors = false}) {
+Json prepareComparison(Json received, {bool scriptErrors = false, bool patchErrors = false}) {
   final request = jsonObject(jsonDecode(jsonEncode(received)));
   void removeTime(Json object, String key) {
     final value = object[key];
@@ -172,6 +172,13 @@ Json prepareComparison(Json received, {bool scriptErrors = false}) {
       for (var part = 0; part < output.length; part++) {
         final content = jsonObject(output[part]);
         if (content['type'] == 'input_text') content['text'] = outputText(content['text'] as String);
+        if (patchErrors && item['call_id'] == 'patch_missing_context' && content['type'] == 'input_text') {
+          // Exception wrappers differ between Rust and Dart. Keep the path and
+          // every expected context byte strict; the raw diagnostic is gated below.
+          content['text'] = (content['text'] as String).replaceFirst(
+            RegExp(r'^Script error:\n(?:Bad state: |apply_patch verification failed: )(?=Failed to find expected lines in )'),
+            'Script error:\n');
+        }
         if (scriptErrors && content['type'] == 'input_text') {
           if (scriptErrorMessages[item['call_id']] case final List<String> messages) {
             final lines = (content['text'] as String).split('\n');
@@ -239,8 +246,9 @@ bool shellIdContract(List<Json> input) {
   return true;
 }
 
-Future<bool> compare(Json reference, Json actual, String path, {bool scriptErrors = false}) async {
-  final left = prepareComparison(reference, scriptErrors: scriptErrors), right = prepareComparison(actual, scriptErrors: scriptErrors);
+Future<bool> compare(Json reference, Json actual, String path, {bool scriptErrors = false, bool patchErrors = false}) async {
+  final left = prepareComparison(reference, scriptErrors: scriptErrors, patchErrors: patchErrors),
+    right = prepareComparison(actual, scriptErrors: scriptErrors, patchErrors: patchErrors);
   final equal = equals(left).matches(right, {});
   final a = encoder.convert(sortedKeys(left)).split('\n'), b = encoder.convert(sortedKeys(right)).split('\n');
   var index = 0;
@@ -453,11 +461,14 @@ Future<Json> scenario(Json scenario, String model, String codex, String output,
     await file.parent.create(recursive: true);
     await file.writeAsString(entry.value as String);
   }
-  for (final entry in jsonObject(scenario['files']).entries) {
-    final file = File('$work/${entry.key}');
-    await file.parent.create(recursive: true);
-    await file.writeAsString(entry.value as String);
+  Future<void> seedFiles() async {
+    for (final entry in jsonObject(scenario['files']).entries) {
+      final file = File('$work/${entry.key}');
+      await file.parent.create(recursive: true);
+      await file.writeAsString(entry.value as String);
+    }
   }
+  await seedFiles();
   for (final entry in jsonObject(scenario['binary_files'] ?? {}).entries) {
     final file = File('$work/${entry.key}');
     await file.parent.create(recursive: true);
@@ -591,6 +602,14 @@ apps = false
         } finally { await input.cancel(); }
       }
       for (final engine in order) {
+        if (scenario['reset_workspace'] == true) {
+          // Both harnesses use identical absolute paths for request comparison;
+          // give each replay its own initial filesystem state at those paths.
+          await for (final entry in Directory(work).list()) {
+            if (entry.path != '$work/.git') { await entry.delete(recursive: true); }
+          }
+          await seedFiles();
+        }
         final messages = (scenario['messages'] as List? ?? [prompt,
           if (scenario['workflow'] == 'resume') 'Continue and reply READY.']).cast<String>();
         for (var message = 0; message < messages.length; message++) {
@@ -640,7 +659,7 @@ apps = false
       checks['happen:admitted_thread_id:run-$iteration'] = b.isNotEmpty && b.first['prompt_cache_key'] == taskID;
       for (var i = 0; i < a.length && i < b.length; i++) {
         checks['request_equal:$i:run-$iteration'] = await compare(a[i], b[i], '$runPath/request-$i',
-          scriptErrors: scenario['workflow'] == 'javascript-errors');
+          scriptErrors: scenario['workflow'] == 'javascript-errors', patchErrors: scenario['workflow'] == 'patch-recovery');
         checks['request_protocol_equal:$i:run-$iteration'] = equals(aHeaders[i]).matches(bHeaders[i], {});
         for (final pair in [('codex', aHeaders[i]), ('happen', bHeaders[i])]) {
           checks['${pair.$1}:responses_lite_negotiated:$i:run-$iteration'] =
@@ -704,8 +723,10 @@ apps = false
             checks['${entry.key}:deferred_namespace_context:$i:run-$iteration'] =
               (entry.value['input'] as List).map(jsonObject).map(text).any((value) =>
                 value.contains('<tools>') && value.contains('mcp__dart'));
-            if (codeModeOnly) checks['${entry.key}:mcp_not_eagerly_declared:$i:run-$iteration'] =
-              definitions.every((tool) => !(tool['name'] as String).startsWith('mcp__'));
+            if (codeModeOnly) {
+              checks['${entry.key}:mcp_not_eagerly_declared:$i:run-$iteration'] =
+                definitions.every((tool) => !(tool['name'] as String).startsWith('mcp__'));
+            }
           }
         }
       }
@@ -715,6 +736,42 @@ apps = false
           checks['$engine:tool_result_delivered:run-$iteration'] = requests.length > 1 && (requests.last['input'] as List).map(jsonObject)
             .where((item) => ['custom_tool_call_output', 'function_call_output', 'tool_search_output'].contains(item['type']))
             .any((item) => jsonEncode(item).contains(marker));
+        }
+      }
+      if (scenario['workflow'] == 'patch-recovery') {
+        final calls = ['patch_missing_context', 'patch_inspect_unchanged', terminalCall('patch_inspect_unchanged'),
+          'patch_recovery', 'patch_inspect_recovered', terminalCall('patch_inspect_recovered')];
+        for (final pair in [('codex', a), ('happen', b)]) {
+          List<Json> receipt(String call) {
+            for (final request in pair.$2) {
+              final outputs = (request['input'] as List).map(jsonObject)
+                .where((item) => toolOutput(item) && item['call_id'] == call).toList();
+              if (outputs.length == 1 && outputs.single['output'] is List) {
+                return (outputs.single['output'] as List).map(jsonObject).toList();
+              }
+            }
+            return [];
+          }
+          final failed = receipt(calls[0]);
+          final diagnostic = failed.isEmpty ? '' : failed.last['text'] as String? ?? '';
+          checks['${pair.$1}:missing_patch_context_reaches_next_inference:run-$iteration'] = failed.length == 2 &&
+            (failed.first['text'] as String? ?? '').startsWith('Script failed\n') &&
+            diagnostic.startsWith('Script error:\n') &&
+            diagnostic.trimRight().endsWith('Failed to find expected lines in $work/cv.txt:\n  Ran the production product') &&
+            !jsonEncode(failed).contains('UNEXPECTED_AFTER_PATCH_FAILURE');
+          final unchanged = receipt(calls[2]);
+          checks['${pair.$1}:failed_patch_commits_no_files:run-$iteration'] = unchanged.length == 2 && unchanged.last['text'] ==
+            jsonEncode({'before': 'summary: before\n  - Ran the production product\n', 'receiptAbsent': true});
+          final recovery = receipt(calls[3]);
+          checks['${pair.$1}:corrected_patch_completes:run-$iteration'] = recovery.length == 2 &&
+            (recovery.first['text'] as String? ?? '').startsWith('Script completed\n') && recovery.last['text'] == '{}';
+          final verified = receipt(calls[5]);
+          checks['${pair.$1}:corrected_patch_files_reach_inference:run-$iteration'] = verified.length == 2 && verified.last['text'] ==
+            jsonEncode({'after': 'summary: after\n  - Ran the production product reliably\nPATCH_RECOVERY_RECEIPT\n', 'exit': 0});
+          for (var i = 0; i < pair.$2.length; i++) {
+            final received = (pair.$2[i]['input'] as List).map(jsonObject).where(toolOutput).map((item) => item['call_id']).toList();
+            checks['${pair.$1}:patch_receipts_once_in_order:$i:run-$iteration'] = equals(calls.take(received.length).toList()).matches(received, {});
+          }
         }
       }
       if (scenario['workflow'] == 'javascript-errors') {

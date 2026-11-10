@@ -266,15 +266,8 @@ class _OpenAITools extends ToolRuntime {
     final watch = Stopwatch()..start();
     final value = await context.call(name, arguments, cancellation: context.cancellation);
     if (name == 'apply_patch') {
-      final paths = <({String kind, String path})>[];
-      for (final match in RegExp(r'^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$', multiLine: true).allMatches(call.input)) {
-        if (match[1] == 'Move to') { paths[paths.length - 1] = (kind: 'M', path: match[2]!); }
-        else { paths.add((kind: switch (match[1]) {'Add File' => 'A', 'Delete File' => 'D', _ => 'M'}, path: match[2]!)); }
-      }
       return {'output': 'Exit code: 0\nWall time: ${(watch.elapsedMicroseconds / 1000000).toStringAsFixed(1)} seconds\nOutput:\n'
-        'Success. Updated the following files:\n${[
-          for (final kind in ['A', 'M', 'D']) for (final path in paths.where((path) => path.kind == kind)) '$kind ${path.path}',
-        ].join('\n')}\n'};
+        '$value'};
     }
     if (name == 'exec_command' || name == 'write_stdin') {
       final result = jsonObject(value);

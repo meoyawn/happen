@@ -1,173 +1,163 @@
-import 'dart:io';
+// Modified Dart port of Codex apply-patch/lib.rs, 0598a96e9361485f.
+// Copyright 2025 OpenAI, Apache-2.0. See ../../../openai/tools/CODEX-LICENSE.
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
 import 'diff.dart';
 
+part 'patch_parser.dart';
+part 'patch_text.dart';
+
+/// The shared applier commits operations in order, like Codex's standalone tool.
+/// The OpenAI adapter also verifies the entire proposal before starting effects.
 Future<String> applyPatch(String cwd, String patch, {required CancellationToken cancellation,
-  String? callId, Future<void> Function(String phase, Json item)? onItem,
+  bool verifyBeforeApply = false, String? callId,
+  Future<void> Function(String phase, Json item)? onItem,
   Future<void> Function(Json delta)? onPatch}) async {
   cancellation.throwIfCancelled();
-  if (patch.length > 1024 * 1024) {
-    throw const FormatException('Patch exceeds 1 MiB');
-  }
-  final lines = patch
-      .trimRight()
-      .split('\n')
-      .map((line) => line.replaceFirst(RegExp(r'\r$'), ''))
-      .toList();
-  if (lines.first != '*** Begin Patch' || lines.last != '*** End Patch') {
-    throw const FormatException('Expected *** Begin Patch and *** End Patch');
-  }
-  final changes =
-      <({String path, String? destination, String? content, String kind})>[];
-  final nativeChanges = <String, dynamic>{};
-  var i = 1;
+  if (utf8.encode(patch).length > 1024 * 1024) throw const FormatException('Patch exceeds 1 MiB');
+  final parsed = _parsePatch(patch), hunks = parsed.hunks;
+  if (parsed.environment != null) throw StateError('apply_patch environment selection is unavailable for this turn');
+  if (hunks.isEmpty) throw StateError('No files were modified.');
   String resolve(String path) => File.fromUri(Directory(cwd).absolute.uri.resolveUri(Uri.file(path)).normalizePath()).path;
-  while (i < lines.length - 1) {
-    cancellation.throwIfCancelled();
-    final header = lines[i++];
-    if (header.startsWith('*** Add File: ')) {
-      final path = resolve(header.substring(14));
-      final added = <String>[];
-      while (i < lines.length && !lines[i].startsWith('*** ')) {
-        if (!lines[i].startsWith('+')) {
-          throw const FormatException('Added file lines must begin with +');
-        }
-        added.add(lines[i++].substring(1));
-      }
-      changes.add((
-        path: path,
-        destination: null,
-        content: '${added.join('\n')}\n',
-        kind: 'A',
-      ));
-      nativeChanges[path] = {'type': 'add', 'content': '${added.join('\n')}\n'};
-    } else if (header.startsWith('*** Delete File: ')) {
-      final path = resolve(header.substring(17));
-      if (!await File(path).exists()) {
-        throw StateError('File does not exist: $path');
-      }
-      changes.add((path: path, destination: null, content: null, kind: 'D'));
-      nativeChanges[path] = {'type': 'delete', 'content': await File(path).readAsString().asCancellable(cancellation)};
-    } else if (header.startsWith('*** Update File: ')) {
-      final path = resolve(header.substring(17));
-      String? destination;
-      if (lines[i].startsWith('*** Move to: ')) {
-        destination = resolve(lines[i++].substring(13));
-      }
-      final input = ownStream(File(path).openRead(), cancellation);
-      final String original;
-      try { original = await input.stream.transform(utf8.decoder).join().asCancellable(cancellation); }
-      finally { await input.close(); }
-      final crlf = original.contains('\r\n');
-      final content = original.replaceAll('\r\n', '\n').split('\n');
-      if (content.isNotEmpty && content.last.isEmpty) content.removeLast();
-      var cursor = 0;
-      while (i < lines.length && !lines[i].startsWith('*** ')) {
-        if (!lines[i].startsWith('@@')) {
-          throw const FormatException('Expected @@ hunk header');
-        }
-        final marker = lines[i++].substring(2).trim();
-        if (marker.isNotEmpty) {
-          final found = content.indexOf(marker, cursor);
-          if (found < 0) {
-            throw StateError('Hunk marker not found in $path: $marker');
-          }
-          cursor = found + 1;
-        }
-        final before = <String>[], after = <String>[];
-        while (i < lines.length &&
-            !lines[i].startsWith('@@') &&
-            !lines[i].startsWith('*** ')) {
-          final line = lines[i++];
-          if (line.isEmpty) {
-            throw const FormatException(
-              'Hunk lines require a space, +, or - prefix',
-            );
-          }
-          switch (line[0]) {
-            case ' ':
-              before.add(line.substring(1));
-              after.add(line.substring(1));
-            case '-':
-              before.add(line.substring(1));
-            case '+':
-              after.add(line.substring(1));
-            default:
-              throw const FormatException('Invalid hunk line');
-          }
-        }
-        final atEnd = lines[i] == '*** End of File';
-        if (atEnd) i++;
-        var found = -1;
-        for (
-          var start = cursor;
-          start <= content.length - before.length;
-          start++
-        ) {
-          if (atEnd && start + before.length != content.length) continue;
-          if (List.generate(
-            before.length,
-            (index) => content[start + index] == before[index],
-          ).every((same) => same)) {
-            found = start;
-            break;
-          }
-        }
-        if (found < 0) throw StateError('Patch context not found in $path');
-        content.replaceRange(found, found + before.length, after);
-        cursor = found + after.length;
-      }
-      changes.add((
-        path: path,
-        destination: destination,
-        content: content.join(crlf ? '\r\n' : '\n') + (crlf ? '\r\n' : '\n'),
-        kind: 'M',
-      ));
-      nativeChanges[path] = {'type': 'update', 'move_path': destination,
-        'unified_diff': unifiedDiff(original, changes.last.content!)};
-    } else {
-      throw FormatException('Unknown patch header: $header');
+  final nativeChanges = <String, dynamic>{};
+  if (verifyBeforeApply) {
+    for (final hunk in hunks) {
+      cancellation.throwIfCancelled();
+      final path = resolve(hunk.path);
+      if (nativeChanges.containsKey(path)) throw FormatException('invalid patch: multiple operations target $path');
+      nativeChanges[path] = switch (hunk) {
+        _AddFile(:final content) => {'type': 'add', 'content': content},
+        _DeleteFile() => {'type': 'delete', 'content': await _readPatchFile(path, cancellation)},
+        _UpdateFile(:final destination, :final chunks) => await () async {
+          final original = await _readPatchUpdate(path, cancellation);
+          final content = _patchContents(original, path, chunks);
+          return {'type': 'update', 'move_path': destination == null ? null : resolve(destination),
+            'unified_diff': unifiedDiff(original, content, context: 1)};
+        }(),
+      };
     }
   }
   final item = <String, dynamic>{'type': 'FileChange', 'id': callId, 'changes': nativeChanges, 'status': null};
-  await onItem?.call('started', item);
   final committed = <Json>[];
-  var completed = false, exact = true, mutating = false;
-  Future<String?> read(String path) async => await File(path).exists()
-    ? await File(path).readAsString().asCancellable(cancellation) : null;
-  try {
-  for (final change in changes) {
-    cancellation.throwIfCancelled();
-    final before = await read(change.path);
-    final overwritten = change.destination == null ? null : await read(change.destination!);
-    if (change.content == null) {
-      mutating = true;
-      await File(change.path).delete();
-    } else {
-      final destination = File(change.destination ?? change.path);
-      await destination.parent.create(recursive: true);
+  var completed = false, exact = true;
+  final affected = <({String kind, String path})>[];
+  Future<void> notePath(String path) async {
+    final type = await FileSystemEntity.type(path, followLinks: false).asCancellable(cancellation);
+    if (type != FileSystemEntityType.file && type != FileSystemEntityType.notFound) exact = false;
+  }
+  Future<String?> optionalText(String path) async {
+    await notePath(path);
+    try { return await _readPatchFile(path, cancellation); }
+    on FileSystemException catch (error) {
       cancellation.throwIfCancelled();
-      mutating = true;
-      await destination.writeAsString(change.content!, flush: true);
-      if (change.destination != null && change.destination != change.path) {
+      if (error.osError?.errorCode != 2) exact = false;
+      return null;
+    } on FormatException {
+      exact = false; return null;
+    }
+  }
+  Future<void> write(String path, String content, {bool createParents = false}) async {
+    cancellation.throwIfCancelled();
+    try {
+      try { await File(path).writeAsString(content, flush: true); }
+      on FileSystemException catch (error) {
+        if (!createParents || error.osError?.errorCode != 2) rethrow;
+        await File(path).parent.create(recursive: true);
         cancellation.throwIfCancelled();
-        await File(change.path).delete();
+        await File(path).writeAsString(content, flush: true);
+      }
+    } catch (error) {
+      exact = false;
+      cancellation.throwIfCancelled();
+      throw StateError('Failed to write file $path: $error');
+    }
+  }
+  Future<void> remove(String path, String? before, String operation) async {
+    cancellation.throwIfCancelled();
+    try {
+      if (await FileSystemEntity.type(path).asCancellable(cancellation) == FileSystemEntityType.directory) {
+        throw FileSystemException('path is a directory', path);
+      }
+      cancellation.throwIfCancelled();
+      await File(path).delete();
+    } catch (_) {
+      try { if (before == null || await _readPatchFile(path, cancellation) != before) exact = false; }
+      catch (_) { exact = false; }
+      cancellation.throwIfCancelled();
+      throw StateError('$operation $path');
+    }
+  }
+  Json delta(String path, String kind, String? before, String? after, {String? move, String? overwritten}) => {
+    'path': path, 'type': kind, 'oldContent': before, 'newContent': after,
+    'movePath': move, 'overwrittenMoveContent': overwritten,
+  };
+  await onItem?.call('started', item);
+  try {
+    for (final hunk in hunks) {
+      cancellation.throwIfCancelled();
+      final path = resolve(hunk.path);
+      switch (hunk) {
+        case _AddFile(:final content):
+          final before = await optionalText(path);
+          await write(path, content, createParents: true);
+          committed.add(delta(path, 'A', before, content));
+          nativeChanges[path] = {'type': 'add', 'content': content};
+          affected.add((kind: 'A', path: hunk.path));
+        case _DeleteFile():
+          final before = await optionalText(path);
+          if (before == null) exact = false;
+          await remove(path, before, 'Failed to delete file');
+          if (before != null) committed.add(delta(path, 'D', before, null));
+          nativeChanges[path] = {'type': 'delete', 'content': before ?? ''};
+          affected.add((kind: 'D', path: hunk.path));
+        case _UpdateFile(:final destination, :final chunks):
+          await notePath(path);
+          final original = await _readPatchUpdate(path, cancellation);
+          final content = _patchContents(original, path, chunks);
+          final move = destination == null ? null : resolve(destination);
+          nativeChanges[path] = {'type': 'update', 'move_path': move,
+            'unified_diff': unifiedDiff(original, content, context: 1)};
+          if (move == null) {
+            await write(path, content);
+            committed.add(delta(path, 'M', original, content));
+          } else {
+            final overwritten = await optionalText(move);
+            await write(move, content, createParents: true);
+            final index = committed.length;
+            // A destination write is already committed even if source removal
+            // fails or cancellation arrives between these two filesystem effects.
+            committed.add(delta(move, 'A', overwritten, content));
+            await remove(path, original, 'Failed to remove original');
+            committed[index] = delta(path, 'M', original, content, move: move, overwritten: overwritten);
+          }
+          affected.add((kind: 'M', path: destination ?? hunk.path));
       }
     }
-    committed.add({'path': change.path, 'type': change.kind,
-      'oldContent': before, 'newContent': change.content, 'movePath': change.destination,
-      'overwrittenMoveContent': overwritten});
-    mutating = false;
-  }
-  completed = true;
-  return 'Success. Updated the following files:\n${changes.map((change) => '${change.kind} ${change.destination ?? change.path}').join('\n')}';
+    completed = true;
+    return 'Success. Updated the following files:\n${[
+      for (final kind in ['A', 'M', 'D']) for (final change in affected.where((change) => change.kind == kind)) '$kind ${change.path}\n',
+    ].join()}';
   } finally {
-    if (mutating) exact = false;
     try {
       if (committed.isNotEmpty || !exact) await onPatch?.call({'exact': exact, 'changes': committed});
     } finally { await onItem?.call('completed', {...item, 'status': completed ? 'completed' : 'failed'}); }
+  }
+}
+
+Future<String> _readPatchFile(String path, CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  final input = ownStream(File(path).openRead(), cancellation);
+  try { return await input.stream.transform(utf8.decoder).join().asCancellable(cancellation); }
+  finally { await input.close(); }
+}
+
+Future<String> _readPatchUpdate(String path, CancellationToken cancellation) async {
+  try { return await _readPatchFile(path, cancellation); }
+  catch (error) {
+    cancellation.throwIfCancelled();
+    throw StateError('Failed to read file to update $path: $error');
   }
 }

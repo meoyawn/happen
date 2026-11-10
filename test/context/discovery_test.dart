@@ -18,6 +18,7 @@ void main() {
       'The tool results identify the process that actually handled the request. '
       'Preserve the identifier while inspecting the current supervised process. Original guidance tail.';
     String configuration(String description, {String? instructions = guidance}) => jsonEncode({
+      'code_mode_tool_search': true,
       'mcp_servers': {'archive': {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],

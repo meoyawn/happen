@@ -30,7 +30,8 @@ class HostTools {
       if (raw is! String) {
         throw const FormatException('apply_patch expects a raw patch string');
       }
-      return applyPatch(directory, raw, cancellation: cancellation, callId: callId, onItem: onItem, onPatch: onPatch);
+      return applyPatch(directory, raw, cancellation: cancellation, verifyBeforeApply: true,
+        callId: callId, onItem: onItem, onPatch: onPatch);
     }
     final input = jsonObject(raw);
     switch (name) {

@@ -100,12 +100,12 @@ index 0000000000000000000000000000000000000000..3bd1f0e29744a1f32b08d5650e62e2e6
       expect(tracker.unifiedDiffText, isNull);
     });
 
-    test('a later preparation failure retains the successfully committed prefix', () async {
+    test('a failed write invalidates the diff while retaining the committed files', () async {
       await File('${root.path}/blocked').writeAsString('not a directory');
       await expectLater(apply('*** Add File: a.txt\n+committed\n*** Add File: blocked/b.txt\n+never written'),
-        throwsA(isA<FileSystemException>()));
-      expect(tracker.unifiedDiffText, contains('+committed\n'));
-      expect(tracker.unifiedDiffText, isNot(contains('b.txt')));
+        throwsA(predicate<Object>((error) => error.toString().contains('Failed to write file'))));
+      expect(await File('${root.path}/a.txt').readAsString(), 'committed\n');
+      expect(tracker.unifiedDiffText, isNull, reason: 'Codex treats failed writes as potentially partial, making the delta inexact');
     });
 
     test('separates the same path across environments and displays foreign roots', () {

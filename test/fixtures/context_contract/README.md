@@ -118,6 +118,14 @@ and the runtime source frame. It checks that compilation ran no statements,
 output before the runtime error survives, writes before that error remain
 available, and a subsequent cell succeeds. Receipts must appear exactly once in
 their original order in every following request.
+The `patch-context-recovery` case sends a real multi-file patch whose later
+chunk omits a list bullet, reproducing the production failure. Both harnesses
+must deliver the exact missing context and path to the next inference, leave
+every file unchanged, then apply and verify a corrected patch. The correction
+also requires an omitted first `@@`, whitespace matching, and EOF blank-line
+handling. Raw receipts are gated before comparison; only the Rust/Dart exception
+wrapper differs. Each harness replay starts from the same initial filesystem
+state, and every following request must retain receipts once and in order.
 The web case configures the real Dart MCP server and a metadata-only fixture
 skill alongside directly available web search, with ranked discovery both off
 and on. It replays search, batched open, targeted search, repository
@@ -208,12 +216,15 @@ continuations, tool results, compaction and cold resume. Request counts must
 match; an intermediate mismatch cannot be repaired by a later matching context.
 The comparison excludes the top-level `client_metadata` telemetry field,
 removing explicitly scoped generated protocol/transport IDs and normalizing known
-numeric timing fields. Only the `javascript-errors` case also maps its two
+numeric timing fields. The `javascript-errors` case also maps its two
 explicit V8/QuickJS diagnostic variants to a common message for comparison;
 engine-specific stack frames and source excerpts differ. Independent checks on
 the unmodified requests require the expected diagnostic messages, runtime frame,
 failure status, preceding output and recovery. Unknown error messages are never
-normalized, and raw captures retain the complete native errors:
+normalized. The `patch-context-recovery` case removes only the known Rust/Dart
+exception wrapper from its failing call; the filename and complete missing
+context remain strict, with an independent gate on the original diagnostic.
+Raw captures retain the complete native errors:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.
 Method, endpoint path, Accept, Content-Type, OpenAI-Beta and
@@ -230,6 +241,9 @@ eager MCP declarations. These supplement full request equality without discardin
 tool definitions or prompt differences. The exec description normalizes only the known embedded-engine name,
 Happen's two settlement-helper declarations, and its MCP-envelope guidance.
 All shared tool declarations and the rest of the description remain strict.
+Happen's event-subscription extensions remain available through `ALL_TOOLS`;
+they do not enter Codex's shared eager declaration. Their live delivery and
+thread lifetime are covered by the server event and unsubscribe tests.
 Tool declarations,
 printed values, roles, message boundaries, dates, settings, and tool results are
 not discarded. Happen deliberately does not send Codex's `client_metadata`;

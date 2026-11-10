@@ -20,8 +20,8 @@ Map<String, dynamic> terminalShells(Map<String, dynamic> scenario) {
   String script(String source) {
     final prefix = source.startsWith('// @exec:') ? source.indexOf('\n') + 1 : 0;
     final shell = source.contains('tools.exec_command(') && !source.contains('async function terminalShell(');
-    return '${source.substring(0, prefix)}yield_control();\n${shell ? _terminalShell : ''}' +
-      (shell ? source.substring(prefix).replaceAll('tools.exec_command(', 'terminalShell(') : source.substring(prefix));
+    return '${source.substring(0, prefix)}yield_control();\n${shell ? _terminalShell : ''}'
+      '${shell ? source.substring(prefix).replaceAll('tools.exec_command(', 'terminalShell(') : source.substring(prefix)}';
   }
   final result = {...scenario}, calls = <String, String>{};
   for (final key in ['responses', 'resume_responses']) {
@@ -94,7 +94,7 @@ const contextCases = <Map<String, dynamic>>[
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'parallel_shells',
-        'input': _terminalShell + 'const prefix = "parallel-" + Date.now() + "-" + Math.random().toString(16).slice(2); '
+        'input': '${_terminalShell}const prefix = "parallel-" + Date.now() + "-" + Math.random().toString(16).slice(2); '
           'const results = await Promise.all([ '
           'terminalShell({cmd:"touch " + prefix + "-left; for n in {1..500}; do if [ -f " + prefix + "-right ]; then printf PARALLEL_TOOL_RECEIPT_LEFT; exit 0; fi; sleep 0.01; done; exit 41"}), '
           'terminalShell({cmd:"touch " + prefix + "-right; for n in {1..500}; do if [ -f " + prefix + "-left ]; then printf PARALLEL_TOOL_RECEIPT_RIGHT; exit 0; fi; sleep 0.01; done; exit 42"})]); '
@@ -401,10 +401,36 @@ const contextCases = <Map<String, dynamic>>[
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_receipt',
         'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_CONTEXT_RECEIPT\\n*** End Patch"));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'read_patched_receipt',
-        'input': _terminalShell + 'text(await terminalShell({cmd:"cat receipt.txt"}));'}],
+        'input': '${_terminalShell}text(await terminalShell({cmd:"cat receipt.txt"}));'}],
       [_ready],
     ],
     'result': 'PATCH_CONTEXT_RECEIPT',
+  },
+  {
+    'id': 'patch-context-recovery', 'workflow': 'patch-recovery', 'reset_workspace': true,
+    'prompt': 'Apply the patch, inspect the missing context on failure, correct it, and verify the files before replying READY.',
+    'files': {'cv.txt': 'summary: before\n  - Ran the production product\n'},
+    'contains': <Object?>[], 'absent': ['PATCH_RECOVERY_RECEIPT'],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_missing_context',
+        'input': 'await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_RECOVERY_RECEIPT\\n'
+          '*** Update File: cv.txt\\n@@\\n-summary: before\\n+summary: after\\n'
+          '@@\\n-  Ran the production product\\n+  Ran the production product\\n*** End Patch");\n'
+          'text("UNEXPECTED_AFTER_PATCH_FAILURE");'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_inspect_unchanged',
+        'input': '${_terminalShell}const result = await terminalShell({cmd:"cat cv.txt; test ! -e receipt.txt"}); '
+          'text({before:result.output,receiptAbsent:result.exit_code === 0});'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_recovery',
+        'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_RECOVERY_RECEIPT\\n'
+          '*** Update File: cv.txt\\n-summary: before\\n+summary: after\\n'
+          '@@\\n-- Ran the production product\\n+  - Ran the production product reliably\\n'
+          '*** End of File\\n\\n*** End Patch"));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_inspect_recovered',
+        'input': '${_terminalShell}const result = await terminalShell({cmd:"cat cv.txt receipt.txt"}); '
+          'text({after:result.output,exit:result.exit_code});'}],
+      [_ready],
+    ],
+    'result': 'PATCH_RECOVERY_RECEIPT',
   },
   {
     'id': 'shell-unicode-output', 'workflow': 'shell', 'prompt': 'Run the Unicode shell-output fixture.',

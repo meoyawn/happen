@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 // Codex turn_diff_tracker.rs uses a three-line unified diff and bounds the
 // expensive comparison to 100 ms, falling back to an exact coarse replacement.
-String unifiedDiff(String before, String after, {String? oldPath, String? newPath}) {
+String unifiedDiff(String before, String after, {String? oldPath, String? newPath, int context = 3}) {
   if (before == after) return '';
   List<String> lines(String text) {
     final result = <String>[];
@@ -31,11 +31,11 @@ String unifiedDiff(String before, String after, {String? oldPath, String? newPat
   var oldLine = 1, newLine = 1, cursor = 0, change = 0;
   String range(int line, int count) => count == 1 ? '$line' : '${count == 0 ? line - 1 : line},$count';
   while (change < changed.length) {
-    final start = (changed[change] - 3).clamp(0, edits.length);
-    var end = (changed[change] + 4).clamp(0, edits.length);
+    final start = (changed[change] - context).clamp(0, edits.length);
+    var end = (changed[change] + context + 1).clamp(0, edits.length);
     change++;
-    while (change < changed.length && changed[change] - 3 <= end) {
-      end = (changed[change++] + 4).clamp(0, edits.length);
+    while (change < changed.length && changed[change] - context <= end) {
+      end = (changed[change++] + context + 1).clamp(0, edits.length);
     }
     while (cursor < start) {
       if (edits[cursor].kind != '+') oldLine++;

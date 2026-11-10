@@ -1,5 +1,8 @@
 # Shell snapshot port
 
+The apply-patch port and test applicability ledger are documented in
+[APPLY_PATCH_UPSTREAM.md](APPLY_PATCH_UPSTREAM.md).
+
 Modified Dart port of OpenAI Codex, Copyright 2025 OpenAI, Apache-2.0.
 Source revision: `ddd1812a51f4aded35c3ec5446672474d5cb546b` in
 `/Users/meoyawn/Developer/github/codex`. Paths below are relative to `codex-rs/`.
