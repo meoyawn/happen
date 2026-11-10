@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
 
 import 'build_server.dart';
+import 'build_server/common.dart' show runBuildProcess;
 
 String quoteRemote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
@@ -37,7 +38,7 @@ Future<void> main(List<String> arguments) async {
     '-o', 'StrictHostKeyChecking=yes', '-o', 'UpdateHostKeys=no',
     if (user != null) ...['-l', user as String], if (port != null) ...['-p', '$port'],
     if (identity != null) ...['-i', identity as String, '-o', 'IdentitiesOnly=yes'], '--', host];
-  Future<String> remote(List<String> command) => deployRun('ssh', [...ssh, command.map(quoteRemote).join(' ')], cancellation, capture: true);
+  Future<String> remote(List<String> command) => runBuildProcess('ssh', [...ssh, command.map(quoteRemote).join(' ')], cancellation, capture: true);
   try {
     final machine = await remote(['uname', '-m']);
     final architecture = switch (machine) { 'x86_64' => 'x64', 'aarch64' => 'arm64', _ => throw StateError('Unsupported VPS architecture') };

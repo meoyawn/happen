@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_pty2/flutter_pty2.dart';
 import 'package:protocol/protocol.dart';
-import 'package:pty2/pty2.dart';
 
 import 'shell_snapshot_scripts.dart';
 
@@ -90,13 +90,13 @@ class CommandRunner {
       final file = File('${folder.path}/${newId()}.txt');
       final RunningCommand command;
       if (tty) {
-        final status = File('${folder.path}/${newId()}.status');
-        final terminal = PseudoTerminal.start(Platform.isWindows ? executable : '/bin/bash',
-          Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _ptySupervisor, 'happen-pty', status.path, transport?.path ?? '', executable, ...arguments], workingDirectory: directory,
-          environment: {...(environment ?? Platform.environment), 'TERM': 'xterm-256color'});
-        terminal.resize(80, 24);
-        command = RunningCommand._terminal(terminal, file, Platform.isWindows ? null : status, timeout,
-          cancellation.merge(this.cancellation));
+        // Own the eventual session even when cancellation races native spawn.
+        final terminal = await Pty.spawn(PtySpawnOptions(
+          executable: Platform.isWindows ? executable : '/bin/bash',
+          arguments: Platform.isWindows ? arguments : ['--noprofile', '--norc', '-c', _ptyLaunch,
+            'happen-pty', transport?.path ?? '', executable, ...arguments], workingDirectory: directory,
+          environment: PtyEnvironment.replace({...(environment ?? Platform.environment), 'TERM': 'xterm-256color'})));
+        command = RunningCommand._terminal(terminal, file, timeout);
       } else {
         final process = await Process.start(
           Platform.isWindows ? executable : '/bin/bash',
@@ -162,39 +162,20 @@ result=$?
 exit "$result"
 ''';
 
-// Native PTY children are not registered Dart Processes. The VM's SIGCHLD
-// collector may consume their wait status; preserve the command's real status
-// on a private channel, never in stdout or stderr. Children do not inherit it.
-const _ptySupervisor = r'''
-exec 3>"$1"
-shift
-''' + _openSnapshot + r'''
-trap 'result=$?; printf "%s" "$result" >&3; exec 3>&-' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
-"$@" 3>&-
-exit "$?"
+// The native PTY owns child supervision and exit status. Only snapshot replay
+// needs a shell step before handing over to the requested executable.
+const _ptyLaunch = _openSnapshot + r'''
+exec "$@"
 ''';
-
-Future<int> _ptyExit(PseudoTerminal terminal, File? status, CancellationToken cancellation) async {
-  int native;
-  try { native = await terminal.exitCode.asCancellable(cancellation, onCancel: () => terminal.kill(ProcessSignal.sigkill)); }
-  on CancelledException { native = await terminal.exitCode; }
-  if (status == null) return native;
-  try {
-    final recorded = int.tryParse(await status.readAsString());
-    return recorded != null && recorded >= 0 && recorded <= 255 ? recorded : native;
-  } on FileSystemException { return native; }
-  finally { try { await status.delete(); } on FileSystemException { /* Spawn failure or an already released status. */ } }
-}
 
 class RunningCommand {
   RunningCommand._(Process process, this.outputFile, Duration? timeout) : _process = process, _terminal = null {
     _capture([process.stdout, process.stderr], process.exitCode, timeout);
   }
-  RunningCommand._terminal(PseudoTerminal terminal, this.outputFile, File? status, Duration? timeout, CancellationToken cancellation) : _terminal = terminal, _process = null {
-    _capture([terminal.out.map(utf8.encode)], _ptyExit(terminal, status, cancellation), timeout);
+  RunningCommand._terminal(PtySession terminal, this.outputFile, Duration? timeout) : _terminal = terminal, _process = null {
+    _capture([terminal.output], terminal.done.then((exit) => switch (exit) {
+      PtyExitCode(:final code) => code, PtySignalExit(:final signal) => -signal,
+    }), timeout);
   }
   void _capture(List<Stream<List<int>>> streams, Future<int> status, Duration? timeout) {
     final sink = outputFile.openWrite();
@@ -209,14 +190,17 @@ class RunningCommand {
         sink.add(bytes); return bytes;
       }).transform(const Utf8Decoder(allowMalformed: true)).forEach(append),
       status,
-    ]).then((results) async {
-      await sink.close();
+    ]).then((results) {
       exitCode = results.last as int;
-    }).whenComplete(() async { timer?.cancel(); await sink.close(); });
+    }).whenComplete(() async {
+      timer?.cancel();
+      try { await sink.close(); }
+      finally { await _terminal?.close(); }
+    });
     unawaited(done.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
   }
   final Process? _process;
-  final PseudoTerminal? _terminal;
+  final PtySession? _terminal;
   final File outputFile;
   late final Future<void> done;
   int? exitCode;
@@ -233,7 +217,7 @@ class RunningCommand {
         cancellation.throwIfCancelled();
         var end = (offset + 1024).clamp(0, chars.length);
         if (end < chars.length && chars.codeUnitAt(end - 1) >= 0xd800 && chars.codeUnitAt(end - 1) <= 0xdbff) end--;
-        terminal.write(chars.substring(offset, end));
+        await terminal.input.writeUtf8(chars.substring(offset, end)).asCancellable(cancellation);
         offset = end;
         await cancellableDelay(Duration.zero, cancellation);
       }
@@ -245,9 +229,13 @@ class RunningCommand {
     await process.stdin.flush().asCancellable(cancellation);
   }
   void kill() {
-    if (_killed) return;
+    if (_killed || exitCode != null) return;
     _killed = true;
-    if (_terminal case final terminal?) { terminal.kill(ProcessSignal.sigkill); return; }
+    if (_terminal case final terminal?) {
+      try { terminal.kill(); }
+      on PtyClosedException { /* Native shutdown already owns the process. */ }
+      return;
+    }
     final process = _process!;
     if (Platform.isWindows) {
       unawaited(Process.run('taskkill', ['/PID', '${process.pid}', '/T', '/F']).then<void>((result) {

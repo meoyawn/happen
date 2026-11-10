@@ -4,23 +4,23 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import 'appearance.dart';
+import 'project_icon.dart';
 import 'session.dart';
 
 // OpenCode: ui/src/data-display/project-avatar/{project-avatar.tsx,project-avatar.css}.
 class ProjectAvatar extends StatelessWidget {
-  const ProjectAvatar({super.key, required this.project, this.size = 16, this.generated = false,
-    this.color, this.label});
+  const ProjectAvatar({super.key, required this.project, this.size = 16, this.generated = false});
   final Project project;
   final double size;
   final bool generated;
-  final String? color, label;
 
   @override
-  Widget build(BuildContext context) {
-    final variant = color ?? project.avatarColor;
-    final palette = projectColors[variant] ?? projectColors['gray']!;
-    final fallback = generated && variant == null
+  Widget build(BuildContext context) => ListenableBuilder(listenable: project.iconChanges, builder: (context, _) {
+    if (project.icon case final icon?) {
+      return ProjectIconMark(icon: icon, size: size, bytes: project.iconState.value.bytes, svg: project.iconState.value.svg);
+    }
+    const palette = (background: Color(0xff5c5c5c), border: Color(0xff3a3a3a));
+    final fallback = generated
     ? RepaintBoundary(child: CustomPaint(painter: _AvatarPainter(project.id)))
     : DecoratedBox(
         decoration: BoxDecoration(
@@ -28,18 +28,14 @@ class ProjectAvatar extends StatelessWidget {
           gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
             colors: [Color.alphaBlend(const Color(0x29ffffff), palette.background), palette.background]),
           border: Border.all(color: palette.border, width: .5)),
-        child: Center(child: Text((label ?? project.name).characters.firstOrNull?.toUpperCase() ?? '',
+        child: Center(child: Text(project.name.characters.firstOrNull?.toUpperCase() ?? '',
           style: TextStyle(fontSize: size * 11 / 16, height: 1, fontWeight: FontWeight.w500,
             fontVariations: const [ui.FontVariation('wght', 530)],
             letterSpacing: .05, color: Colors.white,
             shadows: const [Shadow(color: Color(0x33000000), blurRadius: 4)]))),
       );
-    return SizedBox.square(dimension: size, child: project.avatarImage != null && color == null && label == null
-      ? ClipRRect(borderRadius: BorderRadius.circular(size > 16 ? 6 : 4),
-          child: Image.memory(project.avatarImage!, width: size, height: size, fit: BoxFit.cover,
-            gaplessPlayback: true, errorBuilder: (_, _, _) => fallback))
-      : fallback);
-  }
+    return SizedBox.square(dimension: size, child: fallback);
+  });
 }
 
 // OpenCode's optional mesh generator (generated.ts, version 1).

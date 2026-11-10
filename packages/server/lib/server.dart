@@ -1920,7 +1920,10 @@ class AgentClient {
     _workerEvents = port;
     _subscription = port.listen((event) {
       if (event == null) { _disconnected(); return; }
-      if (!events.isClosed) events.add(jsonObject(event));
+      final message = jsonObject(event);
+      if (message['method'] == 'connection/ready') _transportConnected = true;
+      if (message['method'] == 'connection/closed') _transportConnected = false;
+      if (!events.isClosed) events.add(message);
     });
     unawaited(owner.done.then((_) => _disconnected()));
   }
@@ -1976,6 +1979,8 @@ class AgentClient {
   Future<void>? _closingClient;
   final bool sharedFilesystem;
   bool get isClosed => _closed || _disconnectRecorded;
+  late bool _transportConnected = false;
+  bool get isConnected => !isClosed && (_worker == null || _transportConnected);
   late final StreamSubscription<dynamic> _subscription;
   final events = StreamController<Json>.broadcast();
   final _pending = <int, Completer<Object?>>{};

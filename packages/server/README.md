@@ -14,7 +14,7 @@ Build, upload and restart the daemon with one command:
 moonx deploy-server
 ```
 
-`deploy-server` depends on the cacheable `build-server` task, which builds Linux x64. Moon hashes the server's package graph, lockfile, build tooling and vendored native sources, and restores the executable, checksum and build report on a cache hit. Desktop code, tests, documentation and private connection settings do not invalidate that build. Upload and restart run on every deployment. The deployment checks the VPS architecture and artifact checksums before uploading.
+`deploy-server` depends on the cacheable `build-server` task, which builds Linux x64. Its Moon dependencies build QuickJS, SQLite, pty2 and flutter_pty2 independently with their package hooks. Each native task tracks its build tooling and lockfile; QuickJS also tracks its hook, C sources and headers, including the vendored submodule. Moon caches each shared library as an output. The Dart AOT task tracks the server's Dart package graph and consumes those native outputs with `cacheStrategy: outputs`, so Dart-only edits reuse the native libraries, and native changes invalidate Dart compilation only when a library changes. Moon also restores the final executable, checksum and build report on a cache hit. Desktop code, tests, documentation and private connection settings do not invalidate the build. Upload and restart run on every deployment. The deployment checks the VPS architecture and artifact checksums before uploading.
 
 To reference the existing Codex login **on the VPS** during the first deployment:
 
@@ -34,11 +34,12 @@ To build independently, or redeploy an existing artifact:
 
 ```sh
 moonx build-server
+moon run build-server-arm64
 dart tool/build_server.dart arm64
 dart tool/deploy_server.dart --skip-build
 ```
 
-The direct Dart deployment detects x64 or arm64 and uses the private local target, or an explicitly supplied SSH alias. Artifacts are written to `build/server/linux-<architecture>/happen-server`, with a SHA-256 file and `build-report.json`. The builder verifies both cold extraction and warm startup.
+The direct Dart build and deployment also invoke the Moon task graph. The direct deployment detects x64 or arm64 and uses the private local target, or an explicitly supplied SSH alias. Artifacts are written to `build/server/linux-<architecture>/happen-server`, with a SHA-256 file and `build-report.json`; independently cached native libraries are under its `native/` directory. The builder verifies both cold extraction and warm startup.
 
 Desktop connections retain their SSH tunnel across daemon restarts and immediately reconnect to the replacement Unix socket. Failed socket attempts back off from 50 ms to at most one second. After the protocol acknowledges capabilities, the desktop becomes available while its catalog and thread histories synchronize in the background. A lost SSH transport is recreated automatically; remote WebSocket pings run every two seconds to detect silent failures.
 

@@ -94,7 +94,7 @@ RemoteWriteState _writeTransition(RemoteWriteState current, RemoteWriteState nex
 
 MachineState _transition(MachineState? current, MachineState next) => switch ((current, next)) {
   (null || MachineFailed() || MachineReady() || MachineClosed(), MachineConnecting()) => next,
-  (MachineConnecting(), MachineReady() || MachineFailed()) => next,
+  (MachineConnecting(), MachineConnecting() || MachineReady() || MachineFailed()) => next,
   (null || MachineConnecting() || MachineReady() || MachineFailed(), MachineClosed()) => next,
   _ => throw StateError('Invalid machine transition'),
 };
@@ -110,7 +110,7 @@ DesktopSession? _cachedSession(MachineState? state) => switch (state) {
 class MachinesController extends ChangeNotifier {
   MachinesController(this.local, this.directory) {
     local.addListener(_sessionChanged);
-    local.sidebarChanges.addListener(notifyListeners);
+    local.sidebarChanges.addListener(_sidebarChanged);
     unawaited(refresh());
     _poll = Timer.periodic(const Duration(seconds: 15), (_) => unawaited(refresh()));
   }
@@ -125,6 +125,7 @@ class MachinesController extends ChangeNotifier {
   Future<void>? _iconsRead;
   MachineIcon iconFor(String? alias) => _icons[alias ?? 'local'] ?? parseMachineIcon(null, remote: alias != null);
   String? _selected;
+  late bool _selectionChanged = false;
   DesktopSession get active => _cachedSession(_states[_selected]) ?? local;
   MachineState? state(String alias) => _states[alias];
   List<MachineSession> get sessions => [
@@ -139,8 +140,15 @@ class MachinesController extends ChangeNotifier {
 
   void activate(DesktopSession session) {
     final machine = machineFor(session);
+    _selectionChanged = true;
     if (_selected == machine.alias) return;
     _selected = machine.alias;
+    unawaited(callIsolate(local.database.port, 'settings.set',
+      {'key': 'active_machine', 'value': machine.alias ?? ''}, cancellation: _lifetime)
+      .catchError((Object error) {
+        if (error is! CancelledException) local.showError(error, title: 'Could not save the selected machine');
+        return null;
+      }));
     notifyListeners();
   }
 
@@ -149,8 +157,7 @@ class MachinesController extends ChangeNotifier {
       throw StateError('The target machine disconnected. Refresh the machine list.');
     }
     machine.session.openDraft(draft);
-    _selected = machine.alias;
-    notifyListeners();
+    activate(machine.session);
   }
   Object? discoveryError;
   Future<void>? _refreshing, _closing;
@@ -164,6 +171,8 @@ class MachinesController extends ChangeNotifier {
   final _workspaceUpdated = <DesktopSession, DateTime>{};
   final _workspaceTokens = <DesktopSession, CancellationToken>{};
   final _workspacePending = <Future<void>>{};
+  bool discoveringWorkspaces(DesktopSession session) => session.connected &&
+    (_workspaces[session] == null || _workspaces[session] is _WorkspaceLoading);
   RemoteWriteState _writeState = const RemoteWriteIdle();
   RemoteWriteState get writeState => _writeState;
   bool get saving => _writeState is RemoteWritePending;
@@ -193,6 +202,10 @@ class MachinesController extends ChangeNotifier {
     final saved = jsonObject(await callIsolate(local.database.port, 'load', {}, cancellation: _lifetime));
     _lifetime.throwIfCancelled();
     final settings = jsonObject(saved['settings']);
+    if (!_selectionChanged) {
+      final selected = settings['active_machine'] as String?;
+      _selected = selected == null || selected.isEmpty ? null : selected;
+    }
     _icons.addAll({for (final entry in settings.entries)
       if (entry.key.startsWith('machine_icon:'))
         entry.key.substring('machine_icon:'.length): parseMachineIcon(entry.value as String?, remote: entry.key != 'machine_icon:local')});
@@ -205,7 +218,22 @@ class MachinesController extends ChangeNotifier {
 
   void _sessionChanged() {
     if (_lifetime.isCancelled) return;
+    for (final entry in _states.entries.toList()) {
+      if (entry.value case MachineConnecting(:final previous?) when previous.connected) {
+        _set(entry.key, MachineReady(previous));
+        unawaited(_refreshCatalog(previous));
+      }
+    }
+    syncProjectIcons();
     _syncWorkspaces();
+    notifyListeners();
+  }
+
+  void syncProjectIcons() => local.resolveProjectIcons(sessions.map((machine) => machine.session));
+
+  void _sidebarChanged() {
+    if (_lifetime.isCancelled) return;
+    syncProjectIcons();
     notifyListeners();
   }
 
@@ -332,11 +360,11 @@ class MachinesController extends ChangeNotifier {
       _hosts = _hosts.where((host) => host.alias != alias).toList();
       cancelConnection(alias);
       await _pending[alias];
-      if (_selected == alias) _selected = null;
+      if (_selected == alias) activate(local);
       _states.remove(alias);
       notifyListeners();
       cached?.removeListener(_sessionChanged);
-      cached?.sidebarChanges.removeListener(notifyListeners);
+      cached?.sidebarChanges.removeListener(_sidebarChanged);
       if (cached != null) _forgetWorkspaces(cached);
       await cached?.close();
       await refresh();
@@ -351,13 +379,21 @@ class MachinesController extends ChangeNotifier {
     await Future.wait([for (final machine in sessions) if (machine.session.connected) _refreshCatalog(machine.session)]);
   }
 
-  Future<void> _refreshCatalog(DesktopSession session) => _catalogRefreshes[session] ??=
-    session.refreshSessions(cancellation: _lifetime).catchError((Object error) {
+  Future<void> _refreshCatalog(DesktopSession session) => _catalogRefreshes[session] ??= (() async {
+    if (!session.connected) return;
+    final host = hosts.where((host) => host.alias == session.machineAlias).firstOrNull;
+    for (final path in host?.projects ?? const <String>[]) {
+      if (session.projects.any((project) => project.path == path)) continue;
+      await session.addProject(path, discovered: true);
+    }
+    await session.refreshSessions(cancellation: _lifetime);
+  })().catchError((Object error) {
       if (error is! CancelledException && !_lifetime.isCancelled) { session.showError(error, title: 'Could not refresh threads'); }
     }).whenComplete(() { _catalogRefreshes.removeWhere((key, _) => identical(key, session)); });
 
   void _set(String alias, MachineState next) {
     _states[alias] = _transition(_states[alias], next);
+    syncProjectIcons();
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -421,7 +457,7 @@ class MachinesController extends ChangeNotifier {
     DesktopSession? session;
     CancellationHook? cancel;
     try {
-      client = await connectSsh(host.host, user: host.user, port: host.port,
+      client = await startSsh(host.host, user: host.user, port: host.port,
         identityFile: host.identityFile, cancellation: cancellation);
       cancel = CancellationHook(cancellation, () => unawaited(client?.close()));
       final key = sha256.convert(utf8.encode(host.alias)).toString().substring(0, 24);
@@ -429,24 +465,21 @@ class MachinesController extends ChangeNotifier {
       await callIsolate(local.database.port, 'machine.import', {'machine': host.alias}, cancellation: cancellation.merge(_lifetime));
       cancellation.throwIfCancelled();
       session = DesktopSession(client, local.database, attachmentDirectory: '$data/attachments',
-        sidebarOwner: local, machineAlias: host.alias, machineName: host.name);
-      await session.load();
+        sidebarOwner: local, machineAlias: host.alias, machineName: host.name,
+        initiallyConnected: client.isConnected);
+      await session.restore();
       await session.adoptSidebarPins();
-      for (final path in host.projects) {
-        if (session.projects.any((project) => project.path == path)) continue;
-        try { await session.addProject(path, discovered: true); }
-        on CancelledException { rethrow; }
-        catch (error) { session.showError(error, title: 'Could not open remote project'); }
-      }
       cancellation.throwIfCancelled();
       session.addListener(_sessionChanged);
-      session.sidebarChanges.addListener(notifyListeners);
+      session.sidebarChanges.addListener(_sidebarChanged);
       session.machineName = hosts.firstWhere((current) => current.alias == host.alias).name;
       _attempts.remove(host.alias);
-      _set(host.alias, MachineReady(session));
+      _set(host.alias, session.connected ? MachineReady(session) : MachineConnecting(session));
+      if (session.connected) unawaited(session.load());
+      if (session.connected) unawaited(_refreshCatalog(session));
       _syncWorkspaces();
       previous?.removeListener(_sessionChanged);
-      previous?.sidebarChanges.removeListener(notifyListeners);
+      previous?.sidebarChanges.removeListener(_sidebarChanged);
       if (previous != null) {
         _forgetWorkspaces(previous);
         try { await previous.close(); }
@@ -467,7 +500,7 @@ class MachinesController extends ChangeNotifier {
     for (final retry in _retries.values) { retry.cancel(); }
     _retries.clear();
     local.removeListener(_sessionChanged);
-    local.sidebarChanges.removeListener(notifyListeners);
+    local.sidebarChanges.removeListener(_sidebarChanged);
     await _refreshing;
     await Future.wait(_pending.values.toList());
     await Future.wait(_catalogRefreshes.values.toList());
@@ -475,7 +508,7 @@ class MachinesController extends ChangeNotifier {
     for (final entry in _states.entries.toList()) {
       if (_cachedSession(entry.value) case final session?) {
         session.removeListener(_sessionChanged);
-        session.sidebarChanges.removeListener(notifyListeners);
+        session.sidebarChanges.removeListener(_sidebarChanged);
         await session.close();
       }
       _set(entry.key, const MachineClosed());

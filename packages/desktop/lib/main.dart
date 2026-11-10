@@ -65,8 +65,10 @@ class _HappenDesktopState extends State<HappenDesktop> {
   @override
   void reassemble() {
     super.reassemble();
+    _session?.watchProjectIcons();
     _watchLocalTasks();
     _watchMachines();
+    _machines?.syncProjectIcons();
   }
 
   void _watchMachines() {
@@ -137,8 +139,9 @@ class _HappenDesktopState extends State<HappenDesktop> {
       _lifetime.throwIfCancelled();
       final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
       _notifications = DesktopNotifications(session);
-      await session.load();
+      await session.restore();
       _watchMachines();
+      unawaited(session.load());
       _lifetime.throwIfCancelled();
       if (mounted) setState(() {});
     } on CancelledException {

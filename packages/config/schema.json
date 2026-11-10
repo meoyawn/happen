@@ -64,8 +64,47 @@
       }
     }
   },
-  "description": "Global tool discovery and MCP server configuration. Project layers configure MCP servers; model and other host options are selected through their owning APIs.",
+  "description": "Global tool discovery and MCP server configuration. Project layers configure icons and MCP servers; model and other host options are selected through their owning APIs.",
   "definitions": {
+    "iconColor": {
+      "enum": ["gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"]
+    },
+    "projectIcon": {
+      "description": "A local image path (absolute or relative to the project directory), a Lucide icon, emoji, or monogram. Null restores the default icon.",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "\\S"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "color"],
+          "properties": {
+            "kind": {"const": "lucide"},
+            "name": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+            "color": {"$ref": "#/definitions/iconColor"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "emoji"],
+          "properties": {
+            "kind": {"const": "emoji"},
+            "emoji": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text", "color"],
+          "properties": {
+            "kind": {"const": "monogram"},
+            "text": {"type": "string", "pattern": "^[A-Z0-9]{1,2}$"},
+            "color": {"$ref": "#/definitions/iconColor"}
+          }
+        }
+      ]
+    },
     "server": {
       "type": "object",
       "additionalProperties": false,
@@ -179,11 +218,12 @@
       }
     },
     "project": {
-      "title": "Happen project MCP configuration",
+      "title": "Happen project configuration",
       "description": "Project layers may override individual MCP server fields. Transports are validated after merging with global and ancestor layers.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "icon": {"$ref": "#/definitions/projectIcon"},
         "mcp_servers": {
           "type": "object",
           "maxProperties": 64,

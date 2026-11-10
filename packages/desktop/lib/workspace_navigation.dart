@@ -362,7 +362,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final id = source.sidebarId(task.id), active = identical(widget.session, source);
     final state = (
       source, project, task, widget.home, active && session.task == task,
-      project.id, project.name, project.branch, project.avatarColor, project.avatarImage, session.projectAvatarStyle,
+      project.id, project.name, project.branch, project.iconState.value.revision, session.projectAvatarStyle,
       task.title, task.archived, task.archiving, task.provider, task.model, activity,
       session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
       _canStartReorder, reorderIndex, widget.onProjectSettings != null,

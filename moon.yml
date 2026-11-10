@@ -3,24 +3,82 @@ language: dart
 toolchains:
   default: system
 fileGroups:
-  server-build:
+  server-dart:
     - pubspec.yaml
     - pubspec.lock
     - tool/build_server.dart
-    - tool/build_server/**/*
+    - tool/build_server/common.dart
+    - tool/build_server/embed.dart
+    - tool/build_server/Dockerfile
     - tool/cli_native_bootstrap.dart
     - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/pubspec.yaml
-    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/{bin,catalog,hook,lib}/**/*
+    - packages/{agent,ai,code_mode,config,mcp,openai,opencode,protocol,server,storage,telemetry,tool_runtime}/{bin,catalog,lib}/**/*
+  server-native:
+    - pubspec.yaml
+    - pubspec.lock
+    - tool/build_server/common.dart
+    - tool/build_server/native.dart
+    - tool/build_server/Dockerfile
+    - tool/cli_native_bootstrap.dart
+  server-quickjs:
+    - packages/code_mode/pubspec.yaml
+    - packages/code_mode/hook/build.dart
     - packages/code_mode/native/*.{c,h}
     - packages/code_mode/native/quickjs/*.{c,h}
     - packages/code_mode/native/quickjs/LICENSE
 tasks:
-  build-server:
-    description: Build the Linux x64 AOT server with embedded native libraries
-    command: dart tool/build_server.dart x64
+  build-server-native-sqlite:
+    description: Build the Linux x64 SQLite library with its package hook
+    command: dart
+    args: [tool/build_server/native.dart, sqlite3, x64]
     preset: utility
     inputs:
-      - '@group(server-build)'
+      - '@group(server-native)'
+    outputs:
+      - build/server/linux-x64/native/libsqlite3.so
+    options:
+      cache: true
+      interactive: false
+      shell: false
+      outputStyle: buffer-only-failure
+      mergeArgs: replace
+      mergeOutputs: replace
+      mutex: happen-server-sqlite-x64
+
+  build-server-native-quickjs:
+    extends: build-server-native-sqlite
+    description: Build the Linux x64 QuickJS library with the code_mode hook
+    args: [tool/build_server/native.dart, code_mode, x64]
+    inputs:
+      - '@group(server-quickjs)'
+    outputs:
+      - build/server/linux-x64/native/libcode_mode.so
+    options:
+      mutex: happen-server-quickjs-x64
+
+  build-server-native-flutter-pty:
+    extends: build-server-native-sqlite
+    description: Build the Linux x64 flutter_pty2 library with its package hook
+    args: [tool/build_server/native.dart, flutter_pty2, x64]
+    outputs:
+      - build/server/linux-x64/native/libflutter_pty2.so
+    options:
+      mutex: happen-server-flutter-pty-x64
+
+  build-server:
+    description: Compile the Linux x64 Dart AOT server with cached native libraries
+    command: dart
+    args: [tool/build_server.dart, --compile, x64]
+    deps:
+      - target: '~:build-server-native-quickjs'
+        cacheStrategy: outputs
+      - target: '~:build-server-native-sqlite'
+        cacheStrategy: outputs
+      - target: '~:build-server-native-flutter-pty'
+        cacheStrategy: outputs
+    preset: utility
+    inputs:
+      - '@group(server-dart)'
     outputs:
       - build/server/linux-x64/happen-server
       - build/server/linux-x64/happen-server.sha256
@@ -30,7 +88,55 @@ tasks:
       interactive: false
       shell: false
       outputStyle: buffer-only-failure
+      mergeArgs: replace
+      mergeDeps: replace
+      mergeOutputs: replace
       mutex: happen-server-build-x64
+
+  build-server-native-sqlite-arm64:
+    extends: build-server-native-sqlite
+    description: Build the Linux arm64 SQLite library with its package hook
+    args: [tool/build_server/native.dart, sqlite3, arm64]
+    outputs:
+      - build/server/linux-arm64/native/libsqlite3.so
+    options:
+      mutex: happen-server-sqlite-arm64
+
+  build-server-native-quickjs-arm64:
+    extends: build-server-native-quickjs
+    description: Build the Linux arm64 QuickJS library with the code_mode hook
+    args: [tool/build_server/native.dart, code_mode, arm64]
+    outputs:
+      - build/server/linux-arm64/native/libcode_mode.so
+    options:
+      mutex: happen-server-quickjs-arm64
+
+  build-server-native-flutter-pty-arm64:
+    extends: build-server-native-flutter-pty
+    description: Build the Linux arm64 flutter_pty2 library with its package hook
+    args: [tool/build_server/native.dart, flutter_pty2, arm64]
+    outputs:
+      - build/server/linux-arm64/native/libflutter_pty2.so
+    options:
+      mutex: happen-server-flutter-pty-arm64
+
+  build-server-arm64:
+    extends: build-server
+    description: Compile the Linux arm64 Dart AOT server with cached native libraries
+    args: [tool/build_server.dart, --compile, arm64]
+    deps:
+      - target: '~:build-server-native-quickjs-arm64'
+        cacheStrategy: outputs
+      - target: '~:build-server-native-sqlite-arm64'
+        cacheStrategy: outputs
+      - target: '~:build-server-native-flutter-pty-arm64'
+        cacheStrategy: outputs
+    outputs:
+      - build/server/linux-arm64/happen-server
+      - build/server/linux-arm64/happen-server.sha256
+      - build/server/linux-arm64/build-report.json
+    options:
+      mutex: happen-server-build-arm64
 
   deploy-server:
     description: Deploy the cached Linux server to the private local target and restart its daemon

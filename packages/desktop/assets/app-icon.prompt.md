@@ -2,6 +2,8 @@
 
 Generated with the built-in imagegen tool. Each icon set contains the 16–1024 px macOS sizes, with transparent exterior padding.
 
+Release and debug share the same outer alpha mask, with isolated low-alpha pixels removed. All smaller sizes are downsampled from their normalized 1024 px master. Keep this silhouette consistent: macOS Tahoe can classify a slightly different or noisy outline as an irregular icon, shrink the artwork, and add a gray background. Verify compiled icons offscreen with `NSWorkspace.iconForFile`, since the source PNG alone does not show that treatment.
+
 - Release and Profile: teal Möbius strip in `../macos/Runner/Assets.xcassets/AppIcon.appiconset/`.
 - Debug: golden amber Möbius strip in `../macos/Runner/Assets.xcassets/AppIconDebug.appiconset/`.
 - Easter egg: toilet-paper roll with a Möbius twist in `../macos/Runner/Assets.xcassets/AppIconToiletPaper.appiconset/`.

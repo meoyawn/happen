@@ -151,6 +151,10 @@ the conversation. On Windows/Linux, use **Ctrl+Shift+B**.
 Live responses reveal incoming text on display frames, updating only the
 streaming message. OpenAI requests visible reasoning summaries by default;
 Thinking shows their current heading, and Thought expands the saved summary.
+The latest activity owns the live status: running tools show their operation,
+then yield to Thinking when they finish. A separate Thinking row appears only
+when no activity, final answer, image generation, compaction, or blocking question
+already owns that feedback.
 Skill reads remain named inside JavaScript cells and in collapsed activity.
 Activity groups start collapsed. JavaScript call rows remember their own open
 state as new calls arrive and when the cell is reopened.

@@ -55,18 +55,6 @@ class DesktopAccent extends ThemeExtension<DesktopAccent> {
 }
 
 // Project identities are independent of the application accent.
-const projectColors = {
-  'orange': (background: Color(0xffee7330), border: Color(0xffd16427)),
-  'yellow': (background: Color(0xffe7af36), border: Color(0xffcb9f34)),
-  'cyan': (background: Color(0xff0096b8), border: Color(0xff007d9b)),
-  'green': (background: Color(0xff2eaf5a), border: Color(0xff198b43)),
-  'red': (background: Color(0xffd92e3c), border: Color(0xffb82d35)),
-  'pink': (background: Color(0xffe4429e), border: Color(0xffc83d8b)),
-  'blue': (background: Color(0xff3250df), border: Color(0xff2c47c8)),
-  'purple': (background: Color(0xff623be2), border: Color(0xff5230c2)),
-  'gray': (background: Color(0xff5c5c5c), border: Color(0xff3a3a3a)),
-};
-
 ThemeData desktopTheme({Color accent = desktopDefaultAccent}) {
   const ink = desktopForeground;
   const surface = desktopSurface;

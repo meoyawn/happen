@@ -346,19 +346,21 @@ class IsolateOwner {
   }
 }
 
-/// Finite I/O effects keep native resource setup and cleanup off their caller's
+/// I/O effects keep native resource setup and cleanup off their caller's
 /// isolate. Cancellation reaches the effect before the worker is closed.
+/// Subscriptions use a null timeout and live until their caller cancels them.
 Future<T> runIsolateEffect<T>(
   Future<T> Function(Json, CancellationToken, void Function(Json)) effect,
   Json params, {
   required CancellationToken cancellation,
   void Function(Json)? onEvent,
+  Duration? timeout = const Duration(minutes: 10),
 }) async {
   cancellation.throwIfCancelled();
   final owner = await IsolateOwner.start(_effectMain, {'effect': effect}, service: 'effect');
   try {
     return await callIsolate(owner.port, 'run', params,
-      cancellation: cancellation, onEvent: onEvent) as T;
+      cancellation: cancellation, onEvent: onEvent, timeout: timeout) as T;
   } finally { await owner.close(); }
 }
 

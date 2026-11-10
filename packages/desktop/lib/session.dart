@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ai/ai.dart';
+import 'package:config/config.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
@@ -14,7 +15,6 @@ import 'dictation.dart';
 import 'response_annotation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
-import 'appearance.dart';
 import 'appearance_preferences.dart';
 import 'archive_state.dart';
 import 'app_icon.dart';
@@ -27,6 +27,8 @@ import 'pin_state.dart';
 import 'file_change.dart';
 import 'git_actions_state.dart';
 import 'project_actions_state.dart';
+import 'project_icon_state.dart';
+import 'local_project_icons.dart';
 
 part 'draft_routing.dart';
 part 'annotation_drafts.dart';
@@ -39,9 +41,26 @@ class Project {
     : tasks = tasks ?? [];
   final String checkoutKey, path;
   String id;
-  String? branch, avatarColor, displayName;
+  String? branch, displayName;
   Json? workspace;
-  Uint8List? avatarImage;
+  late ProjectIconState _iconState = const ProjectIconReady(emptyProjectIcon);
+  ProjectIconState get iconState => _iconOwner?._iconState ?? _iconState;
+  ProjectIcon? get icon => iconState.value.icon;
+  Project? _iconOwner;
+  late final iconChanges = ValueNotifier(0);
+  void _iconChanged() => iconChanges.value++;
+  void _bindIcon(Project? owner) {
+    if (identical(_iconOwner, owner)) return;
+    _iconOwner?.iconChanges.removeListener(_iconChanged);
+    _iconOwner = owner;
+    owner?.iconChanges.addListener(_iconChanged);
+    _iconChanged();
+  }
+  void _disposeIcon() {
+    _iconOwner?.iconChanges.removeListener(_iconChanged);
+    _iconOwner = null;
+    iconChanges.dispose();
+  }
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
   String get folderName => path.split(Platform.pathSeparator).where((part) => part.isNotEmpty).lastOrNull ?? path;
@@ -82,6 +101,7 @@ class DesktopTask {
   };
   set archived(bool value) => _archived = value;
   bool loadingEarlier = false;
+  bool _needsHistoryRefresh = false;
   String? historyBefore;
   String streamingText = '';
   late final liveText = ValueNotifier<String>(streamingText);
@@ -170,8 +190,9 @@ String machineLabel(DesktopSession session) => session.machineAlias == null ? 'l
 /// UI state only. Task execution and durable history stay behind the WebSocket.
 class DesktopSession extends ChangeNotifier {
   DesktopSession(this.client, this.database, {String? attachmentDirectory,
-    this.sidebarOwner, this.machineAlias, this.machineName = 'local'})
+    this.sidebarOwner, this.machineAlias, this.machineName = 'local', bool initiallyConnected = true})
     : attachmentDirectory = attachmentDirectory ?? '${Directory.systemTemp.path}/happen-attachments-${newId()}' {
+    connected = initiallyConnected;
     _events = client.events.stream.listen(
       _onEvent,
       onDone: () {
@@ -192,6 +213,9 @@ class DesktopSession extends ChangeNotifier {
   final String? machineAlias;
   String machineName;
   CancellationToken? _recovery;
+  late Future<void>? _restoring = null;
+  late Future<void>? _synchronizing = null;
+  late final _synchronizations = <Future<void>>{};
   DesktopSession get sidebar => sidebarOwner ?? this;
   String sidebarId(String id) => machineAlias == null ? id : jsonEncode([machineAlias, id]);
 
@@ -205,6 +229,7 @@ class DesktopSession extends ChangeNotifier {
     _recovery?.cancel();
     for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values]) {
       target._historyRead?.cancel();
+      target._needsHistoryRefresh = true;
     }
     unawaited(_dictation?.cancel());
     if (!_lifetime.isCancelled) notifyListeners();
@@ -212,18 +237,31 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> _restoreConnection(CancellationToken cancellation) async {
     try {
+      await restore().asCancellable(cancellation);
       await _request('client.capabilities', {'questions': true}).asCancellable(cancellation);
       cancellation.throwIfCancelled();
       connected = true;
       notifyListeners();
-      await refreshProjects(cancellation: cancellation);
-      cancellation.throwIfCancelled();
       await Future.wait([
-        for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values])
-          if (target.loaded || target.running || identical(target, task)) loadHistory(target, cancellation: cancellation),
+        loadNavigationTasks(cancellation: cancellation),
+        refreshProviders(cancellation: cancellation),
+        refreshProjects(cancellation: cancellation).then((_) => loadNavigationTasks(cancellation: cancellation)),
       ]);
     } on CancelledException { /* A newer transport owns recovery. */ }
     catch (error) { if (!cancellation.isCancelled) showError(error, title: 'Could not restore remote threads'); }
+  }
+
+  Future<void> _synchronize() {
+    _recovery?.cancel();
+    final token = _recovery = CancellationToken();
+    late final Future<void> operation;
+    operation = _restoreConnection(token.merge(_lifetime)).whenComplete(() {
+      _synchronizations.remove(operation);
+      if (identical(_synchronizing, operation)) _synchronizing = null;
+    });
+    _synchronizing = operation;
+    _synchronizations.add(operation);
+    return operation;
   }
   AppearanceController? _appearance;
   AppearanceController get appearance => sidebarOwner?.appearance ?? (_appearance ??= AppearanceController(database));
@@ -389,8 +427,10 @@ class DesktopSession extends ChangeNotifier {
   }.contains(providers.where((provider) => provider['id'] == (target?.provider ?? providerId)).firstOrNull?['status']);
   bool get authenticated => authenticatedFor(null);
 
-  Future<void> refreshProviders() async {
-    final result = jsonObject(await _request('providers.list'));
+  Future<void> refreshProviders({CancellationToken? cancellation}) async {
+    final token = cancellation?.merge(_lifetime) ?? _lifetime;
+    final result = jsonObject(await _request('providers.list').asCancellable(token));
+    token.throwIfCancelled();
     providers = (result['providers'] as List).map(jsonObject)
         .where((provider) => {'openai', 'opencode'}.contains(provider['id'])).toList();
     if (!models.any((m) => m['provider'] == _provider && m['id'] == _model)) {
@@ -406,7 +446,8 @@ class DesktopSession extends ChangeNotifier {
 
   /// Sidebar references are a presentation cache of native thread metadata.
   Future<void> refreshSessions({Project? owner, CancellationToken? cancellation}) async {
-    final operation = cancellation?.merge(_lifetime) ?? _lifetime;
+    if (!connected) return;
+    final operation = (cancellation?.merge(_lifetime) ?? _lifetime).merge(_recovery ?? _lifetime);
     String key(String path) => Directory(path).absolute.uri.normalizePath().toString();
     final owners = {for (final project in owner == null ? projects : [owner]) key(project.path): project};
     final existing = {for (final project in owner == null ? projects : [owner])
@@ -420,6 +461,7 @@ class DesktopSession extends ChangeNotifier {
       final page = await client.sessionRead('thread/list', {
         'limit': 200, 'archived': archived, if (owner != null) 'cwd': owner.path, 'cursor': ?cursor,
       }, cancellation: operation);
+      operation.throwIfCancelled();
       final entries = (page['data'] as List).map(jsonObject).toList();
       for (final info in entries) {
         final folder = info['cwd'] as String?;
@@ -559,14 +601,6 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> chooseProjectAvatarColor(Project target, String? color) async {
-    if (color != null && !projectColors.containsKey(color)) throw ArgumentError('Invalid project avatar color');
-    if (!projects.contains(target) || target.removing) return;
-    await _setting('project_avatar_color:${target.checkoutKey}', color ?? '');
-    target.avatarColor = color;
-    notifyListeners();
-  }
-
   Future<void> renameProject(Project target, String name) async {
     if (!projects.contains(target) || target.removing) return;
     final trimmed = name.trim();
@@ -577,11 +611,127 @@ class DesktopSession extends ChangeNotifier {
     _notice('Project renamed', description: target.name);
   }
 
-  Future<void> chooseProjectAvatarImage(Project target, Uint8List? image) async {
-    if (!projects.contains(target) || target.removing) return;
-    await _setting('project_avatar_image:${target.checkoutKey}', image == null ? '' : base64Encode(image));
-    target.avatarImage = image;
-    notifyListeners();
+  Project? projectIconSource(Project target) {
+    final local = sidebar;
+    final source = target._iconOwner ?? target;
+    return local.localProjectIcons && local.projects.contains(source) && !source.removing ? source : null;
+  }
+
+  Future<ProjectIconSnapshot> previewProjectIcon(Project target, ProjectIcon icon, {required CancellationToken cancellation}) async {
+    final source = projectIconSource(target);
+    if (source == null) throw StateError('No local checkout for this project');
+    return readProjectIconSnapshot(await localProjectIcon(source.path, icon, save: false,
+      cancellation: cancellation.merge(_lifetime).merge(sidebar._lifetime)));
+  }
+
+  /// One desktop project identity shares its local icon across every machine.
+  void resolveProjectIcons(Iterable<DesktopSession> sources) {
+    if (!localProjectIcons || _lifetime.isCancelled) return;
+    (String, String)? identity(Project project) {
+      final repository = project.workspace?['repository'] as String? ??
+        (project.id.startsWith('https://') ? project.id : null);
+      return repository == null ? null : (repository, project.workspace?['subdirectory'] as String? ?? '');
+    }
+    final candidates = projects.where((project) => !project.removing).toList()..sort((a, b) {
+      final configured = (a._iconState.value.icon == null ? 1 : 0).compareTo(b._iconState.value.icon == null ? 1 : 0);
+      if (configured != 0) return configured;
+      final worktree = (a.workspace?['worktree'] == true ? 1 : 0).compareTo(b.workspace?['worktree'] == true ? 1 : 0);
+      return worktree != 0 ? worktree : a.path.compareTo(b.path);
+    });
+    final owners = <(String, String), Project>{};
+    for (final project in candidates) {
+      if (identity(project) case final key?) { owners.putIfAbsent(key, () => project); }
+    }
+    // Detach new owners before rebinding their peers, so ownership stays acyclic.
+    for (final owner in owners.values) { owner._bindIcon(null); }
+    for (final source in sources) {
+      if (source._lifetime.isCancelled) continue;
+      for (final project in source.projects) {
+        final owner = owners[identity(project)];
+        project._bindIcon(identical(owner, project) ? null : owner);
+      }
+    }
+  }
+
+  bool get localProjectIcons => machineAlias == null && client.sharedFilesystem;
+  CancellationToken? _iconWatch;
+  String? _iconPaths;
+  late final _iconWatches = <Future<void>>{};
+
+  void watchProjectIcons() {
+    if (_lifetime.isCancelled || !localProjectIcons || projects.any((project) => project.iconState is ProjectIconSaving)) return;
+    final directories = projects.where((project) => !project.removing).map((project) => project.path).toSet().toList()..sort();
+    final paths = jsonEncode(directories);
+    if (_iconPaths == paths && _iconWatches.isNotEmpty) return;
+    _stopIconWatch();
+    _iconPaths = paths;
+    if (directories.isEmpty) return;
+    final token = _iconWatch = CancellationToken();
+    final operation = watchLocalProjectIcons(directories, cancellation: token.merge(_lifetime), onChange: (path, appearance) {
+      if (_lifetime.isCancelled || token.isCancelled || !identical(_iconWatch, token)) return;
+      final target = projects.where((project) => project.path == path && !project.removing).firstOrNull;
+      if (target == null || !_readProjectIcon(target, appearance)) return;
+      target._iconChanged();
+      sidebarChanges.notifyListeners();
+    }).onError<CancelledException>((_, _) {}).catchError((Object error) {
+      if (!_lifetime.isCancelled && !token.isCancelled) showError(error, title: 'Could not watch project icons');
+    });
+    _iconWatches.add(operation);
+    unawaited(operation.whenComplete(() {
+      _iconWatches.remove(operation);
+      if (identical(_iconWatch, token)) {
+        _iconWatch = null;
+        _iconPaths = null;
+      }
+    }));
+  }
+
+  void _stopIconWatch() {
+    _iconWatch?.cancel();
+    _iconWatch = null;
+    _iconPaths = null;
+  }
+
+  Future<void> chooseProjectIcon(Project target, ProjectIcon? icon, {required CancellationToken cancellation}) async {
+    final source = projectIconSource(target);
+    if (source == null) throw StateError('No local checkout for this project');
+    if (!identical(sidebar, this)) {
+      return sidebar.chooseProjectIcon(source, icon, cancellation: cancellation.merge(_lifetime));
+    }
+    target = source;
+    if (!localProjectIcons || !projects.contains(target) || target.removing || !target.available) throw StateError('Project is unavailable');
+    if (target._iconState is ProjectIconSaving) throw StateError('Project icon is being saved');
+    final token = cancellation.merge(_lifetime);
+    token.throwIfCancelled();
+    _stopIconWatch();
+    final previous = target._iconState.value;
+    final pending = ProjectIconSaving(previous, icon);
+    target._iconState = transitionProjectIcon(target._iconState, pending);
+    target._iconChanged();
+    try {
+      final saved = await localProjectIcon(target.path, icon, save: true, cancellation: token);
+      token.throwIfCancelled();
+      if (!projects.contains(target) || target.removing || !identical(target._iconState, pending)) return;
+      target._iconState = transitionProjectIcon(pending, ProjectIconReady(readProjectIconSnapshot(saved)));
+      target._iconChanged();
+      sidebarChanges.notifyListeners();
+    } catch (error) {
+      if (!_lifetime.isCancelled && projects.contains(target) && !target.removing && identical(target._iconState, pending)) {
+        target._iconState = transitionProjectIcon(pending, error is CancelledException
+          ? ProjectIconReady(previous) : ProjectIconFailed(previous, error.toString()));
+        target._iconChanged();
+      }
+      rethrow;
+    } finally { watchProjectIcons(); }
+  }
+
+  bool _readProjectIcon(Project target, Json value) {
+    if (target._iconState is ProjectIconSaving || target._iconState is ProjectIconReady && target._iconState.value.revision == value['icon_revision']) return false;
+    target._iconState = transitionProjectIcon(target._iconState, switch (value['icon_error']) {
+      String message => ProjectIconFailed(target._iconState.value, message),
+      _ => ProjectIconReady(readProjectIconSnapshot(value)),
+    });
+    return true;
   }
 
   Future<void> chooseSidebarWidth(double width) async {
@@ -817,15 +967,20 @@ class DesktopSession extends ChangeNotifier {
     _savePanels(target);
   }
 
-  Future<void> loadNavigationTasks() async {
+  Future<void> loadNavigationTasks({CancellationToken? cancellation}) async {
+    if (!connected) return;
+    final token = cancellation?.merge(_lifetime) ?? _lifetime;
     if (task case final target?) _rememberTab(target);
-    final targets = {...openTasks.map((entry) => entry.$2),
-      ...projects.expand((project) => project.tasks).where((target) => target.running && !target.archived)}.toList();
+    // Inactive tabs hydrate on selection. Reading every open conversation here
+    // made both startup and remote availability wait behind old histories.
+    final targets = {if (task case final target?) target,
+      ...projects.expand((project) => project.tasks).where((target) => target.running && !target.archived),
+      ...sideChats.values.where((target) => target.loaded || target.running)}.toList();
     for (var index = 0; index < targets.length; index += 4) {
-      _lifetime.throwIfCancelled();
+      token.throwIfCancelled();
       await Future.wait([
         for (final target in targets.skip(index).take(4))
-          if (!target.loaded && !target.loading) loadHistory(target),
+          if ((!target.loaded || target._needsHistoryRefresh) && !target.loading) loadHistory(target, cancellation: token),
       ]);
     }
   }
@@ -1299,13 +1454,21 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> load() async {
-    await _request('client.capabilities', {'questions': true});
+    await restore();
+    if (connected) await (_synchronizing ?? _synchronize());
+  }
+
+  /// Restore presentation state entirely from the local cache, including the
+  /// selected thread. Network discovery must never gate this snapshot.
+  Future<void> restore() => _restoring ??= _restore();
+
+  Future<void> _restore() async {
     final saved = jsonObject(
       await _databaseCall('load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
-    if (client.sharedFilesystem && supportsAppIconSwitching) await appIcon.ready;
+    if (client.sharedFilesystem && supportsAppIconSwitching) unawaited(appIcon.ready);
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -1355,17 +1518,10 @@ class DesktopSession extends ChangeNotifier {
                 )..archived = t['archived'] == 1
                   ..lastActivity = t['last_activity'] as int? ?? 0,
           ],
-        )..avatarColor = projectColors.containsKey(settings['project_avatar_color:$key'])
-          ? settings['project_avatar_color:$key'] as String : null
-          ..displayName = (settings['project_name:$key'] as String?)?.trim().isNotEmpty == true
+        )..displayName = (settings['project_name:$key'] as String?)?.trim().isNotEmpty == true
             ? settings['project_name:$key'] as String : null,
       );
-      final image = settings['project_avatar_image:$key'] as String?;
-      if (image != null && image.isNotEmpty) {
-        try { projects.last.avatarImage = base64Decode(image); } on FormatException { /* Use the default icon. */ }
-      }
     }
-    await refreshProjects();
     project = projects.firstOrNull;
     Json restored = {};
     try {
@@ -1415,9 +1571,7 @@ class DesktopSession extends ChangeNotifier {
       break;
     }
     _pruneEmptyDrafts();
-    await refreshProviders();
     if (task == null && viewingConversation) currentDraft;
-    await loadNavigationTasks();
     notifyListeners();
   }
 
@@ -1476,6 +1630,7 @@ class DesktopSession extends ChangeNotifier {
       if (discovered) return null;
       throw StateError('Project is being removed');
     }
+    watchProjectIcons();
     if (discovered) return opened;
     if (!opened.available || opened.workspace != inspected) {
       opened.available = true;
@@ -1511,12 +1666,14 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> refreshProjects({CancellationToken? cancellation}) async {
+    if (!connected) return;
     final token = cancellation?.merge(_lifetime) ?? _lifetime;
     for (final owner in List.of(projects)) {
       if (owner.removing) continue;
       await _refreshIdentity(owner, cancellation: token);
     }
     await refreshSessions(cancellation: token);
+    watchProjectIcons();
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -1555,6 +1712,8 @@ class DesktopSession extends ChangeNotifier {
       }, cancellation: _lifetime);
       for (final removed in target.tasks) { releaseHistory(removed); }
       projects.remove(target);
+      watchProjectIcons();
+      target._disposeIcon();
       final removedIds = target.tasks.map((task) => task.id).toSet();
       if (openTabIds.any(removedIds.contains)) {
         openTabIds.removeWhere(removedIds.contains);
@@ -1611,10 +1770,10 @@ class DesktopSession extends ChangeNotifier {
     // Live events can leave a cached task without its initial configuration.
     // History and checkout identity are independent reads.
     await Future.wait([
-      if (nextTask != null && !nextTask.loading &&
-          (!nextTask.loaded || nextTask.messages.isNotEmpty && nextTask.provider == null))
+      if (connected && nextTask != null && !nextTask.loading &&
+          (!nextTask.loaded || nextTask._needsHistoryRefresh || nextTask.messages.isNotEmpty && nextTask.provider == null))
         loadHistory(nextTask),
-      if (changedProject) _refreshIdentity(nextProject),
+      if (connected && changedProject) _refreshIdentity(nextProject),
     ]);
   }
 
@@ -1644,7 +1803,7 @@ class DesktopSession extends ChangeNotifier {
   );
 
   Future<void> loadHistory(DesktopTask target, {CancellationToken? cancellation}) async {
-    if (target.loading || target.loadingEarlier) return;
+    if (!connected || target.loading || target.loadingEarlier) return;
     final work = target._historyRead = CancellationToken();
     final read = work.merge(cancellation?.merge(_lifetime) ?? _lifetime);
     read.throwIfCancelled();
@@ -1732,6 +1891,7 @@ class DesktopSession extends ChangeNotifier {
       target.questionDrafts.removeWhere((id, _) => !target.questions.containsKey(id));
       target.lastSentAt ??= taskLastSentAt(target);
       target.loaded = true;
+      target._needsHistoryRefresh = false;
       _markViewed(target);
     } on CancelledException {
       rethrow;
@@ -2207,9 +2367,7 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     if (event['method'] == 'connection/ready') {
-      _recovery?.cancel();
-      final token = _recovery = CancellationToken();
-      unawaited(_restoreConnection(token.merge(_lifetime)));
+      unawaited(_synchronize());
       return;
     }
     final trace = event['_trace'] == null ? null : client.eventTrace(event);
@@ -2435,6 +2593,9 @@ class DesktopSession extends ChangeNotifier {
     _dictation?.dispose();
     _dictation = null;
     _lifetime.cancel();
+    await Future.wait(_synchronizations.toList());
+    _stopIconWatch();
+    await Future.wait(_iconWatches.toList());
     _recovery?.cancel();
     _disconnect.dispose();
     await _events.cancel();
@@ -2450,6 +2611,7 @@ class DesktopSession extends ChangeNotifier {
       for (final attachment in entry.value) { await attachment.discard(); }
     }
     attachmentDrafts.clear();
+    for (final project in projects) { project._disposeIcon(); }
     panelSelection.dispose();
     sidebarChanges.dispose();
     annotationChanges.dispose();

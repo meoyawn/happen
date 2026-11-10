@@ -24,7 +24,9 @@ void main() {
   late _Client client;
   late DesktopSession session;
   Directory? directory;
+  var sessionClosed = false;
   setUp(() {
+    sessionClosed = false;
     client = _Client();
     session = DesktopSession(client, _Database());
     session.providers = [
@@ -44,7 +46,7 @@ void main() {
     session.task = task;
   });
   tearDown(() async {
-    await session.close();
+    if (!sessionClosed) await session.close();
     await directory?.delete(recursive: true);
     directory = null;
   });
@@ -64,6 +66,38 @@ void main() {
     client.inventories.clear();
     await tester.pumpAndSettle();
   }
+
+  testWidgets('remote project picker can close, rebuild during dismissal, and reopen', (tester) async {
+    client.sharedFilesystem = false;
+    final originalProject = session.project, originalTask = session.task;
+    await open(tester);
+    for (final (index, action) in ['Cancel', 'Escape', 'Outside', 'Open', 'Enter'].indexed) {
+      await tester.tap(find.byTooltip('Open project').first);
+      await tester.pumpAndSettle();
+      final field = find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField));
+      expect(tester.widget<TextField>(field).controller!.text, '~/workspace');
+      await tester.enterText(field, '  ~/workspace/example  ');
+      switch (action) {
+        case 'Escape': await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        case 'Outside': await tester.tapAt(const Offset(10, 450));
+        case 'Enter': await tester.testTextInput.receiveAction(TextInputAction.done);
+        default: await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text(action)));
+      }
+      await tester.pump();
+      // A popped dialog stays mounted throughout its reverse transition.
+      // Resizing rebuilds its text field before that transition completes.
+      tester.view.physicalSize = Size(1201.0 + index, 900);
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(session.project, same(originalProject));
+      expect(session.task, same(originalTask));
+    }
+    expect(client.inspectedPaths, ['~/workspace/example', '~/workspace/example']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('sidebar sections collapse independently and pin menus move tasks and projects', (tester) async {
     final first = session.task!..lastActivity = 100;
@@ -664,13 +698,54 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('MCP submenu preserves the draft and file chips and never submits the command', (tester) async {
+  ComposerEditor composer(WidgetTester tester) => tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+
+  Future<void> openMcp(WidgetTester tester) async {
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-mcp-view-');
+      final database = await openDesktopDatabase(directory!.path);
+      final previous = session;
+      final providers = previous.providers, task = previous.task;
+      final projectKey = previous.project!.checkoutKey;
+      final projects = [for (final project in previous.projects)
+        Project(project.checkoutKey, project.id, project.path, [...project.tasks])];
+      await previous.close();
+      client = _Client()..providers = providers;
+      session = DesktopSession(client, database)
+        ..providers = providers
+        ..projects.addAll(projects)
+        ..project = projects.singleWhere((project) => project.checkoutKey == projectKey)
+        ..task = task;
+    });
     await open(tester);
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller! as ComposerTextController;
-    await tester.enterText(find.byType(TextField), 'Keep /mcp tail ');
+  }
+
+  Future<void> enterComposer(WidgetTester tester, String text) async {
+    final editor = composer(tester);
+    editor.focusNode.requestFocus();
+    editor.controller.value = TextEditingValue(text: text, selection: TextSelection.collapsed(offset: text.length));
+    await tester.pump();
+  }
+
+  void testMcp(String description, WidgetTesterCallback body) {
+    testWidgets(description, (tester) async {
+      await openMcp(tester);
+      try { await body(tester); }
+      finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        sessionClosed = true;
+        await tester.runAsync(() => session.close());
+        await tester.pump();
+      }
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
+
+  testMcp('MCP submenu preserves the draft and file chips and never submits the command', (tester) async {
+    final controller = composer(tester).controller as ComposerTextController;
+    await enterComposer(tester, 'Keep /mcp tail ');
     controller.insertFile(TextRange.collapsed(controller.text.length), '/project/lib/main.dart');
     controller.selection = const TextSelection.collapsed(offset: 9);
-    final before = tester.getRect(find.byType(TextField));
+    final before = tester.getRect(find.byType(ComposerEditor));
     await tester.pumpAndSettle();
     expect(client.inventories, isEmpty, reason: 'The command suggestion alone does no discovery');
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -698,48 +773,52 @@ void main() {
     await mouse.removePointer();
     await tester.tap(find.text('dart'));
     await tester.pumpAndSettle();
-    expect(tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus, true);
+    expect(composer(tester).focusNode.hasFocus, true);
     expect(client.sent, isEmpty);
-    expect(tester.getRect(find.byType(TextField)), before);
+    expect(tester.getRect(find.byType(ComposerEditor)), before);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
     expect(find.text('dart'), findsNothing);
     expect(controller.files.single.path, '/project/lib/main.dart');
-    await tester.enterText(find.byType(TextField), '/mcp');
+    await enterComposer(tester, '/mcp');
     await tester.pumpAndSettle();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
     client.inventories.last.reply.complete({'servers': [{'name': 'dart', 'enabled': true, 'state': 'ready', 'tool_count': 1, 'auth_status': 'unsupported'}]});
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'dar');
+    await enterComposer(tester, 'dar');
     await tester.pumpAndSettle();
     expect(find.text('dart'), findsOneWidget);
     await tester.tap(find.byTooltip('Send message'));
     await tester.pump();
-    client.events.add({'task_id': 'task', 'type': 'turn.completed', 'data': <String, Object?>{}});
+    client.events.add({'method': 'turn/completed', 'params': {
+      'threadId': 'task', 'turn': {'id': 'fixture-turn', 'status': 'completed', 'items': <Object?>[]},
+    }});
     await tester.pumpAndSettle();
-    expect(client.sent.single['prompt'], 'dar');
+    expect(client.sent.single['threadId'], 'task');
+    expect(client.sent.single['input'], [{'type': 'text', 'text': 'dar'}]);
     expect(find.text('dart'), findsNothing);
     expect(controller.text, isEmpty);
-    await tester.enterText(find.byType(TextField), '@ma');
+    await enterComposer(tester, '@ma');
     await tester.pump(const Duration(milliseconds: 210));
     expect(client.searches.single.query, 'ma');
     client.searches.single.reply.complete({'paths': ['lib/main.dart'], 'truncated': false});
     await tester.pumpAndSettle();
-    expect(find.text('lib/main.dart'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+    expect(find.text('main.dart'), findsOneWidget);
+    expect(find.text('lib/'), findsOneWidget);
+  });
 
-  testWidgets('MCP verbose shows tool and resource details during an unauthenticated running task', (tester) async {
+  testMcp('MCP verbose shows tool and resource details during an unauthenticated running task', (tester) async {
     session.providers.first['status'] = 'signed_out';
-    await open(tester);
-    client.events.add({'task_id': 'task', 'type': 'turn.started', 'data': <String, Object?>{}});
+    client.events.add({'method': 'turn/started', 'params': {
+      'threadId': 'task', 'turn': {'id': 'fixture-turn', 'status': 'inProgress', 'items': <Object?>[]},
+    }});
     Future<void> frame() async {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
     }
-    await tester.enterText(find.byType(TextField), '/mcp verbose');
-    final commandText = tester.widget<TextField>(find.byType(TextField)).controller!;
+    await enterComposer(tester, '/mcp verbose');
+    final commandText = composer(tester).controller;
     commandText.selection = TextSelection(baseOffset: 0, extentOffset: commandText.text.length);
     await frame();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -761,21 +840,20 @@ void main() {
     expect(session.task!.running, true);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await frame();
-    await tester.enterText(find.byType(TextField), '/mcp full');
+    await enterComposer(tester, '/mcp full');
     await frame();
-    await tester.tap(find.byType(TextField));
+    await tester.tap(find.byType(ComposerEditor));
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await frame();
-    expect(find.text('Usage: /mcp [verbose]'), findsOneWidget);
+    expect(find.text('No matching items'), findsOneWidget);
+    expect(commandText.text, '/mcp full');
     expect(client.inventories, hasLength(1));
     expect(client.sent, isEmpty);
-    await tester.pumpWidget(const SizedBox.shrink());
-  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  });
 
-  testWidgets('MCP discovery retires late replies, refreshes config and cancels on navigation', (tester) async {
-    await open(tester);
+  testMcp('MCP discovery retires late replies, refreshes config and cancels on navigation', (tester) async {
     Future<void> show() async {
-      await tester.enterText(find.byType(TextField), '/mcp');
+      await enterComposer(tester, '/mcp');
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
@@ -803,31 +881,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('external'), findsOneWidget);
     expect(find.text('Disabled'), findsOneWidget);
-    await tester.enterText(find.byType(TextField), '@ma');
+    await enterComposer(tester, '@ma');
     await tester.pump(const Duration(milliseconds: 210));
     expect(find.text('external'), findsNothing);
     client.searches.single.reply.complete({'paths': ['lib/main.dart'], 'truncated': false});
     await tester.pumpAndSettle();
-    expect(find.text('lib/main.dart'), findsOneWidget);
+    expect(find.text('main.dart'), findsOneWidget);
+    expect(find.text('lib/'), findsOneWidget);
     await show();
     client.inventories.last.reply.complete({'servers': [{'name': 'external', 'enabled': false, 'state': 'disabled', 'tool_count': 0, 'auth_status': 'unsupported'}]});
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'ordinary message with no matching server');
+    await enterComposer(tester, 'ordinary message with no matching server');
     await tester.pumpAndSettle();
     expect(find.text('external'), findsNothing);
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, 'ordinary message with no matching server');
+    expect(composer(tester).controller.text, 'ordinary message with no matching server');
     await show();
     final departing = client.inventories.last;
     await tester.runAsync(() => session.select(session.project!));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(departing.cancellation.isCancelled, true);
     departing.reply.complete({'servers': [{'name': 'departed'}]});
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('departed'), findsNothing);
     expect(client.sent, isEmpty);
     expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  });
 
   testWidgets('expanded tool details survive switching away from the task and back', (tester) async {
     session.task!.messages.addAll({
@@ -1661,43 +1741,17 @@ void main() {
     expect(surface().gradient!.colors.last, const Color(0xff5c5c5c));
     await choose(find.byType(DropdownButton<String>), 'Generated', () => session.projectAvatarStyle == 'generated');
     expect(find.descendant(of: preview, matching: find.text('P')), findsNothing);
-    Future<void> color(String name, String? expected) async {
-      await tester.tap(find.byTooltip('Use $name for project'));
-      for (var attempt = 0; session.project!.avatarColor != expected && session.error == null && attempt < 100; attempt++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
-        await tester.pump();
-      }
-      await tester.pumpAndSettle();
-      expect(session.project!.avatarColor, expected, reason: session.error);
-    }
-    await color('blue', 'blue');
-    expect(find.descendant(of: preview, matching: find.text('P')), findsOneWidget,
-      reason: 'A chosen color overrides Generated, as in OpenCode.');
-    expect(surface().gradient!.colors.last, const Color(0xff3250df));
-    expect(surface().border!.top.color, const Color(0xff2c47c8));
-    expect(otherProject.avatarColor, isNull);
-    await color('blue', null);
-    expect(find.descendant(of: preview, matching: find.text('P')), findsNothing);
-    await color('blue', 'blue');
     await choose(find.byType(DropdownButton<String>), 'Letters', () => session.projectAvatarStyle == 'letters');
     await tester.runAsync(() async {
       final saved = jsonObject(await callIsolate(database.port, 'load', {}));
       expect(saved['settings']['project_avatar_style'], 'letters');
       expect(saved['settings']['dictation_mode'], 'on_stop');
-      final restored = DesktopSession(_Client()..providers = session.providers, await openDesktopDatabase(root.path));
-      try {
-        await restored.load();
-        expect(restored.projects.singleWhere((project) => project.checkoutKey == 'checkout').avatarColor, 'blue');
-        expect(restored.projects.singleWhere((project) => project.checkoutKey == 'other-checkout').avatarColor, isNull);
-      } finally {
-        await restored.close();
-      }
     });
     await tester.pumpAndSettle();
     expect(find.descendant(of: preview, matching: find.text('P')), findsOneWidget);
     tester.view.physicalSize = const Size(640, 900);
     await tester.pumpAndSettle();
-    expect(find.byTooltip('Use blue for project'), findsOneWidget);
+    expect(find.byType(ProjectAvatar), findsOneWidget);
     expect(tester.takeException(), isNull);
     expect(find.byTooltip('Settings pages'), findsOneWidget);
     await tester.tap(find.byTooltip('Settings pages'));
@@ -1788,8 +1842,13 @@ void main() {
 }
 
 class _Client implements AgentClient {
-  @override bool get sharedFilesystem => true;
+  @override bool sharedFilesystem = true;
   @override final events = StreamController<Json>.broadcast();
+  final inspectedPaths = <String>[];
+  @override Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async {
+    inspectedPaths.add(path);
+    return {'available': false};
+  }
   final sent = <Json>[];
   final restored = <String>[];
   final cancelled = <String>[];
@@ -1830,10 +1889,10 @@ class _Client implements AgentClient {
       if (method == 'session.unarchive') restored.add(params['sessionID'] as String);
       return {'sessionID': params['sessionID'], 'archived': method == 'session.archive'};
     }
-    if (method != 'session.prompt') throw StateError('Unexpected request: $method');
+    if (method != 'turn/start') throw StateError('Unexpected request: $method');
     sent.add(params);
     if (rejectSend) throw StateError('fixture rejection');
-    return {'sessionID': params['sessionID']};
+    return {'turn': {'id': 'fixture-turn', 'status': 'inProgress', 'items': <Object?>[]}};
   }
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');

@@ -32,4 +32,32 @@ applying validated changes through its MCP manager. Model and host settings are
 selected through their owning APIs. `code_mode_tool_search` supplies the default
 for new GPT threads, including after a config reload; an explicit thread setting
 overrides it. Existing threads retain their selected settings. This option is
-global; project layers continue to configure MCP servers only.
+global.
+
+Project icons are saved in the project's `.happen/config.yaml`, alongside its
+MCP configuration. Use the project schema (`#/definitions/project`) for this file.
+An icon can be an arbitrary local image path, including SVG and PNG:
+
+```yaml
+icon: assets/logo.svg
+```
+
+Relative paths start in the project directory; absolute paths and `~/` paths
+are supported. Files stay in place and are read by the local desktop client.
+Desktop watches local project configs and updates project marks when they change.
+Checkouts with the same Git repository and subdirectory share that local icon
+across machines. Remote files are never read for icons. A configured local
+checkout takes precedence; ordinary checkouts precede worktrees, then paths
+are ordered alphabetically to choose a consistent source.
+Desktop settings can browse for a file, preview it, or choose a Lucide
+icon, emoji, or monogram:
+
+```yaml
+icon: {kind: lucide, name: rocket, color: blue}
+# Or: icon: {kind: emoji, emoji: "🚀"}
+# Or: icon: {kind: monogram, text: HP, color: purple}
+```
+
+Set `icon: null` to restore the default. Saving through desktop settings updates
+the icon atomically and retains the other YAML fields and comments. File reads
+and writes belong in worker effects; the config package does not render images.

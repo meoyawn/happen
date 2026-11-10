@@ -9,6 +9,7 @@ import 'package:schema_engine/schema_engine.dart';
 import 'package:yaml/yaml.dart';
 
 import 'src/schema.dart';
+export 'src/project_icon.dart';
 export 'src/schema.dart' show globalConfigSchema;
 export 'src/watcher.dart' show ConfigWatcher;
 
@@ -86,6 +87,7 @@ Map<String, dynamic> parseConfig(String source, {bool partialMcp = false}) {
       'type' => 'incorrect value type',
       'enum' => 'unsupported option',
       'additionalProperties' => 'unsupported field',
+      'oneOf' when error.schemaPath.contains('/projectIcon/') => 'invalid project icon',
       'oneOf' => error.schemaPath.contains('/oauth/')
           ? 'specify OAuth options or false' : 'specify exactly one command or URL',
       'dependencies' => 'field does not apply to this transport',

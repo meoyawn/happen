@@ -41,6 +41,7 @@ import 'machines.dart';
 import 'machine_icons.dart';
 import 'thread_machine_picker.dart';
 import 'project_details.dart';
+import 'remote_project_dialog.dart';
 
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session, this.machines});
@@ -296,17 +297,7 @@ class _DesktopViewState extends State<DesktopView> {
     setState(() => _picking = true);
     try {
       if (!session.client.sharedFilesystem) {
-        final input = TextEditingController(text: '~/workspace');
-        String? path;
-        try {
-          path = await showDialog<String>(context: context, builder: (context) => AlertDialog(
-            title: const Text('Open remote project'),
-            content: SizedBox(width: 440, child: TextField(controller: input, autofocus: true,
-              decoration: const InputDecoration(labelText: 'Folder on the remote machine'),
-              onSubmitted: (value) => Navigator.pop(context, value.trim()))),
-            actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-              FilledButton(onPressed: () => Navigator.pop(context, input.text.trim()), child: const Text('Open'))]));
-        } finally { input.dispose(); }
+        final path = await showDialog<String>(context: context, builder: (_) => const RemoteProjectDialog());
         if (path != null && path.isNotEmpty && mounted) {
           await session.addProject(path);
           if (mounted) { setState(() => session.viewingConversation = true); if (!_settingsOpen) _focusComposer(); }
@@ -668,7 +659,7 @@ class _DesktopViewState extends State<DesktopView> {
                 child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, picking: _picking,
-                    machinePicker: widget.machines == null ? null : ThreadMachinePicker(machines: widget.machines!, session: session),
+                    machinePicker: ThreadMachinePicker(machines: widget.machines, session: session),
                     projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),

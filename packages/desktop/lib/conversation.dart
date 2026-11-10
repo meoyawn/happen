@@ -23,6 +23,10 @@ typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, Stri
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
 typedef ForkResponseAction = Future<void> Function(DesktopTask task, String turnId);
 
+bool _indicatingWork(DesktopTask task, ChatEntry? latest) => task.running &&
+  (task.turns[latest?.turnId] == null || task.turns[latest?.turnId]?['status'] == 'inProgress') &&
+  !task.questions.values.any((request) => request['async'] != true);
+
 List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
   final rows = <_TranscriptRow>[];
   var activity = <ChatEntry>[];
@@ -120,11 +124,18 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
     }
   }
   flush(latest: true);
+  final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
+  final activity = rows.lastOrNull;
+  final activityOwnsStatus = activity?.kind == 'activity' && identical(activity?.entries.last, latest);
+  final retrying = task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true;
   rows.addAll(_workRows(queued));
-  final latest = entries.where((entry) => !{'You', 'Answer', 'Queued'}.contains(entry.role)).lastOrNull;
-  if (task.running && latest?.compaction?.status != 'running' && !(latest?.role == 'Happen' && latest!.streaming)) {
-    final label = latest?.tool?.status == 'running' || latest?.image != null && latest!.streaming ? 'Working' : 'Thinking';
-    rows.add((id: 'working', kind: 'working', entries: const [], label: label));
+  // The latest activity group owns the live status, including the pause after
+  // its tools finish. Commentary and steering hand it back to the placeholder.
+  if (_indicatingWork(task, latest) && (retrying || !activityOwnsStatus &&
+      latest?.tool?.status != 'running' && latest?.compaction?.status != 'running' &&
+      !(latest?.image != null && latest!.streaming) &&
+      !(latest?.role == 'Happen' && latest!.phase != 'commentary'))) {
+    rows.add((id: 'working', kind: 'working', entries: const [], label: 'Thinking'));
   }
   return rows;
 }
@@ -342,6 +353,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     // mounted list when its data has not changed, including during scrolling.
     final contentState = (entries, widget.directory, task, task.running, task.archived, task.archiving, task.retryStatus, task.runStartedAt,
       task.historyBefore, task.loadingEarlier, task.loadError, task.lastSentID,
+      task.questions.values.any((request) => request['async'] != true),
       widget.onLoadEarlier != null, widget.onRetryTurn != null, widget.onPendingAction != null, widget.onFork != null,
       _expansionRevision);
     if (_contentState != contentState) {
@@ -376,6 +388,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       annotationContexts[entry.id] = annotations;
     }
     final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
+    final latestRowID = rows.where((row) => row.entries.isEmpty || row.entries.last.role != 'Queued').lastOrNull?.id;
     final count = rows.length;
     _visibleRows = count;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -455,8 +468,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                         bottom: entry == null ? 8 : entry.role == 'You' || entry.response != null ? 16 : 8),
                       child: entry == null ? _ActivityGroup(
                         key: PageStorageKey(row.id), entries: row.entries,
-                        active: task.running && identical(row.entries.last, latest) &&
-                          (row.entries.last.streaming || row.entries.last.tool?.status == 'running'),
+                        active: _indicatingWork(task, row.entries.last) && row.id == latestRowID &&
+                          task.retryStatus?['error'] == null && task.retryStatus?['provider_delay'] != true,
                         directory: widget.directory, onExpand: () => _following = false,
                       ) : switch (entry.role) {
                         'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),
@@ -506,25 +519,25 @@ class _ActivityGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final tools = [for (final entry in entries) if (entry.tool != null) entry.tool!];
     final running = tools.where((tool) => tool.status == 'running').lastOrNull;
-    final thinking = active && entries.last.role == 'Reasoning';
-    if (entries.length == 1 && tools.length == 1) {
+    final thinking = active && running == null;
+    if (entries.length == 1 && tools.length == 1 && !active) {
       return _ToolRow(tool: tools.single, directory: directory, onExpand: onExpand);
     }
     if (entries.length == 1 && tools.isEmpty) {
-      return _ReasoningRow(entry: entries.single, active: active && entries.single.streaming,
+      return _ReasoningRow(entry: entries.single, active: active,
         directory: directory, onExpand: onExpand);
     }
     final thought = entries.where((entry) => entry.role == 'Reasoning').lastOrNull;
-    final current = running ?? tools.lastOrNull;
-    final label = thinking ? _thoughtPreview(thought?.text ?? '', active: true)
-      : active && current != null ? toolLabel(current, directory: directory, active: running != null)
+    final label = thinking ? entries.last.role == 'Reasoning' ? _thoughtPreview(thought?.text ?? '', active: true) : 'Thinking'
+      : active && running != null ? toolLabel(running, directory: directory, active: true)
       : tools.isEmpty ? entries.length == 1 ? 'Thought' : 'Thought (×${entries.length})' : toolGroupSummary(tools);
     final failed = tools.any(toolShowsFailure);
     return ConversationDisclosure(
       key: PageStorageKey('disclosure:${entries.first.id}'),
       label: label, shimmer: active, timestamp: entries.first.timestamp,
       color: failed ? desktopError : desktopSecondary,
-      icon: ConversationWorkIcon(kind: thinking || tools.isEmpty ? 'reasoning'
+      icon: thinking && entries.last.role != 'Reasoning' ? null : ConversationWorkIcon(kind: thinking || tools.isEmpty ? 'reasoning'
+        : active && running != null ? toolKind(running)
         : tools.map(toolKind).toSet().length == 1 ? toolKind(tools.first) : 'tool', failed: failed),
       fontSize: 14,
       onExpand: onExpand,
@@ -534,7 +547,7 @@ class _ActivityGroup extends StatelessWidget {
               for (final entry in entries)
                 if (entry.tool != null) _ToolRow(key: ValueKey(entry.id),
                   tool: entry.tool!, directory: directory, onExpand: onExpand)
-                else _ReasoningRow(entry: entry, active: active && entry.streaming && identical(entry, entries.last),
+                else _ReasoningRow(entry: entry, active: thinking && identical(entry, entries.last),
                   directory: directory, onExpand: onExpand),
             ]))),
     );
@@ -542,19 +555,18 @@ class _ActivityGroup extends StatelessWidget {
 }
 
 class _ReasoningRow extends StatelessWidget {
-  const _ReasoningRow({required this.entry, required this.active, required this.directory, required this.onExpand, this.initiallyExpanded = false});
+  const _ReasoningRow({required this.entry, required this.active, required this.directory, required this.onExpand});
   final ChatEntry entry;
   final bool active;
   final String directory;
   final VoidCallback onExpand;
-  final bool initiallyExpanded;
 
   @override
   Widget build(BuildContext context) => ConversationDisclosure(
     key: PageStorageKey('reasoning:${entry.id}'),
     label: _thoughtPreview(entry.text, active: active), fontSize: 14, timestamp: entry.timestamp,
     icon: const ConversationWorkIcon(kind: 'reasoning'),
-    shimmer: active, initiallyExpanded: initiallyExpanded,
+    shimmer: active,
     onExpand: onExpand,
     builder: (context) => Padding(padding: const EdgeInsets.fromLTRB(30, 4, 2, 8),
       child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 384),

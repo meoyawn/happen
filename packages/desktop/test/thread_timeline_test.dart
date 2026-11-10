@@ -94,6 +94,7 @@ void main() {
     item({'id': 'old', 'type': 'reasoning', 'summary': ['Earlier thought']}, live: true);
     await render();
     expect(thinking('Earlier thought'), findsOneWidget);
+    expect(find.byType(ThinkingLabel), findsOneWidget);
 
     for (final id in ['steer', 'second-steer']) {
       item({'id': id, 'type': 'userMessage', 'content': [{'type': 'text', 'text': id}]});
@@ -110,27 +111,48 @@ void main() {
     expect(thinking('Checking the follow-up'), findsOneWidget);
     expect(thinking('Thinking'), findsNothing);
 
+    item({'id': 'cell', 'type': 'dynamicToolCall', 'tool': 'exec',
+      'arguments': 'await tools.read({path: "input.txt"})', 'status': 'inProgress'}, live: true);
     item({'id': 'read', 'type': 'dynamicToolCall', 'tool': 'read',
-      'arguments': {'path': 'input.txt'}, 'status': 'inProgress'}, live: true);
+      'parentCallId': 'cell', 'arguments': {'path': 'input.txt'}, 'status': 'inProgress'}, live: true);
+    item({'id': 'finished', 'type': 'dynamicToolCall', 'tool': 'read',
+      'parentCallId': 'cell', 'arguments': {'path': 'other.txt'}, 'status': 'completed'});
     await render();
     expect(thinking('Thinking'), findsNothing);
     expect(thinking('Checking the follow-up'), findsNothing);
+    expect(thinking('Reading input.txt'), findsOneWidget);
+    expect(find.byType(ThinkingLabel), findsOneWidget);
+    expect(find.byKey(const ValueKey('working')), findsNothing);
 
     item({'id': 'read', 'type': 'dynamicToolCall', 'tool': 'read',
-      'arguments': {'path': 'input.txt'}, 'status': 'completed'});
+      'parentCallId': 'cell', 'arguments': {'path': 'input.txt'}, 'status': 'completed'});
     await render();
     expect(thinking('Thinking'), findsOneWidget);
+    expect(find.byKey(const ValueKey('working')), findsNothing);
 
     item({'id': 'after-tool', 'type': 'reasoning', 'summary': ['Checking the result']}, live: true);
     await render();
     expect(thinking('Checking the result'), findsOneWidget);
     expect(thinking('Thinking'), findsNothing);
 
+    item({'id': 'commentary', 'type': 'agentMessage', 'text': 'Preparing the answer', 'phase': 'commentary'}, live: true);
+    await render();
+    expect(thinking('Thinking'), findsOneWidget);
+    task.questions['question'] = {'async': false};
+    await render();
+    expect(find.byType(ThinkingLabel), findsNothing);
+    task.questions['question'] = {'async': true};
+    await render();
+    expect(thinking('Thinking'), findsOneWidget);
+    task.questions.clear();
+
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Answering the follow-up'}, live: true);
     await render();
     expect(thinking('Thinking'), findsNothing);
 
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Done', 'phase': 'final_answer'});
+    await render();
+    expect(find.byType(ThinkingLabel), findsNothing);
     task.turns['turn'] = {'id': 'turn', 'status': 'completed'};
     task.running = false;
     await render();

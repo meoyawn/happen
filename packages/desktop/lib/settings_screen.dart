@@ -1,20 +1,17 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
-
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'appearance_settings.dart';
 import 'app_icon.dart';
 import 'native_app_icon.dart';
-import 'composer_attachments.dart';
 import 'project_avatar.dart';
 import 'project_actions_state.dart';
+import 'project_icon_picker.dart';
+import 'project_icon_state.dart';
 import 'project_script_dialog.dart';
 import 'session.dart';
 import 'machines.dart';
@@ -395,7 +392,6 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
   final _nameFocus = FocusNode();
   final _lifetime = CancellationToken();
   int _pendingNameSaves = 0;
-  bool _loadingIcon = false, _receivingIcon = false, _dragOver = false;
 
   @override
   void initState() {
@@ -431,61 +427,13 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
   }
 
   Future<void> _chooseIcon() async {
-    if (_loadingIcon || _receivingIcon) return;
-    final paths = await MacosFilePicker().pick(MacosFilePickerMode.file,
-      allowsMultiple: false, allowedUtiTypes: ['public.image'], dialogTitle: 'Choose project icon');
-    try {
-      if (mounted && paths != null && paths.isNotEmpty) await _loadIcon(paths.first.path);
-    } finally {
-      for (final path in paths ?? <MacosFilePickerPath>[]) { await path.release(); }
-    }
+    await showDialog<void>(context: context,
+      builder: (_) => ProjectIconPicker(session: widget.session, project: widget.project));
   }
-
-  Future<void> _loadIcon(String path) async {
-    if (_loadingIcon || !mounted) return;
-    setState(() => _loadingIcon = true);
-    try {
-      final file = File(path);
-      if (await file.length() > 8 * 1024 * 1024) throw ArgumentError('Choose an image smaller than 8 MB');
-      _lifetime.throwIfCancelled();
-      final bytes = await file.readAsBytes();
-      _lifetime.throwIfCancelled();
-      final codec = await ui.instantiateImageCodecWithSize(await ui.ImmutableBuffer.fromUint8List(bytes),
-        getTargetSize: (width, height) => width <= 128 && height <= 128 ? const ui.TargetImageSize()
-          : width >= height ? const ui.TargetImageSize(width: 128) : const ui.TargetImageSize(height: 128));
-      try {
-        _lifetime.throwIfCancelled();
-        final frame = await codec.getNextFrame();
-        try {
-          _lifetime.throwIfCancelled();
-          final png = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-          _lifetime.throwIfCancelled();
-          if (png == null) throw StateError('Could not read this image');
-          await widget.session.chooseProjectAvatarImage(widget.project, png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes));
-        } finally { frame.image.dispose(); }
-      } finally { codec.dispose(); }
-    } finally {
-      if (mounted) setState(() => _loadingIcon = false);
-    }
-  }
-
-  Future<void> _dropIcon(DropDetails details) => widget.run(() async {
-    if (_loadingIcon || _receivingIcon) return;
-    setState(() { _dragOver = false; _receivingIcon = true; });
-    try {
-      final attachments = await receiveComposerDrop(details, widget.session.attachmentDirectory, _lifetime);
-      try {
-        if (attachments.isNotEmpty) await _loadIcon(attachments.first.path);
-      } finally {
-        for (final attachment in attachments) { await attachment.discard(); }
-      }
-    } finally {
-      if (mounted) setState(() => _receivingIcon = false);
-    }
-  });
 
   @override
-  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.project.iconChanges,
+    builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
     if (!widget.project.available) ...[
       Container(padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: const Color(0xfffff6e5), borderRadius: BorderRadius.circular(8)),
@@ -502,35 +450,26 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
           style: const TextStyle(fontSize: 13, color: desktopForeground),
           decoration: _settingsInput(widget.project.folderName).copyWith(labelText: 'Project name', floatingLabelBehavior: FloatingLabelBehavior.never),
           onSubmitted: (_) => _saveName(), onTapOutside: (_) => _nameFocus.unfocus()))),
-      _settingsRow('Project icon', 'Choose an image or drop one onto the icon.',
+      if (widget.session.projectIconSource(widget.project) != null) _settingsRow('Project icon', switch (widget.project.iconState) {
+        ProjectIconSaving() => 'Saving project icon…',
+        ProjectIconFailed(:final message) => message,
+        final state => state.value.error ?? 'Choose an icon, emoji, monogram, or local image file.',
+      },
         Row(mainAxisSize: MainAxisSize.min, children: [
-          DropTarget(enabled: !_loadingIcon && !_receivingIcon, acceptedKinds: const {DropItemKind.file},
-            onEnter: (_) => setState(() => _dragOver = true),
-            onLeave: () { if (mounted) setState(() => _dragOver = false); },
-            onDrop: _dropIcon,
-            child: Tooltip(message: 'Choose project icon', child: InkWell(
-              mouseCursor: WidgetStateMouseCursor.clickable,
-              onTap: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(_chooseIcon)),
-              borderRadius: BorderRadius.circular(6),
-              child: Container(padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: _dragOver ? desktopForeground : Colors.transparent)),
-                child: _loadingIcon || _receivingIcon ? const SizedBox.square(dimension: 32, child: CircularProgressIndicator(strokeWidth: 2))
-                  : ProjectAvatar(project: widget.project, size: 32, generated: widget.session.projectAvatarStyle == 'generated'))))),
+          Tooltip(message: 'Choose project icon', child: InkWell(
+            onTap: _canChooseIcon ? () => unawaited(_chooseIcon()) : null,
+            borderRadius: BorderRadius.circular(6), child: Padding(padding: const EdgeInsets.all(4),
+              child: ProjectAvatar(project: widget.project, size: 32, generated: widget.session.projectAvatarStyle == 'generated')))),
           const SizedBox(width: 8),
-          OutlinedButton(onPressed: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(_chooseIcon)),
-            child: const Text('Choose file')),
-          if (widget.project.avatarImage != null) ...[
+          OutlinedButton(onPressed: _canChooseIcon ? () => unawaited(_chooseIcon()) : null,
+            child: const Text('Choose icon')),
+          if (widget.project.icon != null) ...[
             const SizedBox(width: 8),
-            IconButton(tooltip: 'Remove custom icon', icon: const Icon(Icons.close, size: 16),
-              onPressed: _loadingIcon || _receivingIcon ? null : () => unawaited(widget.run(() => widget.session.chooseProjectAvatarImage(widget.project, null)))),
+            TextButton(onPressed: _canChooseIcon ? () => unawaited(widget.run(() =>
+              widget.session.chooseProjectIcon(widget.project, null, cancellation: _lifetime))) : null,
+              child: const Text('Reset')),
           ],
         ])),
-      if (widget.project.avatarImage == null)
-        _settingsRow('Color', 'Choose a color for the project icon.',
-          SizedBox(width: 244, child: Wrap(spacing: 8, runSpacing: 12, alignment: WrapAlignment.end, children: [
-            for (final color in projectColors.keys) _projectColor(widget.project, color),
-          ]))),
     ]),
     const SizedBox(height: 24),
     _ProjectActionsSettings(project: widget.project, session: widget.session, run: widget.run),
@@ -568,25 +507,10 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
             icon: const Icon(Icons.delete_outline_rounded, size: 16), label: const Text('Remove project'))),
       ]),
     ],
-  ]);
+  ]));
 
-  Widget _projectColor(Project project, String color) {
-    final selected = (project.avatarColor ?? 'gray') == color;
-    return Tooltip(message: 'Use $color for ${project.name}', child: Semantics(selected: selected,
-      child: DecoratedBox(
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), boxShadow: selected ? const [
-          BoxShadow(color: desktopForeground, spreadRadius: 4),
-          BoxShadow(color: desktopSidebar, spreadRadius: 2),
-        ] : null),
-        child: InkWell(borderRadius: BorderRadius.circular(6),
-          mouseCursor: WidgetStateMouseCursor.clickable,
-          onTap: () => unawaited(widget.run(() => widget.session.chooseProjectAvatarColor(project, selected ? null : color))),
-          child: SizedBox.square(dimension: 20, child: Stack(alignment: Alignment.center, children: [
-            ProjectAvatar(project: project, color: color, label: '', size: 20),
-            if (selected) const Icon(Icons.check, size: 14, color: Colors.white),
-          ]))),
-      )));
-  }
+  bool get _canChooseIcon => widget.session.projectIconSource(widget.project)?.available == true &&
+    !widget.project.removing && widget.project.iconState is! ProjectIconSaving;
 }
 
 Widget _projectSettingsSection(String title, List<Widget> rows) => Column(

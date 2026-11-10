@@ -126,7 +126,7 @@ class ThreadMachineController extends ChangeNotifier {
 
 class ThreadMachinePicker extends StatefulWidget {
   const ThreadMachinePicker({super.key, required this.machines, required this.session});
-  final MachinesController machines;
+  final MachinesController? machines;
   final DesktopSession session;
   @override
   State<ThreadMachinePicker> createState() => _ThreadMachinePickerState();
@@ -136,6 +136,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
   final _machineMenu = MenuController(), _workspaceMenu = MenuController();
   ThreadMachineController? _controller;
   MachineSession? _pendingMachine;
+  MachinesController? _machines;
   DesktopSession? _source;
   Project? _project;
   String? _draftId;
@@ -144,13 +145,13 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
   @override
   void didUpdateWidget(ThreadMachinePicker oldWidget) { super.didUpdateWidget(oldWidget); _bind(); }
   void _bind() {
-    final session = widget.session;
+    final session = widget.session, machines = widget.machines;
     final id = session.task == null ? session.currentDraft.id : null;
-    if (identical(_source, session) && identical(_project, session.project) && _draftId == id) return;
+    if (identical(_machines, machines) && identical(_source, session) && identical(_project, session.project) && _draftId == id) return;
     _controller?.removeListener(_changed);
     if (_controller != null) unawaited(_controller!.close());
-    _source = session; _project = session.project; _draftId = id; _pendingMachine = null;
-    _controller = session.project == null ? null : ThreadMachineController(widget.machines, session);
+    _machines = machines; _source = session; _project = session.project; _draftId = id; _pendingMachine = null;
+    _controller = session.project == null || machines == null ? null : ThreadMachineController(machines, session);
     _controller?.addListener(_changed);
   }
   void _changed() { if (mounted) setState(() {}); }
@@ -172,7 +173,10 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     }
   }
 
-  Widget _control(Widget icon, String label, VoidCallback? onPressed, String tooltip) => Tooltip(
+  Widget get _progress => const SizedBox(width: 12, height: 12,
+    child: CircularProgressIndicator(strokeWidth: 1.5, color: desktopSecondary));
+
+  Widget _control(Widget icon, String label, VoidCallback? onPressed, String tooltip, {bool loading = false}) => Tooltip(
     message: tooltip,
     child: TextButton(onPressed: onPressed, style: TextButton.styleFrom(foregroundColor: desktopSecondary,
       minimumSize: const Size(0, 24), tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -181,6 +185,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6))),
       child: Row(mainAxisSize: MainAxisSize.min, children: [icon, const SizedBox(width: 6),
         Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        if (loading) ...[const SizedBox(width: 6), _progress],
         const SizedBox(width: 3), const Icon(Icons.expand_more, size: 12)])),
   );
 
@@ -199,39 +204,84 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
       MenuItemButton(onPressed: null, child: SizedBox(width: 300, child: Text('$error', maxLines: 3))),
   ];
 
+  ({String? label, String? error, bool loading}) _machineStatus(String? alias, DesktopSession? session) {
+    final machines = widget.machines;
+    if (machines == null) return (label: 'Loading machines…', error: null, loading: true);
+    final state = alias == null ? null : machines.state(alias);
+    if (state is MachineFailed) return (label: 'Connection failed', error: '${state.error}', loading: false);
+    if (state is MachineClosed) return (label: 'Disconnected', error: null, loading: false);
+    if (session == null || state is MachineConnecting || !session.connected) {
+      return (label: session == null ? 'Connecting…' : 'Reconnecting…', error: null, loading: true);
+    }
+    if (machines.discoveringWorkspaces(session)) return (label: 'Finding workspaces…', error: null, loading: true);
+    return (label: null, error: null, loading: false);
+  }
+
+  Widget _machineItem(String? alias, String name, DesktopSession? session, ThreadMachineReady? ready, bool busy, String? selected) {
+    final status = _machineStatus(alias, session);
+    final options = ready?.checkouts.where((choice) => identical(choice.machine.session, session)).toList() ?? const <ThreadCheckout>[];
+    final error = status.error ?? ready?.errors[name];
+    final label = status.label ?? (error != null ? 'Unavailable' : options.isEmpty && ready?.repository != null ? 'No matching workspace' : null);
+    final item = MenuItemButton(
+      leadingIcon: MachineGlyph(widget.machines?.iconFor(alias) ?? parseMachineIcon(null, remote: alias != null)),
+      trailingIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (status.loading) _progress
+        else if (error != null) const Icon(Icons.error_outline, size: 14),
+        if (alias == selected) ...[if (status.loading || error != null) const SizedBox(width: 8), const Icon(Icons.check, size: 14)],
+      ]),
+      onPressed: busy || session?.connected != true || options.isEmpty ? null : () {
+        if (options.length == 1) { unawaited(_choose(options.single)); return; }
+        final target = options.first.machine;
+        setState(() => _pendingMachine = target);
+        _machineMenu.close();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && identical(_pendingMachine?.session, target.session)) _workspaceMenu.open();
+        });
+      },
+      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 300),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          if (label != null) Text(label, style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+        ])),
+    );
+    return error == null ? item : Tooltip(message: error, child: item);
+  }
+
   @override
-  Widget build(BuildContext context) {
-    final machine = widget.machines.machineFor(widget.session), state = _controller?.state;
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.machines ?? widget.session,
+    builder: (context, _) => _picker(context));
+
+  Widget _picker(BuildContext context) {
+    final owner = widget.machines;
+    final machine = owner?.machineFor(widget.session) ??
+      (alias: widget.session.machineAlias, name: machineLabel(widget.session), session: widget.session);
+    final state = _controller?.state;
     final ready = switch (state) { ThreadMachineReady() => state, ThreadMachineSelecting(:final previous) => previous, _ => null };
     final checkouts = ready?.checkouts ?? const <ThreadCheckout>[];
     final targetMachine = _pendingMachine ?? machine;
     final workspaceChoices = checkouts.where((choice) => identical(choice.machine.session, targetMachine.session)).toList();
     final selected = checkouts.where((choice) => identical(choice.machine.session, widget.session) && choice.path == _project?.path).firstOrNull;
     final busy = state is ThreadMachineSelecting || widget.session.submitting || widget.session.pullingCheckout;
-    final machines = widget.machines.sessions;
+    final sessions = owner?.sessions ?? const <MachineSession>[];
+    final machines = <({String? alias, String name, DesktopSession? session})>[
+      if (owner == null) machine else (alias: null, name: 'local', session: owner.local),
+      for (final host in owner?.hosts ?? const <RemoteMachine>[])
+        (alias: host.alias, name: host.name, session: sessions.where((machine) => machine.alias == host.alias).firstOrNull?.session),
+    ];
+    final loading = machines.any((machine) => _machineStatus(machine.alias, machine.session).loading);
+    final workspaceStatus = _machineStatus(targetMachine.alias, targetMachine.session);
     return Row(mainAxisSize: MainAxisSize.min, children: [
       Flexible(child: MenuAnchor(controller: _machineMenu, style: _menuStyle,
         menuChildren: [_heading('Run on'),
-          for (final target in machines) MenuItemButton(
-            leadingIcon: MachineGlyph(widget.machines.iconFor(target.alias)),
-            trailingIcon: target.alias == machine.alias ? const Icon(Icons.check, size: 14) : null,
-            onPressed: busy || !target.session.connected || !checkouts.any((choice) => identical(choice.machine.session, target.session)) ? null : () {
-              final options = checkouts.where((choice) => identical(choice.machine.session, target.session)).toList();
-              if (options.length == 1) { unawaited(_choose(options.single)); return; }
-              setState(() => _pendingMachine = target);
-              _machineMenu.close();
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted && identical(_pendingMachine?.session, target.session)) _workspaceMenu.open();
-              });
-            }, child: Text(target.name)),
+          for (final target in machines) _machineItem(target.alias, target.name, target.session, ready, busy, machine.alias),
           if (ready != null) ...[
-            for (final entry in ready.errors.entries) MenuItemButton(onPressed: null,
-              child: Tooltip(message: entry.value, child: Text('${entry.key} · Unavailable'))),
             if (ready.repository == null) const MenuItemButton(onPressed: null, child: Text('No Git remote to match')),
             if (ready.truncated) const MenuItemButton(onPressed: null, child: Text('Some locations were not checked')),
           ], ..._status(state)],
-        builder: (_, controller, _) => _control(MachineGlyph(widget.machines.iconFor(machine.alias), size: 13),
-          machine.name, _controller == null || busy ? null : () => controller.isOpen ? controller.close() : controller.open(), 'Run on'))),
+        builder: (_, controller, _) => _control(MachineGlyph(owner?.iconFor(machine.alias) ??
+          parseMachineIcon(null, remote: machine.alias != null), size: 13),
+          machine.name, busy ? null : () => controller.isOpen ? controller.close() : controller.open(), 'Run on',
+          loading: loading || state is ThreadMachineSelecting))),
       const SizedBox(width: 2),
       Flexible(child: MenuAnchor(controller: _workspaceMenu, style: _menuStyle,
         onClose: () { if (mounted && _pendingMachine != null) setState(() => _pendingMachine = null); },
@@ -247,10 +297,12 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
                   style: const TextStyle(fontSize: 12)),
                 Text(checkout.path, maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 11, color: desktopTertiary)),
-              ])))), ..._status(state)],
+              ])))),
+          if (workspaceStatus.loading) MenuItemButton(onPressed: null, leadingIcon: _progress, child: Text(workspaceStatus.label!)),
+          ..._status(state)],
         builder: (_, controller, _) => _control(Icon(selected?.worktree == true ? Icons.account_tree_outlined : Icons.folder_outlined, size: 13),
           selected?.worktree == true ? 'Worktree' : 'Current checkout', _controller == null || busy ? null
-            : () => controller.isOpen ? controller.close() : controller.open(), 'Workspace'))),
+            : () => controller.isOpen ? controller.close() : controller.open(), 'Workspace', loading: workspaceStatus.loading))),
       const SizedBox(width: 2),
       Flexible(child: CheckoutPullControl(session: widget.session,
         enabled: state is! ThreadMachineSelecting && !widget.session.submitting)),

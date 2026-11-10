@@ -8,7 +8,6 @@ List<String> sshOptions(String host, {String? user, int? port, String? identityF
   return ['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
     '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2',
     '-o', 'StrictHostKeyChecking=yes', '-o', 'UpdateHostKeys=no',
-    '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
     if (user != null) ...['-l', user], if (port != null) ...['-p', '$port'],
     if (identityFile != null) ...['-i', identityFile, '-o', 'IdentitiesOnly=yes']];
 }
@@ -34,18 +33,19 @@ _SshState _sshTransition(_SshState current, _SshState next) => switch ((current,
   _ => throw StateError('Invalid SSH connection transition'),
 };
 
-/// The worker owns a persistent remote connection, independent of UI routes.
-/// Transport loss fails in-flight requests; only the transport is retried.
-Future<AgentClient> connectSsh(String alias, {String? user, int? port, String? identityFile, required CancellationToken cancellation}) async {
+/// Publish the worker before connecting so cached threads remain available
+/// throughout startup and outages. The worker owns all transport retries.
+Future<AgentClient> startSsh(String alias, {String? user, int? port, String? identityFile, required CancellationToken cancellation}) async {
   sshOptions(alias, user: user, port: port, identityFile: identityFile);
   final events = ReceivePort();
   final owner = await IsolateOwner.start(_sshMain, {'alias': alias, 'user': user, 'port': port,
     'identityFile': identityFile, 'events': events.sendPort}, service: 'ssh');
+  final client = AgentClient._worker(owner, events);
   try {
     await callIsolate(owner.port, 'connect', {}, cancellation: cancellation, timeout: const Duration(seconds: 60));
     cancellation.throwIfCancelled();
-    return AgentClient._worker(owner, events);
-  } catch (_) { events.close(); await owner.close(); rethrow; }
+    return client;
+  } catch (_) { await client.close(); rethrow; }
 }
 
 Future<void> _sshMain(List<Object?> arguments) async {
@@ -61,7 +61,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
 
   void setState(_SshState next) { state = _sshTransition(state, next); }
 
-  Future<void> maintain(Completer<void> first, CancellationToken initial) async {
+  Future<void> maintain() async {
     Directory? directory;
     Process? tunnel;
     Future<int>? tunnelExit;
@@ -108,7 +108,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
       while (!lifetime.isCancelled) {
         setState(const _SshConnecting());
         final deadline = TimeoutCancellationToken(Duration(seconds: tunnel == null ? 55 : 3));
-        final cancellation = (first.isCompleted ? lifetime : initial.merge(lifetime)).merge(deadline);
+        final cancellation = lifetime.merge(deadline);
         AgentClient? client;
         StreamSubscription<Json>? subscription;
         final lost = Completer<void>();
@@ -154,17 +154,15 @@ Future<void> _sshMain(List<Object?> arguments) async {
           setState(_SshReady(client));
           established = true;
           delay = 50;
-          if (!first.isCompleted) first.complete();
-          else events.send({'method': 'connection/ready'});
+          events.send({'method': 'connection/ready'});
           deadline.cancel();
           await lost.future.asCancellable(lifetime.merge(tunnelClosed!));
           throw StateError('Remote connection closed');
-        } catch (error, stack) {
+        } catch (error) {
           if (!lifetime.isCancelled) {
             setState(_SshRetrying(error));
             events.send({'method': 'connection/closed', 'params': {'error': '$error'}});
           }
-          if (!first.isCompleted) { first.completeError(error, stack); return; }
         } finally {
           deadline.cancel();
           await subscription?.cancel();
@@ -192,9 +190,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
       Object? result;
       if (request['method'] == 'connect') {
         if (maintaining != null) throw StateError('Already connecting');
-        final first = Completer<void>();
-        maintaining = maintain(first, token);
-        await first.future.asCancellable(token.merge(lifetime));
+        maintaining = maintain();
       } else {
         final current = state;
         if (current is! _SshReady) throw StateError('Remote machine is reconnecting');

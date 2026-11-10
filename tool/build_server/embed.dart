@@ -9,14 +9,14 @@ import 'package:protocol/protocol.dart';
 
 import '../cli_native_bootstrap.dart' show linuxNativeContracts;
 
-// Runs inside the Linux build environment after the normal native build hooks.
+// Runs inside the Linux build environment with Moon's cached native libraries.
 // The same extraction and anchor checks serve the macOS CLI and Linux daemon.
 Future<void> main(List<String> arguments) async {
-  if (!Platform.isLinux || arguments.length != 2) throw ArgumentError('Provide the native bundle and output executable on Linux');
-  final bundle = Directory(arguments[0]).absolute, output = File(arguments[1]).absolute;
+  if (!Platform.isLinux || arguments.length != 2) throw ArgumentError('Provide the native library directory and output executable on Linux');
+  final native = Directory(arguments[0]).absolute, output = File(arguments[1]).absolute;
   final root = Directory.fromUri(Platform.script).parent.parent.parent;
   final sdk = File(await File(Platform.resolvedExecutable).resolveSymbolicLinks()).parent.parent;
-  final libraries = (await Directory('${bundle.path}/lib').list().toList()).whereType<File>().toList()
+  final libraries = (await native.list().toList()).whereType<File>().toList()
     ..sort((a, b) => a.path.compareTo(b.path));
   final names = libraries.map((file) => file.uri.pathSegments.last).toSet();
   if (names.length != linuxNativeContracts.length || !names.containsAll(linuxNativeContracts.keys)) {

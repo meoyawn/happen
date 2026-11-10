@@ -170,4 +170,41 @@ mcp_servers:
       );
     },
   );
+
+  test('project icon writes preserve other YAML fields and comments across document styles', () async {
+    final root = await Directory.systemTemp.createTemp('project-icon-config-');
+    final token = CancellationToken();
+    addTearDown(() async { token.cancel(); await root.delete(recursive: true); });
+    final documents = [
+      '# Keep this comment\nmcp_servers:\n  dart:\n    args: [mcp-server]\n',
+      '# Keep this comment\nicon:\n  kind: lucide\n  name: terminal\n  color: blue\nmcp_servers: {}\n',
+      '# Keep this comment\nmcp_servers: {}\nicon:\n  kind: emoji\n  emoji: 🚀\n',
+      '# Keep this comment\nicon: old.png # Icon comment\nmcp_servers: {}\n',
+      '# Keep this comment\n{"mcp_servers":{"dart":{"args":["mcp-server"]}}}\n',
+      '# Keep this comment\n{icon: old.svg, mcp_servers: {}}\n',
+      '# Keep this comment\n---\nmcp_servers: {}\n...\n',
+      '# Keep this comment\n',
+    ];
+    for (var index = 0; index < documents.length; index++) {
+      final directory = await Directory('${root.path}/$index/.happen').create(recursive: true);
+      final file = File('${directory.path}/config.yaml');
+      final source = documents[index], project = directory.parent.path;
+      await file.writeAsString(source);
+      final before = parseConfig(source, partialMcp: true);
+      for (final icon in <ProjectIcon?>[
+        const ProjectFileIcon('assets/logo.svg'), const ProjectMonogramIcon('HP', 'purple'), null,
+      ]) {
+        await saveProjectIcon(project, icon, cancellation: token);
+        final saved = await file.readAsString();
+        final values = parseConfig(saved, partialMcp: true);
+        expect(values['icon'], projectIconConfig(icon), reason: 'Document $index');
+        expect(values['mcp_servers'], before['mcp_servers'], reason: 'Document $index');
+        expect(saved, contains('# Keep this comment'), reason: 'Document $index');
+        expect(projectIconConfig(await loadProjectIcon(project, cancellation: token)), projectIconConfig(icon));
+      }
+      final committed = await file.readAsString();
+      await expectLater(saveProjectIcon(project, const ProjectMonogramIcon('TOO LONG', 'blue'), cancellation: token), throwsFormatException);
+      expect(await file.readAsString(), committed);
+    }
+  });
 }
