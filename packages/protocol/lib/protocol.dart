@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:isolate';
 
@@ -259,7 +260,7 @@ Future<Object?> _callIsolate(
       result.future,
       if (exited != null)
         exited.then(
-          (_) => throw const RemoteFailure('Worker exited before replying'),
+          (failure) => throw failure,
         ),
     ]).asCancellable(token);
   } finally {
@@ -270,14 +271,47 @@ Future<Object?> _callIsolate(
   }
 }
 
-final _ownerExits = <SendPort, Future<void>>{};
+final _ownerExits = <SendPort, Future<RemoteFailure>>{};
+SendPort? _ownerExit;
+final _exitResources = <String, Json>{};
+
+/// Custody survives abrupt exit. Only plain data crosses the VM's exit-message
+/// boundary; the parent already owns the effect that disposes these resources.
+void registerIsolateCleanup(String key, Json params) {
+  if (_ownerExit == null) return;
+  _exitResources[key] = params;
+  _publishIsolateCleanup();
+}
+
+void unregisterIsolateCleanup(String key) {
+  if (_exitResources.remove(key) != null) _publishIsolateCleanup();
+}
+
+void _publishIsolateCleanup() {
+  if (_ownerExit case final target?) {
+    Isolate.current.addOnExitListener(target, response: {'cleanup': _exitResources.values.toList()});
+  }
+}
+
+Future<void> _cleanExitedIsolate(Object? message,
+  Future<void> Function(Json, CancellationToken, void Function(Json))? effect) async {
+  if (effect == null || message is! Map || message['cleanup'] is! List) return;
+  final cancellation = TimeoutCancellationToken(const Duration(seconds: 3));
+  try {
+    await Future.wait((message['cleanup'] as List).map((raw) async {
+      try {
+        await runIsolateEffect<void>(effect, jsonObject(raw), cancellation: cancellation);
+      } catch (error, stack) { stderr.writeln('Worker resource cleanup failed: ${traceErrorMessage(error)}\n$stack'); }
+    }));
+  } finally { cancellation.cancel(); }
+}
 
 /// A worker owns its resources until its mailbox receives close.
 class IsolateOwner {
-  IsolateOwner._(this.isolate, this.port, this._exit, this._errors, this.done);
+  IsolateOwner._(this.isolate, this.port, this._exit, this.done);
   final Isolate isolate;
   final SendPort port;
-  final ReceivePort _exit, _errors;
+  final ReceivePort _exit;
   final Future<void> done;
   Future<void>? _closing;
 
@@ -285,42 +319,60 @@ class IsolateOwner {
     Future<void> Function(List<Object?>) entry,
     Json config, {
     String service = 'network',
+    CancellationToken? cancellation,
+    Future<void> Function(Json, CancellationToken, void Function(Json))? cleanup,
   }
   ) async {
-    final ready = ReceivePort(), exit = ReceivePort(), errors = ReceivePort();
+    cancellation?.throwIfCancelled();
+    final ready = ReceivePort(), exit = ReceivePort();
     final startup = Completer<SendPort>();
-    final stopped = Completer<void>();
-    errors.listen((error) {
-      if (!startup.isCompleted) {
-        startup.completeError(StateError('Worker failed during startup'));
+    final stopped = Completer<RemoteFailure>();
+    RemoteFailure? failure;
+    // One lifecycle mailbox preserves the fatal error before the exit signal.
+    // `done` acknowledges actual exit, rather than the earlier error notice.
+    exit.listen((message) {
+      if (message is List) {
+        failure = RemoteFailure('$service worker failed: ${message[0]}', code: 'worker_failed');
+        final stack = StackTrace.fromString('${message[1]}');
+        stderr.writeln('$failure\n$stack');
+        if (!startup.isCompleted) {
+          startup.completeError(StateError('$service worker failed during startup: ${message[0]}'), stack);
+        }
+        return;
       }
-      if (!stopped.isCompleted) stopped.complete();
-    });
-    exit.listen((_) {
-      if (!startup.isCompleted) {
-        startup.completeError(StateError('Worker exited during startup'));
-      }
-      if (!stopped.isCompleted) stopped.complete();
+      unawaited(() async {
+        await _cleanExitedIsolate(message, cleanup);
+        if (!startup.isCompleted) { startup.completeError(StateError('$service worker exited during startup')); }
+        if (!stopped.isCompleted) {
+          stopped.complete(failure ?? RemoteFailure('$service worker exited before replying', code: 'worker_exited'));
+        }
+      }());
     });
     final listener = ready.listen((message) {
       if (!startup.isCompleted) startup.complete(message as SendPort);
     });
-    final isolate = await Isolate.spawn(
-      _tracedOwnerMain,
-      [entry, ready.sendPort, {...config, '_trace': currentTrace?.carrier(), '_trace_service': service}],
-      onExit: exit.sendPort,
-      onError: errors.sendPort,
-      errorsAreFatal: true,
-    );
+    Isolate? isolate;
     try {
-      final port = await startup.future.timeout(const Duration(seconds: 30));
+      isolate = await Isolate.spawn(
+        _tracedOwnerMain,
+        [entry, ready.sendPort, {...config, '_trace': currentTrace?.carrier(), '_trace_service': service,
+          '_owner_exit': cleanup == null ? null : exit.sendPort}],
+        onExit: exit.sendPort,
+        onError: exit.sendPort,
+        errorsAreFatal: true,
+        debugName: service,
+      );
+      final port = await startup.future.timeout(const Duration(seconds: 30)).asCancellable(cancellation);
       _ownerExits[port] = stopped.future;
-      return IsolateOwner._(isolate, port, exit, errors, stopped.future);
-    } catch (_) {
-      isolate.kill(priority: Isolate.immediate);
+      return IsolateOwner._(isolate, port, exit, stopped.future.then((_) {}));
+    } catch (error, stack) {
+      if (isolate != null) {
+        isolate.kill(priority: Isolate.immediate);
+        try { await stopped.future.timeout(const Duration(seconds: 5)); }
+        catch (cleanupError) { stderr.writeln('Worker startup cleanup failed: ${traceErrorMessage(cleanupError)}'); }
+      }
       exit.close();
-      errors.close();
-      rethrow;
+      Error.throwWithStackTrace(error, stack);
     } finally {
       await listener.cancel();
       ready.close();
@@ -329,20 +381,31 @@ class IsolateOwner {
 
   Future<void> close() => _closing ??= _close();
   Future<void> _close() async {
+    Object? failure;
+    StackTrace? failureStack;
     try {
-      await callIsolate(
-        port,
-        'close',
-        {},
-        timeout: const Duration(seconds: 10),
-      );
-      await done.timeout(const Duration(seconds: 2));
+      try {
+        await callIsolate(port, 'close', {}, timeout: const Duration(seconds: 10));
+      } catch (error, stack) {
+        if (error is! RemoteFailure || error.code != 'worker_exited' && error.code != 'worker_failed') {
+          failure = error; failureStack = stack;
+        }
+      }
+      try { await done.timeout(const Duration(seconds: 5)); }
+      catch (error, stack) {
+        failure ??= error; failureStack ??= stack;
+        isolate.kill(priority: Isolate.immediate);
+        // Keep the lifecycle mailbox until forced-exit cleanup acknowledges
+        // resource disposal, even when the ordinary close request failed.
+        try { await done.timeout(const Duration(seconds: 5)); }
+        catch (cleanupError) { stderr.writeln('Worker forced-exit cleanup failed: ${traceErrorMessage(cleanupError)}'); }
+      }
     } finally {
       unawaited(_ownerExits.remove(port));
       _exit.close();
-      _errors.close();
       isolate.kill();
     }
+    if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
   }
 }
 
@@ -405,6 +468,8 @@ Future<void> _effectMain(List<Object?> arguments) async {
 Future<void> _tracedOwnerMain(List<Object?> arguments) async {
   final entry = arguments[0] as Future<void> Function(List<Object?>);
   final config = jsonObject(arguments[2]);
+  _ownerExit = config['_owner_exit'] as SendPort?;
+  _publishIsolateCleanup();
   final context = traceContextFrom(config['_trace'], service: config['_trace_service'] as String);
   await withTrace(context, () => entry([arguments[1], config]));
 }

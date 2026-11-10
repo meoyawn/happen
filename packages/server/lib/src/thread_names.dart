@@ -99,7 +99,7 @@ extension _ThreadNames on AgentServer {
           if (provider == 'openai' || provider == 'gpt') 'verbosity': 'low'
           else 'max_output_tokens': 256},
         effectiveReasoning: reasoning);
-      final reply = ModelReply.fromJson(jsonObject(await callIsolate(network.port, 'respond',
+      final reply = ModelReply.fromJson(jsonObject(await _callNetwork('respond',
         {'provider': provider, ...request.toJson()}, cancellation: work)));
       final generated = requiredString(jsonObject(jsonDecode(reply.text)), 'title')
         .replaceAll(RegExp(r'\s+'), ' ').trim();

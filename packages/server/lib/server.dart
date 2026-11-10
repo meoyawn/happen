@@ -31,6 +31,7 @@ part 'src/thread_names.dart';
 part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
 part 'src/mcp_input.dart';
+part 'src/network_lifecycle.dart';
 part 'src/goals.dart';
 part 'src/git_requests.dart';
 part 'src/ssh.dart';
@@ -47,7 +48,7 @@ class AgentServer {
   );
   final String directory;
   final HttpServer? http;
-  final IsolateOwner network;
+  IsolateOwner network;
   final String? token;
   final int maxAgents;
   final Telemetry telemetry;
@@ -84,6 +85,10 @@ class AgentServer {
   final _mcpInputs = <String, ({Json request, Completer<Json> answer, String? owner, String? threadId})>{};
   bool _closing = false;
   bool _networkExited = false;
+  late Json _networkConfiguration = const {};
+  late _NetworkRecovery _networkRecovery = const _NetworkIdle();
+  IsolateOwner? _observedNetwork;
+  String? _networkGeneration;
   final int _threadUnloadDelaySecs = 60;
   Timer? _maintenanceTimer;
   Future<Json>? _maintenance;
@@ -150,6 +155,7 @@ class AgentServer {
       }
     }
     final events = ReceivePort();
+    final generation = newId();
     final IsolateOwner network;
     try {
       network = await startNetwork(
@@ -162,6 +168,7 @@ class AgentServer {
         configPath: configPath,
         skillsHome: skillsHome,
         events: events.sendPort,
+        generation: generation,
       );
     } catch (_) {
       events.close();
@@ -194,6 +201,13 @@ class AgentServer {
         events,
       );
       server.socketPath = socketPath;
+      server._networkConfiguration = {
+        'endpoint': endpoint, 'api_key_env': apiKeyEnv,
+        'opencode_endpoint': openCodeEndpoint, 'opencode_search_endpoint': openCodeSearchEndpoint,
+        'public_url': publicUrl, 'config_path': configPath, 'skills_home': skillsHome,
+      };
+      server._networkGeneration = generation;
+      server._watchNetwork(network);
       server._goalSubscription = server._goalRequests.listen(server._handleGoalRequest);
       if (socketPath != null) {
         server._socketStat = await File(socketPath).stat();
@@ -206,20 +220,6 @@ class AgentServer {
       unawaited(restoringEvents.catchError((Object error) {
         if (!server._closing) traceError(error);
       }).whenComplete(() => server._requests.remove(restoringEvents)));
-      unawaited(
-        network.done.then((_) {
-          server._networkExited = true;
-          if (!server._closing) {
-            for (final task in server._tasks.values) {
-              final agent = task.agent;
-              if (agent != null) {
-                task.codeInterrupt?.interrupt();
-                agent.port.send({'method': 'cancel', 'params': <String, Object?>{}});
-              }
-            }
-          }
-        }),
-      );
       http?.listen(server._accept);
       void maintain() {
         unawaited(server.maintain().catchError((Object _) {
@@ -481,7 +481,7 @@ class AgentServer {
         }
       }
       final result = jsonObject(
-        await callIsolate(network.port, 'mcp.webhook', {
+        await _callNetwork('mcp.webhook', {
           'subscription_id': request.uri.pathSegments.last,
           'body': bytes,
           'headers': {
@@ -637,7 +637,7 @@ class AgentServer {
       final deadline = TimeoutCancellationToken(const Duration(minutes: 5));
       client.mcpLogins[requestId] = deadline;
       try {
-        return await callIsolate(network.port, method, {...params, 'owner': client.id},
+        return await _callNetwork(method, {...params, 'owner': client.id},
           onEvent: client.event, cancellation: deadline.merge(client.cancellation));
       } finally {
         client.mcpLogins.remove(requestId);
@@ -648,7 +648,7 @@ class AgentServer {
       final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
       client.mcpInventories[requestId] = deadline;
       try {
-        return await callIsolate(network.port, method, {...params, 'owner': client.id},
+        return await _callNetwork(method, {...params, 'owner': client.id},
           cancellation: deadline.merge(client.cancellation));
       } finally {
         client.mcpInventories.remove(requestId);
@@ -678,7 +678,7 @@ class AgentServer {
         }
         owner = 'thread:$id';
       }
-      return callIsolate(network.port, method, {
+      return _callNetwork(method, {
         ...params,
         'owner': owner,
       }, cancellation: client.cancellation);
@@ -713,7 +713,7 @@ class AgentServer {
         client.skillSearch = deadline;
         client.skillSearchId = requestId;
         try {
-          return await callIsolate(network.port, method, {...params, 'owner': client.id},
+          return await _callNetwork(method, {...params, 'owner': client.id},
             cancellation: deadline.merge(client.cancellation));
         } finally {
           if (identical(client.skillSearch, deadline)) {
@@ -723,8 +723,7 @@ class AgentServer {
           deadline.cancel();
         }
       case 'providers.list':
-        return callIsolate(
-          network.port,
+        return _callNetwork(
           'providers.list',
           {},
           cancellation: client.cancellation,
@@ -733,14 +732,13 @@ class AgentServer {
         // Access credentials are only available to the local desktop connection.
         // Audio and transcription never pass through the task WebSocket.
         if (socketPath == null) throw StateError('Desktop authorization requires a local Unix socket');
-        return callIsolate(network.port, method, {
+        return _callNetwork(method, {
           'refresh': params['refresh'] == true, 'owner': client.id,
         }, cancellation: client.cancellation);
       case 'auth.login':
       case 'auth.cancel':
       case 'auth.logout':
-        return callIsolate(
-          network.port,
+        return _callNetwork(
           method,
           {...params, 'owner': client.id},
           onEvent: client.event,
@@ -972,7 +970,7 @@ class AgentServer {
             if (config['reasoning_updates'] != true && effort != baseline['reasoning']) {
               throw ArgumentError('Reasoning effort is fixed for this task');
             }
-            await callIsolate(network.port, 'validate_settings', {
+            await _callNetwork('validate_settings', {
               'provider': config['provider'],
               'model': config['model'],
               'model_info': config['model_info'],
@@ -1201,7 +1199,7 @@ class AgentServer {
     }
     cancellation.throwIfCancelled();
     return importHistory(targetDirectory, source, operationId: operationId,
-      taskIds: network.port, catalog: (await _serverStore).port, cancellation: cancellation);
+      taskIds: (await _acquireNetwork(cancellation)).port, catalog: (await _serverStore).port, cancellation: cancellation);
   }
 
   Future<void> _archive(_Task task, bool archived) async {
@@ -1350,7 +1348,7 @@ class AgentServer {
   }
 
   Future<String> _newTaskId(Json config, CancellationToken cancellation) async =>
-      await callIsolate(network.port, 'task.new_id', {'provider': config['provider']},
+      await _callNetwork('task.new_id', {'provider': config['provider']},
         cancellation: cancellation) as String;
 
   Future<Json> _config(Json input, {CancellationToken? cancellation}) async {
@@ -1359,7 +1357,7 @@ class AgentServer {
       throw ArgumentError('Working directory does not exist');
     }
     final provider = jsonObject(
-      await callIsolate(network.port, 'configure', input, cancellation: cancellation),
+      await _callNetwork('configure', input, cancellation: cancellation),
     );
     return initialConfiguration(
       {...input, ...provider, 'global_directory': directory},
@@ -1376,11 +1374,6 @@ class AgentServer {
     Json settings = const {},
   }) {
     _lifetime.throwIfCancelled();
-    if (_networkExited) {
-      throw StateError(
-        'Network worker exited; restart the server before starting a turn',
-      );
-    }
     if (task.disposing) throw StateError('Side chat is closing');
     if (task.busy || task.maintenance) throw StateError('Task is busy');
     if (!compact && !retry && settings['goalContinuation'] != true && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
@@ -1432,6 +1425,11 @@ class AgentServer {
     // it commits its terminal event, regardless of the turn's total duration.
     final turnLifetime = CancellationToken();
     try {
+      task.turnNetwork = await _acquireNetwork(turnLifetime.merge(_lifetime));
+      task.turnCancellation = turnLifetime;
+      if (_networkExited || !identical(network, task.turnNetwork)) {
+        throw const RemoteFailure('The local chat service stopped before the turn started', code: 'network_unavailable');
+      }
       task.writer ??= task.memoryStore ?? await _startStore(
         task.id,
         create: task.config != null,
@@ -1490,7 +1488,7 @@ class AgentServer {
         taskId: task.id,
         config: _agentConfig(task.id, task.config!),
         writer: task.writer!.port,
-        network: network.port,
+        network: task.turnNetwork!.port,
         clientTools: _clientTools.port,
         goals: _goalRequests.sendPort,
         taskTools: _taskTools.port,
@@ -1573,6 +1571,8 @@ class AgentServer {
       if (!retainWriter) await _taskTools.release(task.id);
       if (task.memoryStore == null && !retainWriter) await task.writer?.close();
       task.agent = null;
+      task.turnNetwork = null;
+      task.turnCancellation = null;
       if (!retainWriter) task.writer = null;
       task.busy = false;
       task.finishing = false;
@@ -1720,6 +1720,7 @@ class AgentServer {
   Future<void> close() async {
     if (_closing) return;
     _closing = true;
+    _closeNetworkRecovery();
     _maintenanceTimer?.cancel();
     _lifetime.cancel();
     try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
@@ -1811,6 +1812,8 @@ class _Task {
   int unloadDelaySecs = 60;
   Timer? unloadTimer;
   IsolateOwner? writer, agent;
+  IsolateOwner? turnNetwork;
+  CancellationToken? turnCancellation;
   CodeInterrupt? codeInterrupt;
   Future<void>? running;
   Completer<void>? backgroundMaintenance;

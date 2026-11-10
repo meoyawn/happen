@@ -19,6 +19,14 @@ extension _McpEvents on AgentServer {
     if (message['method'] == 'cancel') {
       _mcpOperations[message['params']['operation_id']]?.cancel(); return;
     }
+    final params = message['params'] is Map ? jsonObject(message['params']) : null;
+    if ((message['_network_generation'] ?? params?['_network_generation']) != _networkGeneration) {
+      (message['reply'] as SendPort?)?.send({'error': 'The originating network connection has closed', 'code': 'cancelled'});
+      return;
+    }
+    if (params?.containsKey('_network_generation') == true) {
+      message = {...message, 'params': {...params!}..remove('_network_generation')};
+    }
     if (message['method'] == 'mcp.input') {
       final operation = _askMcpInput(message); _requests.add(operation);
       unawaited(operation.whenComplete(() => _requests.remove(operation))); return;
@@ -82,7 +90,8 @@ extension _McpEvents on AgentServer {
     }
   }
 
-  Future<void> _restoreMcpEvents() async {
+  Future<void> _restoreMcpEvents({bool resumePending = true}) async {
+    final networkOwner = network;
     final index = await _serverStore;
     final ids = (await callIsolate(index.port, 'mcp.threads', {}, cancellation: _lifetime) as List).cast<String>();
     final owners = await readMcpEventOwners(directory, threadIds: ids, cancellation: _lifetime);
@@ -98,16 +107,19 @@ extension _McpEvents on AgentServer {
     // when an installation has hundreds of saved watches.
     final remaining = owners.iterator;
     Future<void> restore() async {
-      while (remaining.moveNext()) { await _restoreMcpEventOwner(remaining.current); }
+      while (remaining.moveNext()) {
+        await _restoreMcpEventOwner(remaining.current, networkOwner, resumePending: resumePending);
+      }
     }
     await Future.wait([for (var worker = 0; worker < 16 && worker < owners.length; worker++) restore()]);
   }
 
-  Future<void> _restoreMcpEventOwner(Json owner) async {
+  Future<void> _restoreMcpEventOwner(Json owner, IsolateOwner networkOwner, {bool resumePending = true}) async {
     try {
       _lifetime.throwIfCancelled();
+      if (_networkExited || !identical(network, networkOwner)) return;
       final id = requiredString(owner, 'threadId');
-      if (owner['pending'] == true) {
+      if (resumePending && owner['pending'] == true) {
         // An ACK can precede a crash while another turn owns the thread. Wake
         // the already-admitted inbox even if no upstream occurrence follows.
         final task = await _loadThread(id, _lifetime);
@@ -116,7 +128,8 @@ extension _McpEvents on AgentServer {
           _begin(task, next['prompt'] as String, settings: {'message_id': next['id'], 'sent_at': next['created_at']});
         }
       }
-      await callIsolate(network.port, 'mcp.events.restore', owner, cancellation: _lifetime);
+      if (_networkExited || !identical(network, networkOwner)) return;
+      await callIsolate(networkOwner.port, 'mcp.events.restore', owner, cancellation: _lifetime);
     } on CancelledException { if (!_closing) rethrow; }
     catch (error) { traceError(error); }
   }

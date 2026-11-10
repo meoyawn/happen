@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -38,19 +42,114 @@ class _ConversationMarkdownBody extends StatefulWidget {
   State<_ConversationMarkdownBody> createState() => _ConversationMarkdownBodyState();
 }
 
-class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
+class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> implements MarkdownBuilderDelegate {
   final _lifetime = CancellationToken();
   Object? _styleState;
   late MarkdownStyleSheet _styleSheet;
   var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
+  late final _links = <GestureRecognizer, String?>{};
+  Object? _contentState;
+  late Widget _content;
+  String? _hoveredHref;
+  Offset? _tooltipPosition;
+  Timer? _tooltipDelay;
+  OverlayEntry? _tooltip;
+  ScrollPosition? _tooltipScroll;
+
+  void _disposeLinks() {
+    for (final recognizer in _links.keys) { recognizer.dispose(); }
+    _links.clear();
+  }
 
   @override
-  void dispose() { _lifetime.cancel(); super.dispose(); }
+  GestureRecognizer createLink(String text, String? href, String title) {
+    final recognizer = TapGestureRecognizer()..onTap = () {
+      _hideLinkTooltip();
+      if (href != null) {
+        unawaited(openDesktopLink(context, href, directory: widget.markdown.directory, cancellation: _lifetime));
+      }
+    };
+    _links[recognizer] = href;
+    return recognizer;
+  }
+
+  @override
+  TextSpan formatText(MarkdownStyleSheet styleSheet, String code) =>
+    TextSpan(text: code.replaceFirst(RegExp(r'\n$'), ''), style: styleSheet.code);
+
+  void _hoverLink(PointerHoverEvent event) {
+    final render = context.findRenderObject();
+    if (render is! RenderBox || !render.attached || !render.hasSize) return;
+    final hit = BoxHitTestResult();
+    render.hitTest(hit, position: render.globalToLocal(event.position));
+    final href = hit.path.map((entry) => entry.target).whereType<TextSpan>()
+      .map((span) => _links[span.recognizer]).whereType<String>().firstOrNull;
+    if (href != _hoveredHref) { _hideLinkTooltip(); _hoveredHref = href; }
+    if (href == null) return;
+    _tooltipPosition = event.position;
+    if (_tooltip != null) { _tooltip!.markNeedsBuild(); return; }
+    if (_tooltipDelay != null) return;
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_dismissLinkTooltip);
+    _tooltipScroll = Scrollable.maybeOf(context)?.position;
+    _tooltipScroll?.addListener(_hideLinkTooltip);
+    _tooltipDelay = Timer(TooltipTheme.of(context).waitDuration ?? const Duration(milliseconds: 500), () {
+      if (!mounted || _hoveredHref == null) return;
+      final overlay = Overlay.maybeOf(context);
+      if (overlay == null) { _hideLinkTooltip(); return; }
+      final style = Theme.of(context).textTheme.bodySmall?.copyWith(color: desktopSurface, fontSize: 12, height: 1.4);
+      _tooltip = OverlayEntry(builder: (_) {
+        final render = overlay.context.findRenderObject();
+        if (render is! RenderBox || !render.hasSize || _tooltipPosition == null || _hoveredHref == null) {
+          return const SizedBox.shrink();
+        }
+        return Positioned.fill(child: IgnorePointer(child: ExcludeSemantics(child: CustomSingleChildLayout(
+          delegate: _LinkTooltipLayout(render.globalToLocal(_tooltipPosition!)),
+          child: DecoratedBox(decoration: BoxDecoration(color: desktopForeground, borderRadius: BorderRadius.circular(4)),
+            child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              child: Text(_hoveredHref!, textDirection: TextDirection.ltr, style: style))),
+        ))));
+      });
+      overlay.insert(_tooltip!);
+    });
+  }
+
+  void _dismissLinkTooltip(PointerEvent event) {
+    if (event is PointerDownEvent || event is PointerSignalEvent || event is PointerPanZoomStartEvent ||
+        event is PointerCancelEvent || event is PointerRemovedEvent) { _hideLinkTooltip(); }
+  }
+
+  void _hideLinkTooltip() {
+    if (_tooltipDelay != null) GestureBinding.instance.pointerRouter.removeGlobalRoute(_dismissLinkTooltip);
+    _tooltipDelay?.cancel();
+    _tooltipDelay = null;
+    _tooltipScroll?.removeListener(_hideLinkTooltip);
+    _tooltipScroll = null;
+    _tooltip?.remove();
+    _tooltip?.dispose();
+    _tooltip = null;
+    _hoveredHref = null;
+  }
+
+  @override
+  void didUpdateWidget(_ConversationMarkdownBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.markdown.text != widget.markdown.text || oldWidget.markdown.directory != widget.markdown.directory) {
+      _hideLinkTooltip();
+    }
+  }
+
+  @override
+  void deactivate() { _hideLinkTooltip(); super.deactivate(); }
+
+  @override
+  void dispose() { _hideLinkTooltip(); _disposeLinks(); _lifetime.cancel(); super.dispose(); }
 
   @override
   void reassemble() {
     super.reassemble();
+    _hideLinkTooltip();
     _styleState = null;
+    _contentState = null;
     _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
   }
 
@@ -83,8 +182,8 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         h3Padding: const EdgeInsets.only(top: 20, bottom: 8),
         code: TextStyle(fontFamily: desktopMonoFamily, fontSize: fontSize * .875,
           // Keep the fill translucent: span backgrounds paint over selection.
-          color: desktopForeground, backgroundColor: desktopMuted),
-        strong: body.copyWith(fontWeight: FontWeight.w600),
+          backgroundColor: desktopMuted),
+        strong: const TextStyle(fontWeight: FontWeight.w600),
         blockSpacing: 10.4,
         listBullet: body,
         listIndent: 24,
@@ -107,11 +206,21 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
         ),
       );
     }
-    final body = MarkdownBody(
-        key: ValueKey((directory, fitContent)),
-        data: text,
-        extensionSet: md.ExtensionSet.gitHubFlavored,
-        inlineSyntaxes: _inlineSyntaxes,
+    final contentKey = (text, directory, fitContent, _styleSheet);
+    if (_contentState != contentKey) {
+      _hideLinkTooltip();
+      _disposeLinks();
+      final nodes = md.Document(extensionSet: md.ExtensionSet.gitHubFlavored,
+        inlineSyntaxes: _inlineSyntaxes, encodeHtml: false).parseLines(const LineSplitter().convert(text));
+      // Use the package's parser and rich-text builder, retaining the href for
+      // glyph hit testing without turning selectable link labels into widgets.
+      final children = MarkdownBuilder(
+        delegate: this,
+        selectable: false,
+        imageDirectory: null,
+        bulletBuilder: null,
+        paddingBuilders: const {},
+        listItemCrossAxisAlignment: MarkdownListItemCrossAxisAlignment.baseline,
         fitContent: fitContent,
         softLineBreak: fitContent,
         styleSheet: _styleSheet,
@@ -126,14 +235,34 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> {
           child: Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank,
             size: 17, color: checked ? desktopForeground : desktopSecondary),
         ),
-        onTapLink: (_, href, _) {
-          if (href != null) {
-            unawaited(openDesktopLink(context, href, directory: directory, cancellation: _lifetime));
-          }
-        },
-      );
-    return ConversationImageGroup(child: ConversationAnnotationSelection.contains(context) ? body : SelectionArea(child: body));
+      ).build(nodes);
+      _content = children.length == 1 ? children.single : Column(mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: fitContent ? CrossAxisAlignment.start : CrossAxisAlignment.stretch, children: children);
+      _contentState = contentKey;
+    }
+    return ConversationImageGroup(child: MouseRegion(onHover: _hoverLink, onExit: (_) => _hideLinkTooltip(),
+      child: ConversationAnnotationSelection.contains(context) ? _content : SelectionArea(child: _content)));
   }
+}
+
+class _LinkTooltipLayout extends SingleChildLayoutDelegate {
+  _LinkTooltipLayout(this.position);
+  final Offset position;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) => BoxConstraints.loose(Size(
+    math.min(480, math.max(0, constraints.maxWidth - 16)), math.max(0, constraints.maxHeight - 16)));
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) {
+    final left = (position.dx + 12).clamp(8.0, math.max(8.0, size.width - childSize.width - 8));
+    final below = position.dy + 18;
+    final top = below + childSize.height + 8 <= size.height ? below : position.dy - childSize.height - 12;
+    return Offset(left.toDouble(), top.clamp(8.0, math.max(8.0, size.height - childSize.height - 8)).toDouble());
+  }
+
+  @override
+  bool shouldRelayout(_LinkTooltipLayout oldDelegate) => position != oldDelegate.position;
 }
 
 /// Composer atoms retain native paths, including spaces, in their Markdown.

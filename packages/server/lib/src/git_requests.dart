@@ -204,7 +204,7 @@ extension _GitRequests on AgentServer {
               effectiveReasoning: reasoning);
             final deadline = TimeoutCancellationToken(const Duration(seconds: 45));
             try {
-              final response = ModelReply.fromJson(jsonObject(await callIsolate(network.port, 'respond',
+              final response = ModelReply.fromJson(jsonObject(await _callNetwork('respond',
                 {'provider': provider, ...request.toJson()}, cancellation: cancellation.merge(deadline))));
               final generated = jsonObject(jsonDecode(response.text));
               final subject = requiredString(generated, 'subject').replaceAll(RegExp(r'\s+'), ' ').trim();

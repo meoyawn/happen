@@ -26,6 +26,8 @@ Future<IsolateOwner> startNetwork(
   String? configPath,
   String? skillsHome,
   SendPort? events,
+  String? generation,
+  CancellationToken? cancellation,
 }) async {
   configPath = File(configPath ?? defaultConfigPath()).absolute.path;
   // Validate before spawning so startup errors reach the caller with a field
@@ -33,6 +35,7 @@ Future<IsolateOwner> startNetwork(
   final global = await loadConfig(
     configPath,
     legacyPath: '$directory/config.json',
+    cancellation: cancellation,
   );
   return IsolateOwner.start(_networkMain, {
     'directory': directory,
@@ -46,10 +49,16 @@ Future<IsolateOwner> startNetwork(
     'config': global.values,
     'loaded_config_path': global.path,
     'events': events,
-  });
+    'generation': generation,
+  }, cancellation: cancellation, cleanup: cleanupMcpProcess);
 }
 Future<void> _networkMain(List<Object?> args) async {
   final startup = jsonObject(args[1]);
+  final host = startup['events'] as SendPort?;
+  final generation = startup['generation'];
+  void sendHost(Json message) => host?.send({...message, '_network_generation': ?generation});
+  Future<Object?> callHost(String method, Json params, CancellationToken cancellation) =>
+    callIsolate(host!, method, {...params, '_network_generation': ?generation}, cancellation: cancellation);
   final directory = startup['directory'] as String;
   final configPath = startup['config_path'] as String;
   final global = jsonObject(startup['config']);
@@ -116,23 +125,23 @@ Future<void> _networkMain(List<Object?> args) async {
         'codex/network-policy-meta': {'enabled': false},
     },
     directory: directory,
-    onAuthChanged: (server) => (startup['events'] as SendPort?)?.send({
+    onAuthChanged: (server) => sendHost({
       'event': {'type': 'mcp.auth.changed', 'server': server},
     }),
     publicUrl: startup['public_url'] as String?,
     persistSubscription: (operation, params, cancellation) async {
       try {
-        await callIsolate(startup['events'] as SendPort, 'mcp.subscription.$operation', params, cancellation: cancellation);
+        await callHost('mcp.subscription.$operation', params, cancellation);
       } on CancelledException { rethrow; }
       catch (_) { throw const McpFailure('Unable to persist the thread event subscription', status: 503); }
     },
     acceptThreadEvent: (event, cancellation) async {
       try {
-        await callIsolate(startup['events'] as SendPort, 'mcp.event.accept', {'event': event}, cancellation: cancellation);
+        await callHost('mcp.event.accept', {'event': event}, cancellation);
       } on CancelledException { rethrow; }
       catch (_) { throw const McpFailure('Thread inbox is unavailable; retry this event', status: 503); }
     },
-    onEvent: (owner, event) => (startup['events'] as SendPort?)?.send({
+    onEvent: (owner, event) => sendHost({
       'owner': owner,
       'event': event,
     }),
@@ -168,7 +177,7 @@ Future<void> _networkMain(List<Object?> args) async {
   Future<void> reloads = initialized.catchError((Object _) {});
   void configEvent(String type, Json data) {
     if (closing) return;
-    (startup['events'] as SendPort?)?.send({
+    sendHost({
       'event': {'type': type, 'data': data},
     });
   }
@@ -416,7 +425,7 @@ Future<void> _networkMain(List<Object?> args) async {
             });
           if (provider == 'openai') {
             gptCatalog.invalidate();
-            (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
+            sendHost({'event': {'type': 'auth.changed', 'provider': 'openai'}});
             await auth.login(cancellation: cancellation, notify: notify);
           } else {
             await consoleAuth.login(
@@ -439,7 +448,7 @@ Future<void> _networkMain(List<Object?> args) async {
         final provider = requestedProvider == 'gpt' ? 'openai' : requestedProvider;
         if (provider == 'openai') {
           gptCatalog.invalidate();
-          (startup['events'] as SendPort?)?.send({'event': {'type': 'auth.changed', 'provider': 'openai'}});
+          sendHost({'event': {'type': 'auth.changed', 'provider': 'openai'}});
           await auth.signOut();
         } else if (provider == 'opencode') {
           await consoleAuth.signOut();
@@ -460,10 +469,10 @@ Future<void> _networkMain(List<Object?> args) async {
         }
         final Object? result;
         final McpInputHandler? input = id == null && params['owner'] == null ? null : (inputId, inputRequest, token) async =>
-          jsonObject(await callIsolate(startup['events'] as SendPort, 'mcp.input', {
+          jsonObject(await callHost('mcp.input', {
             'request_id': inputId, 'threadId': id, 'owner': params['owner'], 'source': params['server'] ?? params['name'] ?? 'MCP',
             'request': inputRequest,
-          }, cancellation: token));
+          }, token));
         if (params['read_only'] != null && params['read_only'] is! bool) throw const FormatException('Expected read_only boolean');
         switch (request['method']) {
           case 'mcp.auth.login':
@@ -816,6 +825,13 @@ Future<void> _networkMain(List<Object?> args) async {
       service: {'respond', 'compact', 'web.search', 'image.generate'}.contains(request['method']) &&
         request['params']?['provider'] == 'openai' ? 'openai' : 'network');
     pending.add(operation);
-    unawaited(operation.whenComplete(() => pending.remove(operation)));
+    unawaited(operation.catchError((Object error, StackTrace stack) {
+      // Request failure, including cleanup, belongs to that request. A detached
+      // future must not turn it into an uncaught shared-isolate failure.
+      traceError(error);
+      stderr.writeln('Network request failed: ${traceErrorMessage(error)}\n$stack');
+      (request['reply'] as SendPort?)?.send({'error': error.toString(),
+        if (error is CancelledException) 'code': 'cancelled'});
+    }).whenComplete(() => pending.remove(operation)));
   });
 }

@@ -37,9 +37,11 @@ Future<_StdioProcess> _startStdio(Json config, CancellationToken cancellation) a
   if (!Platform.isMacOS && !Platform.isLinux) {
     final process = await Process.start(command, args, workingDirectory: config['cwd'] as String?,
       environment: environment, includeParentEnvironment: false);
+    registerIsolateCleanup('mcp:${process.pid}', {'pid': process.pid});
     final result = _StdioProcess(process.pid, process.stdin, process.stdout, process.stderr, process.exitCode.then<void>((_) {}),
-      (signal) => process.kill(signal == 9 ? ProcessSignal.sigkill : ProcessSignal.sigterm), () async {});
-    if (cancellation.isCancelled) { await result.stop(); cancellation.throwIfCancelled(); }
+      (signal) => process.kill(signal == 9 ? ProcessSignal.sigkill : ProcessSignal.sigterm),
+      () async { unregisterIsolateCleanup('mcp:${process.pid}'); });
+    if (cancellation.isCancelled) { await result.stop(); await result.dispose(); cancellation.throwIfCancelled(); }
     return result;
   }
   final descriptors = <int>[], sockets = <RawSocket>[];
@@ -59,16 +61,45 @@ Future<_StdioProcess> _startStdio(Json config, CancellationToken cancellation) a
     sockets.addAll(await _adoptStdioSockets([descriptors[0], descriptors[2], descriptors[4]], cancellation));
     cancellation.throwIfCancelled();
     final pid = _spawnStdio(command, args, config['cwd'] as String?, environment, [descriptors[1], descriptors[3], descriptors[5]]);
+    registerIsolateCleanup('mcp:$pid', {'pid': pid});
     final input = IOSink(_StdioInput(sockets[0]));
     unawaited(input.done.then<void>((_) {}, onError: (Object _) {}));
     result = _StdioProcess(pid, input, _stdioOutput(sockets[1]), _stdioOutput(sockets[2]), _stdioExit(pid),
-      (signal) { _stdioKill(-pid, signal); }, () async { await Future.wait(sockets.map((socket) => socket.close())); });
-    if (cancellation.isCancelled) { await result.stop(); cancellation.throwIfCancelled(); }
+      (signal) { _stdioKill(-pid, signal); }, () async {
+        await Future.wait(sockets.map((socket) => socket.close()));
+        unregisterIsolateCleanup('mcp:$pid');
+      });
+    if (cancellation.isCancelled) { await result.stop(); await result.dispose(); cancellation.throwIfCancelled(); }
     return result;
   } catch (_) {
     await Future.wait(sockets.map((socket) => socket.close()));
     rethrow;
   } finally { for (final descriptor in descriptors) { _stdioClose(descriptor); } }
+}
+
+// The parent runs this effect after a failed owner exits, before replacement.
+// Each Unix PID identifies the dedicated process group created by _spawnStdio.
+Future<void> cleanupMcpProcess(Json params, CancellationToken cancellation, void Function(Json) emit) async {
+  final child = params['pid'] as int;
+  cancellation.throwIfCancelled();
+  if (!Platform.isMacOS && !Platform.isLinux) {
+    Process.killPid(child, ProcessSignal.sigterm);
+    await cancellableDelay(const Duration(milliseconds: 250), cancellation);
+    Process.killPid(child, ProcessSignal.sigkill);
+    return;
+  }
+  _stdioKill(-child, 15);
+  await cancellableDelay(const Duration(milliseconds: 250), cancellation);
+  _stdioKill(-child, 9);
+  final status = calloc<Int32>();
+  try {
+    while (true) {
+      cancellation.throwIfCancelled();
+      final exited = _stdioWaitpid(child, status, 1);
+      if (exited == child || exited < 0 && _stdioErrno().value == 10) return;
+      await cancellableDelay(const Duration(milliseconds: 10), cancellation);
+    }
+  } finally { calloc.free(status); }
 }
 
 Stream<List<int>> _stdioOutput(RawSocket socket) {
