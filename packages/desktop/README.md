@@ -441,18 +441,18 @@ moon run release
 moon run release-reinstall
 ```
 
-`release` resolves Flutter's current upstream `stable` revision on every build
-and uses a clean checkout with its bundled Dart SDK in `.local/release-macos/`.
-Local SDK modifications are rejected. The development fork is excluded from the
-release source snapshot.
+`release` uses Homebrew's installed Flutter and its bundled Dart SDK, locating
+the installation through `brew --prefix`. It requires a clean stable SDK and
+records the installed versions without fetching or upgrading Flutter. The
+development fork is excluded from the release source snapshot.
 
 The build uses a snapshot of the working sources, including uncommitted changes
 and submodules. Its package configuration, Xcode files and native build products
 are isolated from the running development app. The signed result is copied to
 `build/macos/Build/Products/Release/Happen.app` under this package, with exact
 Flutter, Dart and engine versions recorded alongside it in `toolchain.json`.
-An upstream version check must succeed before building. `release-reinstall`
-builds first, stages and verifies the bundle, and installs it at `/Applications/Happen.app`.
+`release-reinstall` builds first, stages and verifies the bundle, and installs
+it at `/Applications/Happen.app`.
 It stops the installed release before replacing the bundle and leaves it
 stopped. Failed replacement validation restores the previous bundle and leaves
 it stopped too. `reinstall-release` is an alias.

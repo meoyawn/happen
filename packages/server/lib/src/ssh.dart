@@ -16,8 +16,9 @@ sealed class _SshState { const _SshState(); }
 final class _SshIdle extends _SshState { const _SshIdle(); }
 final class _SshConnecting extends _SshState { const _SshConnecting(); }
 final class _SshReady extends _SshState {
-  const _SshReady(this.client);
+  const _SshReady(this.client, this.cancellation);
   final AgentClient client;
+  final CancellationToken cancellation;
 }
 final class _SshRetrying extends _SshState {
   const _SshRetrying(this.error);
@@ -111,8 +112,12 @@ Future<void> _sshMain(List<Object?> arguments) async {
         final cancellation = lifetime.merge(deadline);
         AgentClient? client;
         StreamSubscription<Json>? subscription;
+        final connection = CancellationToken();
         final lost = Completer<void>();
-        void disconnected() { if (!lost.isCompleted) lost.complete(); }
+        void disconnected() {
+          connection.cancel();
+          if (!lost.isCompleted) lost.complete();
+        }
         var established = false;
         try {
           // Daemon restarts replace the remote socket, not the SSH transport.
@@ -151,7 +156,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
           if (tunnelClosed!.isCancelled) throw StateError('SSH socket forwarding exited');
           client.socket!.pingInterval = const Duration(seconds: 2);
           subscription = client.events.stream.listen(events.send, onDone: disconnected);
-          setState(_SshReady(client));
+          setState(_SshReady(client, connection));
           established = true;
           delay = 50;
           events.send({'method': 'connection/ready'});
@@ -164,6 +169,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
             events.send({'method': 'connection/closed', 'params': {'error': '$error'}});
           }
         } finally {
+          connection.cancel();
           deadline.cancel();
           await subscription?.cancel();
           await client?.close();
@@ -194,8 +200,18 @@ Future<void> _sshMain(List<Object?> arguments) async {
       } else {
         final current = state;
         if (current is! _SshReady) throw StateError('Remote machine is reconnecting');
-        result = await current.client._request(params['method'] as String,
-          jsonObject(params['params']), cancellation: token.merge(lifetime), timeout: Duration(milliseconds: params['timeout'] as int));
+        final cancellation = token.merge(lifetime).merge(current.cancellation);
+        try {
+          result = await current.client._request(params['method'] as String,
+            jsonObject(params['params']), cancellation: cancellation, timeout: Duration(milliseconds: params['timeout'] as int));
+          cancellation.throwIfCancelled();
+        } catch (_) {
+          // Pending replies can fail before the event stream reports its close.
+          // Invalidate the transport's operations before publishing stale errors.
+          if (current.client.isClosed) current.cancellation.cancel();
+          cancellation.throwIfCancelled();
+          rethrow;
+        }
       }
       reply?.send({'result': result});
     } catch (error) { reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'}); }

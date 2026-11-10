@@ -264,7 +264,7 @@ tasks:
       outputStyle: stream
 
   release:
-    description: Build the macOS release with an unmodified latest-stable Flutter SDK
+    description: Build the macOS release with Homebrew Flutter and Dart
     command: dart packages/desktop/tool/build_release.dart
     preset: utility
     inputs: []

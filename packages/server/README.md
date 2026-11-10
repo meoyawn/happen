@@ -43,7 +43,7 @@ dart tool/deploy_server.dart --skip-build
 
 The direct Dart build and deployment also invoke the Moon task graph. The direct deployment detects x64 or arm64 and uses the private local target, or an explicitly supplied SSH alias. Artifacts are written to `build/server/linux-<architecture>/happen-server`, with a SHA-256 file and `build-report.json`; independently cached native libraries are under its `native/` directory. The builder verifies both cold extraction and warm startup.
 
-Desktop connections retain their SSH tunnel across daemon restarts and immediately reconnect to the replacement Unix socket. Failed socket attempts back off from 50 ms to at most one second. After the protocol acknowledges capabilities, the desktop becomes available while its catalog and thread histories synchronize in the background. A lost SSH transport is recreated automatically; remote WebSocket pings run every two seconds to detect silent failures.
+Desktop connections retain their SSH tunnel across daemon restarts and immediately reconnect to the replacement Unix socket. Failed socket attempts back off from 50 ms to at most one second. After the protocol acknowledges capabilities, the desktop becomes available while its catalog and thread histories synchronize in the background. A lost SSH transport is recreated automatically; remote WebSocket pings run every two seconds to detect silent failures. Requests interrupted by a network change are cancelled with their connection, and background reads resume after reconnecting without reporting stale connection errors.
 
 Manage the daemon directly:
 

@@ -4,8 +4,6 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
-const _upstream = 'https://github.com/flutter/flutter.git';
-
 Future<void> main(List<String> arguments) async {
   if (!Platform.isMacOS) throw UnsupportedError('This target builds the macOS release');
   final root = File.fromUri(Platform.script).absolute.parent.parent.parent.parent;
@@ -22,17 +20,17 @@ Future<void> main(List<String> arguments) async {
     locked = true;
     cancelLock.dispose();
     cancellation.throwIfCancelled();
-    final sdk = await _stableSdk(cache, cancellation);
+    final sdk = await _homebrewFlutter(root, cancellation);
     final flutter = '${sdk.path}/bin/flutter';
     final environment = {'FLUTTER_ROOT': sdk.path, 'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}'};
     final version = jsonObject(jsonDecode(await _run(flutter, ['--version', '--machine'], sdk.path,
       cancellation, capture: true, environment: environment)));
     final revision = (await _run('git', ['rev-parse', 'HEAD'], sdk.path, cancellation, capture: true)).trim();
     if (version['channel'] != 'stable' || version['frameworkRevision'] != revision) {
-      throw StateError('Release Flutter does not match the verified stable checkout: $version');
+      throw StateError('Homebrew Flutter does not match its stable checkout: $version');
     }
-    stdout.writeln('Release toolchain: Flutter ${version['frameworkVersion']} stable, '
-      'bundled Dart ${version['dartSdkVersion']}, revision $revision.');
+    stdout.writeln('Release toolchain: Homebrew Flutter ${version['frameworkVersion']}, '
+      'bundled Dart ${version['dartSdkVersion']}, revision $revision, SDK ${sdk.path}.');
 
     // Flutter rewrites package_config.json and Xcode's generated SDK paths.
     // Build a working-source snapshot so release cannot redirect a live reload
@@ -46,7 +44,7 @@ Future<void> main(List<String> arguments) async {
     final framework = (config['packages'] as List).map(jsonObject).singleWhere((package) => package['name'] == 'flutter');
     final resolvedFramework = Directory.fromUri(configFile.uri.resolve(framework['rootUri'] as String));
     if (await resolvedFramework.resolveSymbolicLinks() != await Directory('${sdk.path}/packages/flutter').resolveSymbolicLinks()) {
-      throw StateError('Release dependencies resolved Flutter outside the stable SDK');
+      throw StateError('Release dependencies resolved Flutter outside the Homebrew SDK');
     }
     await _run(flutter, ['build', 'macos', '--release', '--no-pub', ...arguments], desktop,
       cancellation, environment: environment);
@@ -63,11 +61,12 @@ Future<void> main(List<String> arguments) async {
       if (await destination.exists()) await destination.delete(recursive: true);
       await Directory('${staged.path}/Happen.app').rename(destination.path);
       await File('${output.path}/toolchain.json').writeAsString('${const JsonEncoder.withIndent('  ').convert({
-        'upstream': _upstream, 'channel': 'stable', 'framework_revision': revision,
+        'upstream': version['repositoryUrl'], 'channel': 'stable', 'framework_revision': revision,
+        'distribution': 'homebrew',
         'flutter': version['frameworkVersion'], 'dart': version['dartSdkVersion'],
         'engine_revision': version['engineRevision'], 'sdk': sdk.path,
       })}\n');
-      stdout.writeln('Built ${destination.path} with the unmodified stable SDK.');
+      stdout.writeln('Built ${destination.path} with Homebrew Flutter and Dart.');
     } finally { await staged.delete(recursive: true); }
   } finally {
     if (work != null) await work.delete(recursive: true);
@@ -78,56 +77,13 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-Future<Directory> _stableSdk(Directory cache, CancellationToken cancellation) async {
-  final remote = (await _run('git', ['ls-remote', '--exit-code', _upstream, 'refs/heads/stable'],
-    cache.path, cancellation, capture: true)).trim();
-  final match = RegExp(r'^([0-9a-f]{40})\s+refs/heads/stable$').firstMatch(remote);
-  if (match == null) throw StateError('Could not resolve the current upstream Flutter stable revision');
-  final revision = match.group(1)!;
-  final sdk = Directory('${cache.path}/flutter');
-  if (!await sdk.exists()) {
-    // Seed immutable Git objects locally. Working-tree changes, including the
-    // dev mouse patch, are never copied into this checkout.
-    final installed = _installedFlutter();
-    final staging = await cache.createTemp('sdk-');
-    final candidate = Directory('${staging.path}/flutter');
-    try {
-      await _run('git', ['clone', '--no-hardlinks', '--no-checkout', installed.path, candidate.path], cache.path, cancellation);
-      await _run('git', ['remote', 'set-url', 'origin', _upstream], candidate.path, cancellation);
-      await _run('git', ['fetch', '--depth=1', 'origin', 'stable'], candidate.path, cancellation);
-      await _run('git', ['checkout', '-B', 'stable', revision], candidate.path, cancellation);
-      final installedRevision = (await _run('git', ['rev-parse', 'HEAD'], installed.path, cancellation, capture: true)).trim();
-      if (installedRevision == revision && await Directory('${installed.path}/bin/cache').exists()) {
-        // APFS copy-on-write keeps engine/Dart downloads separate without another
-        // full download. Rebuild Flutter Tools from the pristine release source.
-        await _run('/bin/cp', ['-cR', '${installed.path}/bin/cache', '${candidate.path}/bin/cache'], cache.path, cancellation);
-        for (final name in ['flutter_tools.snapshot', 'flutter_tools.stamp', 'flutter.version.json']) {
-          final file = File('${candidate.path}/bin/cache/$name');
-          if (await file.exists()) await file.delete();
-        }
-      }
-      await _requireClean(candidate, cancellation);
-      await candidate.rename(sdk.path);
-    } finally { await staging.delete(recursive: true); }
-  } else {
-    await _requireClean(sdk, cancellation);
-    final current = (await _run('git', ['rev-parse', 'HEAD'], sdk.path, cancellation, capture: true)).trim();
-    if (current != revision) {
-      await _run('git', ['fetch', '--depth=1', _upstream, 'stable'], sdk.path, cancellation);
-      await _run('git', ['checkout', '-B', 'stable', revision], sdk.path, cancellation);
-    }
-  }
+Future<Directory> _homebrewFlutter(Directory root, CancellationToken cancellation) async {
+  final prefix = (await _run('brew', ['--prefix'], root.path, cancellation, capture: true)).trim();
+  final executable = File('$prefix/bin/flutter');
+  if (!await executable.exists()) throw StateError('Install Flutter with Homebrew before building a release');
+  final sdk = File(await executable.resolveSymbolicLinks()).parent.parent;
   await _requireClean(sdk, cancellation);
   return sdk;
-}
-
-Directory _installedFlutter() {
-  for (final path in (Platform.environment['PATH'] ?? '').split(':')) {
-    if (path.isEmpty) continue;
-    final executable = File('$path/flutter');
-    if (executable.existsSync()) return File(executable.resolveSymbolicLinksSync()).parent.parent;
-  }
-  throw StateError('Flutter is not on PATH');
 }
 
 Future<void> _requireClean(Directory sdk, CancellationToken cancellation) async {
