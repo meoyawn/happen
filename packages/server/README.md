@@ -14,7 +14,9 @@ Build, upload and restart the daemon with one command:
 moonx deploy-server
 ```
 
-`deploy-server` depends on the cacheable `build-server` task, which builds Linux x64. Its Moon dependencies build QuickJS, SQLite, pty2 and flutter_pty2 independently with their package hooks. Each native task tracks its build tooling and lockfile; QuickJS also tracks its hook, C sources and headers, including the vendored submodule. Moon caches each shared library as an output. The Dart AOT task tracks the server's Dart package graph and consumes those native outputs with `cacheStrategy: outputs`, so Dart-only edits reuse the native libraries, and native changes invalidate Dart compilation only when a library changes. Moon also restores the final executable, checksum and build report on a cache hit. Desktop code, tests, documentation and private connection settings do not invalidate the build. Upload and restart run on every deployment. The deployment checks the VPS architecture and artifact checksums before uploading.
+`deploy-server` depends on the cacheable `build-server` task, which builds Linux x64. Its Moon dependencies build QuickJS, SQLite and flutter_pty2 independently with their package hooks. Agent commands and interactive terminals share flutter_pty2 3.x, a Dart FFI package with no Flutter SDK dependency. Each native task tracks its build tooling and lockfile; QuickJS also tracks its hook, C sources and headers, including the vendored submodule. Moon caches each shared library as an output.
+
+The Dart AOT task tracks the server's Dart package graph and consumes those native outputs with `cacheStrategy: outputs`, so Dart-only edits reuse the native libraries, and native changes invalidate Dart compilation only when a library changes. Moon also restores the final executable, checksum and build report on a cache hit. Desktop code, tests, documentation and private connection settings do not invalidate the build. Upload and restart run on every deployment. The deployment checks the VPS architecture and artifact checksums before uploading.
 
 To reference the existing Codex login **on the VPS** during the first deployment:
 

@@ -2,7 +2,7 @@
 
 Our own AI coding agent harness, built in Dart with a Flutter desktop app.
 
-![Happen showing a coding conversation, inline tool activity, and the message composer](packages/desktop/screenshots/conversation.png)
+![Happen desktop app showing project conversations, inline code changes, and machine and Git controls](packages/desktop/screenshots/conversation.png)
 
 Work across projects and conversations, inspect the context sent to the model,
 run tools and terminals, and steer or interrupt an agent while it works.
