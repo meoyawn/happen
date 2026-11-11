@@ -140,8 +140,15 @@ extension _ThreadProtocol on AgentServer {
       if (const {'thread/goal/get', 'thread/goal/set', 'thread/goal/clear'}.contains(method)) {
         return await _threadGoalRequest(method, id, params, client, requestID, cancellation);
       }
-      if (method == 'thread/items/list' || method == 'thread/turns/list') {
-        return await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);
+      if (method == 'thread/items/list' || method == 'thread/turns/list' || method == 'thread/item/read') {
+        final task = _tasks[id] ?? _Task(id, null);
+        var page = await _readSession(task, method, params, cancellation);
+        if (page['needsProjection'] is String) {
+          final source = _tasks[page['needsProjection']] ?? _Task(page['needsProjection'] as String, null);
+          await _withWriter(source, (writer) => callIsolate(writer.port, 'session.prepare', {}, cancellation: cancellation));
+          page = await _readSession(task, method, params, cancellation);
+        }
+        return page;
       }
       if (method == 'thread/image/read') {
         final result = await _readSession(_tasks[id] ?? _Task(id, null), method, params, cancellation);

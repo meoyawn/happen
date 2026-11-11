@@ -213,6 +213,13 @@ void main() {
       await client.request('history.export', {'task_id': child, 'path': path});
       await finish('continue', id: id);
       expect(users(await read(child)), ['calculate']);
+      final sourceTurns = (await read(id))['thread']['turns'] as List;
+      final sharedItem = sourceTurns.first['items'].first;
+      expect((await client.sessionRead('thread/item/read', {'threadId': child,
+        'turnId': sourceTurns.first['id'], 'itemId': sharedItem['id']}, cancellation: CancellationToken()))['item']['id'], sharedItem['id']);
+      await expectLater(client.sessionRead('thread/item/read', {'threadId': child,
+        'turnId': sourceTurns.last['id'], 'itemId': sourceTurns.last['items'].first['id']}, cancellation: CancellationToken()),
+        throwsA(predicate((error) => '$error'.contains('Item not found in visible thread history'))));
       final imported = jsonObject(await client.request('history.import', {'path': path, 'operation_id': 'import-operation'}));
       final copy = imported['task_id'] as String;
       expect(await client.request('history.import', {'path': path, 'operation_id': 'import-operation'}), imported);

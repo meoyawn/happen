@@ -92,8 +92,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('only the latest failed turn offers retry; a successful continuation hides the old failure', (tester) async {
+  testWidgets('retry keeps new tool activity visible and completion hides the old failure', (tester) async {
     final current = task()..turns['failed'] = {'id': 'failed', 'status': 'failed', 'error': {'message': 'Headers timed out'}};
+    addTearDown(current.liveText.dispose);
+    current.messages.addAll({
+      'user': {'id': 'user', 'type': 'userMessage', 'turnId': 'failed', 'order': 0,
+        'content': [{'type': 'text', 'text': 'Check the project'}]},
+      'old-read': {'id': 'old-read', 'type': 'dynamicToolCall', 'turnId': 'failed', 'order': 1,
+        'tool': 'read', 'arguments': {'path': 'input.txt'}, 'status': 'completed'},
+    });
     var retries = 0;
     Widget transcript() => MaterialApp(home: Scaffold(body: ConversationTranscript(task: current, directory: '/project', onRetry: () {},
       onRetryTurn: () { retries++; current.running = true; })));
@@ -101,9 +108,16 @@ void main() {
     expect(find.text('Headers timed out'), findsOneWidget);
     await tester.tap(find.text('Retry')); await tester.pumpWidget(transcript()); await tester.pump();
     expect(retries, 1);
+    current.turns['retry'] = {'id': 'retry', 'status': 'inProgress'};
+    current.messages['retry-tool'] = {'id': 'retry-tool', 'type': 'commandExecution', 'turnId': 'retry', 'order': 2,
+      'command': 'flutter analyze', 'status': 'inProgress', 'live': true};
+    await tester.pumpWidget(transcript()); await tester.pump();
+    expect(find.text('Running flutter analyze'), findsOneWidget);
+    expect(find.text('Headers timed out'), findsNothing);
     current.running = false;
-    current.messages['done'] = answer('done', 'Work completed', 1);
-    current.turns['done'] = {'id': 'done', 'status': 'completed'};
+    current.messages['retry-tool'] = {...current.messages['retry-tool']!, 'status': 'completed', 'live': false};
+    current.messages['done'] = {...answer('done', 'Work completed', 3), 'turnId': 'retry'};
+    current.turns['retry'] = {'id': 'retry', 'status': 'completed'};
     await tester.pumpWidget(transcript()); await tester.pumpAndSettle();
     expect(find.text('Work completed', findRichText: true), findsOneWidget);
     expect(find.text('Headers timed out'), findsNothing);

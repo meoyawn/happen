@@ -109,6 +109,8 @@ class DesktopTask {
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
   num? contextLimit;
+  Json? _contextTokens;
+  Json? get contextTokens => _contextTokens;
   int lastActivity = 0;
   int? runStartedAt, lastSentAt;
   List<ChatEntry>? _conversation;
@@ -1059,6 +1061,7 @@ class DesktopSession extends ChangeNotifier {
     }));
     target.lastSentAt ??= taskLastSentAt(target);
     target.messages.clear();
+    target._contextTokens = null;
     target._fileChanges.clear();
     final latestTurn = target.turns.values.lastOrNull;
     target.turns.clear();
@@ -1849,7 +1852,7 @@ class DesktopSession extends ChangeNotifier {
         final turn = jsonObject(raw);
         target.turns[turn['id'] as String] = turn;
         for (final item in turn['items'] as List) {
-          target.messages[item['id'] as String] = {...jsonObject(item), 'turnId': turn['id']};
+          target.messages[item['id'] as String] = _cacheConversationItem({...jsonObject(item), 'turnId': turn['id']});
         }
       }
       _mergeHistory(target, history);
@@ -1862,10 +1865,7 @@ class DesktopSession extends ChangeNotifier {
         applyThreadNotification(target.messages, {'method': 'item/started',
           'params': {'turnId': item['turnId'], 'item': item}});
       }
-      if (page['tokens'] != null && target.messages.isNotEmpty) {
-        final last = target.messages.keys.last;
-        target.messages[last] = {...target.messages[last]!, 'tokens': page['tokens']};
-      }
+      target._contextTokens = page['tokens'] as Json?;
       target.pending.removeWhere((id, item) => item['sending'] == true && target.messages.containsKey(id));
       final live = target.liveEvents.toList();
       target.liveEvents.clear();
@@ -1904,8 +1904,8 @@ class DesktopSession extends ChangeNotifier {
     target.turns..clear()..addEntries(turns);
     for (final raw in (page['data'] as List).reversed) {
       final entry = jsonObject(raw), item = jsonObject(entry['item']), id = item['id'] as String;
-      target.messages.putIfAbsent(id, () => {...item, 'turnId': entry['turnId'],
-        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'], 'order': entry['order']});
+      target.messages.putIfAbsent(id, () => _cacheConversationItem({...item, 'turnId': entry['turnId'],
+        'startedAtMs': entry['startedAtMs'], 'completedAtMs': entry['completedAtMs'], 'order': entry['order']}));
     }
     target.historyBefore = page['nextCursor'] as String?;
   }
@@ -2506,7 +2506,12 @@ class DesktopSession extends ChangeNotifier {
         target.streamingText = target.messages[data['itemId']]?['text'] as String? ?? '';
         target.retryStatus = null;
       case 'item/completed':
+        final id = data['item']['id'] as String;
+        if (target.messages[id] case final item?) target.messages[id] = _cacheConversationItem(item);
         target.streamingText = ''; target.retryStatus = null;
+        if (data['item']?['type'] == 'contextCompaction' && data['item']?['status'] == 'completed') {
+          target._contextTokens = null;
+        }
       case 'happen/turn/retrying':
         target.streamingText = '';
         target.retryStatus = {'type': 'retry', ...data};
@@ -2547,8 +2552,7 @@ class DesktopSession extends ChangeNotifier {
           target.runStartedAt = null; target.streamingText = ''; target.retryStatus = null;
         }
       case 'thread/tokenUsage/updated':
-        final last = target.messages.entries.lastOrNull;
-        if (last != null) target.messages[last.key] = {...last.value, 'tokens': sessionTokens(jsonObject(data['tokenUsage']))};
+        target._contextTokens = sessionTokens(jsonObject(data['tokenUsage']));
       case 'turn/completed':
         final id = data['turn']['id'] as String;
         target.turns[id] = {...?target.turns[id], ...jsonObject(data['turn'])};
@@ -2605,6 +2609,44 @@ class DesktopSession extends ChangeNotifier {
   }
 }
 
+typedef StoredToolOutput = ({String threadId, String turnId, String itemId});
+
+List<Object?>? _toolContent(Json item) => switch (item) {
+  {'type': 'dynamicToolCall', 'contentItems': final List<Object?> content} => content,
+  {'type': 'mcpToolCall', 'result': {'content': final List<Object?> content}} => content,
+  _ => null,
+};
+
+// Results stay in committed history. The transcript only retains large
+// text while its disclosure is mounted; media previews remain available.
+Json _cacheConversationItem(Json item) {
+  if (item['live'] == true || item['status'] == 'inProgress' || item['turnId'] is! String) return item;
+  final content = _toolContent(item);
+  if (content == null) return item;
+  var length = 0;
+  for (final part in content) {
+    if (part case {'type': 'text' || 'inputText', 'text': final String text}) length += text.length;
+  }
+  if (length <= 32 * 1024) return item;
+  final previews = [for (final part in content)
+    if (part is! Map || !{'text', 'inputText'}.contains(part['type'])) part];
+  return {...item, '_storedOutput': true,
+    if (item['type'] == 'dynamicToolCall') 'contentItems': previews
+    else 'result': {'content': previews}};
+}
+
+Object? conversationToolOutput(Json item) {
+  final content = _toolContent(item);
+  if (content != null) {
+    final text = [for (final part in content)
+      if (part case {'type': 'text' || 'inputText', 'text': final String text}) text].join('\n');
+    return text.isEmpty ? null : text;
+  }
+  return item['error'] ?? item['aggregatedOutput'] ?? switch (item['type']) {
+    'webSearch' => item['results'], 'collabAgentToolCall' => item['agentsStates'], _ => null,
+  };
+}
+
 class ToolActivity {
   ToolActivity(this.id, this.name, Object? input, {this.startedAt, this.preview, this.threadId, bool formatInput = false})
     : _rawInput = input, _input = formatInput || input is! String ? null : input;
@@ -2618,7 +2660,7 @@ class ToolActivity {
   // Collapsed tools should not parse and re-encode their potentially large JSON.
   String get input => _input ??= _pretty(_rawInput);
   Object? get rawInput => _rawInput;
-  String? get output => _hasOutput ? _output ??= _pretty(_rawOutput) : null;
+  String? get output => _hasOutput && _rawOutput is! StoredToolOutput ? _output ??= _pretty(_rawOutput) : null;
   Object? get rawOutput => _rawOutput;
   set output(Object? value) {
     _hasOutput = true;
@@ -2775,20 +2817,14 @@ List<ChatEntry> conversation(DesktopTask task) {
         if (tool.status != 'interrupted' && (message['success'] == false || message['error'] != null ||
             message['exitCode'] is int && message['exitCode'] != 0)) tool.status = 'failed';
         tool.endedAt = at(message['completedAtMs']);
-        final output = switch (message) {
-          {'type': 'dynamicToolCall', 'contentItems': final List<Object?> content} => content,
-          {'type': 'mcpToolCall', 'result': {'content': final List<Object?> content}} => content,
-          _ => null,
-        };
+        final output = _toolContent(message);
+        if (message['_storedOutput'] == true) {
+          tool.output = (threadId: task.id, turnId: message['turnId'] as String, itemId: id);
+        } else if (conversationToolOutput(message) case final value?) { tool.output = value; }
         if (output != null) {
-          final text = [for (final part in output)
-            if (part case {'type': 'text' || 'inputText', 'text': final String text}) text].join('\n');
-          if (text.isNotEmpty) tool.output = text;
           tool.images = output.whereType<Json>().where((part) =>
             {'image', 'inputImage', 'input_image'}.contains(part['type'])).toList(growable: false);
-        } else if (message['error'] != null || message['aggregatedOutput'] != null) { tool.output = message['error'] ?? message['aggregatedOutput']; }
-        else if (message['type'] == 'webSearch') { tool.output = message['results']; }
-        else if (message['type'] == 'collabAgentToolCall') { tool.output = message['agentsStates']; }
+        }
         tools[id] = tool;
         final parent = tools[message['parentCallId']];
         if (parent != null) { parent.children.add(tool); }

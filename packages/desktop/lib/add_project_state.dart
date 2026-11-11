@@ -20,10 +20,11 @@ final class ProjectRepository extends AddProjectState {
   final ProjectSource source;
 }
 final class ProjectLocation extends AddProjectState {
-  const ProjectLocation(this.machine, this.source, {this.remoteUrl});
+  const ProjectLocation(this.machine, this.source, {this.remoteUrl, this.subdirectory = ''});
   final MachineSession machine;
   final ProjectSource source;
   final String? remoteUrl;
+  final String subdirectory;
 }
 final class ProjectSaving extends AddProjectState {
   const ProjectSaving(this.location, this.label, [this.output]);
@@ -115,9 +116,10 @@ ProjectLocation? projectLocation(AddProjectState state) => switch (state) {
 };
 
 class AddProjectController extends ChangeNotifier {
+  AddProjectController({ProjectLocation? location}) : _state = location ?? const ProjectMachines();
   final _lifetime = CancellationToken();
   CancellationToken? _listing, _operation;
-  AddProjectState _state = const ProjectMachines();
+  AddProjectState _state;
   AddProjectState get state => _state;
   ProjectFolderState _folders = const ProjectFoldersIdle();
   ProjectFolderState get folders => _folders;
@@ -213,7 +215,9 @@ class AddProjectController extends ChangeNotifier {
       }
       cancellation.throwIfCancelled();
       _set(ProjectSaving(location, 'Saving project…'));
-      final project = await target.ensureProject(prepared ?? path.trim(), cancellation: cancellation);
+      final root = prepared ?? path.trim();
+      final project = await target.ensureProject(location.subdirectory.isEmpty ? root
+        : '$root/${location.subdirectory.replaceAll('\\', '/')}', cancellation: cancellation);
       cancellation.throwIfCancelled();
       _set(ProjectSaved(location.machine, project));
     } on CancelledException {

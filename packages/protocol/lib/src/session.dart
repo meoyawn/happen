@@ -1,14 +1,5 @@
 import '../protocol.dart';
 
-Json? lastAssistantWithUsage(Iterable<Json> items) {
-  Json? result;
-  for (final item in items) {
-    if (item['type'] == 'contextCompaction') result = null;
-    if (item['tokens'] is Map) result = item;
-  }
-  return result;
-}
-
 Json sessionTokens(Json usage) {
   final read = usage['cached_input_tokens'] as num? ?? 0;
   final write = usage['cache_write_tokens'] as num? ?? 0;

@@ -1712,7 +1712,7 @@ class AgentServer {
       }
       for (final notification in notifications) {
         notification['params']['happen']['notificationSeq'] = ++task.notificationSeq;
-        applyThreadNotification(task.liveItems, notification);
+        applyThreadNotification(task.liveItems, notification, retainCompletedPayload: false);
         if (notification['method'] == 'turn/started' || notification['method'] == 'turn/completed') {
           task.liveTurn = jsonObject(notification['params']['turn']);
         }
@@ -2127,7 +2127,7 @@ class AgentClient {
     }, cancellation: cancellation));
 
   Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async {
-    if (!{'session.context', 'thread/resume', 'thread/read', 'thread/items/list', 'thread/turns/list', 'thread/list', 'thread/image/read'}.contains(method)) {
+    if (!{'session.context', 'thread/resume', 'thread/read', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'thread/list', 'thread/image/read'}.contains(method)) {
       throw ArgumentError('Unknown session read');
     }
     return jsonObject(await _request(method, params, cancellation: cancellation));
@@ -2295,7 +2295,7 @@ class AgentClient {
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
-      if ((method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
+      if ((method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'session.context', 'session.trace.page', 'session.trace.status',
         'session.side.create'}.contains(method)) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }

@@ -209,12 +209,13 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
 
 /// T3Code's item-addressed reconciliation: completion replaces streamed text;
 /// late deltas never resurrect completed items or append duplicate final text.
-void applyThreadNotification(Map<String, Json> items, Json notification) {
+void applyThreadNotification(Map<String, Json> items, Json notification, {bool retainCompletedPayload = true}) {
   final params = jsonObject(notification['params'] ?? {}), method = notification['method'];
   if (method == 'item/started' || method == 'item/completed') {
     final value = jsonObject(params['item']), id = requiredString(value, 'id');
     if (method == 'item/started' && items[id]?['completedAtMs'] != null) return;
-    items[id] = {...value, 'turnId': params['turnId'], 'live': method == 'item/started',
+    items[id] = {...method == 'item/completed' && !retainCompletedPayload ? _itemLifecycle(value) : value,
+      'turnId': params['turnId'], 'live': method == 'item/started',
       'order': items[id]?['order'] ?? items.values.fold<int>(0, (next, item) =>
         (item['order'] as int? ?? -1) >= next ? (item['order'] as int) + 1 : next)};
   } else if (method == 'item/agentMessage/delta' || method == 'item/reasoning/summaryTextDelta') {
@@ -239,8 +240,16 @@ void applyThreadNotification(Map<String, Json> items, Json notification) {
         // Unified exec belongs to the loaded thread. A yielded CLI can finish
         // after its initiating turn; only its native exit watcher completes it.
         if (entry.value['type'] == 'commandExecution' && entry.value['status'] == 'inProgress') continue;
-        items[entry.key] = {...entry.value, 'live': false, 'status': 'interrupted'};
+        items[entry.key] = {...retainCompletedPayload ? entry.value : _itemLifecycle(entry.value),
+          'live': false, 'status': 'interrupted'};
       }
     }
   }
 }
+
+// Live overlays need completion markers to reject late starts and deltas.
+// The committed payload belongs to paginated history, not this cache.
+Json _itemLifecycle(Json item) => {
+  for (final key in const ['id', 'type', 'turnId', 'order', 'status', 'startedAtMs', 'completedAtMs'])
+    if (item.containsKey(key)) key: item[key],
+};

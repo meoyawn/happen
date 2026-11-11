@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
+import 'add_project_dialog.dart';
+import 'add_project_state.dart';
 import 'appearance.dart';
 import 'checkout_pull.dart';
 import 'machines.dart';
@@ -149,6 +151,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
   DesktopSession? _source;
   Project? _project;
   String? _draftId;
+  bool _cloning = false;
   @override
   void initState() { super.initState(); _bind(); }
   @override
@@ -179,6 +182,29 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final changed = await controller.choose(checkout);
     if (!changed && mounted && controller.state is ThreadMachineFailed) {
       widget.session.showError((controller.state as ThreadMachineFailed).error, title: 'Could not change machine');
+    }
+  }
+
+  Future<void> _clone(MachineSession machine) async {
+    final controller = _controller, project = _project;
+    final repository = project == null ? null : projectRepository(project);
+    if (_cloning || controller == null || controller.state is! ThreadMachineReady || project == null ||
+        repository == null || !machine.session.connected) return;
+    _machineMenu.close(); _workspaceMenu.close();
+    setState(() => _cloning = true);
+    try {
+      final result = await showDialog<ProjectSaved>(context: context, barrierColor: const Color(0x22000000),
+        builder: (_) => AddProjectDialog(session: widget.session, machines: widget.machines,
+          location: ProjectLocation(machine, ProjectSource.git,
+            remoteUrl: project.workspace?['remoteUrl'] as String? ?? repository,
+            subdirectory: project.workspace?['subdirectory'] as String? ?? '')));
+      if (result == null || !mounted || !identical(_controller, controller)) return;
+      final changed = await controller.chooseProject((source: result.machine.session, project: result.project));
+      if (controller.state case ThreadMachineFailed(:final error) when !changed && mounted) {
+        widget.session.showError(error, title: 'Could not change machine');
+      }
+    } finally {
+      if (mounted) setState(() => _cloning = false);
     }
   }
 
@@ -230,15 +256,18 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final status = _machineStatus(alias, session);
     final options = ready?.checkouts.where((choice) => identical(choice.machine.session, session)).toList() ?? const <ThreadCheckout>[];
     final error = status.error ?? ready?.errors[name];
-    final label = status.label ?? (error != null ? 'Unavailable' : options.isEmpty && ready?.repository != null ? 'No matching workspace' : null);
+    final clone = options.isEmpty && ready?.repository != null && status.label == null && error == null && session?.connected == true;
+    final label = status.label ?? (error != null ? 'Unavailable' : clone ? 'No matching workspace · Clone…' : null);
     final item = MenuItemButton(
       leadingIcon: MachineGlyph(widget.machines?.iconFor(alias) ?? parseMachineIcon(null, remote: alias != null)),
       trailingIcon: Row(mainAxisSize: MainAxisSize.min, children: [
         if (status.loading) _progress
         else if (error != null) const Icon(Icons.error_outline, size: 14),
+        if (clone) const Icon(Icons.download_outlined, size: 14),
         if (alias == selected) ...[if (status.loading || error != null) const SizedBox(width: 8), const Icon(Icons.check, size: 14)],
       ]),
-      onPressed: busy || session?.connected != true || options.isEmpty ? null : () {
+      onPressed: busy || session?.connected != true || options.isEmpty && !clone ? null : () {
+        if (clone) { unawaited(_clone(widget.machines!.machineFor(session!))); return; }
         if (options.length == 1) { unawaited(_choose(options.single)); return; }
         final target = options.first.machine;
         setState(() => _pendingMachine = target);
@@ -270,7 +299,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final targetMachine = _pendingMachine ?? machine;
     final workspaceChoices = checkouts.where((choice) => identical(choice.machine.session, targetMachine.session)).toList();
     final selected = checkouts.where((choice) => identical(choice.machine.session, widget.session) && choice.path == _project?.path).firstOrNull;
-    final busy = state is ThreadMachineSelecting || widget.session.submitting || widget.session.pullingCheckout;
+    final busy = _cloning || state is ThreadMachineSelecting || widget.session.submitting || widget.session.pullingCheckout;
     final sessions = owner?.sessions ?? const <MachineSession>[];
     final machines = <({String? alias, String name, DesktopSession? session})>[
       if (owner == null) machine else (alias: null, name: 'local', session: owner.local),

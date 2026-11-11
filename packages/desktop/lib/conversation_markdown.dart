@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:mermaid_flutter/mermaid_flutter.dart';
 import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, CancellationToken;
 
 import 'code_highlight.dart';
@@ -374,6 +375,72 @@ class ConversationCode extends StatefulWidget {
 class _ConversationCodeState extends State<ConversationCode> {
   final _scroll = ScrollController(keepScrollOffset: false);
   bool _wrap = false;
+  bool _showSource = false;
+
+  void _expandDiagram() {
+    final source = widget.source;
+    unawaited(showDialog<void>(context: context, builder: (context) => Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: [
+        Padding(padding: const EdgeInsets.only(left: 16, right: 4), child: Row(children: [
+          const Expanded(child: Text('Mermaid diagram')),
+          ConversationCopyButton(text: source, label: 'Copy code'),
+          IconButton(tooltip: 'Close diagram', icon: const Icon(Icons.close, size: 18),
+            onPressed: () => Navigator.of(context).pop()),
+        ])),
+        const Divider(height: 1, color: desktopBorder),
+        Expanded(child: MermaidView(source: source,
+          theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
+          semanticNodes: true, allowFullscreen: false, keepLastGoodSceneOnError: false,
+          backgroundColor: desktopSurface)),
+      ]),
+    )));
+  }
+
+  Widget _sourceView() => LayoutBuilder(builder: (context, constraints) {
+    final span = TextSpan(children: [
+        highlightedCode(widget.source, language: widget.language),
+        if (widget.output case final output?) TextSpan(text: '\n\n$output'),
+      ]);
+    const style = TextStyle(fontFamily: desktopMonoFamily, fontSize: 13,
+      height: 1.625, letterSpacing: 0, color: desktopForeground);
+    final code = ConversationAnnotationSelection.contains(context)
+      ? Text.rich(span, style: style)
+      : SelectableText.rich(span,
+      // ExpansionTile saves a bool; this text saves its own scroll offset.
+      key: const PageStorageKey('code-selection'),
+      style: style,
+    );
+    return Scrollbar(
+      controller: _scroll,
+      child: SingleChildScrollView(
+        key: const PageStorageKey('code-scroll'),
+        controller: _scroll,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.all(14),
+        child: _wrap
+            ? SizedBox(width: (constraints.maxWidth - 28).clamp(0, double.infinity), child: code)
+            : code,
+      ),
+    );
+  });
+
+  Widget _diagramView(BuildContext context) => LayoutBuilder(builder: (context, constraints) =>
+    Padding(padding: const EdgeInsets.all(14), child: FittedBox(fit: BoxFit.scaleDown,
+      child: MermaidDiagram(source: widget.source,
+        theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
+        semanticNodes: true, keepLastGoodSceneOnError: false,
+        errorBuilder: (context, error) => SizedBox(
+          width: math.max(0, constraints.maxWidth - 28),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text('Could not render diagram. Showing source.',
+              style: TextStyle(fontSize: 12, color: desktopSecondary)),
+            _sourceView(),
+          ]),
+        ),
+      ),
+    )));
 
   @override
   void dispose() {
@@ -384,6 +451,8 @@ class _ConversationCodeState extends State<ConversationCode> {
   @override
   Widget build(BuildContext context) {
     final text = widget.source + (widget.output == null ? '' : '\n\n${widget.output}');
+    final mermaid = widget.language.toLowerCase() == 'mermaid' && widget.output == null;
+    final showDiagram = mermaid && !_showSource;
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -397,7 +466,19 @@ class _ConversationCodeState extends State<ConversationCode> {
           child: Row(children: [
             Expanded(child: Text(widget.language.isEmpty ? 'text' : widget.language,
               style: const TextStyle(fontSize: 11, color: desktopSecondary))),
-            IconButton(
+            if (mermaid) IconButton(
+              tooltip: _showSource ? 'Show diagram' : 'Show source',
+              isSelected: _showSource,
+              visualDensity: VisualDensity.compact,
+              icon: Icon(_showSource ? Icons.account_tree_outlined : Icons.code, size: 16),
+              onPressed: () => setState(() => _showSource = !_showSource),
+            ),
+            if (showDiagram) IconButton(
+              tooltip: 'Expand diagram',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.open_in_full, size: 16),
+              onPressed: _expandDiagram,
+            ) else IconButton(
               tooltip: _wrap ? 'Scroll long lines' : 'Wrap long lines',
               isSelected: _wrap,
               visualDensity: VisualDensity.compact,
@@ -408,33 +489,7 @@ class _ConversationCodeState extends State<ConversationCode> {
           ]),
         ),
         const Divider(height: 1, color: desktopBorder),
-        LayoutBuilder(builder: (context, constraints) {
-          final span = TextSpan(children: [
-              highlightedCode(widget.source, language: widget.language),
-              if (widget.output case final output?) TextSpan(text: '\n\n$output'),
-            ]);
-          const style = TextStyle(fontFamily: desktopMonoFamily, fontSize: 13,
-            height: 1.625, letterSpacing: 0, color: desktopForeground);
-          final code = ConversationAnnotationSelection.contains(context)
-            ? Text.rich(span, style: style)
-            : SelectableText.rich(span,
-            // ExpansionTile saves a bool; this text saves its own scroll offset.
-            key: const PageStorageKey('code-selection'),
-            style: style,
-          );
-          return Scrollbar(
-            controller: _scroll,
-            child: SingleChildScrollView(
-              key: const PageStorageKey('code-scroll'),
-              controller: _scroll,
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.all(14),
-              child: _wrap
-                  ? SizedBox(width: (constraints.maxWidth - 28).clamp(0, double.infinity), child: code)
-                  : code,
-            ),
-          );
-        }),
+        showDiagram ? _diagramView(context) : _sourceView(),
       ]),
     );
   }

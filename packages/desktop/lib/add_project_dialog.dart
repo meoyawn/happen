@@ -16,16 +16,17 @@ import 'session.dart';
 typedef _Choice = ({String id, String title, String description, Widget icon, VoidCallback? select});
 
 class AddProjectDialog extends StatefulWidget {
-  const AddProjectDialog({super.key, required this.session, this.machines});
+  const AddProjectDialog({super.key, required this.session, this.machines, this.location});
   final DesktopSession session;
   final MachinesController? machines;
+  final ProjectLocation? location;
 
   @override
   State<AddProjectDialog> createState() => _AddProjectDialogState();
 }
 
 class _AddProjectDialogState extends State<AddProjectDialog> {
-  final _controller = AddProjectController();
+  late final _controller = AddProjectController(location: widget.location);
   final _input = TextEditingController();
   final _scroll = ScrollController();
   late final _focus = FocusNode(onKeyEvent: _key);
@@ -37,6 +38,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
   void initState() {
     super.initState();
     _controller.addListener(_changed);
+    if (widget.location != null) _navigate(() {});
   }
 
   @override
@@ -99,14 +101,18 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
 
   Future<void> _pickFolder() async {
     final location = projectLocation(_controller.state);
-    if (_pickingFolder || _controller.busy || location?.source != ProjectSource.folder ||
-        !location!.machine.session.client.sharedFilesystem) { return; }
+    if (_pickingFolder || _controller.busy || location == null ||
+        !location.machine.session.client.sharedFilesystem) { return; }
     setState(() => _pickingFolder = true);
     try {
       final paths = await MacosFilePicker().pick(MacosFilePickerMode.folder,
-        allowsMultiple: false, dialogTitle: 'Add project');
+        allowsMultiple: false, dialogTitle: location.source == ProjectSource.folder ? 'Add project' : 'Choose destination folder');
       try {
         if (!mounted || paths == null || paths.isEmpty || !identical(projectLocation(_controller.state), location)) return;
+        if (location.source != ProjectSource.folder) {
+          _enterFolder(paths.first.path, '/');
+          return;
+        }
         _input.text = paths.first.path;
         _input.selection = TextSelection.collapsed(offset: _input.text.length);
         _edited(_input.text);
@@ -181,11 +187,13 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
   }
 
   void _enterFolder(String path, String separator) {
+    _controller.editLocation();
     final location = projectLocation(_controller.state)!;
     final leaf = _input.text.split(RegExp(r'[/\\]')).last;
-    _input.text = '$path${path.endsWith(separator) ? '' : separator}${location.source == ProjectSource.folder ? '' : leaf}';
+    final name = leaf.isEmpty ? location.remoteUrl == null ? 'new-project' : projectCloneName(location.remoteUrl!) : leaf;
+    _input.text = '$path${path.endsWith(separator) ? '' : separator}${location.source == ProjectSource.folder ? '' : name}';
     _input.selection = TextSelection.collapsed(offset: _input.text.length);
-    setState(() => _selected = null);
+    setState(() { _selected = null; _inputError = null; });
     _debounce?.cancel();
     _browse();
     _focus.requestFocus();
@@ -235,6 +243,9 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
     else { Navigator.pop(context); }
   }
 
+  bool get _atStart => widget.location == null ? _controller.state is ProjectMachines
+    : _controller.state is! ProjectSaveFailed;
+
   KeyEventResult _key(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
     final keyboard = HardwareKeyboard.instance;
@@ -252,7 +263,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
       case LogicalKeyboardKey.escape:
         if (event is KeyDownEvent) _close();
       case LogicalKeyboardKey.backspace:
-        if (_input.text.isNotEmpty || _controller.state is ProjectMachines || _controller.busy) return KeyEventResult.ignored;
+        if (_input.text.isNotEmpty || _atStart || _controller.busy) return KeyEventResult.ignored;
         if (event is KeyDownEvent) _navigate(_controller.back);
       default: return KeyEventResult.ignored;
     }
@@ -262,6 +273,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
   String get _submitLabel => switch (_controller.state) {
     ProjectRepository() => 'Continue',
     ProjectSaveFailed(:final preparedPath) when preparedPath != null => 'Add project',
+    _ when widget.location != null => 'Clone to ${widget.location!.machine.name}',
     _ => switch (projectLocation(_controller.state)?.source) {
       ProjectSource.folder => 'Add project', ProjectSource.create => 'Create project', _ => 'Clone',
     },
@@ -297,13 +309,23 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
         elevation: 16, shadowColor: const Color(0x33000000),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: desktopBorder, width: .5)),
         clipBehavior: Clip.antiAlias,
-        child: SizedBox(width: 576, child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 420),
+        child: SizedBox(width: 576, child: ConstrainedBox(constraints: BoxConstraints(maxHeight: widget.location == null ? 420 : 500),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (widget.location != null) Padding(padding: const EdgeInsets.fromLTRB(16, 14, 8, 0),
+              child: Row(children: [
+                const Icon(Icons.download_outlined, size: 16, color: desktopSecondary), const SizedBox(width: 8),
+                const Expanded(child: Text('Add to another machine', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
+                IconButton(tooltip: _controller.busy ? 'Cancel clone' : 'Close', onPressed: _close,
+                  icon: const Icon(Icons.close, size: 16), constraints: const BoxConstraints.tightFor(width: 28, height: 28), padding: EdgeInsets.zero),
+              ])),
+            if (widget.location != null) Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 2), child: Text(
+              'Destination folder on ${widget.location!.machine.name}', style: const TextStyle(fontSize: 12, color: desktopSecondary))),
             Padding(padding: const EdgeInsets.all(6), child: Row(children: [
-              IconButton(tooltip: state is ProjectMachines ? 'Close' : 'Back',
-                onPressed: _controller.busy ? null : state is ProjectMachines ? _close : () => _navigate(_controller.back),
+              if (widget.location == null || !_atStart) IconButton(tooltip: _atStart ? 'Close' : 'Back',
+                onPressed: _controller.busy ? null : _atStart ? _close : () => _navigate(_controller.back),
                 icon: const Icon(Icons.arrow_back, size: 16, color: desktopSecondary),
-                constraints: const BoxConstraints.tightFor(width: 32, height: 32), padding: EdgeInsets.zero),
+                constraints: const BoxConstraints.tightFor(width: 32, height: 32), padding: EdgeInsets.zero)
+              else const SizedBox(width: 10),
               Expanded(child: TextField(key: const ValueKey('add-project-input'), controller: _input,
                 focusNode: _focus, autofocus: true,
                 readOnly: _controller.busy || state is ProjectSaveFailed && state.preparedPath != null,
@@ -326,9 +348,10 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
               MachineGlyph(widget.machines?.iconFor(machine.alias) ?? MachineIcon.laptop, size: 13, color: desktopSecondary),
               const SizedBox(width: 6), Expanded(child: Text(machine.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 12, color: desktopSecondary))),
-              if (location?.source == ProjectSource.folder && machine.session.client.sharedFilesystem)
+              if (location != null && machine.session.client.sharedFilesystem)
                 TextButton.icon(key: const ValueKey('add-project-file-picker'),
-                  onPressed: _pickingFolder || _controller.busy ? null : () => unawaited(_pickFolder()),
+                  onPressed: _pickingFolder || _controller.busy || state is ProjectSaveFailed && state.preparedPath != null
+                    ? null : () => unawaited(_pickFolder()),
                   style: TextButton.styleFrom(minimumSize: const Size(0, 28), padding: const EdgeInsets.symmetric(horizontal: 8),
                     textStyle: const TextStyle(fontSize: 12)),
                   icon: const Icon(Icons.folder_open_outlined, size: 14),

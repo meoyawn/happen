@@ -188,6 +188,15 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
       final projected = segment.db.select('SELECT next_rollout_ordinal FROM thread_history_projection_state').firstOrNull?['next_rollout_ordinal'] as int? ?? 0;
       if (projected < segment.end) return {'needsProjection': segment.id};
     }
+    if (method == 'thread/item/read') {
+      final turn = requiredString(params, 'turnId'), item = requiredString(params, 'itemId');
+      for (final segment in segments.reversed) {
+        final row = segment.db.select('SELECT item_json FROM thread_items '
+          'WHERE turn_id IS ? AND item_id IS ? AND rollout_ordinal < ?', [turn, item, segment.end]).firstOrNull;
+        if (row != null) return {'item': jsonDecode(row['item_json'] as String)};
+      }
+      throw StateError('Item not found in visible thread history');
+    }
     if (method == 'thread/items/list' || method == 'thread/turns/list') return _pagedHistory(segments, id, method, params);
     final previewOnly = method == 'thread/read' && params['includeTurns'] != true;
     final turns = <Json>[], items = <Json>[];

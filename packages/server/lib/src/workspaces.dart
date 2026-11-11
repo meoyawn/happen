@@ -40,6 +40,7 @@ Future<Json> _checkout(String path, CancellationToken cancellation) async {
   final relative = p.relative(path, from: root);
   final dirs = values[2].output.trim().split('\n');
   return {'available': true, 'path': path, 'identity': repository ?? path, 'repository': repository,
+    'remoteUrl': primaryGitRemote(values[0].output),
     'repositoryRoot': root, 'subdirectory': relative == '.' ? '' : relative,
     'branch': values[1].code == 0 ? values[1].output.trim() : null, 'bare': bare,
     'worktree': dirs.length == 2 && p.normalize(p.join(root, dirs[0])) != p.normalize(p.join(root, dirs[1]))};

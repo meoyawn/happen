@@ -16,6 +16,7 @@ class CodeSession {
   final _cells = <String, _Cell>{};
   bool _closed = false;
   Json? _values;
+  Json? _changedValues;
   int _nextCell = 1;
   bool get hasRunningCells => _cells.values.any((cell) => cell.result == null);
 
@@ -55,7 +56,10 @@ class CodeSession {
         if (!cell.cancellation.isCancelled) {
           try {
             final writes = jsonObject(result['writes'] ?? cell.engine.evaluate('__cell.writes'));
-            _values!.addAll(writes);
+            if (writes.isNotEmpty) {
+              _values!.addAll(writes);
+              _changedValues = _values;
+            }
           } catch (error) {
             result.putIfAbsent('error', () => error.toString());
           }
@@ -120,9 +124,11 @@ class CodeSession {
       traceInstant('code_mode.observed', category: 'code_mode', attributes: {
         'code.cell_id': id, 'code.running': completed == null, 'code.terminated': cell.terminated,
       });
+      final changedValues = _changedValues;
+      _changedValues = null;
       return {
         ...result,
-        'values': {...?_values},
+        if (changedValues != null) 'values': {...changedValues},
         if (completed == null) 'cell_id': id,
         if (cell.terminated) 'terminated': true,
         'wall_time_seconds': watch.elapsedMicroseconds / 1000000,
@@ -146,6 +152,8 @@ class CodeSession {
     for (final cell in cells) { cell.cancellation.cancel(); }
     await Future.wait(cells.map((cell) => cell.done));
     _cells.clear();
+    _values = null;
+    _changedValues = null;
   }
 }
 

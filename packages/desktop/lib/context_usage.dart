@@ -6,23 +6,22 @@ import 'package:protocol/protocol.dart';
 import 'appearance.dart';
 
 class ContextUsageIndicator extends StatelessWidget {
-  const ContextUsageIndicator({super.key, required this.messages, required this.onPressed, this.limit});
-  final Iterable<Json> messages;
+  const ContextUsageIndicator({super.key, required this.tokens, required this.onPressed, this.limit});
+  final Json? tokens;
   final VoidCallback onPressed;
   final num? limit;
 
   @override
   Widget build(BuildContext context) {
-    final message = lastAssistantWithUsage(messages);
-    final used = message == null ? null : sessionTokenTotal(jsonObject(message['tokens']));
+    final used = tokens == null ? null : sessionTokenTotal(tokens!);
     final percent = used != null && limit != null && limit! > 0 ? (used / limit! * 100).clamp(0, 100).toDouble() : null;
-    return Tooltip(message: 'View context usage', child: TextButton(
+    return Tooltip(message: percent == null ? 'View context usage' : 'Context usage: ${percent.round()}%', child: TextButton(
       key: const ValueKey('view-context'), onPressed: onPressed,
       style: TextButton.styleFrom(foregroundColor: desktopTertiary, padding: const EdgeInsets.symmetric(horizontal: 8)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         SizedBox.square(dimension: 16, child: CustomPaint(painter: _ContextUsagePainter(percent))),
         const SizedBox(width: 8),
-        Text(used == null ? 'Context' : used < 1000 ? '${used.round()}' : '${(used / 1000).toStringAsFixed(0)}k',
+        Text(percent != null ? '${percent.round()}%' : used == null ? 'Context' : used < 1000 ? '${used.round()}' : '${(used / 1000).toStringAsFixed(0)}k',
           style: const TextStyle(fontSize: 12)),
       ]),
     ));

@@ -247,23 +247,21 @@ Future<Object?> _callIsolate(
       'params': {'operation_id': operationId},
     }),
   );
-  target.send({
-    'method': method,
-    'params': params,
-    'reply': port.sendPort,
-    'operation_id': operationId,
-    '_trace': ?traceIsolateCarrier(method),
+  final exited = _ownerExitSignal(target);
+  final exitHook = exited == null ? null : CancellationHook(exited, () {
+    if (!result.isCompleted) result.completeError(exited.exception!);
   });
   try {
-    final exited = _ownerExits[target];
-    return await Future.any<Object?>([
-      result.future,
-      if (exited != null)
-        exited.then(
-          (failure) => throw failure,
-        ),
-    ]).asCancellable(token);
+    target.send({
+      'method': method,
+      'params': params,
+      'reply': port.sendPort,
+      'operation_id': operationId,
+      '_trace': ?traceIsolateCarrier(method),
+    });
+    return await result.future.asCancellable(token);
   } finally {
+    exitHook?.dispose();
     hook.dispose();
     deadline?.cancel();
     await subscription.cancel();
@@ -272,6 +270,21 @@ Future<Object?> _callIsolate(
 }
 
 final _ownerExits = <SendPort, Future<RemoteFailure>>{};
+final _ownerExitSignals = Expando<CancellationToken>();
+
+CancellationToken? _ownerExitSignal(SendPort target) {
+  final exited = _ownerExits[target];
+  if (exited == null) return null;
+  final cached = _ownerExitSignals[exited];
+  if (cached != null) return cached;
+  final signal = CancellationToken();
+  _ownerExitSignals[exited] = signal;
+  // A future's listeners cannot be removed. Observe exit once per owner, then
+  // let each call detach its cancellation hook as soon as it finishes.
+  unawaited(exited.then(signal.cancel));
+  return signal;
+}
+
 SendPort? _ownerExit;
 final _exitResources = <String, Json>{};
 

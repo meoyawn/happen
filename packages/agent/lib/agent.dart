@@ -877,7 +877,7 @@ class _Agent {
               telemetry.add('code_cells');
               searchEvents.addAll([
                 toolStarted(call),
-                {'type': 'tool.completed', 'data': {'item': interface.resultItem(call, result).toJson(), 'values': values}},
+                {'type': 'tool.completed', 'data': {'item': interface.resultItem(call, result).toJson()}},
               ]);
             }
           }
@@ -890,8 +890,7 @@ class _Agent {
               }}},
             if (nativeSearch) ...searchEvents
             else if (calls.isNotEmpty) toolStarted(calls.first),
-          ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed,
-            if (nativeSearch) 'values': values}).then((entries) {
+          ], {'context_usage': nextUsage, 'context_usage_items': nextItems, 'uncached_tokens_used': uncachedTokensUsed}).then((entries) {
               for (final entry in entries) { event(entry); }
               return entries;
             });
@@ -925,6 +924,7 @@ class _Agent {
             }
             final watch = Stopwatch()..start();
             Json result;
+            Json? changedValues;
             var images = <Json>[];
             var executionFailed = false;
             final cellCancellation = CodeCancellationToken.shared(config['code_interrupt'] as int);
@@ -1045,7 +1045,9 @@ class _Agent {
                   }
                 },
               ));
-              if (result['values'] != null) values = jsonObject(result['values']);
+              if (result.remove('values') case final Map<String, dynamic> updated) {
+                changedValues = values = updated;
+              }
               final separated = separateToolImages(result);
               result = separated.$1;
               if (separated.$2.isNotEmpty) {
@@ -1089,8 +1091,8 @@ class _Agent {
             event(
               await _append(
                 'tool.completed',
-                {'item': item.toJson(), 'values': values},
-                metadata: {'values': values},
+                {'item': item.toJson()},
+                metadata: {if (changedValues != null) 'values': changedValues},
               ),
             );
           }

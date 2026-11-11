@@ -78,10 +78,11 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   };
   final queued = <ChatEntry>[];
   var response = <ChatEntry>[];
+  String? responseTurnId;
   var segment = 'initial';
   void flush({bool latest = false}) {
     if (response.isEmpty && !(latest && task.running)) return;
-    final turnId = response.map((entry) => entry.turnId).whereType<String>().firstOrNull;
+    final turnId = responseTurnId;
     final turn = task.turns[turnId];
     final active = task.running && (turn?['status'] == 'inProgress' || latest && turn == null);
     if (active) {
@@ -112,6 +113,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       }
     }
     response = [];
+    responseTurnId = null;
   }
   for (final entry in entries) {
     if (entry.role == 'Queued') { queued.add(entry); continue; }
@@ -120,6 +122,13 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       segment = entry.id;
       rows.addAll(_workRows([entry]));
     } else {
+      // Retrying starts a new turn without another user message. Its live
+      // activity must not inherit the failed turn's collapsed presentation.
+      if (responseTurnId != null && entry.turnId != null && responseTurnId != entry.turnId) {
+        flush();
+        segment = entry.id;
+      }
+      responseTurnId ??= entry.turnId;
       response.add(entry);
     }
   }

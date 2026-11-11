@@ -193,6 +193,8 @@ class DesktopNotifications {
     _run(() async {
       try {
         final player = _sounds.putIfAbsent(completion, AudioPlayer.new);
+        // Notification sounds have no playback-position UI or listeners.
+        player.positionUpdater = null;
         await player.play(AssetSource('notifications/${completion ? 'completion' : 'input'}.mp3'))
           .asCancellable(_lifetime);
         if (!hasNotificationSound(session.notificationMode)) await player.stop().asCancellable(_lifetime);

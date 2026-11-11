@@ -36,7 +36,6 @@ void main() {
       final item = jsonObject(entry['item']);
       task.messages[item['id'] as String] = {...item, 'turnId': entry['turnId'], 'order': task.messages.length};
     }
-    if (task.messages.isNotEmpty) task.messages.values.last['tokens'] = client.store.modelSnapshot()['tokens'];
     task.through = client.store.lastSequence;
     session.projects.add(Project('checkout', 'project', root.path, [task]));
   });
@@ -63,7 +62,7 @@ void main() {
   Future<void> showContext(WidgetTester tester, {bool indicator = false}) async {
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: Center(child: SizedBox(width: 420,
       child: Column(children: [
-        if (indicator) ContextUsageIndicator(messages: task.messages.values, limit: 1000, onPressed: () {}),
+        if (indicator) ContextUsageIndicator(tokens: client.store.modelSnapshot()['tokens'] as Json?, limit: 1000, onPressed: () {}),
         Expanded(child: SessionContextWindow(session: session, task: task,
           downloadsDirectory: Directory('${root.path}/Downloads'))),
       ]))))));

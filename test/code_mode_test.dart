@@ -126,6 +126,30 @@ void main() {
       expect(next['output'], ['{"value":42}']);
     });
 
+    test('read-only exec and wait observations do not copy saved state', () async {
+      final lifetime = CancellationToken();
+      final session = CodeSession(lifetime);
+      addTearDown(() async { await session.close(); lifetime.cancel(); });
+      final saved = <String, dynamic>{'cold': 'x' * (4 * 1024 * 1024), 'answer': 42};
+      final release = Completer<void>();
+      Future<Json> execute(String source) => session.execute(source,
+        cancellation: lifetime, values: saved, catalog: [{'name': 'hold', 'description': ''}],
+        tool: (_, _, {required cancellation}) async {
+          await release.future.asCancellable(cancellation);
+          return null;
+        });
+      final read = await execute('text(load("answer"));');
+      expect(read['output'], ['42']);
+      expect(utf8.encode(jsonEncode(read)).length, lessThan(4096),
+        reason: 'Reading a small value must not export the untouched multi-megabyte store.');
+      final pending = await execute('yield_control(); await tools.hold({}); text(load("answer"));');
+      expect(utf8.encode(jsonEncode(pending)).length, lessThan(4096));
+      release.complete();
+      final completed = await session.wait({'cell_id': pending['cell_id']}, cancellation: lifetime);
+      expect(completed['output'], ['42']);
+      expect(utf8.encode(jsonEncode(completed)).length, lessThan(4096));
+    });
+
     test('yielded cells load their admitted snapshot while later cells see committed writes', () async {
       final lifetime = CancellationToken();
       final session = CodeSession(lifetime);

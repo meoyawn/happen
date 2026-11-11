@@ -182,6 +182,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final settings = {...request}..remove(inputField)..remove('tools');
     final tokens = snapshot['tokens'] as Json?;
     final total = tokens == null ? null : sessionTokenTotal(tokens);
+    final cacheRead = tokens?['cache']?['read'] as num? ?? 0;
+    final inputTotal = (tokens?['input'] as num? ?? 0) + cacheRead + (tokens?['cache']?['write'] as num? ?? 0);
+    final cached = inputTotal > 0 ? cacheRead / inputTotal : null;
     final limit = snapshot['limit'] as num?;
     final used = total == null || limit == null || limit == 0 ? null : total / limit;
     final model = snapshot['model'];
@@ -207,8 +210,9 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       ('Model', modelInfo?['name'] as String? ?? model?['id'] as String? ?? '—'),
       ('Context Limit', number(limit)), ('Total Tokens', number(total)),
       ('Usage', used == null ? '—' : '${(used * 100).round()}%'),
-      ('Input Tokens', number(tokens?['input'])), ('Output Tokens', number(tokens?['output'])),
+      ('Uncached Input Tokens', number(tokens?['input'])), ('Output Tokens', number(tokens?['output'])),
       ('Reasoning Tokens', number(tokens?['reasoning'])),
+      ('Cached Input (latest request)', cached == null ? '—' : '${(cached * 100).toStringAsFixed(1)}% of input tokens'),
       ('Cache Tokens (read/write)', '${number(tokens?['cache']?['read'])} / ${number(tokens?['cache']?['write'])}'),
       ('User Messages', number(counts['user'] ?? 0)), ('Assistant Messages', number(counts['assistant'] ?? 0)),
       ('Session Created', time(snapshot['created'])), ('Last Activity', time(snapshot['updated'])),

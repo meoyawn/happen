@@ -20,16 +20,21 @@ String? canonicalGitRemote(String remote) {
     port: standard ? null : uri.port, path: path).toString();
 }
 
-String? primaryGitRepository(String remoteListing) {
+String? primaryGitRemote(String remoteListing) {
   final remotes = <String, String>{};
   for (final line in remoteListing.split('\n')) {
     final match = RegExp(r'^(\S+)\s+(\S+)\s+\(fetch\)(?:\s+\[[^\]]+\])?\s*$').firstMatch(line.trim());
     if (match == null) continue;
-    final identity = canonicalGitRemote(match[2]!);
-    if (identity != null) remotes[match[1]!] = identity;
+    final remote = match[2]!;
+    if (canonicalGitRemote(remote) != null) remotes[match[1]!] = remote;
   }
   for (final preferred in ['upstream', 'origin', ...(remotes.keys.toList()..sort())]) {
-    if (remotes[preferred] case final identity?) return identity;
+    if (remotes[preferred] case final remote?) return remote;
   }
   return null;
+}
+
+String? primaryGitRepository(String remoteListing) {
+  final remote = primaryGitRemote(remoteListing);
+  return remote == null ? null : canonicalGitRemote(remote);
 }

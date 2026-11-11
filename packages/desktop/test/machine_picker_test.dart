@@ -66,6 +66,7 @@ Json _checkout(String path, String branch, bool worktree) => {
 
 class _Client implements AgentClient {
   int inspections = 0, discoveries = 0;
+  @override final sharedFilesystem = false;
   @override final events = StreamController<Json>.broadcast();
   @override Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async {
     inspections++;
