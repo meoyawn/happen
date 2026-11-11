@@ -8,6 +8,9 @@ import 'appearance.dart';
 import 'machines.dart';
 import 'machine_icons.dart';
 
+Future<void> showRemoteEditor(BuildContext context, MachinesController machines, {RemoteMachine? remote}) =>
+  showDialog<void>(context: context, builder: (_) => _RemoteEditor(machines: machines, remote: remote));
+
 class RemoteSettings extends StatefulWidget {
   const RemoteSettings({super.key, required this.machines});
   final MachinesController machines;
@@ -20,8 +23,7 @@ class _RemoteSettingsState extends State<RemoteSettings> {
   @override
   void dispose() { _lifetime.cancel(); super.dispose(); }
 
-  Future<void> _edit([RemoteMachine? remote]) => showDialog<void>(context: context,
-    builder: (_) => _RemoteEditor(machines: widget.machines, remote: remote));
+  Future<void> _edit([RemoteMachine? remote]) => showRemoteEditor(context, widget.machines, remote: remote);
 
   Future<void> _remove(RemoteMachine remote) async {
     try { await widget.machines.removeRemote(remote.alias, cancellation: _lifetime); }

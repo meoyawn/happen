@@ -41,7 +41,8 @@ import 'machines.dart';
 import 'machine_icons.dart';
 import 'thread_machine_picker.dart';
 import 'project_details.dart';
-import 'remote_project_dialog.dart';
+import 'add_project_dialog.dart';
+import 'add_project_state.dart';
 
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session, this.machines});
@@ -298,31 +299,12 @@ class _DesktopViewState extends State<DesktopView> {
     if (_picking || !mounted) return;
     setState(() => _picking = true);
     try {
-      if (!session.client.sharedFilesystem) {
-        final path = await showDialog<String>(context: context, builder: (_) => const RemoteProjectDialog());
-        if (path != null && path.isNotEmpty && mounted) {
-          await session.addProject(path);
-          if (mounted) { setState(() => session.viewingConversation = true); if (!_settingsOpen) _focusComposer(); }
-        }
-        return;
-      }
-      final paths = await MacosFilePicker().pick(
-        MacosFilePickerMode.folder,
-        allowsMultiple: false,
-        dialogTitle: 'Open project',
-      );
-      try {
-        if (mounted && paths != null && paths.isNotEmpty) {
-          await session.addProject(paths.first.path);
-          if (!mounted) return;
-          setState(() => session.viewingConversation = true);
-          if (!_settingsOpen) _focusComposer();
-        }
-      } finally {
-        for (final path in paths ?? <MacosFilePickerPath>[]) {
-          await path.release();
-        }
-      }
+      final result = await showDialog<ProjectSaved>(context: context,
+        barrierColor: const Color(0x22000000),
+        builder: (_) => AddProjectDialog(session: session, machines: widget.machines));
+      if (result == null || !mounted) return;
+      await _selectProject(result.project);
+      if (mounted && !_settingsOpen) _focusComposer();
     } finally {
       if (mounted) setState(() => _picking = false);
     }

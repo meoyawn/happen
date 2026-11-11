@@ -60,6 +60,14 @@ The default data directory is `~/.local/share/agent-server` (`AGENT_DATA_DIR` or
 
 After deployment, open desktop **Settings → Environments → Add environment**. Enter a hostname or an SSH config alias and a display name. User, port and identity-file path are optional; blank values inherit SSH configuration and the SSH agent. Optional workspace directories seed checkout discovery. Local and remote environments use the same connection-status layout; their overflow menus provide icon selection, including Apple, laptop, desktop, server, Linux and Ubuntu. Use **Manage environments…** in the machine picker to edit or remove a connection.
 
+Desktop **Add project** can also connect an SSH machine, browse its folders,
+initialize a Git repository, or clone a Git URL into a chosen destination.
+Folder paths and `~/` resolve on that server. Git uses that machine's credentials;
+progress and cancellation travel over the client connection. Creation and cloning
+prepare a private temporary folder before moving it into place. Existing
+destinations are rejected, and failed or cancelled operations remove their
+temporary folder. Remote machines need a server build with these workspace APIs.
+
 Remote connections and machine icons are desktop-owned settings in `desktop.sqlite`. Deployment provisions the server; adding a connection is a desktop Settings action. Happen does not generate SSH config includes or write to `~/.ssh`. SSH keys remain with SSH, and model credentials remain on the server where they are used. Connection settings and credential values are kept outside this repository.
 
 The sidebar combines threads and invested drafts from every connected server, regardless of which machine is selected. Cards show their machine icon; opening one routes to that server. This computer is named **local** throughout the app. Switching machines retains the sidebar's pins, project filter, disclosure and scroll state. Application-owned SSH workers keep connections alive and retry dropped transports with capped exponential backoff. Recovery retains the desktop session, cached rows and drafts, and restores thread watches without replaying messages.

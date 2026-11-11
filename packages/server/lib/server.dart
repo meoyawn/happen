@@ -22,6 +22,7 @@ import 'src/attachments.dart';
 import 'src/questions.dart';
 import 'src/git.dart';
 import 'src/workspaces.dart';
+import 'src/project_folders.dart';
 import 'src/terminals.dart';
 
 part 'src/side_chats.dart';
@@ -563,6 +564,17 @@ class AgentServer {
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
     if (method == 'workspace.inspect') {
       return inspectWorkspace(requiredString(params, 'path'), client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+    }
+    if (method == 'workspace.browse') {
+      return browseProjectFolders(requiredString(params, 'query'),
+        client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+    }
+    if (method == 'workspace.prepare') {
+      final operationId = requiredString(params, 'operationId');
+      return prepareProjectFolder(params,
+        client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime),
+        onProgress: (progress) => client.event({'method': 'workspace.progress',
+          'params': {'operationId': operationId, ...progress}}));
     }
     if (method == 'workspace.discover') {
       final cancellation = client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime);
@@ -2075,6 +2087,16 @@ class AgentClient {
   Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
     jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
 
+  Future<Json> browseProjectFolders(String query, {required CancellationToken cancellation}) async =>
+    jsonObject(await _request('workspace.browse', {'query': query}, cancellation: cancellation,
+      timeout: const Duration(seconds: 15)));
+
+  Future<Json> prepareProjectFolder(String kind, String path, {String? remoteUrl,
+    required String operationId, required CancellationToken cancellation}) async =>
+    jsonObject(await _request('workspace.prepare', {'kind': kind, 'path': path,
+      'remoteUrl': remoteUrl, 'operationId': operationId}, cancellation: cancellation,
+      timeout: const Duration(minutes: 12)));
+
   Future<Json> discoverWorkspaces({required List<String> paths, String? repository, String subdirectory = '',
     List<String> subdirectories = const [],
     required CancellationToken cancellation}) async => jsonObject(await _request('workspace.discover',
@@ -2273,8 +2295,8 @@ class AgentClient {
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
-      if ((method.startsWith('terminal/') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
-        'session.side.create', 'workspace.inspect', 'workspace.discover'}.contains(method)) && socket!.readyState == WebSocket.open) {
+      if ((method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'session.context', 'session.trace.page', 'session.trace.status',
+        'session.side.create'}.contains(method)) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {

@@ -15,6 +15,16 @@ Release app RAM measurements will be added to the
 
 ## Using Happen
 
+**Add project** opens a command palette: choose a machine, then **Local folder**,
+**New project**, **Git URL**, or **GitHub repository**. Browse folders on that
+machine or enter an absolute path (`~/` uses its home directory). On this device,
+**Choose folder…** opens the system file picker and fills in the selected path.
+Use **Add project**, **Create project**, or **Clone** to finish; **⌘Enter**
+(**Ctrl+Enter**) also submits. GitHub accepts `owner/repository` or a URL and
+uses `git@github.com:owner/repository.git` over SSH by default.
+Clones use the selected machine's Git credentials and show cancellable progress.
+**Add SSH machine…** connects another computer from the machine selection step.
+
 **Settings → Appearance → Project icons** switches between **Letters** (the
 default) and **Generated**, matching OpenCode's `projectAvatar.style` experiment.
 **Settings → Projects** lists added folders and opens each project's settings.
