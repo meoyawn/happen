@@ -63,12 +63,17 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
 
   @override
   GestureRecognizer createLink(String text, String? href, String title) {
-    final recognizer = TapGestureRecognizer()..onTap = () {
-      _hideLinkTooltip();
-      if (href != null) {
-        unawaited(openDesktopLink(context, href, directory: widget.markdown.directory, cancellation: _lifetime));
+    final recognizer = TapGestureRecognizer()
+      ..onTap = () {
+        _hideLinkTooltip();
+        if (href != null) {
+          unawaited(openDesktopLink(context, href, directory: widget.markdown.directory, cancellation: _lifetime));
+        }
       }
-    };
+      ..onSecondaryTapUp = href == null ? null : (details) {
+        _hideLinkTooltip();
+        unawaited(_showLinkMenu(context, href, details.globalPosition));
+      };
     _links[recognizer] = href;
     return recognizer;
   }
@@ -245,6 +250,22 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
   }
 }
 
+Future<void> _showLinkMenu(BuildContext context, String href, Offset position) async {
+  ContextMenuController.removeAny();
+  final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+  final copy = await showMenu<bool>(context: context,
+    position: RelativeRect.fromRect(overlay.globalToLocal(position) & Size.zero, Offset.zero & overlay.size),
+    items: [const PopupMenuItem(value: true, child: Text('Copy link'))]);
+  if (copy != true || !context.mounted) return;
+  try {
+    await Clipboard.setData(ClipboardData(text: href));
+  } on PlatformException {
+    if (context.mounted) {
+      showDesktopToast(context, 'Could not copy to the clipboard.', type: DesktopToastType.error);
+    }
+  }
+}
+
 class _LinkTooltipLayout extends SingleChildLayoutDelegate {
   _LinkTooltipLayout(this.position);
   final Offset position;
@@ -316,6 +337,7 @@ class _SkillLinkBuilder extends MarkdownElementBuilder {
     return Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
       child: GestureDetector(onTap: () => unawaited(openDesktopLink(context, href,
         directory: directory, cancellation: cancellation)),
+        onSecondaryTapUp: (details) => unawaited(_showLinkMenu(context, href, details.globalPosition)),
         child: Text.rich(TextSpan(children: [
           const WidgetSpan(alignment: PlaceholderAlignment.middle,
             child: Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())),
