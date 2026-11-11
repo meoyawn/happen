@@ -83,7 +83,7 @@ void main() {
     }
   });
 
-  testWidgets('the conversation surfaces required MCP auth and completes it inline without changing the draft', (tester) async {
+  testWidgets('the conversation keeps MCP auth optional and completes it inline without changing the draft', (tester) async {
     final client = _Client();
     final draft = TextEditingController(text: 'my yesterdays workout?');
     final opened = <String>[];
@@ -103,11 +103,22 @@ void main() {
       TextField(controller: draft),
     ]))));
     await tester.pumpAndSettle();
-    expect(find.text('MCP sign-in required'), findsOneWidget);
+    expect(find.text('Sign in'), findsNothing);
+    final connections = find.text('MCP connections · 1 awaiting sign-in');
+    expect(connections, findsOneWidget);
+    await tester.tap(connections);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
     expect(client.loginCwd, '/project');
     expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Preparing sign-in…'), findsOneWidget);
+    await tester.tap(connections);
+    await tester.pumpAndSettle();
+    expect(find.text('Preparing sign-in…'), findsNothing);
+    expect(client.loginCancellation!.isCancelled, false);
+    await tester.tap(connections);
+    await tester.pumpAndSettle();
     expect(find.text('Preparing sign-in…'), findsOneWidget);
     const url = 'https://strengthmcp.com/authorize?state=fixture';
     client.events.add({'type': 'mcp.auth.login', 'server': 'strength', 'login_id': client.loginId, 'url': url});
@@ -115,9 +126,17 @@ void main() {
     expect(opened, [url]);
     expect(find.text('Complete sign-in in your default browser.'), findsOneWidget);
     expect(draft.text, 'my yesterdays workout?');
+    await tester.tap(find.byTooltip('Dismiss MCP sign-in requests'));
+    await tester.pumpAndSettle();
+    expect(connections, findsNothing);
+    expect(client.loginCancellation!.isCancelled, false);
+    client.events.add({'type': 'mcp.auth.changed', 'server': 'strength'});
+    await tester.pumpAndSettle();
+    expect(connections, findsNothing);
     client.completion!.complete({'state': 'ready', 'tool_count': 1});
     await tester.pumpAndSettle();
-    expect(find.text('MCP sign-in required'), findsNothing);
+    expect(client.connected, true);
+    expect(connections, findsNothing);
     expect(draft.text, 'my yesterdays workout?');
     expect(find.text('Existing conversation'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());

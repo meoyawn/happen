@@ -3,13 +3,18 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:mcp/mcp.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('MCP OAuth connects through the client API, persists privately, refreshes, and signs out across owners', () async {
-    final fixture = await _OAuthFixture.start();
+  test('MCP OAuth receives callbacks at the client, persists privately, refreshes, and signs out across owners', () async {
+    // The configured callback port belongs to the remote host. Reserving it
+    // here proves browser sign-in does not try to bind that port on the server.
+    final remoteCallback = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => remoteCallback.close(force: true));
+    final fixture = await _OAuthFixture.start(callbackPort: remoteCallback.port);
     addTearDown(fixture.close);
     var server = await fixture.happen();
     var client = await AgentClient.connect(server.uri);
@@ -26,7 +31,9 @@ void main() {
         if (event['type'] == 'mcp.auth.login') url.complete(Uri.parse(event['url'] as String));
       });
       final login = client.mcpLogin('strength', 'first', cancellation: token);
-      final authorization = await url.future.timeout(const Duration(seconds: 10));
+      final authorization = await Future.any([url.future, login.then<Uri>((_) => throw StateError('Missing browser URL'))])
+        .timeout(const Duration(seconds: 10));
+      expect(Uri.parse(authorization.queryParameters['redirect_uri']!).port, isNot(remoteCallback.port));
       expect(authorization.queryParameters['scope']!.split(' '), containsAll(['training', 'offline_access']));
       expect(authorization.queryParameters['resource'], fixture.resource);
       expect((await client.mcpInventory(cancellation: token))['servers'][0]['auth_status'], 'signing_in');
@@ -67,11 +74,13 @@ void main() {
       expect(fixture.toolCalls, 2, reason: 'An interrupted tool call must never be replayed after refresh');
       final credentials = (await Directory('${fixture.root.path}/data/mcp-auth').list().toList()).whereType<File>().single;
       if (!Platform.isWindows) expect((await credentials.stat()).mode & 0x3f, 0);
-      // Another live harness owner starts with the same credentials. This also
+      // Another live MCP owner starts with the same credentials. This also
       // represents the desktop observing a later CLI login/logout on disk.
-      final otherServer = await fixture.happen();
-      final other = await AgentClient.connect(otherServer.uri);
-      expect((await other.mcpInventory(cancellation: token))['servers'][0]['tool_count'], 1);
+      final otherHttp = HttpClient();
+      final other = McpManager(http: otherHttp, directory: '${fixture.root.path}/data', onEvent: (_, _) {});
+      addTearDown(() async { await other.close(); otherHttp.close(force: true); });
+      await other.configure({'strength': {'url': fixture.resource}}, token);
+      expect((await other.inventory(token))['servers'][0]['tool_count'], 1);
       await client.close();
       await server.close();
       final saved = jsonObject(jsonDecode(await credentials.readAsString()));
@@ -83,10 +92,8 @@ void main() {
       expect(fixture.refreshCount, 2);
       expect(fixture.registrationCount, 1, reason: 'Restart reuses the saved OAuth client');
       await client.mcpLogout('strength', cancellation: token);
-      expect((await other.mcpInventory(cancellation: token))['servers'][0]['state'], 'authentication_required');
+      expect((await other.inventory(token))['servers'][0]['state'], 'authentication_required');
       expect(await credentials.exists(), false);
-      await other.close();
-      await otherServer.close();
     } finally {
       token.cancel();
       await events.cancel();
@@ -113,9 +120,7 @@ void main() {
         final callback = fixture.callback(authorization);
         final query = {...callback.queryParameters};
         if (issuer == 'missing') { query.remove('iss'); } else { query['iss'] = 'https://unrelated.example'; }
-        await client.request('mcp.auth.callback', {
-          'server': 'strength', 'login_id': 'issuer', 'callback_url': callback.replace(queryParameters: query).toString(),
-        });
+        expect(await fixture.visit(callback.replace(queryParameters: query)), 400);
         await failed;
         expect(fixture.exchangeCount, 0);
         expect(await Directory('${fixture.root.path}/data/mcp-auth').exists(), false);
@@ -220,14 +225,15 @@ class _OAuthFixture {
   String get resource => 'http://127.0.0.1:${peer.port}/mcp';
   String get issuer => 'http://127.0.0.1:${authorization.port}';
 
-  static Future<_OAuthFixture> start({bool issuerResponses = true}) async {
+  static Future<_OAuthFixture> start({bool issuerResponses = true, int? callbackPort}) async {
     final fixture = _OAuthFixture(await Directory.systemTemp.createTemp('happen-mcp-oauth-'),
       await HttpServer.bind(InternetAddress.loopbackIPv4, 0),
       await HttpServer.bind(InternetAddress.loopbackIPv4, 0), issuerResponses);
     fixture.peer.listen(fixture._resource);
     fixture.authorization.listen(fixture._authorization);
     await File('${fixture.root.path}/config.yaml').writeAsString(jsonEncode({'mcp_servers': {
-      'strength': {'url': fixture.resource, 'headers': {'X-Resource-Private': 'private-resource-header'}},
+      'strength': {'url': fixture.resource, 'headers': {'X-Resource-Private': 'private-resource-header'},
+        if (callbackPort != null) 'oauth': {'callback_port': callbackPort}},
     }}));
     return fixture;
   }

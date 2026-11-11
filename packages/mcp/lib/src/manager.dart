@@ -177,13 +177,13 @@ class McpManager {
       },
   ];
 
-  Future<Json> login(String name, CancellationToken cancellation, void Function(String url) notify, {String? scope}) async {
+  Future<Json> login(String name, CancellationToken cancellation, void Function(String url) notify, {String? scope, int? callbackPort}) async {
     cancellation.throwIfCancelled();
     final server = _visible(scope)[name];
     if (server?.oauth == null) throw const McpFailure('Browser sign-in is unavailable for this MCP server');
     if (!_authenticating.add(server!)) throw const McpFailure('An MCP sign-in is already in progress');
     try {
-      await server.oauth!.login(cancellation.merge(lifetime).merge(server.lifetime), notify);
+      await server.oauth!.login(cancellation.merge(lifetime).merge(server.lifetime), notify, callbackPort: callbackPort);
       // Credential installation is the commit point. Reconcile the shared
       // connection even if this client stops waiting immediately afterwards.
       await _restart(name, server, lifetime);
@@ -205,10 +205,10 @@ class McpManager {
     }
   }
 
-  void completeLogin(String name, String callbackUrl, {String? scope}) {
+  bool completeLogin(String name, String callbackUrl, {String? scope}) {
     final auth = _visible(scope)[name]?.oauth;
     if (auth == null) throw const McpFailure('No MCP sign-in is waiting for a callback');
-    auth.completeLogin(callbackUrl);
+    return auth.completeLogin(callbackUrl);
   }
 
   Future<void> _refreshAuthentication(CancellationToken cancellation) async {

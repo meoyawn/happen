@@ -31,6 +31,7 @@ part 'src/thread_names.dart';
 part 'src/thread_lifecycle.dart';
 part 'src/mcp_events.dart';
 part 'src/mcp_input.dart';
+part 'src/mcp_auth.dart';
 part 'src/network_lifecycle.dart';
 part 'src/goals.dart';
 part 'src/git_requests.dart';
@@ -2180,8 +2181,7 @@ class AgentClient {
         cancellation: cancellation, timeout: const Duration(seconds: 35)));
 
   Future<Json> mcpLogin(String server, String loginId, {String? cwd, required CancellationToken cancellation}) async =>
-      jsonObject(await _request('mcp.auth.login', {'server': server, 'login_id': loginId, 'cwd': ?cwd},
-        cancellation: cancellation, timeout: const Duration(minutes: 6)));
+      _mcpClientLogin(this, server, loginId, cwd: cwd, cancellation: cancellation);
 
   Future<void> mcpLogout(String server, {String? cwd, required CancellationToken cancellation}) async =>
       _request('mcp.auth.logout', {'server': server, 'cwd': ?cwd}, cancellation: cancellation);

@@ -202,12 +202,13 @@ class McpOAuth {
     }
   }
 
-  Future<void> login(CancellationToken cancellation, void Function(String url) notify) {
+  Future<void> login(CancellationToken cancellation, void Function(String url) notify, {int? callbackPort}) {
     if (_loggingIn != null) throw const McpFailure('An MCP sign-in is already in progress');
-    return _loggingIn = _login(cancellation.merge(lifetime), notify).whenComplete(() => _loggingIn = null);
+    if (callbackPort != null && (callbackPort < 1 || callbackPort > 65535)) throw const McpFailure('Invalid MCP callback port');
+    return _loggingIn = _login(cancellation.merge(lifetime), notify, callbackPort: callbackPort).whenComplete(() => _loggingIn = null);
   }
 
-  Future<void> _login(CancellationToken token, void Function(String url) notify) async {
+  Future<void> _login(CancellationToken token, void Function(String url) notify, {int? callbackPort}) async {
     HttpServer? listener;
     StreamSubscription<HttpRequest>? subscription;
     try {
@@ -219,9 +220,11 @@ class McpOAuth {
       final issuerBound = metadata['authorization_response_iss_parameter_supported'] == true;
       final callbackId = base64Url.encode(sha256.convert(utf8.encode(_url)).bytes.take(9).toList()).replaceAll('=', '');
       final path = issuerBound ? '/callback' : '/callback/$callbackId';
-      listener = await HttpServer.bind(InternetAddress.loopbackIPv4, _options['callback_port'] as int? ?? 0);
+      // Interactive clients reserve their own loopback listener. CLI/standalone
+      // owners can still receive the browser callback in this process.
+      if (callbackPort == null) listener = await HttpServer.bind(InternetAddress.loopbackIPv4, _options['callback_port'] as int? ?? 0);
       token.throwIfCancelled();
-      final redirect = 'http://127.0.0.1:${listener.port}$path';
+      final redirect = 'http://127.0.0.1:${callbackPort ?? listener!.port}$path';
       final configuredScopes = (_options['scopes'] as List?)?.cast<String>();
       final scopes = <String>{
         ...?(_credentials?['scope'] as String?)?.split(' ').where((s) => s.isNotEmpty),
@@ -298,7 +301,7 @@ class McpOAuth {
           return true;
         }
       };
-      subscription = listener.listen((request) async {
+      subscription = listener?.listen((request) async {
         if (request.method != 'GET' || request.uri.path != path) {
           request.response.statusCode = 404;
         } else {
@@ -349,13 +352,13 @@ class McpOAuth {
     }
   }
 
-  void completeLogin(String value) {
+  bool completeLogin(String value) {
     final uri = value.length <= 65536 && utf8.encode(value).length <= 65536 ? Uri.tryParse(value.trim()) : null;
     if (uri == null || _redirect == null || _callback == null || uri.userInfo.isNotEmpty || uri.hasFragment ||
         uri.scheme != _redirect!.scheme || uri.host != _redirect!.host || uri.port != _redirect!.port || uri.path != _redirect!.path) {
-      throw const McpFailure('Paste the complete callback URL from this sign-in');
+      throw const McpFailure('Invalid MCP sign-in callback URL');
     }
-    _callback!(uri);
+    return _callback!(uri);
   }
 
   Future<String?> _stamp() async {

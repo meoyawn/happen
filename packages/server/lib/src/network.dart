@@ -477,6 +477,10 @@ Future<void> _networkMain(List<Object?> args) async {
         switch (request['method']) {
           case 'mcp.auth.login':
             final name = requiredString(params, 'server');
+            final callbackPort = params['callback_port'];
+            if (callbackPort != null && (callbackPort is! int || callbackPort < 1 || callbackPort > 65535)) {
+              throw const FormatException('Expected a valid MCP callback port');
+            }
             final key = jsonEncode([scope, name]);
             final login = requiredString(params, 'login_id');
             if (mcpLogins.containsKey(key)) throw StateError('An MCP sign-in is already in progress');
@@ -484,7 +488,7 @@ Future<void> _networkMain(List<Object?> args) async {
             try {
               final signingIn = mcp.login(name, cancellation, (url) => reply?.send({'event': {
                 'type': 'mcp.auth.login', 'server': name, 'login_id': login, 'url': url,
-              }}), scope: scope);
+              }}), scope: scope, callbackPort: callbackPort as int?);
               configEvent('mcp.auth.changed', {'server': name});
               result = await signingIn;
             } finally {
@@ -497,8 +501,7 @@ Future<void> _networkMain(List<Object?> args) async {
             if (login == null || login.owner != params['owner'] || login.id != params['login_id']) {
               throw StateError('No matching MCP sign-in is waiting for a callback');
             }
-            mcp.completeLogin(name, requiredString(params, 'callback_url'), scope: scope);
-            result = null;
+            result = mcp.completeLogin(name, requiredString(params, 'callback_url'), scope: scope);
           case 'mcp.auth.logout':
             final name = requiredString(params, 'server');
             await mcp.logout(name, cancellation, scope: scope);
