@@ -154,7 +154,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                       Offstage(offstage: state.active != workspaceChangesPanel,
                         child: ExcludeFocus(excluding: !opened || state.active != workspaceChangesPanel,
                           child: WorkspaceChanges(key: ValueKey('checkout:${task!.id}'),
-                            controller: widget.session.gitForProject(owner)))),
+                            controller: widget.session.gitForProject(owner), active: opened && state.active == workspaceChangesPanel))),
                   for (final tab in state.tabs.where(isFilePanel))
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: state.active != tab,
@@ -166,6 +166,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: !opened || state.active != tab,
                         child: DiffViewer(files: changesForSource(task, diffPanelSource(tab)),
+                          active: opened && state.active == tab,
                           directory: directory ?? '', selectedPath: state.diffReveals[tab]?.path,
                           revealRevision: state.diffReveals[tab]?.revision ?? 0))),
                   for (final tab in state.tabs.where(isBrowserPanel))

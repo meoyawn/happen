@@ -234,11 +234,20 @@ class GitActionsController extends ChangeNotifier {
       (ref: raw['ref'] as String, name: raw['name'] as String, remote: raw['remote'] == true)];
   }
 
-  Future<({ChangedFile file, bool truncated})> diff(String path, CancellationToken cancellation) async {
-    final result = await client.gitRequest('git/diff', {'cwd': cwd, 'path': path}, cancellation: cancellation.merge(_lifetime));
+  Future<GitRepository> review(String comparison, CancellationToken cancellation) async =>
+    _repository(await client.gitRequest('git/status', {'cwd': cwd, 'comparison': comparison},
+      cancellation: cancellation.merge(_lifetime)));
+
+  Future<({ChangedFile file, bool truncated})> diff(String path, CancellationToken cancellation,
+      {String comparison = 'uncommitted', bool hideWhitespace = false, String? expectedHead}) async {
+    final result = await client.gitRequest('git/diff', {'cwd': cwd, 'path': path,
+      'comparison': comparison, 'hideWhitespace': hideWhitespace, 'expectedHead': expectedHead ?? _state.repository?.head},
+      cancellation: cancellation.merge(_lifetime));
+    final status = result['status'] as String;
+    final side = comparison == 'staged' ? status[0] : comparison == 'unstaged' ? status[1] : status;
     return (file: (path: path, oldPath: result['previousPath'] as String?,
-      kind: result['previousPath'] != null ? 'rename' : result['status'] == '??' ? 'add'
-        : (result['status'] as String).contains('D') ? 'delete' : 'update',
+      kind: result['previousPath'] != null ? 'rename' : status == '??' || side.contains('A') ? 'add'
+        : side.contains('D') ? 'delete' : 'update',
       diff: result['diff'] as String, additions: result['additions'] as int, deletions: result['deletions'] as int),
       truncated: result['truncated'] == true);
   }

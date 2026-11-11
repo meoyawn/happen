@@ -134,7 +134,7 @@ Future<({String remote, String? branch})?> gitPullTarget(String root, Cancellati
   return (remote: remote, branch: branch);
 }
 
-Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool includeUnstaged = true}) async {
+Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool includeUnstaged = true, String comparison = 'uncommitted'}) async {
   final discovery = await runGit(cwd, ['rev-parse', '--show-toplevel'], cancellation, accepted: {0, 128});
   if (discovery.code == 128) return {'isRepo': false, 'host': Platform.localHostname, 'files': <Json>[]};
   final root = await Directory(discovery.output.trim()).resolveSymbolicLinks();
@@ -167,8 +167,13 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
         if (rename) 'previousPath': records[++i]});
     }
   }
-  if (!includeUnstaged) {
+  if (!includeUnstaged || comparison == 'staged') {
     files.removeWhere((file) => {'.', ' ', '?'}.contains((file['status'] as String)[0]));
+  } else if (comparison == 'unstaged') {
+    files.removeWhere((file) => {'.', ' '}.contains((file['status'] as String)[1]));
+    // An index rename belongs to the staged comparison. Unstaged changes are
+    // relative to the index's current path.
+    for (final file in files) { file.remove('previousPath'); }
   }
   final remotes = (await runGit(root, ['remote'], cancellation)).output.trim().split('\n').where((line) => line.isNotEmpty).toList();
   String? remote;
@@ -181,9 +186,10 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
       .where((name) => name.isNotEmpty && remotes.contains(name)).firstOrNull;
   }
   final counts = <String, (int, int, bool)>{};
-  if (files.isNotEmpty && (head != null || !includeUnstaged)) {
+  if (files.isNotEmpty && (head != null || !includeUnstaged || comparison != 'uncommitted')) {
     final diff = await runGit(root, ['diff', '--numstat', '-z', '--find-renames', '--no-ext-diff', '--no-textconv',
-      if (!includeUnstaged) '--cached' else head!], cancellation);
+      if (!includeUnstaged || comparison == 'staged') '--cached'
+      else if (comparison != 'unstaged') head!], cancellation);
     final entries = diff.output.split('\u0000');
     for (var index = 0; index < entries.length; index++) {
       final record = entries[index];
@@ -202,7 +208,10 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
       final old = counts[previous] ?? (0, 0, false);
       count = (count.$1 + old.$1, count.$2 + old.$2, count.$3 || old.$3);
     }
-    if (includeUnstaged && (file['status'] == '??' || head == null)) count = await _newFileCount(p.join(root, path), cancellation);
+    if (includeUnstaged && comparison != 'staged' &&
+        (file['status'] == '??' || head == null && comparison == 'uncommitted')) {
+      count = await _newFileCount(p.join(root, path), cancellation);
+    }
     file.addAll({'additions': count.$1, 'deletions': count.$2, 'binary': count.$3});
   }
   final pullTarget = await gitPullTarget(root, cancellation);
@@ -242,15 +251,20 @@ Future<List<Json>> gitBranches(String root, CancellationToken cancellation) asyn
       {'ref': ref, 'name': ref.replaceFirst(RegExp(r'^refs/(heads|remotes)/'), ''), 'remote': ref.startsWith('refs/remotes/')}];
 }
 
-Future<Json> gitFileDiff(Json status, String path, CancellationToken cancellation) async {
+Future<Json> gitFileDiff(Json status, String path, CancellationToken cancellation,
+    {String comparison = 'uncommitted', bool hideWhitespace = false}) async {
   final files = (status['files'] as List).map(jsonObject);
   final file = files.where((file) => file['path'] == path).firstOrNull;
   if (file == null) throw StateError('This file no longer has changes. Refresh the checkout');
   final root = requiredString(status, 'root');
-  final untracked = file['status'] == '??' || status['head'] == null;
+  final untracked = comparison != 'staged' &&
+    (file['status'] == '??' || status['head'] == null && comparison == 'uncommitted');
   final result = await runGit(root, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--find-renames',
+    if (hideWhitespace) '--ignore-all-space',
     if (untracked) ...['--no-index', '--', Platform.isWindows ? 'NUL' : '/dev/null', p.join(root, path)]
-    else ...[status['head'] as String, '--', if (file['previousPath'] case final String previous) previous, path]],
+    else ...[if (comparison == 'staged') '--cached'
+      else if (comparison != 'unstaged') status['head'] as String,
+      '--', if (file['previousPath'] case final String previous) previous, path]],
     cancellation, accepted: {0, 1});
   final truncated = utf8.encode(result.output).length >= maxFrameBytes ~/ 2;
   return {...file, 'diff': result.output, 'truncated': truncated};

@@ -81,11 +81,20 @@ extension _GitRequests on AgentServer {
     final parent = client.gitOperations[requestId]!.merge(client.cancellation).merge(_lifetime);
     final cwd = requiredString(params, 'cwd');
     final includeUnstaged = params['includeUnstaged'] != false;
-    final status = await gitStatus(cwd, parent, includeUnstaged: includeUnstaged);
+    final comparison = params['comparison'] as String? ?? 'uncommitted';
+    if (!{'uncommitted', 'staged', 'unstaged'}.contains(comparison)) throw const FormatException('Unknown Git comparison');
+    final status = await gitStatus(cwd, parent, includeUnstaged: includeUnstaged,
+      comparison: method == 'git/run' ? 'uncommitted' : comparison);
     if (method == 'git/status') return status;
     if (status['isRepo'] != true) throw StateError('This folder is not a Git repository');
     if (method == 'git/branches') return {'branches': await gitBranches(requiredString(status, 'root'), parent)};
-    if (method == 'git/diff') return gitFileDiff(status, requiredString(params, 'path'), parent);
+    if (method == 'git/diff') {
+      if (params.containsKey('expectedHead') && params['expectedHead'] != status['head']) {
+        throw StateError('The checkout changed. Refresh changes.');
+      }
+      return gitFileDiff(status, requiredString(params, 'path'), parent,
+        comparison: comparison, hideWhitespace: params['hideWhitespace'] == true);
+    }
     if (method != 'git/run') throw const FormatException('Unknown Git operation');
     final action = requiredString(params, 'action'), actionId = requiredString(params, 'actionId');
     if (!{'commit', 'push', 'commit_push', 'switch', 'create_branch', 'pull'}.contains(action)) throw const FormatException('Unknown Git action');
