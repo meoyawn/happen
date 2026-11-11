@@ -156,9 +156,13 @@ state as new calls arrive and when the cell is reopened.
 
 File-change activity expands to a compact folder tree with added and removed
 line counts. Finished responses show the net changes for that turn below the
-answer. Click a file or **Open diff** to review it in the side panel, switch
-between unified and split views, copy the diff, or open the current file.
-Saved conversations retain their turn diffs.
+answer. Click a file or **Open diff** to review all changed files in the side
+panel. The viewer follows Harness's continuous review: **Auto**, **Unified**,
+and **Split** views, word wrap, syntax colors, word-change highlights, individual
+and global folding, and per-file copy and open actions. Wide panels include a
+searchable file list; **Jump to file** is available at every width. **Changes
+options** toggles whitespace filtering and word highlights. Saved conversations
+retain their turn diffs.
 
 The top-right toolbar toggles project details, the terminal, and the side panel.
 Project details sits beside the conversation in wide windows and opens as a
@@ -168,8 +172,13 @@ Git actions, and **Changes** with added and removed line counts.
 Scripts can be added, edited, and deleted; running one opens its own terminal
 tab in the project folder. The preferred application and scripts survive relaunch.
 The branch picker switches local branches, tracks remote branches, and creates
-new branches. **Changes** opens the checkout's staged, working, and untracked
-changes compared with HEAD in the diff viewer.
+new branches. **Changes** opens the checkout review. Choose **Uncommitted** for
+staged, working, and untracked changes compared with HEAD, **Staged** for the
+index compared with HEAD, or **Unstaged** for the working tree compared with the
+index, including untracked files. **Refresh changes** retains the last successful
+patches and viewport while reading their replacements. Patches load as needed;
+binary files, renames, metadata-only changes, and preview limits have explicit
+messages. Hidden checkout panels cancel pending reads.
 
 The details card's Git control offers **Commit**, **Push**, and **Commit & push**.
 The commit dialog shows the branch and lets you select files and enter an
