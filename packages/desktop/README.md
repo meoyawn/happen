@@ -424,6 +424,8 @@ added to the app bundle.
 
 `moonx dev` (`moon run dev`) uses the `third_party/flutter` submodule from
 [meoyawn/flutter](https://github.com/meoyawn/flutter), branch `happen/stable`.
+The launcher selects that SDK explicitly, sets `FLUTTER_ROOT` and `PATH`, and
+resolves packages again when the workspace points at another Flutter SDK.
 It contains the fix for [Flutter #195780](https://github.com/flutter/flutter/issues/195780)
 ([upstream PR #195781](https://github.com/flutter/flutter/pull/195781))
 on stable Flutter 3.47.9 / Dart 3.13.7: the mouse update guard is cleared in
@@ -432,8 +434,9 @@ cases live in the fork. SDK source is never patched by a launch script.
 
 Update the fork by incorporating upstream stable and rerunning its mouse tracker
 tests, then update the submodule commit. Use the vendored `bin/flutter` for direct
-development commands. An already-running supervisor switches SDKs on the next
-development launch; an already-frozen process needs a restart to reset its state.
+development commands. Reusing a running supervisor repairs the workspace's
+package resolution; hot reload then applies the vendored framework. Replacing
+the supervisor's toolchain requires exiting and launching development again.
 
 Debug builds use the amber Relay tile and bundle ID `com.adelnz.happen.debug`.
 Release and Profile use lime on deep green and `com.adelnz.happen`. The
@@ -457,7 +460,9 @@ development fork is excluded from the release source snapshot.
 
 The build uses a snapshot of the working sources, including uncommitted changes
 and submodules. Its package configuration, Xcode files and native build products
-are isolated from the running development app. The signed result is copied to
+are isolated from the running development app. The Moon entrypoint disables
+Dart's automatic package resolution before the snapshot is created. The signed
+result is copied to
 `build/macos/Build/Products/Release/Happen.app` under this package, with exact
 Flutter, Dart and engine versions recorded alongside it in `toolchain.json`.
 `release-reinstall` builds first, stages and verifies the bundle, and installs

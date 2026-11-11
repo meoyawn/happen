@@ -50,6 +50,31 @@ void main() {
     expect((await fixture.status())['flutter_pids'], isEmpty);
   });
 
+  test('dev ignores an inherited SDK and repairs its package resolution', () async {
+    final foreignSdk = Directory('${fixture.temporary.path}/homebrew flutter');
+    final foreignFlutter = File('${foreignSdk.path}/bin/flutter');
+    await foreignFlutter.parent.create(recursive: true);
+    await foreignFlutter.writeAsString('#!${Platform.resolvedExecutable} --disable-dart-dev\n'
+      "import 'dart:io';\nvoid main() { exit(23); }\n");
+    expect((await Process.run('/bin/chmod', ['700', foreignFlutter.path])).exitCode, 0);
+    fixture.environment['PATH'] = '${foreignFlutter.parent.path}:${Platform.environment['PATH']}';
+    fixture.environment['FLUTTER_ROOT'] = foreignSdk.path;
+    final packageFile = File('${fixture.root.path}/.dart_tool/package_config.json');
+    final packages = jsonDecode(await packageFile.readAsString()) as Map<String, dynamic>;
+    (packages['packages'] as List).cast<Map<String, dynamic>>()
+      .singleWhere((package) => package['name'] == 'flutter')['rootUri'] =
+        Uri.directory('${foreignSdk.path}/packages/flutter').toString();
+    await packageFile.writeAsString(jsonEncode(packages));
+
+    final (owner, _) = await fixture.launch();
+    await fixture.waitFor(() => fixture.starts.isNotEmpty);
+    expect(fixture.starts.single['FLUTTER_ROOT'], '${fixture.root.path}/third_party/flutter');
+    expect(fixture.starts.single['frameworkRoot'],
+      await Directory('${fixture.root.path}/third_party/flutter/packages/flutter').resolveSymbolicLinks());
+    await owner.send('q');
+    expect(await owner.process.exitCode, 0);
+  });
+
   test('concurrent launches share one process and relaunch after it exits', () async {
     expect((await fixture.status())['flutter_pids'], isEmpty);
     final results = await Future.wait(List.generate(8, (_) => fixture.launch()));
@@ -138,10 +163,12 @@ void main() {
     expect(fixture.starts, isEmpty);
   });
 
-  test('SDK paths containing spaces and apostrophes still reuse the supervisor', () async {
-    final directory = await Directory('${fixture.flutter.parent.path}/owner\'s tools').create();
-    fixture.flutter = await fixture.flutter.rename('${directory.path}/flutter');
-    fixture.environment['PATH'] = '${directory.path}:${Platform.environment['PATH']}';
+  test('vendored SDK symlinks with spaces and apostrophes still reuse the supervisor', () async {
+    final sdk = fixture.flutter.parent.parent;
+    final directory = await Directory('${fixture.root.path}/owner\'s tools').create();
+    final moved = await sdk.rename('${directory.path}/flutter');
+    await Link(sdk.path).create(moved.path);
+    fixture.flutter = File('${moved.path}/bin/flutter');
     final (owner, first) = await fixture.launch();
     await fixture.waitFor(() => fixture.starts.isNotEmpty);
     final (reused, report) = await fixture.launch();
@@ -193,6 +220,7 @@ class _Fixture {
     final fixture = _Fixture(Directory(await temporary.resolveSymbolicLinks()));
     await fixture.copyLauncher(fixture.desktop);
     await fixture.flutter.parent.create(recursive: true);
+    await Directory('${fixture.root.path}/third_party/flutter/packages/flutter').create(recursive: true);
     await fixture.flutter.writeAsString('#!${Platform.resolvedExecutable} --disable-dart-dev\n'
       '${await File('${fixture.source.path}/test/fixtures/desktop_flutter.dart').readAsString()}');
     await Link('${fixture.flutter.parent.path}/dart').create(Platform.resolvedExecutable);
@@ -211,7 +239,9 @@ class _Fixture {
     final packages = jsonDecode(await packageFile.readAsString()) as Map<String, dynamic>;
     for (final package in packages['packages'] as List<dynamic>) {
       final entry = package as Map<String, dynamic>;
-      entry['rootUri'] = packageFile.uri.resolve(entry['rootUri'] as String).toString();
+      entry['rootUri'] = entry['name'] == 'flutter'
+        ? Uri.directory('${fixture.root.path}/third_party/flutter/packages/flutter').toString()
+        : packageFile.uri.resolve(entry['rootUri'] as String).toString();
     }
     await File('${fixture.root.path}/.dart_tool/package_config.json').writeAsString(jsonEncode(packages));
     return fixture;
@@ -223,6 +253,13 @@ class _Fixture {
     final config = File('${destination.path}/macos/Runner/Configs/AppInfo.xcconfig');
     await config.parent.create(recursive: true);
     await config.writeAsString('PRODUCT_NAME = $name\nPRODUCT_BUNDLE_IDENTIFIER = com.adelnz.$name\n');
+    final checkout = destination.parent.parent;
+    if (checkout.path != root.path) {
+      await Directory('${checkout.path}/third_party').create(recursive: true);
+      await Link('${checkout.path}/third_party/flutter').create('${root.path}/third_party/flutter');
+      await Directory('${checkout.path}/.dart_tool').create();
+      await File('${root.path}/.dart_tool/package_config.json').copy('${checkout.path}/.dart_tool/package_config.json');
+    }
   }
 
   List<Map<String, dynamic>> get starts {

@@ -147,6 +147,30 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
+Future<void> _resolveDevelopmentPackages(Directory sdk, Map<String, String> environment,
+    CancellationToken cancellation) async {
+  final packageFile = File('${desktopRoot.parent.parent.path}/.dart_tool/package_config.json');
+  if (packageFile.existsSync()) {
+    final config = jsonObject(jsonDecode(packageFile.readAsStringSync()));
+    final framework = (config['packages'] as List).map(jsonObject)
+      .where((package) => package['name'] == 'flutter').firstOrNull;
+    if (framework != null) {
+      final resolved = Directory.fromUri(packageFile.uri.resolve(framework['rootUri'] as String));
+      if (resolved.existsSync() && resolved.resolveSymbolicLinksSync() ==
+          Directory('${sdk.path}/packages/flutter').resolveSymbolicLinksSync()) return;
+    }
+  }
+  cancellation.throwIfCancelled();
+  final executable = '${sdk.path}/bin/flutter';
+  final process = await Process.start(executable, ['pub', 'get'], workingDirectory: desktopRoot.parent.parent.path,
+    environment: environment, includeParentEnvironment: false, mode: ProcessStartMode.inheritStdio);
+  final hook = CancellationHook(cancellation, () => process.kill(ProcessSignal.sigterm));
+  try {
+    final code = await process.exitCode.asCancellable(cancellation);
+    if (code != 0) throw ProcessException(executable, ['pub', 'get'], 'Development package resolution failed', code);
+  } finally { hook.dispose(); }
+}
+
 Future<void> _launch(bool status, CancellationToken cancellation) async {
   runDirectory.createSync(recursive: true);
   final uid = _libc.lookupFunction<Uint32 Function(), int Function()>('getuid')();
@@ -162,6 +186,15 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         exitCode = 2;
         return;
       }
+      final sdk = Directory('${desktopRoot.parent.parent.path}/third_party/flutter');
+      final flutter = File('${sdk.path}/bin/flutter');
+      final environment = Map<String, String>.of(Platform.environment)..addAll({
+        'FLUTTER_ROOT': sdk.path, 'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}',
+      });
+      if (!status) {
+        if (!flutter.existsSync()) throw StateError('Initialize third_party/flutter before running dev');
+        await _resolveDevelopmentPackages(sdk, environment, cancellation);
+      }
       if (status || apps.isNotEmpty || supervisors.isNotEmpty) {
         final value = <String, dynamic>{'mode': 'debug', 'reused': !status && (apps.isNotEmpty || supervisors.isNotEmpty),
           'app_pids': apps, 'flutter_pids': supervisors};
@@ -173,9 +206,6 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         stdout.writeln(jsonEncode(value));
         if (status) return;
       } else {
-        final flutter = (Platform.environment['PATH'] ?? '').split(':').map((path) => File('$path/flutter'))
-          .where((file) => file.existsSync()).firstOrNull;
-        if (flutter == null) throw StateError('Flutter is not on PATH');
         final value = {'pid': pid, 'mode': 'debug', 'cwd': desktopRoot.path};
         final pending = File('${runDirectory.path}/supervisor.json.tmp');
         pending.writeAsStringSync(jsonEncode(value));
@@ -188,7 +218,7 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         await stdout.flush();
         cancellation.throwIfCancelled();
         Directory.current = desktopRoot;
-        exec(flutter.absolute.path, ['run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'], Platform.environment);
+        exec(flutter.absolute.path, ['run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'], environment);
       }
     } finally { closeLaunchLock(local); }
   } finally { closeLaunchLock(shared); }

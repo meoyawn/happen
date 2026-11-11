@@ -265,7 +265,7 @@ tasks:
 
   release:
     description: Build the macOS release with Homebrew Flutter and Dart
-    command: dart packages/desktop/tool/build_release.dart
+    command: dart --disable-dart-dev packages/desktop/tool/build_release.dart
     preset: utility
     inputs: []
     options:
