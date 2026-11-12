@@ -54,7 +54,7 @@ void main() {
     }
   });
   for (final shell in ['bash', 'zsh', 'sh'].where((name) => File('/bin/$name').existsSync())) {
-    test('$shell snapshot preserves initialized state and multiline exports once', () async {
+    test('$shell snapshot reuses unchanged startup and refreshes edited startup files', () async {
       final peer = await _host(shell, r'''
 printf x >> "$HOME/captures-SHELL"
 export APP_SETTING='first
@@ -69,11 +69,35 @@ OPTIONS
       final first = await peer.run('profile_helper first$alias');
       expect(first['exit_code'], 0, reason: '$first');
       expect(first['output'], 'restored:first|first\nsecond 😀${shell == 'sh' ? '' : '|alias'}');
-      await peer.profile.writeAsString('printf poison >> "\$HOME/captures-$shell"\nexport APP_SETTING=changed\n');
       final second = await peer.run('profile_helper second$alias');
       expect(second['exit_code'], 0);
       expect(second['output'], 'restored:second|first\nsecond 😀${shell == 'sh' ? '' : '|alias'}');
       expect(await File('${peer.root.path}/captures-$shell').readAsString(), 'x');
+      await peer.profile.writeAsString('printf poison >> "\$HOME/captures-$shell"\nexport APP_SETTING=changed\n');
+      final updated = await peer.run(r'''printf '%s' "$APP_SETTING"''');
+      expect(updated['exit_code'], 0);
+      expect(updated['output'], 'changed');
+      expect(await File('${peer.root.path}/captures-$shell').readAsString(), 'xpoison');
+      await peer.profile.delete();
+      expect((await peer.run(r'''printf '%s' "${APP_SETTING-absent}"'''))['output'], 'absent');
+    });
+
+    test('$shell newly created login profile updates PATH in every directory', () async {
+      final peer = await _host(shell, 'export CAPTURE_SETTING=initialized\n');
+      expect((await peer.run(r'''printf '%s' "$CAPTURE_SETTING"'''))['output'], 'initialized');
+      final bin = await Directory('${peer.root.path}/bin').create();
+      final executable = File('${bin.path}/snapshot-command');
+      await executable.writeAsString('#!/bin/sh\nprintf fresh-path\n');
+      expect((await Process.run('/bin/chmod', ['700', executable.path])).exitCode, 0);
+      final login = File('${peer.root.path}/${shell == 'bash' ? '.bash_profile' : shell == 'zsh' ? '.zprofile' : '.profile'}');
+      await login.writeAsString(r'''export PATH="$HOME/bin:$PATH"
+''');
+      final other = await Directory('${peer.root.path}/other').create();
+      for (final directory in [peer.root.path, other.path]) {
+        final result = await peer.run('snapshot-command', workdir: directory);
+        expect(result['exit_code'], 0, reason: '$result');
+        expect(result['output'], 'fresh-path');
+      }
     });
 
     test('$shell snapshot does not inherit command stdin', () async {
@@ -134,6 +158,26 @@ profile_helper() { printf ready; }
   }
 
   for (final shell in ['bash', 'zsh'].where((name) => File('/bin/$name').existsSync())) {
+    test('$shell discards a capture when startup changes while it is pending', () async {
+      final peer = await _host(shell, r'''
+printf old >> "$HOME/capture-generations"
+profile_helper() { printf stale; }
+printf '%s' "$$" > "$HOME/capture-pid"
+while [ ! -f "$HOME/ready" ]; do /bin/sleep 0.01; done
+''');
+      final pending = peer.batch(List.generate(4, (_) => {'cmd': 'profile_helper'}));
+      await _waitFor(File('${peer.root.path}/capture-pid'));
+      await peer.profile.writeAsString(r'''
+printf fresh >> "$HOME/capture-generations"
+profile_helper() { printf refreshed; }
+''');
+      await File('${peer.root.path}/ready').writeAsString('');
+      final results = await pending;
+      expect(results.map((value) => value['exit_code']), everyElement(0));
+      expect(results.map((value) => value['output']), everyElement('refreshed'));
+      expect(await File('${peer.root.path}/capture-generations').readAsString(), 'oldfresh');
+    });
+
     for (final tty in [false, true]) {
       test('$shell concurrent snapshot replays have independent readers, tty=$tty', () async {
         final payload = 'x' * (480 * 1024);
@@ -352,6 +396,12 @@ profile_helper() { printf shared; }
       expect(result['exit_code'], 0);
       expect(result['output'], {'injection', 'missing'}.contains(form) ? 'absent' : 'expanded');
       expect(await File('${root.path}/injected').exists(), isFalse);
+      if (!{'injection', 'missing'}.contains(form)) {
+        for (final file in [startup, File('${config.path}/startup.sh')]) {
+          await file.writeAsString('profile_helper() { printf refreshed; }\n');
+        }
+        expect((await peer.run('profile_helper'))['output'], 'refreshed');
+      }
     });
   }
 

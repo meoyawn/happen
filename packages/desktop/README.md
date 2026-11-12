@@ -76,8 +76,9 @@ Press **⌘K** (**Ctrl+K** on Windows/Linux), or click **Search sessions**, to
 search commands and active sessions. Use **↑/↓** and **Enter** to open a result,
 or **Escape** to close the menu. **Archived sessions** opens Settings directly
 to the archive page; archived chats stay out of command-menu search results.
-The archive list uses the full available height. Select a chat to preview its
-conversation inside Settings, then go back to the archive or restore it.
+The archive list uses the full available height and can be searched by task or
+project. Newest archives appear first. Select a chat to preview its conversation
+inside Settings, then go back to the archive or restore it.
 
 Saved sessions come from the server's durable session list, not the live-agent
 registry or a desktop-only sidebar entry. Its shared SQLite catalog survives a
@@ -277,6 +278,12 @@ WebView. HTML starts in Preview, with a Source toggle and line navigation.
 HTML resources can load from the session's project folder. PDFs use WebKit's
 native viewer. Reload rereads the file; previews work offline. Source views
 retain the 2 MB text limit.
+
+File links read from the conversation's machine through Codex-style
+`fs/getMetadata` and `fs/readFile` requests. Remote text, Markdown and images
+preview in the panel; remote HTML opens as source. Finder actions appear only
+for local files. Remote PDF previews are unavailable. Reads are cancellable,
+and the server limits each file read to 32 MB to fit the transport frame.
 
 **Context** shows the actual saved system prompt,
 provider/model, context limit, token and cache counts, tools, model settings, and
@@ -499,7 +506,10 @@ and MCP tools. Quoted queries support paths containing spaces. File references
 retain their full path and serialize as Markdown links; they do not upload file
 contents. Session references include the text from up to 20 recent messages.
 The **+** menu opens context search, commands, prompt history, or attachments.
-**Shift+Up** opens searchable prompt history for the current session.
+**Shift+Up/Down** extends text selection by one visual line.
+**Prompt history** is also available in **⌘K** (**Ctrl+K** on Windows/Linux).
+Assign or clear its shortcut in **Settings → Shortcuts → Prompt history**.
+No shortcut is assigned by default; your choice is saved for this device.
 
 Type `/` for local commands, model choices, reasoning levels, and skills. Model
 and reasoning choices follow the same availability rules as their picker.

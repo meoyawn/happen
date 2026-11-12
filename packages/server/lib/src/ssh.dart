@@ -69,7 +69,7 @@ Future<void> _sshMain(List<Object?> arguments) async {
     CancellationToken? tunnelClosed;
     CancellationHook? cancelTunnel;
     String? local, remoteSocket;
-    var delay = 50;
+    var delay = 1000;
     var ensureDaemonAt = DateTime.now();
 
     Future<void> releaseTunnel() async {
@@ -119,10 +119,12 @@ Future<void> _sshMain(List<Object?> arguments) async {
           if (!lost.isCompleted) lost.complete();
         }
         var established = false;
+        DateTime? readyAt;
         try {
           // Daemon restarts replace the remote socket, not the SSH transport.
           // Reuse the forward immediately; start a stopped daemon if it stays down.
           if (tunnel == null || DateTime.now().isAfter(ensureDaemonAt)) {
+            ensureDaemonAt = DateTime.now().add(const Duration(seconds: 30));
             final socket = await startDaemon(cancellation);
             ensureDaemonAt = DateTime.now().add(const Duration(seconds: 5));
             if (remoteSocket != null && remoteSocket != socket) await releaseTunnel();
@@ -158,10 +160,10 @@ Future<void> _sshMain(List<Object?> arguments) async {
           subscription = client.events.stream.listen(events.send, onDone: disconnected);
           setState(_SshReady(client, connection));
           established = true;
-          delay = 50;
+          readyAt = DateTime.now();
           events.send({'method': 'connection/ready'});
           deadline.cancel();
-          await lost.future.asCancellable(lifetime.merge(tunnelClosed!));
+          await lost.future.asCancellable(lifetime.merge(tunnelClosed!).merge(connection));
           throw StateError('Remote connection closed');
         } catch (error) {
           if (!lifetime.isCancelled) {
@@ -177,12 +179,15 @@ Future<void> _sshMain(List<Object?> arguments) async {
         }
         if (lifetime.isCancelled) break;
         if (established) {
+          if (DateTime.now().difference(readyAt!) >= const Duration(seconds: 30)) delay = 1000;
           ensureDaemonAt = DateTime.now().add(const Duration(seconds: 1));
           continue;
         }
         try { await cancellableDelay(Duration(milliseconds: delay + alias.hashCode.abs() % 26), lifetime); }
         on CancelledException { break; }
-        delay = (delay * 2).clamp(50, 1000);
+        // A rejected handshake can be an SSH admission penalty. Repeated
+        // probes must leave the host time to recover instead of extending it.
+        delay = (delay * 2).clamp(1000, 30000);
       }
     } finally { await releaseTunnel(); }
   }
@@ -197,6 +202,16 @@ Future<void> _sshMain(List<Object?> arguments) async {
       if (request['method'] == 'connect') {
         if (maintaining != null) throw StateError('Already connecting');
         maintaining = maintain();
+      } else if (request['method'] == 'check') {
+        final current = state;
+        if (current is _SshReady) {
+          try {
+            await current.client._request('ping', {}, cancellation: token.merge(lifetime).merge(current.cancellation),
+              timeout: const Duration(seconds: 3));
+          } catch (_) {
+            if (!token.isCancelled && !lifetime.isCancelled && identical(state, current)) current.cancellation.cancel();
+          }
+        }
       } else {
         final current = state;
         if (current is! _SshReady) throw StateError('Remote machine is reconnecting');

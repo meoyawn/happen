@@ -14,7 +14,8 @@ Future<void> main(List<String> arguments) async {
   final home = await Directory('${workspace.path}/home').create();
   final environment = <String, String>{
     for (final name in ['PATH', 'PATHEXT', 'SHELL', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'COMSPEC', 'TMPDIR', 'TMP', 'TEMP',
-      'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TZ', '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'DEVELOPER_DIR', 'CODEX_SOURCE_DIR'])
+      'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TZ', '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'DEVELOPER_DIR', 'CODEX_SOURCE_DIR',
+      'DART_MCP_SERVER_EXECUTABLE'])
       if (Platform.environment[name] case final String value) name: value,
     'HOME': home.path, 'USERPROFILE': home.path,
     'XDG_CONFIG_HOME': '${home.path}/.config', 'XDG_CACHE_HOME': '${home.path}/.cache', 'XDG_DATA_HOME': '${home.path}/.local/share',
@@ -69,7 +70,10 @@ Future<void> main(List<String> arguments) async {
   finally {
     hook.dispose(); cancellation.cancel(); for (final signal in signals) { await signal.cancel(); }
     // Keep failures reproducible. Only this newly-created workspace is removed.
-    if (exitCode == 0) await workspace.delete(recursive: true);
-    else stderr.writeln('Retained failed check workspace: ${workspace.path}');
+    if (exitCode == 0) {
+      await workspace.delete(recursive: true);
+    } else {
+      stderr.writeln('Retained failed check workspace: ${workspace.path}');
+    }
   }
 }

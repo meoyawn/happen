@@ -398,6 +398,12 @@ class MachinesController extends ChangeNotifier {
   }
 
   Future<void> refresh() => _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
+  Future<void> checkConnections() async {
+    if (_lifetime.isCancelled) return;
+    await Future.wait([for (final machine in sessions) machine.session.checkConnection()]);
+    await refresh();
+  }
+
   Future<void> _refresh() async {
     if (_lifetime.isCancelled) return;
     try {

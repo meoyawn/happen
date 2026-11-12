@@ -18,6 +18,7 @@ export 'package:config/config.dart' show defaultConfigPath;
 import 'src/client_tools.dart';
 import 'src/task_tools.dart';
 import 'src/file_search.dart';
+import 'src/filesystem.dart';
 import 'src/attachments.dart';
 import 'src/questions.dart';
 import 'src/git.dart';
@@ -453,7 +454,7 @@ class AgentServer {
     unawaited(_terminals.detach(client.id).catchError((Object _) {}));
     unawaited(client.attachments.close());
     _clientTools.detach(client.id);
-    if (!_networkExited) {
+    if (!_closing && !_networkExited) {
       unawaited(
         callIsolate(network.port, 'mcp.detach', {
           'owner': client.id,
@@ -513,7 +514,7 @@ class AgentServer {
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
     final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
-    final preparation = method == 'session.side.create' || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/')
+    final preparation = method == 'session.side.create' || method.startsWith('fs/') || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/')
       ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
     try {
       // Export reads must not recursively record their own trace pages.
@@ -706,6 +707,9 @@ class AgentServer {
         return null;
       case 'ping':
         return {'version': '0.1.0'};
+      case 'fs/readFile':
+      case 'fs/getMetadata':
+        return fileSystemRequest(method, params, client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
       case 'files.search':
         client.fileSearch?.cancel();
         final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
@@ -959,8 +963,8 @@ class AgentServer {
             'status': task.retryStatus ?? {'type': task.busy ? 'busy' : 'idle'}};
         }
         if (method == 'task.archive' || method == 'task.unarchive') {
-          await _archive(task, method == 'task.archive');
-          return {identityKey: id, 'archived': method == 'task.archive'};
+          final archivedAt = await _archive(task, method == 'task.archive');
+          return {identityKey: id, 'archived': method == 'task.archive', 'archivedAt': archivedAt};
         }
         if (method == 'task.cancel') {
           task.cancelled = true;
@@ -1218,13 +1222,14 @@ class AgentServer {
       taskIds: (await _acquireNetwork(cancellation)).port, catalog: (await _serverStore).port, cancellation: cancellation);
   }
 
-  Future<void> _archive(_Task task, bool archived) async {
+  Future<String?> _archive(_Task task, bool archived) async {
     if (task.maintenance) throw StateError('Task has a pending maintenance operation');
     task.goalContinuation?.cancel();
     task.maintenance = true;
     final settled = task.maintenanceDone = Completer<void>();
     _tasks[task.id] = task;
     IsolateOwner? writer;
+    String? archivedAt;
     try {
       if (task.busy) {
         task.cancelled = true;
@@ -1241,6 +1246,7 @@ class AgentServer {
       writer = task.memoryStore ?? task.writer ?? await _startStore(task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
+      archivedAt = jsonObject(event['data'])['archived_at'] as String?;
       // Publish the committed membership change before draining resources. MCP
       // initialization or remote cleanup must not hold the archive UI open.
       _broadcast(task.id, event);
@@ -1276,6 +1282,7 @@ class AgentServer {
         _forgetIdle(task);
       }
     }
+    return archivedAt;
   }
 
   /// Coalesces startup, daily and manual maintenance into one cancellable sweep.
@@ -2087,6 +2094,13 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  Future<void> checkConnection({required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
+    if (_worker case final worker? when !isClosed) {
+      await callIsolate(worker.port, 'check', {}, cancellation: cancellation, timeout: const Duration(seconds: 6));
+    }
+  }
+
   Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
     jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
 
@@ -2197,6 +2211,10 @@ class AgentClient {
       jsonObject(await _request('files.search', {'cwd': cwd, 'query': query},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
 
+  Future<Json> fileSystemRequest(String method, String path, {required CancellationToken cancellation}) async =>
+      jsonObject(await _request(method, {'path': path},
+          cancellation: cancellation, timeout: const Duration(seconds: 30)));
+
   Future<Json> searchSkills(String cwd, String query, {String? provider, required CancellationToken cancellation}) async =>
       jsonObject(await _request('skills.search', {'cwd': cwd, 'query': query, 'provider': ?provider},
           cancellation: cancellation, timeout: const Duration(seconds: 10)));
@@ -2298,7 +2316,7 @@ class AgentClient {
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
-      if ((method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'session.context', 'session.trace.page', 'session.trace.status',
+      if ((method.startsWith('fs/') || method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'session.context', 'session.trace.page', 'session.trace.status',
         'session.side.create'}.contains(method)) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }

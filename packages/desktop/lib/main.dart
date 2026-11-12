@@ -85,6 +85,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   Future<void> _refreshProjects() async {
     try {
+      await _machines?.checkConnections();
       final session = _machines?.active ?? _session;
       await session?.refreshProjects();
       await session?.refreshProviders();

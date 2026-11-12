@@ -140,6 +140,7 @@ class CommandRunner {
   Future<void> _close() async {
     _hook?.dispose(); _hook = null;
     _snapshotCancellation.cancel();
+    for (final entry in _snapshots.values) { entry.retire(); }
     await Future.wait(_captures.toList().map((operation) => operation.then<void>((_) {},
         onError: (Object _, StackTrace _) {})));
     _snapshots.clear();

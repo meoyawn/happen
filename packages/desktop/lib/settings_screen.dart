@@ -5,6 +5,7 @@ import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'appearance_settings.dart';
+import 'shortcut_preferences.dart';
 import 'project_avatar.dart';
 import 'project_actions_state.dart';
 import 'project_icon_picker.dart';
@@ -26,6 +27,8 @@ const _pages = [
     description: 'Customize preferences and default behavior'),
   (id: 'appearance', label: 'Appearance', icon: Icons.palette_outlined,
     description: 'Customize how Happen looks'),
+  (id: 'shortcuts', label: 'Shortcuts', icon: Icons.keyboard_outlined,
+    description: 'Choose keyboard shortcuts for Happen'),
   (id: 'projects', label: 'Projects', icon: Icons.folder_outlined,
     description: 'Manage your projects and customize their appearance'),
   (id: 'archived', label: 'Archived tasks', icon: Icons.archive_outlined,
@@ -36,7 +39,8 @@ const _pages = [
 class DesktopSettingsScreen extends StatefulWidget {
   const DesktopSettingsScreen({super.key, required this.session, required this.accounts,
     required this.archived, required this.run, this.addProject, this.openProject,
-    this.removeProject, this.windowControls = true, this.initialPage = 'preferences', this.initialProject, this.machines});
+    this.removeProject, this.windowControls = true, this.initialPage = 'preferences', this.initialProject, this.machines,
+    this.shortcutError});
   final DesktopSession session;
   final MachinesController? machines;
   final Widget accounts, archived;
@@ -46,6 +50,7 @@ class DesktopSettingsScreen extends StatefulWidget {
   final bool windowControls;
   final String initialPage;
   final Project? initialProject;
+  final String? Function(SingleActivator)? shortcutError;
 
   @override
   State<DesktopSettingsScreen> createState() => _DesktopSettingsScreenState();
@@ -149,6 +154,8 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                   : RemoteSettings(machines: widget.machines!),
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
+                'shortcuts' => _settingsList([_PromptHistoryShortcutSettings(
+                  controller: widget.session.promptHistoryShortcut, run: widget.run, shortcutError: widget.shortcutError)]),
                 'projects' => project == null ? _projects() : _ProjectSettings(
                   key: ValueKey(projectIdentity(_source(project), project)), project: project, session: _source(project), run: widget.run,
                   removeProject: widget.removeProject),
@@ -298,6 +305,77 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
         ]),
     ]);
   }
+}
+
+class _PromptHistoryShortcutSettings extends StatefulWidget {
+  const _PromptHistoryShortcutSettings({required this.controller, required this.run, this.shortcutError});
+  final PromptHistoryShortcutController controller;
+  final Future<void> Function(Future<void> Function()) run;
+  final String? Function(SingleActivator)? shortcutError;
+
+  @override
+  State<_PromptHistoryShortcutSettings> createState() => _PromptHistoryShortcutSettingsState();
+}
+
+class _PromptHistoryShortcutSettingsState extends State<_PromptHistoryShortcutSettings> {
+  final _focus = FocusNode();
+  bool _recording = false;
+  String? _error;
+
+  @override
+  void dispose() { _focus.dispose(); super.dispose(); }
+
+  void _save(SingleActivator? shortcut) {
+    setState(() { _recording = false; _error = null; });
+    unawaited(widget.run(() => widget.controller.choose(shortcut)));
+  }
+
+  KeyEventResult _key(FocusNode _, KeyEvent event) {
+    if (!_recording) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent) return KeyEventResult.handled;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      setState(() { _recording = false; _error = null; });
+      return KeyEventResult.handled;
+    }
+    if (shortcutModifierKeys.contains(event.logicalKey)) return KeyEventResult.handled;
+    final keyboard = HardwareKeyboard.instance;
+    final shortcut = SingleActivator(event.logicalKey, meta: keyboard.isMetaPressed,
+      control: keyboard.isControlPressed, alt: keyboard.isAltPressed,
+      shift: keyboard.isShiftPressed, includeRepeats: false);
+    final error = shortcutInputError(shortcut) ?? widget.shortcutError?.call(shortcut);
+    if (error != null) { setState(() => _error = error); }
+    else { _save(shortcut); }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.controller, builder: (context, _) {
+    final state = widget.controller.state;
+    final enabled = state is PromptHistoryShortcutReady || state is PromptHistoryShortcutFailed;
+    final shortcut = state is PromptHistoryShortcutSaving ? state.pending : state.value;
+    final description = _error ?? switch (state) {
+      PromptHistoryShortcutLoading() => 'Loading shortcut…',
+      PromptHistoryShortcutSaving() => 'Saving shortcut…',
+      PromptHistoryShortcutFailed() => 'Could not save the shortcut. Try again.',
+      _ when _recording => 'Press a key combination. Escape cancels.',
+      _ => 'Search previous prompts in the current session. Also available in the command menu.',
+    };
+    return _settingsRow('Prompt history', description,
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        Focus(focusNode: _focus, onKeyEvent: _key,
+          onFocusChange: (focused) {
+            if (!focused && _recording) setState(() { _recording = false; _error = null; });
+          },
+          child: OutlinedButton(onPressed: enabled ? () {
+            setState(() { _recording = !_recording; _error = null; });
+            if (_recording) _focus.requestFocus();
+          } : null, child: Text(_recording ? 'Press shortcut…' : shortcut == null ? 'Record shortcut' : shortcutLabel(shortcut)))),
+        if (shortcut != null) ...[
+          const SizedBox(width: 8),
+          TextButton(onPressed: enabled ? () => _save(null) : null, child: const Text('Clear')),
+        ],
+      ]));
+  });
 }
 
 class _NotificationPreferences extends StatefulWidget {

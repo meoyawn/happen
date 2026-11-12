@@ -186,7 +186,7 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
     case 'configuration.updated': emit('happen/thread/configuration', data);
     case 'goal.updated': emit('thread/goal/updated', {'goal': data['goal']});
     case 'goal.cleared': emit('thread/goal/cleared', {});
-    case 'task.archived': emit('thread/archived', {});
+    case 'task.archived': emit('thread/archived', {'archivedAt': data['archived_at']});
     case 'task.unarchived': emit('thread/unarchived', {});
     case 'thread.name.updated': emit('thread/name/updated', {'threadName': data['name']});
     case 'question.asked': emit('happen/question/asked', data);

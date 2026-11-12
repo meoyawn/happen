@@ -427,15 +427,21 @@ void main() {
     expect(composer.text.files.single.title, 'Planning');
   });
 
-  _testComposer('Shift+Up opens history and Up/Down navigates it while the draft stays untouched', (tester) async {
+  _testComposer('Shift+Up selects text and prompt history remains available explicitly', (tester) async {
     final task = DesktopTask('current', 'Current')..messages.addAll({
-      'one': {'type': 'user', 'text': 'First prompt'},
-      'two': {'type': 'user', 'text': 'Second prompt'},
+      'one': {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'First prompt'}]},
+      'two': {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Second prompt'}]},
     });
     final composer = await _open(tester, session: _Session()..task = task, text: 'Unsent draft');
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Prompt history'), findsNothing);
+    expect(composer.text.selection, const TextSelection(baseOffset: 12, extentOffset: 0));
+    expect(composer.text.text, 'Unsent draft');
+    composer.autocomplete.currentState!.openHistory();
     await tester.pump();
     await tester.pump();
     expect(find.text('Prompt history'), findsOneWidget);

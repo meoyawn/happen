@@ -12,6 +12,7 @@ import 'package:desktop/inline_reference.dart';
 import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/settings_screen.dart';
+import 'package:desktop/shortcut_preferences.dart';
 import 'package:desktop_drop/src/native_transport.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
@@ -66,6 +67,50 @@ void main() {
     client.inventories.clear();
     await tester.pumpAndSettle();
   }
+
+  testWidgets('remote drafts stay editable while disconnected and sending waits for reconnection', (tester) async {
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-disconnected-composer-');
+      final previous = session;
+      await previous.close();
+      client = _Client()..sharedFilesystem = false..providers = previous.providers;
+      final task = DesktopTask('task', 'Example')..loaded = true
+        ..provider = 'openai'..model = 'gpt-6.1-sol'..reasoning = 'low';
+      final project = Project('checkout', '/project', '/project', [task]);
+      session = DesktopSession(client, await openDesktopDatabase(directory!.path))
+        ..providers = previous.providers
+        ..projects.add(project)
+        ..project = project
+        ..task = task;
+    });
+    await open(tester);
+    final editor = tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+    final text = editor.controller;
+    text.value = const TextEditingValue(text: 'Keep editing', selection: TextSelection.collapsed(offset: 12));
+    editor.focusNode.requestFocus();
+    await tester.pumpAndSettle();
+
+    client.events.add({'method': 'connection/closed'});
+    await tester.pumpAndSettle();
+    expect(session.connected, isFalse);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(text.text, 'Keep editin');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(client.sent, isEmpty);
+    expect(text.text, 'Keep editin');
+
+    session.connected = true;
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(text.text, 'Keep editi');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() async { await session.close(); sessionClosed = true; });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('remote project picker can close, rebuild during dismissal, and reopen', (tester) async {
     client.sharedFilesystem = false;
@@ -1659,6 +1704,116 @@ void main() {
       expect(tester.takeException(), isNull);
     }
     await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('Prompt history stays in command search and its recorded shortcut persists', (tester) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    late IsolateOwner database;
+    await tester.runAsync(() async {
+      directory = await Directory.systemTemp.createTemp('desktop-history-shortcut-');
+      database = await openDesktopDatabase(directory!.path);
+      await callIsolate(database.port, 'project.add', {'checkout_key': 'checkout', 'identity': '/project', 'path': '/project'});
+      final previous = session;
+      await previous.close();
+      client = _Client()..providers = previous.providers;
+      final task = DesktopTask('task', 'Example')..loaded = true
+        ..provider = 'openai'..model = 'gpt-6.1-sol'..reasoning = 'low';
+      final project = Project('checkout', '/project', '/project', [task]);
+      session = DesktopSession(client, database)
+        ..providers = previous.providers..projects.add(project)..project = project..task = task;
+      await session.promptHistoryShortcut.ready;
+    });
+    try {
+      session.task!.messages['prompt'] = {'id': 'prompt', 'type': 'userMessage', 'order': 1,
+        'content': [{'type': 'text', 'text': 'A previous prompt'}]};
+      await open(tester);
+      final editor = tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+      editor.controller.text = 'Unsent draft';
+      await tester.pump();
+      Future<void> chord(LogicalKeyboardKey key, {bool command = false, bool control = false}) async {
+        if (command) await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+        if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.runAsync(() => tester.sendKeyEvent(key));
+        if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        if (command) await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+        await tester.pumpAndSettle();
+      }
+      Future<void> openShortcuts() async {
+        await tester.runAsync(() => tester.tap(find.byTooltip('App settings')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(TextButton, 'Shortcuts'));
+        await tester.pumpAndSettle();
+      }
+      Future<void> commit() async {
+        for (var attempt = 0; session.promptHistoryShortcut.state is PromptHistoryShortcutSaving && attempt < 100; attempt++) {
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+          await tester.pump();
+        }
+        await tester.pumpAndSettle();
+        expect(session.promptHistoryShortcut.state, isA<PromptHistoryShortcutReady>());
+        expect(session.error, isNull);
+      }
+      await chord(LogicalKeyboardKey.keyK, command: true);
+      await tester.tap(find.text('Prompt history'));
+      await tester.pumpAndSettle();
+      expect(find.text('Prompt history'), findsOneWidget);
+      expect(find.text('A previous prompt', findRichText: true), findsWidgets);
+      expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus, isTrue);
+      expect(editor.controller.text, 'Unsent draft');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('Prompt history'), findsNothing);
+
+      await openShortcuts();
+      await tester.tap(find.text('Record shortcut'));
+      await chord(LogicalKeyboardKey.keyK, command: true);
+      expect(find.text('This shortcut is already in use. Choose another combination.'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byType(DesktopSettingsScreen), findsOneWidget);
+      expect(session.promptHistoryShortcut.state.value, isNull);
+      await tester.tap(find.text('Record shortcut'));
+      await chord(LogicalKeyboardKey.keyR, control: true);
+      await commit();
+      expect(find.text('⌃ R'), findsOneWidget);
+      await tester.runAsync(() async {
+        final restored = PromptHistoryShortcutController(database);
+        try {
+          await restored.ready;
+          expect(restored.state.value!.trigger, LogicalKeyboardKey.keyR);
+          expect(restored.state.value!.control, isTrue);
+          expect(restored.state.value!.meta, isFalse);
+        } finally { await restored.close(); }
+      });
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      await chord(LogicalKeyboardKey.keyR, control: true);
+      expect(find.text('Prompt history'), findsOneWidget);
+      expect(editor.controller.text, 'Unsent draft');
+      expect(tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('Prompt history'), findsNothing);
+
+      await openShortcuts();
+      await tester.runAsync(() => tester.tap(find.text('Clear')));
+      await commit();
+      expect(find.text('Record shortcut'), findsOneWidget);
+      expect(session.promptHistoryShortcut.state.value, isNull);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      await chord(LogicalKeyboardKey.keyR, control: true);
+      expect(find.text('Prompt history'), findsNothing);
+      await chord(LogicalKeyboardKey.keyK, command: true);
+      expect(find.text('Prompt history'), findsOneWidget);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        await session.close();
+        sessionClosed = true;
+      });
+    }
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('Settings opens instantly, saves appearance and preferences, and restores archived tasks', (tester) async {

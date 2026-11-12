@@ -16,6 +16,7 @@ import 'response_annotation.dart';
 import 'composer_attachments.dart';
 import 'composer_text_controller.dart';
 import 'appearance_preferences.dart';
+import 'shortcut_preferences.dart';
 import 'archive_state.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
@@ -93,6 +94,7 @@ class DesktopTask {
   bool _stopRequested = false;
   bool running = false, loaded = false, loading = false, archiving = false;
   bool _archived = false;
+  DateTime? archivedAt;
   late ArchiveWriteState _archiveWrite = const ArchiveWriteIdle();
   bool get archived => switch (_archiveWrite) {
     ArchiveWritePending(:final archived) => archived,
@@ -225,6 +227,12 @@ class DesktopSession extends ChangeNotifier {
     await client.close();
   }
 
+  Future<void> checkConnection() async {
+    if (_lifetime.isCancelled || client.isClosed) return;
+    await client.checkConnection(cancellation: _lifetime);
+    if (!_lifetime.isCancelled && !connected && client.isConnected && _synchronizing == null) await _synchronize();
+  }
+
   void _connectionLost() {
     connected = false;
     _recovery?.cancel();
@@ -266,6 +274,9 @@ class DesktopSession extends ChangeNotifier {
   }
   AppearanceController? _appearance;
   AppearanceController get appearance => sidebarOwner?.appearance ?? (_appearance ??= AppearanceController(database));
+  PromptHistoryShortcutController? _promptHistoryShortcut;
+  PromptHistoryShortcutController get promptHistoryShortcut => sidebarOwner?.promptHistoryShortcut ??
+    (_promptHistoryShortcut ??= PromptHistoryShortcutController(database));
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
   late final terminals = DesktopTerminals(client);
@@ -494,7 +505,10 @@ class DesktopSession extends ChangeNotifier {
         target.provider = info['modelProvider'] as String? ?? target.provider;
         target.model = info['model'] as String? ?? target.model;
         target.projectionState['summary'] = info;
-        if (!target.archiving) target.archived = archived;
+        if (!target.archiving) {
+          target.archived = archived;
+          target.archivedAt = DateTime.tryParse(info['archivedAt'] as String? ?? '');
+        }
         final updated = (info['updatedAt'] as int? ?? info['createdAt'] as int? ?? 0) * 1000;
         if (!target.loaded || updated > target.lastActivity) target.lastActivity = updated;
         await _databaseCall('task.add', {
@@ -1465,6 +1479,7 @@ class DesktopSession extends ChangeNotifier {
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
+    await promptHistoryShortcut.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -2267,9 +2282,12 @@ class DesktopSession extends ChangeNotifier {
     final navigationRevision = _navigationRevision;
     notifyListeners();
     try {
-      await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
+      final response = await _request(archived ? 'task.archive' : 'task.unarchive', {'task_id': target.id});
       if (!identical(target._archiveWrite, pending)) return;
       target.archived = archived;
+      target.archivedAt = archived
+        ? DateTime.tryParse(jsonObject(response ?? {})['archivedAt'] as String? ?? '') ?? target.archivedAt
+        : null;
       target._archiveWrite = transitionArchiveWrite(pending, ArchiveWriteCommitted(archived));
       if (archived) {
         await _releaseArchivedThread(target);
@@ -2545,8 +2563,12 @@ class DesktopSession extends ChangeNotifier {
         if (target.pending[id] case final previous?) target.pending[id] = {...previous, 'delivery': data['delivery']};
       case 'happen/inbox/cancelled':
         for (final id in data['ids'] as List? ?? []) { target.pending.remove('msg_$id'); }
-      case 'thread/archived': target.archived = true;
-      case 'thread/unarchived': target.archived = false;
+      case 'thread/archived':
+        target.archived = true;
+        target.archivedAt = DateTime.tryParse(data['archivedAt'] as String? ?? '');
+      case 'thread/unarchived':
+        target.archived = false;
+        target.archivedAt = null;
       case 'thread/name/updated':
         _updateThreadTitle(target, {
           ...jsonObject(target.projectionState['summary'] ?? {'preview': target.title}),
@@ -2572,6 +2594,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> close() async {
     _draftSave?.cancel();
     await _appearance?.close();
+    await _promptHistoryShortcut?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();
     await Future.wait(_projectActions.values.map((controller) => controller.close()));

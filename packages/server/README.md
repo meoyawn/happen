@@ -1,5 +1,7 @@
 The server runs as one detached, PID-managed daemon per Linux user and data directory, shared by all desktop connections. It uses no systemd unit. SSH forwards its private Unix socket; the VPS needs no public application port.
 
+Agent commands use Codex V2 shell snapshots. Unchanged startup files reuse the initialized shell state; editing, creating or removing a standard login/rc file, `BASH_ENV` or `ENV` refreshes it before the next command in that workspace. In-flight captures are discarded if their startup inputs change. Files sourced indirectly by a profile are not watched; start a fresh shell explicitly after changing those files.
+
 From the repository root, create the **gitignored** `.local/deploy-server.json` with your private SSH target:
 
 ```json
@@ -30,7 +32,9 @@ The builder freezes the current server sources (including uncommitted edits), an
 
 The artifact is one self-contained AOT executable, `happen-server`, with QuickJS, SQLite and PTY libraries embedded as raw binary payloads, without base64 or compression. Each payload occupies a 64 KiB aligned region between the Dart runtime and AOT snapshot; Dart-only edits leave the native regions byte-for-byte unchanged. The snapshot contains only their offsets and checksums. Before entering the CLI, it extracts verified native libraries into a private cache and checks their actual symbol bindings. Warm launches use the cached libraries without reading the payloads. The VPS needs no Dart SDK, Flutter, compiler, Docker or adjacent library directory to run it.
 
-Deployment requires rsync locally and on the VPS. The tool uses rsync over SSH with the current release as its delta-transfer basis (`--copy-dest`), reusing unchanged runtime and native bytes instead of uploading them again. Transfer statistics show how much data was reused. Uploads go to a separate staging directory and interrupted transfers can resume there. The tool verifies SHA-256, checks the embedded-library bootstrap, switches `~/.local/share/happen/current`, and restarts the daemon. It waits for readiness before acknowledging success and restores the previous release if the new daemon fails to start. Restart interrupts active turns; saved threads remain on disk.
+Deployment requires compatible Unison versions locally and on the VPS (for example, `brew install unison` and `sudo apt install unison`). Each invocation owns a private SSH master and control socket, independently of desktop connections. Initial connection failures back off before retrying; authentication failures identify the missing key configuration. Commands and Unison reuse only that deployment connection, which closes when deployment ends. Set `identityFile` in the private target file or load the server key into your SSH agent.
+
+Unison mirrors only `happen-server` from the local build to a separate staging directory, using the current executable as its delta-transfer basis. Local artifacts remain authoritative and interrupted uploads can resume there. The tool verifies SHA-256, checks the embedded-library bootstrap, switches `~/.local/share/happen/current`, and restarts the daemon. It waits for readiness before acknowledging success and restores the previous release if the new daemon fails to start. Restart interrupts active turns; saved threads remain on disk.
 
 To build independently, or redeploy an existing artifact:
 
@@ -43,7 +47,7 @@ dart tool/deploy_server.dart --skip-build
 
 The direct Dart build and deployment also invoke the Moon task graph. The direct deployment detects x64 or arm64 and uses the private local target, or an explicitly supplied SSH alias. Artifacts are written to `build/server/linux-<architecture>/happen-server`, with a SHA-256 file and `build-report.json`; independently cached native libraries are under its `native/` directory. The builder verifies both cold extraction and warm startup.
 
-Desktop connections retain their SSH tunnel across daemon restarts and immediately reconnect to the replacement Unix socket. Failed socket attempts back off from 50 ms to at most one second. After the protocol acknowledges capabilities, the desktop becomes available while its catalog and thread histories synchronize in the background. A lost SSH transport is recreated automatically; remote WebSocket pings run every two seconds to detect silent failures. Requests interrupted by a network change are cancelled with their connection, and background reads resume after reconnecting without reporting stale connection errors.
+Desktop connections retain their SSH tunnel across daemon restarts and immediately reconnect to the replacement Unix socket. Failed connection attempts back off from one to thirty seconds so rejected SSH handshakes do not hammer the host. After the protocol acknowledges capabilities, sending becomes available while the catalog and thread histories synchronize in the background; drafts remain editable during outages. A lost SSH transport is recreated automatically; remote WebSocket pings run every two seconds to detect silent failures, and returning to the app also checks the connection with a bounded ping. Requests interrupted by a network change are cancelled with their connection, and background reads resume after reconnecting without reporting stale connection errors.
 
 Manage the daemon directly:
 

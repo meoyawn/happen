@@ -71,6 +71,16 @@ they do not assert implementation source or timing performance.
   by shell executable and selected cwd. Concurrent callers share capture.
   Failed commands retry at most three times with one-second backoff; speculative
   failure does not consume the command retry budget.
+- Happen additionally fingerprints the shell's standard login/rc inputs and
+  `BASH_ENV`/`ENV` paths before cache lookup and after capture. Resolved paths
+  include the capture's resulting environment, using Codex's non-evaluating ENV
+  expansion rules for variables, defaults, tilde and the first PATH entry. File
+  creation, replacement, editing and removal retire that generation, cancel
+  pending work, and reset its failure budget. Retired completions cannot publish
+  state; callers share a new capture. LRU eviction alone does not cancel callers.
+  This is a freshness extension to upstream V2, which retains successful state
+  until eviction. Arbitrary files sourced indirectly by startup files are not
+  discovered or watched.
 - Capture has a ten-second deadline, an 8 MiB file-replay bound and a 4 MiB
   environment-replay bound. Native shell state has a 4 MiB file-replay bound;
   environment and env-only replay retain the upstream
@@ -116,3 +126,32 @@ checkout, with private startup files and HOME:
 
 These checks establish the local shell behavior above, not a timing benchmark
 or verification on Linux/Windows.
+
+## Snapshot choice and freshness regression
+
+On November 12, 2026, the real Codex CLI 0.167.1 was run against a local
+Responses fixture with `shell_snapshot=true` and V2 alternately disabled and
+enabled. Both modes returned the original exported value after `.zshrc` was
+edited; an explicitly fresh shell returned the updated value. Stable snapshots
+therefore do not resolve the freshness problem. Happen retains V2's capture,
+serialization, replay, limits, cancellation and fallback implementation.
+The upstream V2 production files are unchanged between the pinned revision and
+checkout `a7aab624a`.
+
+`test/shell_snapshot_test.dart` extends the existing real-runtime ports with
+unchanged-input reuse, edited rc/ENV files, newly created login profiles and PATH
+resolution in the selected and alternate cwd. Those six freshness cases failed
+against the preceding implementation before passing after invalidation. A shared
+capture whose profile changes before completion must deliver only the new state.
+The context contract explicitly enables Codex V2 and exercises initialized
+functions, aliases, multiline exports and the non-login bypass through both real
+tool hosts and their subsequent model requests.
+
+Final November 12 verification: 68 snapshot cases and 19 sibling process/tool
+cases passed, with the existing POSIX process-substitution exclusion. All 63
+Codex context-contract cases passed with V2 enabled. The E2E runner accepts
+`DART_MCP_SERVER_EXECUTABLE` for an already installed real SDK MCP server,
+avoiding repeated package downloads while retaining private fixture homes.
+Scoped analysis is clean. An isolated Dart MCP hot reload and live profile edit
+succeeded. A Linux x64 probe separately verified initial capture, edited rc,
+new login-profile PATH, alternate cwd and deleted rc behavior.

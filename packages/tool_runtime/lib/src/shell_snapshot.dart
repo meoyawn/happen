@@ -11,11 +11,126 @@ class _ShellSnapshot {
 }
 
 class _ShellCapture {
-  Future<_ShellSnapshot?>? pending;
-  _ShellSnapshot? value;
-  DateTime? retryAfter;
-  int attempts = 0;
-  bool prewarming = false;
+  _ShellCapture(this.files, this.fingerprint);
+  final List<String> files;
+  final String fingerprint;
+  final cancellation = CancellationToken();
+  _ShellCaptureState _state = const _CaptureEmpty();
+
+  void transition(_ShellCaptureState next) {
+    _state = switch ((_state, next)) {
+      (_CaptureRetired(), _) => throw StateError('Shell capture is retired'),
+      (_, _CaptureRetired()) => next,
+      (_CaptureEmpty() || _CaptureFailed(), _Capturing()) => next,
+      (_Capturing(), _Captured() || _CaptureFailed()) => next,
+      _ => throw StateError('Invalid shell capture transition'),
+    };
+  }
+
+  void retire() {
+    if (_state is _CaptureRetired) return;
+    transition(const _CaptureRetired());
+    cancellation.cancel();
+  }
+}
+
+sealed class _ShellCaptureState { const _ShellCaptureState(); }
+class _CaptureEmpty extends _ShellCaptureState { const _CaptureEmpty(); }
+class _Capturing extends _ShellCaptureState {
+  const _Capturing(this.operation, {required this.prewarm});
+  final Future<_ShellSnapshot?> operation;
+  final bool prewarm;
+}
+class _Captured extends _ShellCaptureState {
+  const _Captured(this.value, this.files, this.fingerprint);
+  final _ShellSnapshot value;
+  final List<String> files;
+  final String fingerprint;
+}
+class _CaptureFailed extends _ShellCaptureState {
+  const _CaptureFailed(this.attempts, this.retryAfter);
+  final int attempts;
+  final DateTime? retryAfter;
+}
+class _CaptureRetired extends _ShellCaptureState { const _CaptureRetired(); }
+
+// Codex V2 caches initialized state. Happen additionally invalidates that cache
+// when its standard startup inputs change, including newly created profiles.
+// Arbitrary files sourced by those profiles remain the shell's responsibility.
+List<String> _shellStartupFiles(String shell, String directory, {Map<String, String>? environment}) {
+  final env = environment ?? Platform.environment;
+  final home = env['HOME'];
+  final files = <String>{};
+  void add(String? path) {
+    if (path == null || path.isEmpty) return;
+    path = _shellStartupPath(path, env);
+    if (path.isEmpty) return;
+    files.add(Directory(directory).absolute.uri.resolveUri(Uri.file(path)).toFilePath());
+  }
+  if (shell == 'zsh') {
+    for (final prefix in ['/etc', '/etc/zsh', ?home,
+      if (env['ZDOTDIR'] case final String root) root]) {
+      for (final name in ['zshenv', 'zprofile', 'zshrc', 'zlogin']) {
+        add('$prefix/${prefix == '/etc' || prefix == '/etc/zsh' ? '' : '.'}$name');
+      }
+    }
+  } else {
+    add('/etc/profile');
+    if (home != null) {
+      for (final name in ['.profile', if (shell == 'bash') ...['.bash_profile', '.bash_login', '.bashrc']]) {
+        add('$home/$name');
+      }
+    }
+    add(shell == 'bash' ? env['BASH_ENV'] : env['ENV']);
+    if (shell == 'bash') add('/etc/bash.bashrc');
+  }
+  return files.toList()..sort();
+}
+
+// Matches Codex's non-evaluating POSIX ENV resolver. A login profile can change
+// PATH or XDG_CONFIG_HOME, so ready captures also track paths in their resulting
+// environment rather than relying only on the server's inherited values.
+String _shellStartupPath(String value, Map<String, String> env) {
+  if (value.startsWith('~/')) return '${env['HOME'] ?? ''}/${value.substring(2)}';
+  const prefix = r'${PATH%%:*}';
+  if (value == prefix || value.startsWith('$prefix/')) {
+    return '${(env['PATH'] ?? '').split(':').first}${value.substring(prefix.length)}';
+  }
+  String name, suffix;
+  String? fallback;
+  if (value.startsWith(r'${')) {
+    final end = value.indexOf('}');
+    if (end < 0) return value;
+    name = value.substring(2, end);
+    suffix = value.substring(end + 1);
+    final separator = name.indexOf(':-');
+    if (separator >= 0) {
+      fallback = name.substring(separator + 2);
+      name = name.substring(0, separator);
+    }
+  } else if (value.startsWith(r'$')) {
+    final end = value.indexOf('/');
+    name = value.substring(1, end < 0 ? value.length : end);
+    suffix = end < 0 ? '' : value.substring(end);
+  } else { return value; }
+  if (!RegExp(r'^[A-Za-z_][A-Za-z_0-9]*$').hasMatch(name) ||
+      suffix.isNotEmpty && !suffix.startsWith('/')) {
+    return value;
+  }
+  final expanded = env[name];
+  if (expanded != null && (expanded.isNotEmpty || fallback == null)) return '$expanded$suffix';
+  return fallback == null ? value : '${_shellStartupPath(fallback, env)}$suffix';
+}
+
+Future<String> _shellStartupFingerprint(List<String> files, CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  final values = await Future.wait(files.map((path) async {
+    final stat = await File(path).stat();
+    return [path, stat.type.toString(), stat.size, stat.modified.microsecondsSinceEpoch,
+      stat.changed.microsecondsSinceEpoch, stat.mode];
+  }));
+  cancellation.throwIfCancelled();
+  return jsonEncode(values);
 }
 
 String? _snapshotShell(String executable) {
@@ -29,43 +144,78 @@ Future<_ShellSnapshot?> _snapshotFor(CommandRunner runner, String executable,
   final shell = _snapshotShell(executable);
   if (shell == null) return null;
   final key = jsonEncode([executable, Directory(directory).absolute.uri.toString()]);
-  final entry = runner._snapshots.remove(key) ?? _ShellCapture();
-  runner._snapshots[key] = entry;
-  while (runner._snapshots.length > 16) {
-    runner._snapshots.remove(runner._snapshots.keys.first);
-  }
+  final inheritedFiles = _shellStartupFiles(shell, directory);
   while (true) {
     runner._snapshotCancellation.throwIfCancelled();
-    if (entry.value != null) return entry.value;
-    if (entry.pending case final pending?) {
-      final wasPrewarm = entry.prewarming;
-      final value = await pending;
+    final previous = runner._snapshots[key];
+    final previousState = previous?._state;
+    final files = previousState is _Captured ? previousState.files : inheritedFiles;
+    final fingerprint = await _shellStartupFingerprint(files, runner._snapshotCancellation);
+    if (!identical(previous, runner._snapshots[key]) || !identical(previousState, previous?._state)) continue;
+    final previousFingerprint = previousState is _Captured ? previousState.fingerprint : previous?.fingerprint;
+    final entry = previous != null && previousFingerprint == fingerprint
+        ? previous : _ShellCapture(files, fingerprint);
+    if (!identical(previous, entry)) previous?.retire();
+    runner._snapshots.remove(key);
+    runner._snapshots[key] = entry;
+    while (runner._snapshots.length > 16) {
+      // Eviction releases cache ownership. Existing callers may still use a
+      // valid result; changing startup inputs explicitly retires their capture.
+      runner._snapshots.remove(runner._snapshots.keys.first);
+    }
+    final state = entry._state;
+    if (state case _Captured(:final value)) return value;
+    if (state case _Capturing(:final operation, prewarm: final wasPrewarm)) {
+      final value = await operation;
+      if (entry._state is _CaptureRetired) continue;
       if (value != null || prewarm || !wasPrewarm) return value;
       // A failed speculative capture must release a waiting real command
       // immediately, without consuming its retry budget or backoff.
       continue;
     }
-    if (entry.attempts >= 3 ||
-        entry.retryAfter != null && DateTime.now().isBefore(entry.retryAfter!)) {
+    final attempts = state is _CaptureFailed ? state.attempts : 0;
+    if (attempts >= 3 || state is _CaptureFailed && state.retryAfter != null &&
+        DateTime.now().isBefore(state.retryAfter!)) {
       return null;
     }
-    entry.prewarming = prewarm;
-    if (!prewarm) entry.attempts++;
-    final operation = _captureShell(executable, shell, directory,
-        cancellation: runner._snapshotCancellation.merge(runner.cancellation));
+    late final Future<_ShellSnapshot?> operation;
+    operation = _captureCurrentShell(runner, key, entry, executable, shell, directory,
+      attempts: attempts + (prewarm ? 0 : 1), prewarm: prewarm)
+        .whenComplete(() { runner._captures.remove(operation); });
+    entry.transition(_Capturing(operation, prewarm: prewarm));
     runner._captures.add(operation);
-    entry.pending = operation;
-    try {
-      entry.value = await operation;
-      if (entry.value == null && !prewarm) {
-        entry.retryAfter = DateTime.now().add(const Duration(seconds: 1));
-      }
-      return entry.value;
-    } finally {
-      runner._captures.remove(operation);
-      entry.pending = null;
-      entry.prewarming = false;
+    final value = await operation;
+    if (entry._state is _CaptureRetired) continue;
+    return value;
+  }
+}
+
+Future<_ShellSnapshot?> _captureCurrentShell(CommandRunner runner, String key,
+    _ShellCapture entry, String executable, String shell, String directory, {
+    required int attempts, required bool prewarm,
+  }) async {
+  final cancellation = entry.cancellation.merge(runner._snapshotCancellation).merge(runner.cancellation);
+  try {
+    final value = await _captureShell(executable, shell, directory, cancellation: cancellation);
+    if (entry._state is _CaptureRetired) return null;
+    final fingerprint = await _shellStartupFingerprint(entry.files, cancellation);
+    if (fingerprint != entry.fingerprint) {
+      entry.retire();
+      if (identical(runner._snapshots[key], entry)) runner._snapshots.remove(key);
+      return null;
     }
+    if (value == null) {
+      entry.transition(_CaptureFailed(attempts, prewarm ? null : DateTime.now().add(const Duration(seconds: 1))));
+    } else {
+      final files = {..._shellStartupFiles(shell, directory),
+        ..._shellStartupFiles(shell, directory, environment: {...Platform.environment, ...value.environment})}.toList()..sort();
+      final fingerprint = await _shellStartupFingerprint(files, cancellation);
+      entry.transition(_Captured(value, files, fingerprint));
+    }
+    return value;
+  } on CancelledException {
+    if (entry._state is _CaptureRetired) return null;
+    rethrow;
   }
 }
 

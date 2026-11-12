@@ -407,11 +407,6 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 _code.moveCursor(intent.direction);
                 return null;
               }),
-              CodeShortcutSelectionExtendIntent: _ComposerAction<CodeShortcutSelectionExtendIntent>(_code, onInvoke: (intent) {
-                if (intent.direction == AxisDirection.up && autocomplete != null) { autocomplete.openHistory(); }
-                else { _code.extendSelection(intent.direction); }
-                return null;
-              }),
               CodeShortcutCursorMoveWordBoundaryIntent: _ComposerAction<CodeShortcutCursorMoveWordBoundaryIntent>(_code, onInvoke: (intent) {
                 _code.selection = CodeLineSelection.fromPosition(position: _wordTarget(intent.forward));
                 _code.makeCursorVisible();

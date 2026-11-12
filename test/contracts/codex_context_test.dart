@@ -506,6 +506,8 @@ enabled = false
 [skills.bundled]
 enabled = false
 [features]
+shell_snapshot = true
+shell_snapshot_v2 = true
 ${scenario['request_user_input'] == true ? 'default_mode_request_user_input = true' : ''}
 code_mode_tool_search = ${scenario['code_mode_tool_search'] == true}
 # codex-cli 0.166 predates the checkout's default for deferred tool context.
@@ -526,13 +528,16 @@ apps = false
   }
   if (scenario['mcp'] == true) {
     await run(['dart', 'pub', 'get', '--offline'], env, '$output/pub-get.log', cancellation, cwd: work);
+    final installed = Platform.environment['DART_MCP_SERVER_EXECUTABLE'];
     // Install the SDK's real server once, then launch its installed executable
     // directly. The Dart command dispatcher otherwise consumes the optional
     // server's default startup grace before the server itself can initialize.
-    await run(['dart', 'mcp-server', '--help'], env, '$output/mcp-prepare.log', cancellation, cwd: work);
-    final executables = await Directory(home).list(recursive: true, followLinks: false)
+    if (installed == null) await run(['dart', 'mcp-server', '--help'], env, '$output/mcp-prepare.log', cancellation, cwd: work);
+    final executables = installed == null ? await Directory(home).list(recursive: true, followLinks: false)
       .where((entry) => entry is File && entry.path.replaceAll('\\', '/').endsWith(
-        '/bundle/bin/dart_mcp_server${Platform.isWindows ? '.exe' : ''}')).toList().asCancellable(cancellation);
+        '/bundle/bin/dart_mcp_server${Platform.isWindows ? '.exe' : ''}')).toList().asCancellable(cancellation)
+      : [File(installed)];
+    if (!await File(executables.single.path).exists()) throw StateError('The Dart MCP executable does not exist');
     final mcp = {'command': executables.single.path,
       'args': ['--dart-sdk', File(Platform.resolvedExecutable).parent.parent.path], 'env': env};
     config.writeln('[mcp_servers.dart]\ncommand = ${jsonEncode(mcp['command'])}\nargs = ${jsonEncode(mcp['args'])}');
@@ -546,6 +551,18 @@ apps = false
   final prompt = scenario['prompt'] as String;
   final command = [codex, '-C', cwd];
   final checks = <String, bool>{};
+  final startupFiles = <File, String?>{};
+  if (scenario['shell_startup'] case final String startup) {
+    // Both execution hosts read real startup files in their private homes.
+    // The Happen child inherits the already isolated E2E process environment.
+    for (final directory in {home, Platform.environment['CONTEXT_CONTRACT_HOME']!}) {
+      for (final name in ['.bashrc', '.zshrc']) {
+        final file = File('$directory/$name');
+        startupFiles[file] = await file.exists() ? await file.readAsString() : null;
+        await file.writeAsString(startup);
+      }
+    }
+  }
   final host = await AgentServer.startLocal(directory: data, configPath: '$data/config.yaml', skillsHome: home,
     endpoint: '$endpoint/happen/responses', apiKeyEnv: 'CONTEXT_CONTRACT_UNUSED_${newId()}', telemetry: false);
   final client = AgentClient.local(host);
@@ -727,6 +744,20 @@ apps = false
               checks['${entry.key}:mcp_not_eagerly_declared:$i:run-$iteration'] =
                 definitions.every((tool) => !(tool['name'] as String).startsWith('mcp__'));
             }
+          }
+        }
+      }
+      if (scenario['workflow'] == 'shell-snapshot') {
+        for (final pair in [('codex', a), ('happen', b)]) {
+          final input = (pair.$2.last['input'] as List).map(jsonObject).toList();
+          for (final (call, expected) in [
+            ('snapshot_state', 'SNAPSHOT_CONTEXT_RECEIPT|alias|first\nsecond 😀'),
+            ('snapshot_nonlogin', 'absent'),
+          ]) {
+            final receipt = input.singleWhere((item) => toolOutput(item) && item['call_id'] == terminalCall(call));
+            final parts = (receipt['output'] as List).map(jsonObject).toList();
+            final result = jsonObject(jsonDecode(parts.last['text'] as String));
+            checks['${pair.$1}:$call:run-$iteration'] = result['exit_code'] == 0 && result['output'] == expected;
           }
         }
       }
@@ -1077,6 +1108,10 @@ apps = false
     await client.close();
     await host.close();
     await peer.close();
+    for (final entry in startupFiles.entries) {
+      if (entry.value case final String original) { await entry.key.writeAsString(original); }
+      else if (await entry.key.exists()) { await entry.key.delete(); }
+    }
   }
   return {'scenario': scenario['id'], 'passed': checks.values.every((value) => value), 'checks': checks,
     'fixtureErrors': peer.errors};

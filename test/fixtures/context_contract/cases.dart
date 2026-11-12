@@ -433,6 +433,25 @@ const contextCases = <Map<String, dynamic>>[
     'result': 'PATCH_RECOVERY_RECEIPT',
   },
   {
+    'id': 'shell-snapshot-v2', 'workflow': 'shell-snapshot',
+    'prompt': 'Run the initialized shell helper, alias and multiline export, then check a non-login shell and reply READY.',
+    'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': ['SNAPSHOT_CONTEXT_RECEIPT'],
+    'shell_startup': r'''export CONTEXT_SNAPSHOT='first
+second 😀'
+context_snapshot_helper() { printf SNAPSHOT_CONTEXT_RECEIPT; }
+alias context_snapshot_alias='printf alias'
+if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi
+''',
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'snapshot_state',
+        'input': r'''text(await tools.exec_command({cmd:"context_snapshot_helper; printf '|'; eval context_snapshot_alias; printf '|%s' \"$CONTEXT_SNAPSHOT\""}));'''}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'snapshot_nonlogin',
+        'input': r'''text(await tools.exec_command({cmd:"printf '%s' \"${CONTEXT_SNAPSHOT-absent}\"",login:false}));'''}],
+      [_ready],
+    ],
+    'result': 'SNAPSHOT_CONTEXT_RECEIPT',
+  },
+  {
     'id': 'shell-unicode-output', 'workflow': 'shell', 'prompt': 'Run the Unicode shell-output fixture.',
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [

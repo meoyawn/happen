@@ -276,10 +276,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(CommandMenu), findsNothing);
     expect(find.text('Archived tasks (20)'), findsOneWidget);
-    final lowerRow = find.byKey(const ValueKey('archived:archived-6'));
-    expect(lowerRow.hitTestable(), findsOneWidget,
-      reason: 'The archive uses the available page height instead of a small nested viewport');
-    expect(tester.getBottomLeft(lowerRow).dy, greaterThan(500));
+    expect(tester.getSize(find.byKey(const PageStorageKey('archived-sessions'))).height,
+      greaterThan(500), reason: 'The archive uses the available page height');
 
     final last = archived.last;
     final lastRow = find.byKey(ValueKey('archived:${last.id}'));
@@ -300,6 +298,7 @@ void main() {
     expect(lastRow.hitTestable(), findsOneWidget);
     await tester.tap(lastRow);
     await tester.pumpAndSettle();
+    expect(session.error, isNull);
     await tester.runAsync(() async {
       final restored = Completer<void>();
       void changed() {
@@ -322,8 +321,13 @@ void main() {
     expect(lastRow, findsNothing);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
+    expect(find.byType(DesktopSettingsScreen), findsNothing);
     await toggleMenu();
-    expect(find.descendant(of: find.byType(CommandMenu), matching: find.text(last.title)), findsOneWidget);
+    expect(find.byType(CommandMenu), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('command-menu-search')), last.title);
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: find.byType(CommandMenu), matching:
+      find.byWidgetPredicate((widget) => widget is Text && widget.data == last.title)), findsOneWidget);
     await toggleMenu();
     expect(find.byType(CommandMenu), findsNothing);
     expect(tester.takeException(), isNull);
@@ -350,6 +354,7 @@ class _Client implements AgentClient {
     throw StateError('Unexpected read: $method');
   }
   @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'thread/unsubscribe') return {'status': 'notSubscribed'};
     if (method == 'thread/unarchive') {
       restored.add(params['threadId'] as String);
       return null;

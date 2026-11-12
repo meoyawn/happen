@@ -38,7 +38,7 @@ const tldwYoutubeCase = <String, dynamic>{
           'tools.exec_command({cmd:"pwd",max_output_tokens:1000}),'
           'tools.exec_command({cmd:"rg --files -g AGENTS.md -g \'*transcript*\' | sort",max_output_tokens:4000})'
           ']); for (let i=0;i<results.length;i++) text({i,...results[i]}); '
-          'text(ALL_TOOLS.filter(x=>/web|browse|fetch|youtube/i.test(x.name+" "+x.description))'
+          r'text(ALL_TOOLS.filter(x=>/^(web__run|list_mcp_resources|list_mcp_resource_templates)$/.test(x.name))'
           '.map(x=>({name:x.name,description:x.description.slice(0,250)})).slice(0,30));'},
     ],
     [

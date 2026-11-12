@@ -20,6 +20,7 @@ class ArchivedSessions extends StatefulWidget {
 
 class _ArchivedSessionsState extends State<ArchivedSessions> {
   final _scroll = ScrollController();
+  final _search = TextEditingController();
   var _read = CancellationToken();
   (Project, DesktopTask)? _preview;
 
@@ -28,6 +29,7 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
     _read.cancel();
     if (_preview case final preview?) widget.session.releaseHistory(preview.$2);
     _scroll.dispose();
+    _search.dispose();
     super.dispose();
   }
 
@@ -67,25 +69,46 @@ class _ArchivedSessionsState extends State<ArchivedSessions> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.session,
     builder: (context, _) {
-      final archived = [
+      final all = [
         for (final project in widget.session.projects)
           if (!project.removing)
             for (final task in project.tasks)
               if (task.archived) (project, task),
       ];
+      final query = _search.text.trim().toLowerCase();
+      final archived = [
+        for (final entry in all)
+          if ('${entry.$2.title} ${entry.$1.name} ${entry.$1.path}'.toLowerCase().contains(query)) entry,
+      ]..sort((a, b) {
+        final time = (b.$2.archivedAt?.microsecondsSinceEpoch ?? 0)
+          .compareTo(a.$2.archivedAt?.microsecondsSinceEpoch ?? 0);
+        return time != 0 ? time : a.$2.id.compareTo(b.$2.id);
+      });
       final preview = _preview;
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Expanded(child: preview != null && archived.contains(preview)
           ? _conversation(preview.$1, preview.$2)
           : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Archived tasks (${archived.length})',
+              Text('Archived tasks (${all.length})',
                 style: const TextStyle(fontSize: 15, height: 20 / 15, fontWeight: FontWeight.w600, color: desktopForeground)),
               const SizedBox(height: 8),
               const Text('Select a task to preview its conversation. Restore to continue it.',
                 style: TextStyle(fontSize: 12, color: desktopSecondary)),
               const SizedBox(height: 16),
+              TextField(
+                key: const ValueKey('archived-search'),
+                controller: _search,
+                decoration: const InputDecoration(hintText: 'Search archived tasks',
+                  prefixIcon: Icon(Icons.search, size: 17)),
+                onChanged: (_) {
+                  if (_scroll.hasClients) _scroll.jumpTo(0);
+                  setState(() {});
+                },
+              ),
+              const SizedBox(height: 16),
               if (archived.isEmpty)
-                const Text('No archived tasks.', style: TextStyle(fontSize: 12, color: desktopSecondary))
+                Text(all.isEmpty ? 'No archived tasks.' : 'No matching archived tasks.',
+                  style: const TextStyle(fontSize: 12, color: desktopSecondary))
               else
                 Expanded(child: Scrollbar(controller: _scroll, child: ListView.builder(
                   key: const PageStorageKey('archived-sessions'),

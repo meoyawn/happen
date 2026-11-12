@@ -86,7 +86,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
               IconButton(tooltip: 'Close file viewer', icon: const Icon(Icons.close_rounded, size: 18),
                 onPressed: () => Navigator.of(context).pop()),
             ]),
-            Expanded(child: FileViewer(path: location.path, line: location.line)),
+            Expanded(child: FileViewer(client: widget.session.client, path: location.path, line: location.line)),
           ])))))));
     }
   }
@@ -158,7 +158,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                   for (final tab in state.tabs.where(isFilePanel))
                     Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: state.active != tab,
-                      child: FileViewer(path: filePanelPath(tab),
+                      child: FileViewer(client: widget.session.client, path: filePanelPath(tab),
                         directory: directory,
                         active: opened && state.active == tab, line: state.fileReveals[tab]?.line,
                         revealRequest: state.fileReveals[tab]?.revision ?? 0))),

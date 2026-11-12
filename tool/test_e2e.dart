@@ -32,6 +32,8 @@ Future<void> main(List<String> arguments) async {
     ],
       mode: ProcessStartMode.inheritStdio, includeParentEnvironment: false,
       environment: {...isolatedEnvironment(home.path, '${home.path}/.codex'), 'CONTEXT_CONTRACT_HOME': home.path,
+        if (Platform.environment['DART_MCP_SERVER_EXECUTABLE'] case final String executable)
+          'DART_MCP_SERVER_EXECUTABLE': executable,
         'CONTEXT_CONTRACT_CODEX_SOURCE': codexSource,
         'CONTEXT_CONTRACT_OUTPUT': output});
     hook = CancellationHook(cancellation, () => process?.kill(ProcessSignal.sigterm));

@@ -34,6 +34,7 @@ import 'session_question.dart';
 import 'sidebar_frame.dart';
 import 'sidebar_resizer.dart';
 import 'settings_screen.dart';
+import 'shortcut_preferences.dart';
 import 'workspace_navigation.dart';
 import 'window_chrome.dart';
 import 'terminal.dart';
@@ -87,7 +88,8 @@ class _DesktopViewState extends State<DesktopView> {
     _syncWindowChrome();
   }
 
-  Listenable get _viewChanges => Listenable.merge([session, _windowChrome, if (_homeOpen || session.task == null) widget.machines]);
+  Listenable get _viewChanges => Listenable.merge([session, session.promptHistoryShortcut, _windowChrome,
+    if (_homeOpen || session.task == null) widget.machines]);
   double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
 
   void _applyWindowChrome(Object? value) {
@@ -146,6 +148,7 @@ class _DesktopViewState extends State<DesktopView> {
             session: session, run: _run,
             machines: widget.machines,
             initialPage: page, initialProject: project,
+            shortcutError: _shortcutError,
             addProject: _addProject,
             openProject: (project) async {
               Navigator.pop(context);
@@ -172,6 +175,7 @@ class _DesktopViewState extends State<DesktopView> {
     _commandMenuOpen = true;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
     final task = session.task;
+    final historyShortcut = session.promptHistoryShortcut.state.value;
     try {
       await showDialog<void>(
         context: context,
@@ -192,6 +196,9 @@ class _DesktopViewState extends State<DesktopView> {
               shortcut: null, run: () => unawaited(_addProject())),
             (title: 'Settings', keywords: 'preferences appearance accounts interface', icon: Icons.settings_outlined,
               shortcut: mac ? '⌘ ,' : null, run: () => unawaited(_settings())),
+            (title: 'Prompt history', keywords: 'search previous prompts composer', icon: Icons.history_rounded,
+              shortcut: historyShortcut == null ? null : shortcutLabel(historyShortcut),
+              run: _openPromptHistory),
             if (_canOpenTerminal)
               (title: 'Toggle terminal', keywords: 'shell console', icon: Icons.terminal_outlined,
                 shortcut: mac ? '⌘ J' : 'Ctrl J', run: _toggleTerminal),
@@ -370,6 +377,11 @@ class _DesktopViewState extends State<DesktopView> {
         event is! KeyDownEvent && event is! KeyRepeatEvent) { return KeyEventResult.ignored; }
     final keyboard = HardwareKeyboard.instance;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final history = session.promptHistoryShortcut.state.value;
+    if (!terminalHasFocus && history?.accepts(event, keyboard) == true) {
+      _openPromptHistory();
+      return KeyEventResult.handled;
+    }
     if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed) && !keyboard.isAltPressed) return KeyEventResult.ignored;
     if (const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true).accepts(event, keyboard)) {
       _selectAdjacentTask(-1);
@@ -379,12 +391,22 @@ class _DesktopViewState extends State<DesktopView> {
       _selectAdjacentTask(1);
       return KeyEventResult.handled;
     }
+    for (final binding in _workspaceBindings().entries) {
+      if (!binding.key.accepts(event, keyboard)) continue;
+      if (event is KeyDownEvent) binding.value();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Map<SingleActivator, VoidCallback> _workspaceBindings({bool includeUnavailable = false}) {
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
     final panels = task == null ? null : session.panelLayouts[task.id];
-    final terminalFocused = terminalHasFocus;
-    final bindings = <ShortcutActivator, VoidCallback>{
+    final terminalFocused = !includeUnavailable && terminalHasFocus;
+    return {
       shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
@@ -412,7 +434,7 @@ class _DesktopViewState extends State<DesktopView> {
         shortcut(LogicalKeyboardKey.keyO, shift: true): () => unawaited(_run(_newChat)),
         shortcut(LogicalKeyboardKey.keyM, shift: true): () => _openComposerMenu(),
         shortcut(LogicalKeyboardKey.keyE, shift: true): () => _openComposerMenu(effort: true),
-        if (!_homeOpen && task == null && session.currentDraft.submission == null && !_picking && !session.submitting)
+        if (includeUnavailable || !_homeOpen && task == null && session.currentDraft.submission == null && !_picking && !session.submitting)
           shortcut(LogicalKeyboardKey.keyP): _projectMenu.open,
         shortcut(LogicalKeyboardKey.keyW): () {
           if (task != null && panels?.opened == true && panels?.active != null) {
@@ -420,22 +442,37 @@ class _DesktopViewState extends State<DesktopView> {
             if (!panels.opened) _focusComposer();
           }
         },
-        if (task != null) ...{
-          if (panels?.opened == true)
-            shortcut(LogicalKeyboardKey.keyT): () => session.newSessionPanelTab(task),
-          shortcut(LogicalKeyboardKey.keyP, shift: true): () =>
-            unawaited(_run(() => session.pinTask(task, !session.pinnedTaskIds.contains(task.id)))),
+        if (includeUnavailable || task != null) ...{
+          if (includeUnavailable || panels?.opened == true)
+            shortcut(LogicalKeyboardKey.keyT): () { if (task != null) session.newSessionPanelTab(task); },
+          shortcut(LogicalKeyboardKey.keyP, shift: true): () {
+            if (task != null) unawaited(_run(() => session.pinTask(task, !session.pinnedTaskIds.contains(task.id))));
+          },
         },
       },
-      if (task != null && panels?.closed.isNotEmpty == true)
-        shortcut(LogicalKeyboardKey.keyT, shift: true): () => session.openSessionPanel(task, panels!.closed.first),
+      if (includeUnavailable || task != null && panels?.closed.isNotEmpty == true)
+        shortcut(LogicalKeyboardKey.keyT, shift: true): () {
+          if (task != null && panels?.closed.isNotEmpty == true) session.openSessionPanel(task, panels!.closed.first);
+        },
     };
-    for (final binding in bindings.entries) {
-      if (!binding.key.accepts(event, keyboard)) continue;
-      if (event is KeyDownEvent) binding.value();
-      return KeyEventResult.handled;
+  }
+
+  String? _shortcutError(SingleActivator shortcut) {
+    final reserved = [
+      ..._workspaceBindings(includeUnavailable: true).keys,
+      const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true),
+      const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true),
+      for (final key in [LogicalKeyboardKey.keyA, LogicalKeyboardKey.keyC, LogicalKeyboardKey.keyV,
+        LogicalKeyboardKey.keyX, LogicalKeyboardKey.keyZ, LogicalKeyboardKey.keyQ])
+        SingleActivator(key, meta: defaultTargetPlatform == TargetPlatform.macOS,
+          control: defaultTargetPlatform != TargetPlatform.macOS),
+      const SingleActivator(LogicalKeyboardKey.enter, meta: true),
+      const SingleActivator(LogicalKeyboardKey.enter, control: true),
+    ];
+    if (reserved.any((binding) => sameShortcut(binding, shortcut))) {
+      return 'This shortcut is already in use. Choose another combination.';
     }
-    return KeyEventResult.ignored;
+    return null;
   }
 
   void _selectAdjacentTask(int offset) {
@@ -473,6 +510,18 @@ class _DesktopViewState extends State<DesktopView> {
     if (composer == null) return;
     final menu = (effort ? composer._effortMenu.currentState : null) ?? composer._modelMenu.currentState;
     if (menu?.widget.enabled == true) menu!.showButtonMenu();
+  }
+
+  void _openPromptHistory() {
+    final focused = FocusManager.instance.primaryFocus?.context?.findAncestorStateOfType<_ComposerState>();
+    if (_homeOpen && session.project != null) setState(() => session.viewingConversation = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final composer = focused?.mounted == true ? focused : _composer.currentState;
+      final autocomplete = composer?._autocomplete.currentState;
+      if (autocomplete?.widget.enabled == true) autocomplete!.openHistory();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Future<void> _selectProject(Project project, [DesktopTask? task]) {
@@ -1030,7 +1079,7 @@ class _ComposerState extends State<_Composer> {
   }
 
   Future<void> _paste(SelectionChangedCause cause, {TextEditingController? controller, FocusNode? focus}) async {
-    if (_receivingAttachments || _submitting || _dictating || !widget.session.connected) return;
+    if (_receivingAttachments || _submitting || _dictating) return;
     if (controller != null) {
       final before = controller.value, lifetime = _attachmentLifetime;
       final data = await Clipboard.getData(Clipboard.kTextPlain);
@@ -1227,9 +1276,11 @@ class _ComposerState extends State<_Composer> {
 
   Widget _input(BuildContext context, {QuestionComposer? answer}) {
     final session = widget.session;
+    final historyShortcut = session.promptHistoryShortcut.state.value;
     final newThread = answer == null && _target == null;
     final running = _target?.running == true;
     final hasProject = _project?.available == true && _project?.removing != true;
+    final editable = hasProject && (answer?.enabled ?? true);
     final authenticated = session.authenticatedFor(widget.target);
     final available =
         hasProject &&
@@ -1329,7 +1380,7 @@ class _ComposerState extends State<_Composer> {
             child: Actions(actions: {CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
               onInvoke: (intent) { unawaited(copy(cut: intent.collapseSelection)); return null; }),
               PasteTextIntent: ComposerPasteAction(
-              enabled: available && !_dictating, paste: paste)},
+              enabled: editable && !_submitting && !_receivingAttachments && !_dictating, paste: paste)},
             child: autocomplete(DecoratedBox(
                 key: const ValueKey('conversation-composer'),
                 decoration: BoxDecoration(
@@ -1385,7 +1436,7 @@ class _ComposerState extends State<_Composer> {
                       ConstrainedBox(constraints: BoxConstraints(minHeight: newThread ? 72 : 56), child: ComposerEditor(
                         controller: controller,
                         focusNode: focus,
-                        enabled: hasProject && session.connected && (answer?.enabled ?? true),
+                        enabled: editable,
                         placeholder: answer?.placeholder ?? r'Ask anything, @ for files, $ for skills, / for commands',
                         label: answer == null ? 'Message' : 'Answer',
                         paste: paste, copy: copy,
@@ -1410,9 +1461,10 @@ class _ComposerState extends State<_Composer> {
                               const PopupMenuItem(value: 'commands', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                 mouseCursor: MouseCursor.defer,
                                 leading: Icon(Icons.terminal_rounded, size: 16), title: Text('Commands'), trailing: Text('/'))),
-                              const PopupMenuItem(value: 'history', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                              PopupMenuItem(value: 'history', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                 mouseCursor: MouseCursor.defer,
-                                leading: Icon(Icons.history_rounded, size: 16), title: Text('Prompt history'), trailing: Text('⇧↑'))),
+                                leading: const Icon(Icons.history_rounded, size: 16), title: const Text('Prompt history'),
+                                trailing: historyShortcut == null ? null : Text(shortcutLabel(historyShortcut)))),
                               if (defaultTargetPlatform == TargetPlatform.macOS)
                                 const PopupMenuItem(value: 'attach', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                   mouseCursor: MouseCursor.defer,

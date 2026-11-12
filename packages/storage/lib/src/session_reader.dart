@@ -181,7 +181,8 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
   final pending = jsonObject(state['pendingInputs'] ?? {}).values.toList();
   if (method == 'session.inbox') return {'data': pending};
   final config = jsonObject(storedMetadata(db, 'config') ?? {});
-  final archived = storedMetadata(db, 'archived_at') != null;
+  final archivedAt = storedMetadata(db, 'archived_at');
+  final archived = archivedAt != null;
   return withHistoryLineage(directory, id, db, (segments) {
     if (method == 'thread/image/read') return _readInspectedImage(segments, requiredString(params, 'itemId'));
     for (final segment in params['includeTurns'] != true && params['includeRecentHistory'] != true && method == 'thread/read' ? <HistorySegment>[] : segments) {
@@ -242,6 +243,7 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
       'section': null, 'sectionEnteredAt': null, 'projectId': null, 'historyMode': 'paginated',
       'modelProvider': config['provider'] ?? 'openai', 'model': config['model'], 'reasoningEffort': storedMetadata(db, 'effective_reasoning') ?? config['provider_settings']?['reasoning'],
       'createdAt': (state['created'] as int? ?? 0) ~/ 1000, 'updatedAt': (state['updated'] as int? ?? state['created'] as int? ?? 0) ~/ 1000,
+      'archivedAt': archivedAt,
       'recencyAt': (state['updated'] as int? ?? state['created'] as int? ?? 0) ~/ 1000,
       'status': {'type': 'notLoaded'}, 'path': config['ephemeral'] == true ? null : '$directory/tasks/$id/history.sqlite', 'cwd': config['cwd'] ?? '',
       'cliVersion': '0.1.0', 'originator': 'happen', 'source': 'appServer', 'threadSource': config['thread_source'],

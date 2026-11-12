@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
+import 'package:server/server.dart';
 
 import 'appearance.dart';
 import 'browser.dart';
@@ -14,48 +16,48 @@ import 'conversation_markdown.dart';
 import 'desktop_toast.dart';
 import 'file_icon.dart';
 
-typedef _FilePreview = ({String kind, String? text, int size, bool truncated});
+typedef _FilePreview = ({String kind, String? text, Uint8List? bytes, int size, bool truncated});
 
 const _previewLimit = 2 * 1024 * 1024;
 const _imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'};
 
 String _extension(String path) => path.split('/').last.split('.').last.toLowerCase();
 bool _isMarkdown(String path) => {'md', 'markdown', 'mdown', 'mkd'}.contains(_extension(path));
-bool _isHtml(String path) => {'html', 'htm', 'xhtml'}.contains(_extension(path));
 
-Future<_FilePreview> _readFilePreview(String path, CancellationToken cancellation) =>
-  CancellableIsolate.run(() {
-    final file = File(path), stat = file.statSync();
-    if (stat.type == FileSystemEntityType.notFound) throw const FileSystemException('File not found');
-    if (stat.type == FileSystemEntityType.directory) return (kind: 'directory', text: null, size: 0, truncated: false);
-    if (stat.type != FileSystemEntityType.file) return (kind: 'binary', text: null, size: stat.size, truncated: false);
-    final extension = _extension(path);
-    if (_imageExtensions.contains(extension)) return (kind: 'image', text: null, size: stat.size, truncated: false);
-    if (extension == 'svg') return (kind: 'svg', text: null, size: stat.size, truncated: false);
-    if (extension == 'pdf') return (kind: 'pdf', text: null, size: stat.size, truncated: false);
-    final kind = _isHtml(path) ? 'html' : 'text';
-    final input = file.openSync();
+Future<_FilePreview> _readFilePreview(AgentClient client, String path, CancellationToken cancellation) async {
+  final metadata = await client.fileSystemRequest('fs/getMetadata', path, cancellation: cancellation);
+  final size = metadata['size'] as int;
+  if (metadata['isDirectory'] == true) return (kind: 'directory', text: null, bytes: null, size: size, truncated: false);
+  if (metadata['isFile'] != true) return (kind: 'binary', text: null, bytes: null, size: size, truncated: false);
+  final extension = _extension(path);
+  final media = _imageExtensions.contains(extension) ? 'image'
+    : extension == 'svg' ? 'svg' : extension == 'pdf' ? 'pdf' : null;
+  if (media == 'pdf') {
+    return (kind: 'pdf', text: null, bytes: null, size: size, truncated: false);
+  }
+  final result = await client.fileSystemRequest('fs/readFile', path, cancellation: cancellation);
+  return CancellableIsolate.run(() {
+    final bytes = base64Decode(result['dataBase64'] as String);
+    if (media != null) return (kind: media, text: null, bytes: bytes, size: bytes.length, truncated: false);
+    final kind = {'html', 'htm', 'xhtml'}.contains(extension) ? 'html' : 'text';
+    final truncated = bytes.length > _previewLimit;
+    final sample = truncated ? Uint8List.sublistView(bytes, 0, _previewLimit) : bytes;
+    if (sample.contains(0)) return (kind: 'binary', text: null, bytes: null, size: bytes.length, truncated: false);
     try {
-      final bytes = input.readSync(_previewLimit + 1);
-      final truncated = bytes.length > _previewLimit;
-      final sample = truncated ? bytes.sublist(0, _previewLimit) : bytes;
-      if (sample.contains(0)) return (kind: kind == 'html' ? 'html' : 'binary', text: null, size: stat.size, truncated: false);
-      try {
-        final text = StringBuffer();
-        final decoder = utf8.decoder.startChunkedConversion(StringConversionSink.fromStringSink(text));
-        decoder.add(sample);
-        // An incomplete final UTF-8 character belongs to the omitted suffix.
-        if (!truncated) decoder.close();
-        return (kind: kind, text: text.toString(), size: stat.size, truncated: truncated);
-      } on FormatException {
-        return (kind: kind == 'html' ? 'html' : 'binary', text: null, size: stat.size, truncated: false);
-      }
-    } finally {
-      input.closeSync();
+      final text = StringBuffer();
+      final decoder = utf8.decoder.startChunkedConversion(StringConversionSink.fromStringSink(text));
+      decoder.add(sample);
+      // An incomplete final UTF-8 character belongs to the omitted suffix.
+      if (!truncated) decoder.close();
+      return (kind: kind, text: text.toString(), bytes: null, size: bytes.length, truncated: truncated);
+    } on FormatException {
+      return (kind: 'binary', text: null, bytes: null, size: bytes.length, truncated: false);
     }
   }, cancellation);
+}
 
-Future<void> _revealFile(String path, CancellationToken cancellation) async {
+Future<void> _revealFile(Json params, CancellationToken cancellation, void Function(Json) _) async {
+  final path = requiredString(params, 'path');
   cancellation.throwIfCancelled();
   final process = await Process.start(Platform.isMacOS ? '/usr/bin/open' : 'xdg-open',
     Platform.isMacOS ? ['-R', path] : [File(path).parent.path]);
@@ -103,7 +105,8 @@ List<TextSpan> _highlightedLines(String text, String path) {
 }
 
 class FileViewer extends StatefulWidget {
-  const FileViewer({super.key, required this.path, this.line, this.directory, this.revealRequest = 0, this.active = true});
+  const FileViewer({super.key, required this.client, required this.path, this.line, this.directory, this.revealRequest = 0, this.active = true});
+  final AgentClient client;
   final String path;
   final String? directory;
   final int? line;
@@ -133,10 +136,16 @@ class _FileViewerState extends State<FileViewer> {
   @override
   void didUpdateWidget(FileViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final changed = oldWidget.path != widget.path || oldWidget.client != widget.client;
+    if (changed) {
+      _read?.cancel();
+      _preview = null;
+      _failed = false;
+    }
     if (!widget.active) {
       _read?.cancel();
       _loading = false;
-    } else if (oldWidget.path != widget.path || !oldWidget.active && _preview == null) {
+    } else if (changed || !oldWidget.active && _preview == null) {
       unawaited(_load());
     } else if (oldWidget.revealRequest != widget.revealRequest && widget.line != null) {
       _source = true;
@@ -147,9 +156,9 @@ class _FileViewerState extends State<FileViewer> {
   Future<void> _load() async {
     _read?.cancel();
     final read = _read = CancellationToken();
-    setState(() { _loading = true; _failed = false; });
+    setState(() { _preview = null; _loading = true; _failed = false; });
     try {
-      final preview = await _readFilePreview(widget.path, read);
+      final preview = await _readFilePreview(widget.client, widget.path, read);
       read.throwIfCancelled();
       if (!mounted) return;
       final text = preview.text?.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
@@ -184,7 +193,7 @@ class _FileViewerState extends State<FileViewer> {
     if (_revealing) return;
     setState(() => _revealing = true);
     try {
-      await _revealFile(widget.path, _lifetime);
+      await runIsolateEffect<void>(_revealFile, {'path': widget.path}, cancellation: _lifetime);
     } on CancelledException {
       // The viewer was closed.
     } catch (_) {
@@ -220,7 +229,7 @@ class _FileViewerState extends State<FileViewer> {
       if (detail != null) ...[const SizedBox(height: 8),
         Text(detail, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: desktopTertiary))],
       const SizedBox(height: 16),
-      TextButton.icon(onPressed: _revealing ? null : _reveal, icon: const Icon(Icons.folder_open_outlined, size: 16),
+      if (widget.client.sharedFilesystem) TextButton.icon(onPressed: _revealing ? null : _reveal, icon: const Icon(Icons.folder_open_outlined, size: 16),
         label: Text(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager')),
     ])));
 
@@ -239,7 +248,10 @@ class _FileViewerState extends State<FileViewer> {
       return _notice(Icons.insert_drive_file_outlined,
         'Preview is unavailable for this file type.', detail: _fileSize(preview.size));
     }
-    if (preview.kind == 'pdf' || preview.kind == 'html' && (!_source || preview.text == null)) {
+    if (preview.kind == 'pdf' && !widget.client.sharedFilesystem) {
+      return _notice(Icons.insert_drive_file_outlined, 'PDF preview is unavailable for remote files.', detail: _fileSize(preview.size));
+    }
+    if (widget.client.sharedFilesystem && (preview.kind == 'pdf' || preview.kind == 'html' && (!_source || preview.text == null))) {
       return DesktopBrowser(key: ValueKey(widget.path), initialUrl: File(widget.path).absolute.uri.toString(),
         active: widget.active, toolbar: false, navigationEnabled: preview.kind != 'pdf', directory: widget.directory);
     }
@@ -249,8 +261,9 @@ class _FileViewerState extends State<FileViewer> {
       }
       return ClipRect(child: InteractiveViewer(minScale: .1, maxScale: 8,
         child: Center(child: Padding(padding: const EdgeInsets.all(24),
-          child: preview.kind == 'svg' ? SvgPicture.file(File(widget.path), errorBuilder: failed)
-            : Image.file(File(widget.path), fit: BoxFit.contain, errorBuilder: failed)))));
+          child: preview.kind == 'svg'
+            ? SvgPicture.memory(preview.bytes!, errorBuilder: failed)
+            : Image.memory(preview.bytes!, fit: BoxFit.contain, errorBuilder: failed)))));
     }
     if (_isMarkdown(widget.path) && !_source && !preview.truncated) {
       return SingleChildScrollView(padding: const EdgeInsets.all(24),
@@ -273,7 +286,7 @@ class _FileViewerState extends State<FileViewer> {
   Widget build(BuildContext context) {
     final preview = _preview, text = preview?.text;
     final canPreviewMarkdown = text != null && _isMarkdown(widget.path) && !preview!.truncated;
-    final canPreviewHtml = text != null && preview?.kind == 'html';
+    final canPreviewHtml = widget.client.sharedFilesystem && text != null && preview?.kind == 'html';
     final canPreview = canPreviewMarkdown || canPreviewHtml;
     final source = text != null && (!canPreview || _source);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -283,7 +296,7 @@ class _FileViewerState extends State<FileViewer> {
           Expanded(child: Tooltip(message: widget.path, child: Text(widget.path,
             maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: desktopSecondary)))),
           const SizedBox(width: 8),
-          _button(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager',
+          if (widget.client.sharedFilesystem) _button(Platform.isMacOS ? 'Reveal in Finder' : 'Reveal in File Manager',
             Icons.folder_open_outlined, _revealing ? null : _reveal),
           if (canPreview) _button(_source ? 'Show ${canPreviewHtml ? 'HTML' : 'Markdown'} preview' : 'Show source',
             _source ? Icons.visibility_outlined : Icons.code_rounded, () {

@@ -37,7 +37,8 @@ void main() {
     final first = await thread(checkout.path, 'Authoritative title');
     final archived = await thread(checkout.path, 'Archived on the server');
     final missing = await thread(removed.path, 'History with a missing checkout');
-    await creator.request('thread/archive', {'threadId': archived});
+    final archive = jsonObject(await creator.request('thread/archive', {'threadId': archived}));
+    final archivedAt = DateTime.parse(archive['archivedAt'] as String);
     await creator.close(); creator = null;
     await server.close(); server = await start();
     await removed.delete();
@@ -57,6 +58,8 @@ void main() {
     expect(tasks.singleWhere((task) => task.id == first).archived, isFalse);
     expect(tasks.singleWhere((task) => task.id == first).lastActivity, lessThan(9999999999999));
     expect(tasks.singleWhere((task) => task.id == archived).archived, isTrue);
+    expect(tasks.singleWhere((task) => task.id == archived).archivedAt, archivedAt,
+      reason: 'The archive timestamp survives server restart and catalog discovery');
     final unavailable = projects.singleWhere((project) => project.path == removed.path);
     expect(unavailable.available, isFalse);
     expect(unavailable.tasks.single.id, missing);

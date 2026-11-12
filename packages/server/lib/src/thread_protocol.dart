@@ -165,8 +165,8 @@ extension _ThreadProtocol on AgentServer {
         return await _forkThread(id, params, client, requestID, cancellation);
       }
       if (method == 'thread/archive' || method == 'thread/unarchive') {
-        await _archive(_tasks[id] ?? _Task(id, null), method == 'thread/archive');
-        if (method == 'thread/archive') return <String, dynamic>{};
+        final archivedAt = await _archive(_tasks[id] ?? _Task(id, null), method == 'thread/archive');
+        if (method == 'thread/archive') return {'archivedAt': archivedAt};
         return await _threadSnapshot(id, cancellation, includeTurns: false);
       }
       if (method == 'turn/interrupt') {
