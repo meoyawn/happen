@@ -946,7 +946,7 @@ class _ComposerState extends State<_Composer> {
       }
     });
     if (widget.active) focus.requestFocus();
-    await _voice.start(owner: _voiceOwner, conversation: (machineAlias: widget.session.machineAlias, draftKey: _currentDraftKey),
+    await _voice.start(owner: _voiceOwner, conversation: widget.session.dictationConversation(_currentDraftKey),
       liveTranscription: widget.session.dictationMode == 'live',
       onRecordingLimit: () => unawaited(_finishVoice(DictationAction.insert)));
   }

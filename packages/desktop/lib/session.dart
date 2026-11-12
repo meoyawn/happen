@@ -341,10 +341,12 @@ class DesktopSession extends ChangeNotifier {
   DictationService? _dictation;
   // The local desktop owns the microphone/account; machine sessions borrow it.
   DictationService get dictation => sidebarOwner?.dictation ?? (_dictation ??= DictationService(client));
+  late final _dictationScope = Object();
+  DictationConversation dictationConversation(String draftKey) => (scope: _dictationScope, draftKey: draftKey);
   Future<void> _cancelSessionDictation({String? draftKey}) async {
     final voice = sidebar._dictation;
     final conversation = voice?.conversation;
-    if (voice != null && conversation != null && conversation.machineAlias == machineAlias &&
+    if (voice != null && conversation != null && identical(conversation.scope, _dictationScope) &&
         (draftKey == null || conversation.draftKey == draftKey)) {
       await voice.cancel();
     }

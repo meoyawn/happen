@@ -527,7 +527,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       child: LayoutBuilder(builder: (context, constraints) => Stack(children: [
       Positioned.fill(child: _content!),
       if ((constraints.maxWidth - math.min(desktopConversationWidth, constraints.maxWidth)) / 2 >= 48 &&
-          constraints.maxHeight > 0 && _prompts.length >= 4)
+          constraints.maxHeight > 0 && _prompts.isNotEmpty)
         Positioned(left: 16, top: 0, bottom: 0, child: Center(child: SelectionContainer.disabled(
           child: ValueListenableBuilder<Set<String>>(valueListenable: _visiblePrompts, builder: (context, visible, _) =>
             ConversationScrollRail(entries: _prompts, visibleEntries: visible, directory: widget.directory,

@@ -12,7 +12,7 @@ import 'package:server/server.dart';
 import 'dictation_state.dart';
 
 enum DictationAction { insert, send }
-typedef DictationConversation = ({String? machineAlias, String draftKey});
+typedef DictationConversation = ({Object scope, String draftKey});
 
 class DictationResult {
   const DictationResult(this.text, this.action);

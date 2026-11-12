@@ -8,6 +8,7 @@ import 'package:desktop/session.dart';
 import 'package:desktop/workspace_navigation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -268,13 +269,18 @@ void main() {
 
     Future<void> settled() async {
       await tester.pumpAndSettle();
-      await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
-      await tester.pumpAndSettle();
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+        await tester.pumpAndSettle();
+        if (!session.savingTaskPins && session.pinnedSidebar.enabled) return;
+      }
+      fail('Pinned sidebar did not acknowledge persistence');
     }
 
     Future<void> drag(Finder from, Finder to) async {
       final start = tester.getCenter(from);
-      final end = Offset(start.dx, tester.getTopLeft(to).dy + tester.getSize(from).height / 2 + 4);
+      final grab = (tester.getSize(from).height / 2).clamp(0.0, tester.getSize(to).height / 2);
+      final end = Offset(start.dx, tester.getTopLeft(to).dy + grab + 4);
       final pointer = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
       for (var step = 1; step <= 12; step++) {
         await pointer.moveTo(Offset.lerp(start, end, step / 12)!);
@@ -290,13 +296,36 @@ void main() {
     expect(find.byKey(ValueKey('pinned-group:$alphaId')), findsOneWidget,
       reason: 'Worktrees share a project folder; unrelated folders with the same name stay separate');
     expect(sidebarThreadIds(session), ['a1', 'a2', 'a3', 'b1', 'c1']);
+    expect(find.byIcon(Icons.circle_outlined), findsNothing);
+    final active = session.projects.expand((project) => project.tasks).singleWhere((task) => task.id == 'a3');
+    active.running = true;
+    session.notifyListeners();
+    await tester.pump();
+    expect(find.byTooltip('Working'), findsNWidgets(2));
+    active.running = false;
+    session.notifyListeners();
+    await tester.pumpAndSettle();
     await drag(find.byKey(const ValueKey('thread:a3')), find.byKey(const ValueKey('thread:a1')));
     expect(session.pinnedTaskIds, ['a3', 'b1', 'a1', 'c1', 'a2']);
     expect(sidebarThreadIds(session), ['a3', 'a1', 'a2', 'b1', 'c1']);
 
-    await tester.runAsync(() => tester.tap(folder));
+    await tester.runAsync(() => tester.tap(folder, kind: PointerDeviceKind.mouse));
     await settled();
     expect(find.byKey(const ValueKey('thread:a1')), findsNothing);
+    expect(sidebarThreadIds(session), ['b1', 'c1']);
+    await tester.runAsync(() => tester.sendKeyEvent(LogicalKeyboardKey.arrowRight));
+    await settled();
+    expect(find.byKey(const ValueKey('thread:a1')), findsOneWidget);
+    await tester.runAsync(() => tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft));
+    await settled();
+    expect(sidebarThreadIds(session), ['b1', 'c1']);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    await tester.runAsync(() => tester.tap(folder, kind: PointerDeviceKind.mouse));
+    await settled();
+    expect(find.byKey(const ValueKey('thread:a1')), findsOneWidget);
+    await tester.runAsync(() => tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft));
+    await settled();
     expect(sidebarThreadIds(session), ['b1', 'c1']);
     await drag(find.byKey(const ValueKey('thread:c1')), folder);
     expect(session.pinnedTaskIds, ['c1', 'a3', 'a1', 'a2', 'b1']);
@@ -324,6 +353,29 @@ void main() {
     expect(sidebarThreadIds(session), ['c1', 'a3', 'a1', 'a2', 'b1']);
     await drag(folder, find.byKey(const ValueKey('thread:c1')));
     expect(session.pinnedTaskIds, ['a3', 'a1', 'a2', 'c1', 'b1']);
+    await tester.runAsync(() async {
+      for (var index = 0; index < 12; index++) {
+        final task = DesktopTask('extra-$index', 'Extra pinned thread $index');
+        session.projects.add(Project('extra-$index', '/extra-$index', '/extra-$index', [task]));
+        await session.pinTask(task, true);
+      }
+    });
+    tester.view.physicalSize = const Size(900, 450);
+    await tester.pumpAndSettle();
+    final viewport = tester.getRect(find.byKey(const PageStorageKey('thread-sidebar')));
+    final start = tester.getCenter(folder), end = Offset(viewport.center.dx, viewport.bottom - 4);
+    final pointer = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
+    for (var step = 1; step <= 12; step++) {
+      await pointer.moveTo(Offset.lerp(start, end, step / 12)!);
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    for (var frame = 0; frame < 40; frame++) { await tester.pump(const Duration(milliseconds: 30)); }
+    await pointer.up();
+    await settled();
+    expect(session.pinnedTaskIds.indexOf('a3'), greaterThan(session.pinnedTaskIds.indexOf('extra-0')),
+      reason: 'Holding a folder at the viewport edge scrolls and drops at the newly visible project');
+    final moved = session.pinnedTaskIds.indexOf('a3');
+    expect(session.pinnedTaskIds.sublist(moved, moved + 3), ['a3', 'a1', 'a2']);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

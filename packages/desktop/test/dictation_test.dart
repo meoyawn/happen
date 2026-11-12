@@ -443,7 +443,7 @@ void main() {
     var otherClosed = false;
     addTearDown(() async { if (!otherClosed) await other.close(); });
     Future<void> capture(DesktopSession source) async {
-      await source.dictation.start(owner: Object(), conversation: (machineAlias: source.machineAlias, draftKey: 'draft'),
+      await source.dictation.start(owner: Object(), conversation: source.dictationConversation('draft'),
         liveTranscription: source.dictationMode == 'live', onRecordingLimit: () {});
       expect(source.dictation.state, isA<DictationRecording>());
       await messenger.handlePlatformMessage('happen/dictation/audio', const StandardMethodCodec().encodeSuccessEnvelope({
@@ -467,6 +467,10 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(other.dictation.state, isA<DictationIdle>(), reason: 'Local identity changes cancel every recording');
     await capture(other);
+    final previous = DesktopSession(_Client(sharedFilesystem: false), session.database,
+      sidebarOwner: session, machineAlias: 'remote');
+    await previous.close();
+    expect(other.dictation.state, isA<DictationRecording>(), reason: 'A superseded connection cannot cancel its replacement');
     await finish('Remote dictation');
     expect(remoteClient.authorizations, 0);
     expect(client.authorizations, greaterThan(1));

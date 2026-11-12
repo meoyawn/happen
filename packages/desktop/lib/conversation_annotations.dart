@@ -96,7 +96,7 @@ class _AnnotationWorkspaceState extends State<AnnotationWorkspace> {
     _editor = OverlayEntry(builder: (context) => Positioned.fill(child: CustomSingleChildLayout(
       delegate: _AnnotationEditorLayout(point), child: ResponseAnnotationEditor(
         key: ValueKey(annotation.id), service: session.dictation, liveTranscription: session.dictationMode == 'live',
-        conversation: (machineAlias: session.machineAlias, draftKey: draft),
+        conversation: session.dictationConversation(draft),
         annotation: annotation, creating: creating,
         onChanged: (value) => session.putAnnotation(draft, value),
         onRemove: () => session.removeAnnotation(draft, annotation.id), onClose: _close,
