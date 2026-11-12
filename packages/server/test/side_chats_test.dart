@@ -121,6 +121,22 @@ void main() {
     expect((await side(id))['sessionID'], isNot(child));
   });
 
+  test('discarding a side chat after a server restart succeeds without changing its saved parent', () async {
+    final parent = await start(), child = (await side(parent))['sessionID'] as String;
+    final before = (await read(parent))['thread']['turns'];
+    await client.close();
+    await server.close();
+    server = await AgentServer.start(directory: root.path, port: 0, skillsHome: root.path,
+      endpoint: 'http://127.0.0.1:${provider.port}/responses');
+    client = await AgentClient.connect(server.uri);
+
+    await close(child);
+    await close(child);
+    expect(jsonObject(await client.request('session.side.list', {'sessionID': parent}))['data'], isEmpty);
+    expect((await read(parent))['thread']['turns'], before);
+    expect(await Directory('${root.path}/tasks/$child').exists(), false);
+  });
+
   test('inherited unfinished tools are reference-only and never executed or cancelled in the parent', () async {
     final parent = await start();
     final config = jsonObject((await read(parent))['configuration']);

@@ -929,9 +929,15 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     try {
-      await _request('session.side.close', {'sessionID': id});
+      final page = jsonObject(await _request('session.side.list', {'sessionID': parent.id}));
+      _lifetime.throwIfCancelled();
+      if (sideChats[id] != side) return;
+      if ((page['data'] as List).any((entry) => jsonObject(entry)['sessionID'] == id)) {
+        await _request('session.side.close', {'sessionID': id});
+      }
       if (sideChats.remove(id) != null) await _releaseSideDraft(side);
     } catch (failure) {
+      if (sideChats[id] != side) return;
       side.archiving = false;
       side.sideError = failure.toString();
       if (!_lifetime.isCancelled) openSessionPanel(parent, sideChatPanel(id));

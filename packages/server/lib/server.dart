@@ -825,6 +825,14 @@ class AgentServer {
       default:
         final id = requiredString(params, 'task_id');
         validateTaskId(id);
+        if (method == 'session.side.close') {
+          final task = _tasks[id];
+          // Temporary chats can disappear while a remote client is disconnected.
+          if (task == null) return null;
+          if (task.sideParentID == null) throw StateError('Session is not a side chat');
+          await _closeSide(task);
+          return null;
+        }
         _subscribe(client, id);
         if (method == 'session.context') return _contextPage(id, params, client, cancellation);
         if (method == 'session.question.list') return {'data': _questions.list(id)};
@@ -863,11 +871,6 @@ class AgentServer {
             _subscribe(client, side.id);
           }
           return {'data': sides.map(_sideInfo).toList()};
-        }
-        if (method == 'session.side.close') {
-          if (task.sideParentID == null) throw StateError('Session is not a side chat');
-          await _closeSide(task);
-          return null;
         }
         if (task.sideParentID != null &&
             {'task.archive', 'task.unarchive', 'history.export'}.contains(method)) {
