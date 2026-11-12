@@ -437,6 +437,55 @@ void main() {
     await close(tester);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+  test('dictation uses the local desktop identity across machines and survives an inactive machine closing', () async {
+    final remoteClient = _Client(sharedFilesystem: false);
+    final other = DesktopSession(remoteClient, session.database, sidebarOwner: session, machineAlias: 'remote');
+    var otherClosed = false;
+    addTearDown(() async { if (!otherClosed) await other.close(); });
+    Future<void> capture(DesktopSession source) async {
+      await source.dictation.start(owner: Object(), conversation: (machineAlias: source.machineAlias, draftKey: 'draft'),
+        liveTranscription: source.dictationMode == 'live', onRecordingLimit: () {});
+      expect(source.dictation.state, isA<DictationRecording>());
+      await messenger.handlePlatformMessage('happen/dictation/audio', const StandardMethodCodec().encodeSuccessEnvelope({
+        'type': 'audio', 'id': captureId, 'pcm': Uint8List(16000), 'rms': .08,
+      }), (_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 260));
+    }
+    Future<void> finish(String text) async {
+      final count = client.recordings.length;
+      final result = session.dictation.stop(DictationAction.insert);
+      await Future<void>.delayed(Duration.zero);
+      expect(client.recordings, hasLength(count + 1));
+      client.reply.complete(text);
+      expect((await result)?.text, text);
+    }
+
+    await capture(session);
+    await session.dictation.cancel();
+    await capture(other);
+    client.events.add({'type': 'auth.changed', 'provider': 'openai'});
+    await Future<void>.delayed(Duration.zero);
+    expect(other.dictation.state, isA<DictationIdle>(), reason: 'Local identity changes cancel every recording');
+    await capture(other);
+    await finish('Remote dictation');
+    expect(remoteClient.authorizations, 0);
+    expect(client.authorizations, greaterThan(1));
+    await other.chooseDictationMode('live');
+    final saved = jsonObject(await callIsolate(session.database.port, 'load', {}));
+    expect(saved['settings']['dictation_mode'], 'live');
+    await session.chooseDictationMode('on_stop');
+    expect(other.dictationMode, 'on_stop');
+    await capture(session);
+    remoteClient.events.add({'type': 'auth.changed', 'provider': 'openai'});
+    await Future<void>.delayed(Duration.zero);
+    await other.disconnect();
+    await other.close();
+    otherClosed = true;
+    expect(session.dictation.state, isA<DictationRecording>());
+    await finish('Local dictation after remote close');
+    expect(client.recordings, hasLength(2));
+  }, skip: !Platform.isMacOS);
+
   testWidgets('Stop inserts into the selection; Enter transcribes and sends exactly once', (tester) async {
     await open(tester);
     await enterText(tester, 'Hello world');
@@ -594,7 +643,8 @@ void main() {
 }
 
 class _Client implements AgentClient {
-  @override bool get sharedFilesystem => true;
+  _Client({this.sharedFilesystem = true});
+  @override final bool sharedFilesystem;
   @override final events = StreamController<Json>.broadcast();
   final sent = <Json>[];
   final answers = <List<List<String>>?>[];
@@ -602,8 +652,12 @@ class _Client implements AgentClient {
   late Completer<String> reply;
   int? streamPort;
   Completer<Object?>? turnReply;
-  @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
-    {'access_token': 'fixture', 'account_id': 'account'};
+  int authorizations = 0;
+  @override Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async {
+    authorizations++;
+    if (!sharedFilesystem) throw StateError('The remote backend cannot authorize desktop dictation');
+    return {'access_token': 'fixture', 'account_id': 'account'};
+  }
   @override Future<void> answerQuestion(String sessionID, String requestID, List<List<String>>? answers, {
     required CancellationToken cancellation,
   }) async {

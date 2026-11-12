@@ -391,7 +391,10 @@ This compiler is only needed when building on Windows. macOS/Linux keep the
 existing native build path.
 
 On macOS, click the composer's microphone to dictate with the local ChatGPT
-account. The editor stays editable while the mic shows its recording waveform.
+account. Every machine shares the app's microphone, local account, and dictation
+mode; selecting a remote chat does not use that server's credentials. Disconnecting
+an inactive machine leaves the current recording alone. The editor stays editable
+while the mic shows its recording waveform.
 Settings opens a separate screen with a saved Dictation mode: **Live** (the
 default) shows text while you speak; **On stop** inserts it after recording.
 Live mode falls back to transcription on stop if its connection fails. Each

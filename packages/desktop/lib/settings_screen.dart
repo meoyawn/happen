@@ -5,6 +5,7 @@ import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'appearance_settings.dart';
+import 'pinned_sidebar_preferences.dart';
 import 'shortcut_preferences.dart';
 import 'project_avatar.dart';
 import 'project_actions_state.dart';
@@ -220,6 +221,13 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
 
   Widget _appearance() => _settingsList([
     DesktopAccentSettings(controller: widget.session.appearance, run: widget.run),
+    ListenableBuilder(listenable: widget.session.pinnedSidebar, builder: (context, _) {
+      final preferences = widget.session.pinnedSidebar;
+      return _settingsRow('Pinned threads', 'Group projects with multiple pinned threads into collapsible folders.',
+        _choice<PinnedThreadLayout>('Pinned threads', preferences.value.layout,
+          const {PinnedThreadLayout.byProject: 'By project', PinnedThreadLayout.flat: 'Flat'},
+          preferences.enabled ? (value) => widget.run(() => preferences.chooseLayout(value)) : null));
+    }),
     _settingsRow('Project icons', 'Choose the marks shown beside your projects.',
       Row(mainAxisSize: MainAxisSize.min, children: [
         if (widget.session.project case final project?) ...[
@@ -671,18 +679,18 @@ Widget _settingsRow(String title, String description, Widget control) => Padding
     return Row(children: [Expanded(child: copy), const SizedBox(width: 16), control]);
   }));
 
-Widget _choice(String label, String value, Map<String, String> options, ValueChanged<String> onChanged) =>
+Widget _choice<T>(String label, T value, Map<T, String> options, ValueChanged<T>? onChanged) =>
   Semantics(label: label, child: Container(
     height: 28,
     padding: const EdgeInsets.symmetric(horizontal: 8),
     decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6),
       border: Border.all(color: const Color(0x1f000000), width: .5)),
-    child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+    child: DropdownButtonHideUnderline(child: DropdownButton<T>(
       value: value, isDense: true, borderRadius: BorderRadius.circular(6),
       padding: EdgeInsets.zero,
       dropdownColor: Colors.white,
       style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 13, height: 16 / 13, color: desktopForeground),
       icon: const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.keyboard_arrow_down, size: 14, color: desktopSecondary)),
       items: [for (final entry in options.entries) DropdownMenuItem(value: entry.key, child: Text(entry.value))],
-      onChanged: (value) { if (value != null) onChanged(value); },
+      onChanged: onChanged == null ? null : (value) { if (value != null) onChanged(value); },
     ))));

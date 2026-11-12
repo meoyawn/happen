@@ -38,6 +38,7 @@ dependencies:
   path: ^1.9.1
   shiki_flutter: ^1.1.0
   mermaid_flutter: ^0.3.2
+  super_sliver_list: ^0.4.1
 
 dev_dependencies:
   cross_file_io: ^1.0.0

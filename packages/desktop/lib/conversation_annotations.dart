@@ -96,6 +96,7 @@ class _AnnotationWorkspaceState extends State<AnnotationWorkspace> {
     _editor = OverlayEntry(builder: (context) => Positioned.fill(child: CustomSingleChildLayout(
       delegate: _AnnotationEditorLayout(point), child: ResponseAnnotationEditor(
         key: ValueKey(annotation.id), service: session.dictation, liveTranscription: session.dictationMode == 'live',
+        conversation: (machineAlias: session.machineAlias, draftKey: draft),
         annotation: annotation, creating: creating,
         onChanged: (value) => session.putAnnotation(draft, value),
         onRemove: () => session.removeAnnotation(draft, annotation.id), onClose: _close,
@@ -395,7 +396,7 @@ class _DismissAnnotationIntent extends Intent {
 }
 
 class ResponseAnnotationEditor extends StatefulWidget {
-  const ResponseAnnotationEditor({super.key, required this.service, required this.liveTranscription, required this.annotation,
+  const ResponseAnnotationEditor({super.key, required this.service, required this.conversation, required this.liveTranscription, required this.annotation,
     required this.onChanged, required this.onClose, required this.onRemove, this.creating = false});
   final DictationService service;
   final bool liveTranscription;
@@ -404,6 +405,7 @@ class ResponseAnnotationEditor extends StatefulWidget {
   final VoidCallback onClose;
   final VoidCallback onRemove;
   final bool creating;
+  final DictationConversation conversation;
   @override
   State<ResponseAnnotationEditor> createState() => _ResponseAnnotationEditorState();
 }
@@ -444,7 +446,8 @@ class _ResponseAnnotationEditorState extends State<ResponseAnnotationEditor> {
         selection: TextSelection.collapsed(offset: range.start + value.length), composing: TextRange.empty);
     });
     _focus.requestFocus();
-    await _service.start(owner: _owner, liveTranscription: widget.liveTranscription, onRecordingLimit: () => unawaited(_finish()));
+    await _service.start(owner: _owner, conversation: widget.conversation,
+      liveTranscription: widget.liveTranscription, onRecordingLimit: () => unawaited(_finish()));
   }
   Future<void> _cancel() async {
     if (!_owns) return;

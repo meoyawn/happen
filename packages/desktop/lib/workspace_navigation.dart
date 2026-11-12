@@ -8,6 +8,7 @@ import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'machine_icons.dart';
+import 'pinned_sidebar_preferences.dart';
 import 'project_avatar.dart';
 import 'provider_icon.dart';
 import 'rename_state.dart';
@@ -22,6 +23,9 @@ typedef _SidebarThreadActivity = ({
   bool running, bool needsInput, bool failed, bool interrupted, bool completed, bool unread,
   int lastActivity, int sentAt, int? runStartedAt,
 });
+
+typedef _SidebarThread = (Project, DesktopTask, _SidebarThreadActivity);
+typedef _PinnedGroup = ({String id, Project project, List<_SidebarThread> threads});
 
 _SidebarThreadActivity _sidebarActivity(DesktopSession session, DesktopTask task) {
   var running = false, needsInput = false, failed = false, interrupted = false, completed = false, unread = false;
@@ -92,6 +96,22 @@ List<SessionDraft> _sidebarDrafts(DesktopSession session, String? projectKey) =>
       (session.fileDrafts[draft.id]?.isNotEmpty ?? false) ||
       (session.attachmentDrafts[draft.id]?.isNotEmpty ?? false))).toList().reversed.toList();
 
+List<_PinnedGroup> _pinnedGroups(DesktopSession session, List<DesktopSession> sources, List<_SidebarThread> tasks) {
+  final pins = session.sidebar.pinnedTaskIds.toSet();
+  final pinned = tasks.where((entry) => pins.contains(_projectSource(sources, entry.$1).sidebarId(entry.$2.id)));
+  if (session.pinnedSidebar.value.layout == PinnedThreadLayout.flat) {
+    return [for (final entry in pinned)
+      (id: _projectSource(sources, entry.$1).sidebarId(entry.$2.id), project: entry.$1, threads: [entry])];
+  }
+  final groups = <String, List<_SidebarThread>>{};
+  for (final entry in pinned) {
+    final id = projectIdentity(_projectSource(sources, entry.$1), entry.$1);
+    (groups[id] ??= []).add(entry);
+  }
+  final projects = {for (final project in desktopProjects(sources, preferred: session)) project.id: project.preferred.project};
+  return [for (final entry in groups.entries) (id: entry.key, project: projects[entry.key]!, threads: entry.value)];
+}
+
 List<String> sidebarThreadIds(DesktopSession session, {String? projectKey, List<DesktopSession>? sources}) {
   final owners = sources ?? [session], preferences = session.sidebar;
   final tasks = _sidebarTasks(session, projectKey, sources: owners);
@@ -99,7 +119,9 @@ List<String> sidebarThreadIds(DesktopSession session, {String? projectKey, List<
   String key(Project project, DesktopTask task) => _projectSource(owners, project).sidebarId(task.id);
   return [
     if (!preferences.collapsedSidebarSections.contains('pinned'))
-      for (final (project, task, _) in tasks.where((entry) => pins.contains(key(entry.$1, entry.$2)))) key(project, task),
+      for (final group in _pinnedGroups(session, owners, tasks))
+        if (group.threads.length == 1 || !preferences.pinnedSidebar.value.collapsedProjects.contains(group.id))
+          for (final (project, task, _) in group.threads) key(project, task),
     if (!preferences.collapsedSidebarSections.contains('working'))
       for (final (project, task, _) in tasks.where((entry) => entry.$3.running && !pins.contains(key(entry.$1, entry.$2)))) key(project, task),
     for (final source in owners)
@@ -142,13 +164,21 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   late ThreadReorderState _reorder = const ThreadReorderIdle();
   CancellationToken? _reorderCancellation;
   late final _pinnedList = GlobalKey<SliverReorderableListState>();
+  late final _projectLists = <String, GlobalKey<ReorderableListState>>{};
+  late final _folderAnchors = <String, GlobalKey>{};
+  VoidCallback? _cancelListReorder;
+  String? _reorderProject;
+  Map<String, List<String>>? _reorderMembers;
+  PinnedThreadLayout? _reorderLayout;
   late final _threadList = GlobalKey();
   late final _rowAnchors = <String, GlobalKey>{};
-  GlobalKey? get _selectedRow => widget.home ? null : _rowAnchors[session.sidebarId(session.draftKey)];
+  GlobalKey? _selectedRow;
   GlobalKey _anchor(String id) => _rowAnchors.putIfAbsent(id, () => GlobalKey());
   late final _scroll = ScrollController();
   late final _rows = <String, ({Object state, Widget row})>{};
   (String?, String?)? _selection;
+  List<String>? _selectionPins;
+  (PinnedSidebarPreferences, bool)? _selectionPinnedView;
   GlobalKey? _selectionList;
   int? _selectionIndex;
   int _revealRevision = 0;
@@ -162,11 +192,16 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   void _transitionReorder(ThreadReorderState next) =>
     _reorder = transitionThreadReorder(_reorder, next);
 
-  void _startReorder(int index, List<String> order) {
+  void _startReorder(int index, List<String> order, {required VoidCallback cancel,
+      String? project, Map<String, List<String>>? members}) {
     if (!_canStartReorder) {
-      _pinnedList.currentState?.cancelReorder();
+      cancel();
       return;
     }
+    _cancelListReorder = cancel;
+    _reorderProject = project;
+    _reorderMembers = members;
+    _reorderLayout = preferences.pinnedSidebar.value.layout;
     _reorderCancellation = CancellationToken();
     setState(() => _transitionReorder(ThreadReorderDragging(index, order)));
     _reorderFocus.requestFocus();
@@ -199,7 +234,9 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
   Future<void> _persistReorder(ThreadReorderSaving pending, CancellationToken cancellation) async {
     try {
-      await preferences.reorderPinnedTasks(pending.drop.order, cancellation: cancellation);
+      final members = _reorderMembers;
+      final order = members == null ? pending.drop.order : [for (final id in pending.drop.order) ...members[id]!];
+      await preferences.reorderPinnedTasks(order, cancellation: cancellation);
       if (!mounted || cancellation.isCancelled || !identical(_reorder, pending)) return;
       setState(() => _transitionReorder(ThreadReorderSaved(pending)));
     } catch (error) {
@@ -216,7 +253,8 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     _transitionReorder(ThreadReorderCancelled(reason));
     _reorderCancellation?.cancel();
     _reorderCancellation = null;
-    _pinnedList.currentState?.cancelReorder();
+    _cancelListReorder?.call();
+    _cancelListReorder = null;
   }
 
   @override
@@ -238,16 +276,29 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       _cancelReorder(ThreadReorderCancelReason.changed);
       return;
     }
+    _validateReorder(_pinnedGroups(session, sources, _sidebarTasks(session, widget.projectKey, sources: sources)));
+  }
+
+  void _validateReorder(List<_PinnedGroup> groups) {
     final order = switch (_reorder) {
       ThreadReorderDragging(:final order) => order,
       ThreadReorderDropping(:final drag) => drag.order,
       _ => null,
     };
     if (order != null) {
-      final pins = _sidebarTasks(session, widget.projectKey, sources: sources)
-        .where((entry) => preferences.pinnedTaskIds.contains(_taskKey(entry.$1, entry.$2)))
-        .map((entry) => _taskKey(entry.$1, entry.$2)).toList();
-      if (!listEquals(order, pins)) _cancelReorder(ThreadReorderCancelReason.changed);
+      final members = _reorderMembers;
+      final current = members != null ? groups.map((group) => group.id).toList() : [
+        for (final group in groups)
+          if (_reorderProject == null || group.id == _reorderProject)
+            for (final entry in group.threads) _taskKey(entry.$1, entry.$2),
+      ];
+      if (_reorderLayout != preferences.pinnedSidebar.value.layout ||
+          preferences.collapsedSidebarSections.contains('pinned') ||
+          _reorderProject != null && preferences.pinnedSidebar.value.collapsedProjects.contains(_reorderProject) ||
+          !listEquals(order, current) || members != null && groups.any((group) =>
+            !listEquals(members[group.id], group.threads.map((entry) => _taskKey(entry.$1, entry.$2)).toList()))) {
+        _cancelReorder(ThreadReorderCancelReason.changed);
+      }
     }
   }
 
@@ -260,13 +311,23 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     super.dispose();
   }
 
-  void _revealSelection(List<(Project, DesktopTask, _SidebarThreadActivity)> pinned, List<(String?, Widget)> rows) {
+  void _revealSelection(List<_PinnedGroup> pinned, List<(String?, Widget)> rows) {
     final id = widget.home ? null : session.sidebarId(session.draftKey);
     final selection = (id, widget.projectKey);
-    final pin = preferences.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((entry) => _taskKey(entry.$1, entry.$2) == id);
+    final pin = preferences.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((group) =>
+      group.threads.any((entry) => _taskKey(entry.$1, entry.$2) == id));
     final index = pin >= 0 ? pin : rows.indexWhere((entry) => entry.$1 == id);
     final list = pin >= 0 ? _pinnedList : _threadList;
-    if (_selection == selection && _selectionList == list && _selectionIndex == index) return;
+    final folder = pin >= 0 && pinned[pin].threads.length > 1 &&
+      preferences.pinnedSidebar.value.collapsedProjects.contains(pinned[pin].id);
+    final anchor = folder ? _folderAnchors[pinned[pin].id] : id == null ? null : _anchor(id);
+    final pinOrder = [for (final group in pinned) for (final entry in group.threads) _taskKey(entry.$1, entry.$2)];
+    final view = (preferences.pinnedSidebar.value, preferences.collapsedSidebarSections.contains('pinned'));
+    if (_selection == selection && _selectionList == list && _selectionIndex == index && identical(_selectedRow, anchor) &&
+        listEquals(_selectionPins, pinOrder) && _selectionPinnedView == view) return;
+    _selectionPins = pinOrder;
+    _selectionPinnedView = view;
+    _selectedRow = anchor;
     _selection = selection;
     _selectionList = list;
     _selectionIndex = index;
@@ -288,7 +349,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     if (!position.hasContentDimensions) return;
     final target = _selectedRow?.currentContext?.findRenderObject();
     if (target != null && target.attached) {
-      final viewport = RenderAbstractViewport.of(target);
+      var viewport = RenderAbstractViewport.of(target);
+      // Project children have their own shrink-wrapped viewport. Reveal their
+      // bounds in the sidebar's scrolling viewport, including during reparenting.
+      for (var ancestor = viewport.parent; ancestor != null; ancestor = ancestor.parent) {
+        if (ancestor is RenderAbstractViewport) viewport = ancestor;
+      }
       final top = viewport.getOffsetToReveal(target, 0).offset;
       final bottom = viewport.getOffsetToReveal(target, 1).offset;
       final offset = position.pixels > top ? top : position.pixels < bottom ? bottom : position.pixels;
@@ -357,7 +423,67 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         ])));
   }
 
-  Widget _row(Project project, DesktopTask task, _SidebarThreadActivity activity, {int? reorderIndex}) {
+  Widget _projectGroup(_PinnedGroup group, int index, bool reorderable) {
+    if (group.threads.length == 1) {
+      final (project, task, activity) = group.threads.single;
+      return _row(project, task, activity, reorderIndex: reorderable ? index : null);
+    }
+    final expanded = !preferences.pinnedSidebar.value.collapsedProjects.contains(group.id);
+    final selected = !widget.home && group.threads.any((entry) =>
+      identical(_source(entry.$1), session) && entry.$2 == session.task);
+    final activities = group.threads.map((entry) => entry.$3).toList();
+    final activity = (
+      running: activities.any((activity) => activity.running),
+      needsInput: activities.any((activity) => activity.needsInput),
+      failed: activities.any((activity) => activity.failed),
+      interrupted: activities.any((activity) => activity.interrupted),
+      completed: activities.any((activity) => activity.completed),
+      unread: activities.any((activity) => activity.unread),
+      lastActivity: 0, sentAt: 0,
+      runStartedAt: activities.map((activity) => activity.runStartedAt).whereType<int>().fold<int?>(null,
+        (earliest, started) => earliest == null || started < earliest ? started : earliest),
+    );
+    final anchor = _folderAnchors.putIfAbsent(group.id, () => GlobalKey());
+    final list = _projectLists.putIfAbsent(group.id, () => GlobalKey<ReorderableListState>());
+    final heading = KeyedSubtree(key: anchor, child: Semantics(
+      button: true, expanded: expanded, selected: selected && !expanded,
+      child: Tooltip(message: '${expanded ? 'Collapse' : 'Expand'} ${group.project.name}', child: Material(
+        color: selected && !expanded ? Colors.white : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(key: ValueKey('pinned-project:${group.id}'), borderRadius: BorderRadius.circular(6),
+          onTap: !preferences.pinnedSidebar.enabled || _reordering ? null : () =>
+            unawaited(_run(preferences, () => preferences.pinnedSidebar.chooseCollapsed(group.id, expanded))),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8), child: Row(children: [
+            Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
+              size: 16, color: desktopTertiary),
+            const SizedBox(width: 6),
+            ProjectAvatar(project: group.project, size: 16, generated: session.projectAvatarStyle == 'generated'),
+            const SizedBox(width: 8),
+            Expanded(child: Text(group.project.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13, color: selected || activity.unread ? desktopForeground : desktopSecondary,
+                fontWeight: selected || activity.unread ? FontWeight.w600 : FontWeight.w500))),
+            _ThreadStatus(activity: activity),
+            const SizedBox(width: 8),
+            Text('${group.threads.length}', style: const TextStyle(fontSize: 12, color: desktopTertiary)),
+          ])))))));
+    return Column(key: ValueKey('pinned-group:${group.id}'), crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      ReorderableDragStartListener(index: index, enabled: reorderable && _canStartReorder, child: heading),
+      if (expanded) Container(margin: const EdgeInsets.only(left: 15, bottom: 4), padding: const EdgeInsets.only(left: 9),
+        decoration: const BoxDecoration(border: Border(left: BorderSide(color: desktopBorder))),
+        child: DragBoundary(child: ReorderableList(key: list, itemCount: group.threads.length,
+          shrinkWrap: true, primary: false, physics: const NeverScrollableScrollPhysics(), padding: EdgeInsets.zero,
+          onReorderStart: (index) => _startReorder(index,
+            group.threads.map((entry) => _taskKey(entry.$1, entry.$2)).toList(),
+            project: group.id, cancel: () => list.currentState?.cancelReorder()),
+          onReorderEnd: _endReorder, onReorderItem: _dropReorder, proxyDecorator: _dragProxy,
+          itemBuilder: (context, index) {
+            final (project, task, activity) = group.threads[index];
+            return _row(project, task, activity, grouped: true, reorderIndex: index);
+          }))),
+    ]);
+  }
+
+  Widget _row(Project project, DesktopTask task, _SidebarThreadActivity activity, {int? reorderIndex, bool grouped = false}) {
     final source = _source(project), session = _source(project);
     final id = source.sidebarId(task.id), active = identical(widget.session, source);
     final state = (
@@ -365,7 +491,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
       project.id, project.name, project.branch, project.iconState.value.revision, session.projectAvatarStyle,
       task.title, task.archived, task.archiving, task.provider, task.model, activity,
       session.pinnedTaskIds.contains(task.id), session.connected, session.savingTaskPins,
-      _canStartReorder, reorderIndex, widget.onProjectSettings != null,
+      _canStartReorder, reorderIndex, grouped, widget.onProjectSettings != null,
       sources.length, machineLabel(source), widget.machineIcon?.call(source),
     );
     final cached = _rows[id];
@@ -390,6 +516,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           onTap: renameInput == null ? () => widget.onSelect(project, task) : null,
           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (!grouped) ...[
               SizedBox(height: 20, child: Row(children: [
                 ProjectAvatar(project: project, size: 16, generated: session.projectAvatarStyle == 'generated'),
                 const SizedBox(width: 6),
@@ -406,11 +533,22 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
                     child: _archiveButton(session, task, () => widget.onArchive(task, true))))),
               ])),
               const SizedBox(height: 4),
-              renameInput ?? GestureDetector(onDoubleTap: renameTitle,
+              ],
+              SizedBox(height: renameInput == null ? 20 : 26, child: Row(children: [
+              Expanded(child: renameInput ?? GestureDetector(onDoubleTap: renameTitle,
                 child: Tooltip(message: task.title, child: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 14, height: 20 / 14,
                   fontWeight: selected || unread ? FontWeight.w500 : FontWeight.w400,
-                  color: selected || unread ? desktopForeground : desktopSecondary)))),
+                  color: selected || unread ? desktopForeground : desktopSecondary))))),
+              if (grouped) ...[
+                const SizedBox(width: 6),
+                if (!hovering) _ThreadStatus(activity: activity),
+                if (hovering) ...[
+                  _pinButton(session, task, compact: true),
+                  _archiveButton(session, task, () => widget.onArchive(task, true)),
+                ],
+              ],
+              ])),
               const SizedBox(height: 2),
               SizedBox(height: 16, child: Row(children: [
                 _machineBadge(source, widget.machineIcon), const SizedBox(width: 6),
@@ -470,7 +608,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(listenable: Listenable.merge([
-    preferences, for (final source in sources) ...[source, source.sidebarChanges],
+    preferences, preferences.pinnedSidebar, for (final source in sources) ...[source, source.sidebarChanges],
   ]),
     builder: (context, _) => _buildSidebar(context));
 
@@ -479,7 +617,12 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final ids = tasks.map((entry) => _taskKey(entry.$1, entry.$2)).toSet();
     _rows.removeWhere((id, _) => !ids.contains(id));
     final pins = preferences.pinnedTaskIds.toSet();
-    final pinned = tasks.where((entry) => pins.contains(_taskKey(entry.$1, entry.$2))).toList();
+    final pinned = _pinnedGroups(session, sources, tasks);
+    _validateReorder(pinned);
+    final projectIds = pinned.where((group) => group.threads.length > 1).map((group) => group.id).toSet();
+    _folderAnchors.removeWhere((id, _) => !projectIds.contains(id));
+    _projectLists.removeWhere((id, _) => !projectIds.contains(id));
+    for (final id in projectIds) { _folderAnchors.putIfAbsent(id, () => GlobalKey()); }
     final working = tasks.where((entry) => entry.$3.running && !pins.contains(_taskKey(entry.$1, entry.$2))).toList();
     final drafts = [for (final source in sources)
       for (final draft in _sidebarDrafts(source, widget.projectKey)) (source, draft)];
@@ -548,16 +691,18 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
         }, child: DragBoundary(child: CustomScrollView(key: const PageStorageKey('thread-sidebar'), controller: _scroll, slivers: [
           SliverPadding(padding: const EdgeInsets.symmetric(horizontal: 8), sliver: SliverMainAxisGroup(slivers: [
             if (pinned.isNotEmpty) ...[
-              SliverToBoxAdapter(child: _sectionHeading('pinned', 'Pinned', pinned.length)),
+              SliverToBoxAdapter(child: _sectionHeading('pinned', 'Pinned', pinned.fold(0, (count, group) => count + group.threads.length))),
               if (!preferences.collapsedSidebarSections.contains('pinned')) ...[
                 SliverReorderableList(key: _pinnedList, itemCount: pinned.length,
-                  onReorderStart: (index) => _startReorder(index, pinned.map((entry) => _taskKey(entry.$1, entry.$2)).toList()),
+                  onReorderStart: (index) => _startReorder(index, pinned.map((group) => group.id).toList(),
+                    cancel: () => _pinnedList.currentState?.cancelReorder(),
+                    members: {for (final group in pinned)
+                      group.id: group.threads.map((entry) => _taskKey(entry.$1, entry.$2)).toList()}),
                   onReorderEnd: _endReorder,
                   onReorderItem: _dropReorder,
                   proxyDecorator: _dragProxy,
                   itemBuilder: (context, index) {
-                    final (project, task, activity) = pinned[index];
-                    return _row(project, task, activity, reorderIndex: pinned.length > 1 ? index : null);
+                    return _projectGroup(pinned[index], index, pinned.length > 1);
                   }),
                 SliverToBoxAdapter(child: _dragBoundary('Threads')),
               ],

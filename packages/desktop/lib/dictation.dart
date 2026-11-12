@@ -12,6 +12,7 @@ import 'package:server/server.dart';
 import 'dictation_state.dart';
 
 enum DictationAction { insert, send }
+typedef DictationConversation = ({String? machineAlias, String draftKey});
 
 class DictationResult {
   const DictationResult(this.text, this.action);
@@ -19,7 +20,7 @@ class DictationResult {
   final DictationAction action;
 }
 
-/// One physical microphone, owned by the desktop session rather than a chat.
+/// One app-owned physical microphone and local account, shared by all machines.
 /// Both live and on-stop audio go directly to OpenAI and remain memory-only.
 class DictationService extends ChangeNotifier {
   DictationService(this.client);
@@ -43,6 +44,8 @@ class DictationService extends ChangeNotifier {
     _ => null,
   };
   Object? owner;
+  DictationConversation? _conversation;
+  DictationConversation? get conversation => _conversation;
   bool get microphonePermissionDenied => switch (_state) {
     DictationFailed(microphonePermissionDenied: true) => true, _ => false,
   };
@@ -64,13 +67,15 @@ class DictationService extends ChangeNotifier {
   TranscriptionStream? _stream;
   Future<TranscriptionStream?>? _streamOpening;
 
-  Future<void> start({required Object owner, required VoidCallback onRecordingLimit, bool liveTranscription = false}) async {
+  Future<void> start({required Object owner, required DictationConversation conversation,
+    required VoidCallback onRecordingLimit, bool liveTranscription = false}) async {
     if (_disposed || active) return;
     final generation = ++_generation;
     _operation?.cancel();
     _clearAudio();
     _accountId = null;
     this.owner = owner;
+    _conversation = conversation;
     transcript = '';
     this.liveTranscription = liveTranscription;
     _liveStatus = liveTranscription ? 'connecting' : null;
@@ -211,6 +216,7 @@ class DictationService extends ChangeNotifier {
     _captureId = null;
     _clearAudio();
     owner = null;
+    _conversation = null;
     transcript = '';
     _liveStatus = null;
     _transition(const DictationIdle(), notify: false);
@@ -293,6 +299,7 @@ class DictationService extends ChangeNotifier {
     unawaited(_releaseCapture());
     _transition(const DictationDisposed());
     owner = null;
+    _conversation = null;
     unawaited(_subscription?.cancel());
     _clearAudio();
     _http?.close(force: true);

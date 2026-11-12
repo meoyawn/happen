@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:desktop/database.dart';
+import 'package:desktop/pinned_sidebar_preferences.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/workspace_navigation.dart';
 import 'package:flutter/gestures.dart';
@@ -25,6 +26,7 @@ void main() {
       final root = await Directory.systemTemp.createTemp('sidebar-drafts-');
       addTearDown(() => root.delete(recursive: true));
       session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      await session.pinnedSidebar.ready;
       addTearDown(() => tester.runAsync(session.close));
     });
     final interrupted = DesktopTask('interrupted', 'Saved work interrupted by a crash')..loaded = true;
@@ -60,6 +62,7 @@ void main() {
       final root = await Directory.systemTemp.createTemp('workspace-working-order-');
       addTearDown(() => root.delete(recursive: true));
       session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      await session.pinnedSidebar.ready;
       addTearDown(() => tester.runAsync(session.close));
     });
     final now = DateTime.now().millisecondsSinceEpoch - 60000;
@@ -116,6 +119,7 @@ void main() {
       local = DesktopSession(_Client(), await openDesktopDatabase('${root.path}/local'));
       remote = DesktopSession(_Client(), await openDesktopDatabase('${root.path}/remote'),
         sidebarOwner: local, machineAlias: 'other-server', machineName: 'Other server');
+      await local.pinnedSidebar.ready;
     });
     addTearDown(() => tester.runAsync(() async {
       await local.close(); await remote.close(); await root.delete(recursive: true);
@@ -157,6 +161,7 @@ void main() {
 
   testWidgets('failed threads can archive without selecting or loading their broken history', (tester) async {
     final session = DesktopSession(_Client(), _Database());
+    await tester.runAsync(() => session.pinnedSidebar.ready);
     addTearDown(session.close);
     final failed = DesktopTask('failed', 'Cannot load conversation')..loadError = 'History failed';
     session.projects.add(Project('project', '/project', '/project', [failed]));
@@ -183,6 +188,7 @@ void main() {
 
   testWidgets('parent questions override working status until the native resolution arrives', (tester) async {
     final session = DesktopSession(_Client(), _Database());
+    await tester.runAsync(() => session.pinnedSidebar.ready);
     addTearDown(session.close);
     final task = DesktopTask('question', 'Waiting for your answer')..running = true;
     session.projects.add(Project('project', '/project', '/project', [task]));
@@ -206,6 +212,7 @@ void main() {
       final root = await Directory.systemTemp.createTemp('workspace-pinning-');
       addTearDown(() => root.delete(recursive: true));
       session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      await session.pinnedSidebar.ready;
       addTearDown(() => tester.runAsync(session.close));
     });
     final older = DesktopTask('older', 'Older session')..loadError = 'Unavailable'..lastActivity = 1;
@@ -223,6 +230,101 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getTopLeft(row).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('thread:newer'))).dy));
     expect(opened, false); expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('project folders keep pin order and disclosure through dragging, layout changes, and relaunch', (tester) async {
+    tester.view.physicalSize = const Size(900, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    late Directory root;
+    late DesktopSession session;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('pinned-project-folders-');
+      final database = await openDesktopDatabase(root.path);
+      for (final (checkout, identity, path, ids) in [
+        ('alpha', 'https://github.com/example/alpha.git', '/alpha', ['a1', 'a2']),
+        ('worktree', 'https://github.com/example/alpha.git', '/alpha-worktree', ['a3']),
+        ('beta', '/beta', '/beta', ['b1']),
+        ('other', '/other/alpha', '/other/alpha', ['c1']),
+      ]) {
+        await callIsolate(database.port, 'project.add', {'checkout_key': checkout, 'identity': identity, 'path': path});
+        for (final id in ids) {
+          await callIsolate(database.port, 'task.add', {'id': id, 'checkout_key': checkout, 'title': 'Thread $id'});
+        }
+      }
+      session = DesktopSession(_Client(), database);
+      await session.restore();
+      for (final id in ['a1', 'b1', 'a2', 'c1', 'a3']) {
+        await session.pinTask(session.projects.expand((project) => project.tasks).singleWhere((task) => task.id == id), true);
+      }
+    });
+    addTearDown(() => tester.runAsync(() async {
+      await session.close(); await root.delete(recursive: true);
+    }));
+    final alphaId = projectIdentity(session, session.projects.first);
+    final folder = find.byKey(ValueKey('pinned-project:$alphaId'));
+
+    Future<void> settled() async {
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> drag(Finder from, Finder to) async {
+      final start = tester.getCenter(from);
+      final end = Offset(start.dx, tester.getTopLeft(to).dy + tester.getSize(from).height / 2 + 4);
+      final pointer = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
+      for (var step = 1; step <= 12; step++) {
+        await pointer.moveTo(Offset.lerp(start, end, step / 12)!);
+        await tester.pump(const Duration(milliseconds: 30));
+      }
+      await tester.pump(const Duration(milliseconds: 300));
+      await pointer.up();
+      await settled();
+    }
+
+    await tester.pumpWidget(sidebar(session));
+    await settled();
+    expect(find.byKey(ValueKey('pinned-group:$alphaId')), findsOneWidget,
+      reason: 'Worktrees share a project folder; unrelated folders with the same name stay separate');
+    expect(sidebarThreadIds(session), ['a1', 'a2', 'a3', 'b1', 'c1']);
+    await drag(find.byKey(const ValueKey('thread:a3')), find.byKey(const ValueKey('thread:a1')));
+    expect(session.pinnedTaskIds, ['a3', 'b1', 'a1', 'c1', 'a2']);
+    expect(sidebarThreadIds(session), ['a3', 'a1', 'a2', 'b1', 'c1']);
+
+    await tester.runAsync(() => tester.tap(folder));
+    await settled();
+    expect(find.byKey(const ValueKey('thread:a1')), findsNothing);
+    expect(sidebarThreadIds(session), ['b1', 'c1']);
+    await drag(find.byKey(const ValueKey('thread:c1')), folder);
+    expect(session.pinnedTaskIds, ['c1', 'a3', 'a1', 'a2', 'b1']);
+
+    await tester.runAsync(() => session.pinnedSidebar.chooseLayout(PinnedThreadLayout.flat));
+    await tester.pumpAndSettle();
+    expect(folder, findsNothing);
+    expect(sidebarThreadIds(session), ['c1', 'a3', 'a1', 'a2', 'b1']);
+    await tester.runAsync(() => session.pinnedSidebar.chooseLayout(PinnedThreadLayout.byProject));
+    await tester.pumpAndSettle();
+    expect(sidebarThreadIds(session), ['c1', 'b1']);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() async {
+      await session.close();
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      await session.restore();
+    });
+    await tester.pumpWidget(sidebar(session));
+    await tester.pumpAndSettle();
+    expect(sidebarThreadIds(session), ['c1', 'b1']);
+    expect(session.pinnedTaskIds, ['c1', 'a3', 'a1', 'a2', 'b1']);
+    await tester.runAsync(() => tester.tap(folder));
+    await settled();
+    expect(sidebarThreadIds(session), ['c1', 'a3', 'a1', 'a2', 'b1']);
+    await drag(folder, find.byKey(const ValueKey('thread:c1')));
+    expect(session.pinnedTaskIds, ['a3', 'a1', 'a2', 'c1', 'b1']);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

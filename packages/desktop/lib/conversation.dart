@@ -1,8 +1,13 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, setEquals;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:protocol/protocol.dart' show CancellationToken;
+import 'package:super_sliver_list/super_sliver_list.dart';
 
 import 'conversation_markdown.dart';
 import 'session.dart';
@@ -12,6 +17,7 @@ import 'conversation_activity.dart';
 import 'conversation_streaming.dart';
 import 'conversation_tools.dart';
 import 'conversation_response.dart';
+import 'conversation_scroll_rail.dart';
 import 'conversation_changes.dart';
 import 'conversation_images.dart';
 import 'conversation_event.dart';
@@ -200,6 +206,15 @@ class ConversationTranscript extends StatefulWidget {
 
 class _ConversationTranscriptState extends State<ConversationTranscript> {
   final _scroll = ScrollController();
+  late final _list = ListController()..addListener(_scheduleRailRead);
+  late final _visiblePrompts = ValueNotifier<Set<String>>(const {});
+  late List<ConversationPrompt> _prompts = [];
+  late List<String?> _promptForRow = [];
+  late final _promptKeys = <String, GlobalKey>{};
+  late final _rowAnchors = <String, RenderBox>{};
+  ({String id, double top})? _viewportAnchor;
+  CancellationToken? _promptNavigation;
+  late bool _railReadScheduled = false;
   bool _following = true, _scheduled = false, _showLatest = false, _jumping = false, _userScrolling = false;
   bool _pagingScheduled = false, _latestScheduled = false;
   bool _autofillBlocked = false;
@@ -251,7 +266,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
-      if (!mounted || !_following || !_scroll.hasClients) return;
+      if (!mounted || !_following || !_scroll.hasClients || _scroll.position.isScrollingNotifier.value) return;
       if (_scroll.position.extentBefore > .5) {
         _jumping = true;
         try {
@@ -266,6 +281,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
 
   bool _onScroll(ScrollNotification notification) {
     if (notification.depth != 0) return false;
+    _scheduleRailRead();
     if (notification is ScrollStartNotification && !_jumping && notification.dragDetails != null) {
       _following = false;
       _autofillBlocked = false;
@@ -273,15 +289,17 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     }
     if (notification is UserScrollNotification) {
       if (notification.direction != ScrollDirection.idle) {
+        _cancelPromptNavigation();
         _userScrolling = true;
         _autofillBlocked = false;
       }
       if (notification.direction == ScrollDirection.reverse) _following = false;
-      if (notification.direction == ScrollDirection.forward && notification.metrics.extentBefore < 80) _following = true;
+      if (notification.direction == ScrollDirection.forward && notification.metrics.extentBefore < 24) _following = true;
     }
     if (notification is ScrollEndNotification) {
       if (_userScrolling && notification.metrics.extentBefore < 1) _following = true;
       _userScrolling = false;
+      _follow();
     }
     final showLatest = notification.metrics.extentBefore > 100;
     if (showLatest != _showLatest && !_latestScheduled) {
@@ -317,12 +335,141 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   }
 
   void _latest() {
+    _cancelPromptNavigation();
     _following = true;
     _follow();
     setState(() => _showLatest = false);
   }
 
+  void _scheduleRailRead() {
+    if (!mounted || _railReadScheduled) return;
+    _railReadScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _railReadScheduled = false;
+      if (!mounted || !_list.isAttached) return;
+      final anchor = _viewportAnchor;
+      _viewportAnchor = null;
+      if (!_following && _promptNavigation == null && _scroll.hasClients && !_scroll.position.isScrollingNotifier.value) {
+        final box = anchor == null ? null : _rowAnchors[anchor.id];
+        if (box != null && _anchorLaidOut(box)) {
+          final delta = box.localToGlobal(Offset.zero).dy - anchor!.top;
+          if (delta.abs() > .5) {
+            // New rows and streamed height changes must not move the passage
+            // being read. User intent clears the anchor before scrolling.
+            _jumping = true;
+            try { _scroll.jumpTo((_scroll.offset - delta).clamp(_scroll.position.minScrollExtent, _scroll.position.maxScrollExtent)); }
+            finally { _jumping = false; }
+            _scheduleRailRead();
+            return;
+          }
+        }
+        _viewportAnchor = _readViewportAnchor();
+      }
+      final range = _list.visibleRange;
+      final visible = <String>{};
+      if (range != null) {
+        for (var i = math.max(0, range.$1); i <= range.$2 && i < _promptForRow.length; i++) {
+          if (_promptForRow[i] case final id?) visible.add(id);
+        }
+      }
+      if (visible.isEmpty && _prompts.isNotEmpty) visible.add(_prompts.last.id);
+      if (!setEquals(visible, _visiblePrompts.value)) _visiblePrompts.value = Set.unmodifiable(visible);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _cancelPromptNavigation() {
+    _viewportAnchor = null;
+    final navigation = _promptNavigation;
+    if (navigation == null) return;
+    _promptNavigation = null;
+    navigation.cancel();
+    if (_scroll.hasClients) _scroll.jumpTo(_scroll.offset);
+  }
+
+  ({String id, double top})? _readViewportAnchor() {
+    ({String id, double top})? first;
+    for (final entry in _rowAnchors.entries) {
+      final box = entry.value;
+      if (!_anchorLaidOut(box)) continue;
+      final viewport = RenderAbstractViewport.maybeOf(box) as RenderBox?;
+      if (viewport == null || !viewport.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final edge = viewport.localToGlobal(const Offset(0, 16)).dy;
+      if (top <= edge && top + box.size.height > edge) return (id: entry.key, top: top);
+      if (top > edge && top < edge + viewport.size.height && (first == null || top < first.top)) first = (id: entry.key, top: top);
+    }
+    return first;
+  }
+
+  bool _anchorLaidOut(RenderBox box) {
+    if (!box.attached || !box.hasSize) return false;
+    RenderObject? child = box;
+    while (child != null && child is! RenderAbstractViewport) {
+      final data = child.parentData;
+      if (data is SliverMultiBoxAdaptorParentData && data.keptAlive) return false;
+      child = child.parent;
+    }
+    return child != null;
+  }
+
+  void _expand() { _cancelPromptNavigation(); _following = false; }
+
+  Future<void> _revealPrompt(String id, {bool instant = false}) async {
+    if (!_list.isAttached || !_scroll.hasClients) return;
+    _cancelPromptNavigation();
+    final navigation = _promptNavigation = CancellationToken();
+    _following = false;
+    try {
+      var target = _promptKeys[id]?.currentContext;
+      final mountedTarget = target != null;
+      // An indexed seek mounts only the destination. Resolve its real geometry
+      // after layout, including an estimated last row at the history edge.
+      for (var seek = 0; target == null && seek < 3; seek++) {
+        final prompt = _prompts.where((entry) => entry.id == id).firstOrNull;
+        if (prompt == null || !_list.isAttached) return;
+        _list.jumpToItem(index: prompt.index, scrollController: _scroll, alignment: 1);
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || navigation.isCancelled) return;
+        target = _promptKeys[id]?.currentContext;
+      }
+      if (target == null || !target.mounted) return;
+      await Scrollable.ensureVisible(target, alignment: 1,
+        duration: instant || !mountedTarget || MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero : const Duration(milliseconds: 260), curve: Curves.easeOutCubic);
+    } finally {
+      if (identical(_promptNavigation, navigation)) {
+        _promptNavigation = null;
+        _scheduleRailRead();
+      }
+    }
+  }
+
+  Widget _scrollInput(Widget child) => Focus(canRequestFocus: false, onKeyEvent: (_, event) {
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) && [LogicalKeyboardKey.pageUp, LogicalKeyboardKey.pageDown,
+        LogicalKeyboardKey.home, LogicalKeyboardKey.end, LogicalKeyboardKey.arrowUp, LogicalKeyboardKey.arrowDown,
+        LogicalKeyboardKey.space].contains(event.logicalKey)) {
+      _cancelPromptNavigation();
+      if ([LogicalKeyboardKey.pageUp, LogicalKeyboardKey.home, LogicalKeyboardKey.arrowUp].contains(event.logicalKey) ||
+          event.logicalKey == LogicalKeyboardKey.space && HardwareKeyboard.instance.isShiftPressed) {
+        _following = false;
+      }
+    }
+    return KeyEventResult.ignored;
+  }, child: Listener(
+    onPointerDown: (_) => _cancelPromptNavigation(),
+    onPointerSignal: (event) {
+      if (event is PointerScrollEvent && event.scrollDelta.dy.abs() > event.scrollDelta.dx.abs()) {
+        _cancelPromptNavigation();
+        if (event.scrollDelta.dy < 0) _following = false;
+      }
+    },
+    onPointerPanZoomStart: (_) { _cancelPromptNavigation(); _following = false; },
+    child: child,
+  ));
+
   void _toggleTurn(BuildContext context, String id) {
+    _cancelPromptNavigation();
     final box = context.findRenderObject();
     final top = box is RenderBox ? box.localToGlobal(Offset.zero).dy : null;
     _following = false;
@@ -342,6 +489,11 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
 
   @override
   void dispose() {
+    _promptNavigation?.cancel();
+    _list.removeListener(_scheduleRailRead);
+    _list.dispose();
+    _visiblePrompts.dispose();
+    _rowAnchors.clear();
     _scroll.dispose();
     super.dispose();
   }
@@ -366,13 +518,22 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       widget.onLoadEarlier != null, widget.onRetryTurn != null, widget.onPendingAction != null, widget.onFork != null,
       _expansionRevision);
     if (_contentState != contentState) {
+      if (!_following && _promptNavigation == null) _viewportAnchor ??= _readViewportAnchor();
       _contentState = contentState;
       _content = _buildContent(entries);
     }
     final annotationScope = ConversationAnnotationScope.maybeOf(context);
     return ConversationAnnotationSelection(onAdd: annotationScope?.enabled == true ? annotationScope!.onAdd : null,
-      child: Stack(children: [
-      _content!,
+      child: LayoutBuilder(builder: (context, constraints) => Stack(children: [
+      Positioned.fill(child: _content!),
+      if ((constraints.maxWidth - math.min(desktopConversationWidth, constraints.maxWidth)) / 2 >= 48 &&
+          constraints.maxHeight > 0 && _prompts.length >= 4)
+        Positioned(left: 16, top: 0, bottom: 0, child: Center(child: SelectionContainer.disabled(
+          child: ValueListenableBuilder<Set<String>>(valueListenable: _visiblePrompts, builder: (context, visible, _) =>
+            ConversationScrollRail(entries: _prompts, visibleEntries: visible, directory: widget.directory,
+              maxHeight: math.min(constraints.maxHeight, math.min(MediaQuery.sizeOf(context).height * .7, 640)),
+              onReveal: (id, {instant = false}) { unawaited(_revealPrompt(id, instant: instant)); })),
+        ))),
       if (_showLatest) Positioned(
         bottom: 12, left: 0, right: 0,
         child: Center(child: FilledButton.tonalIcon(
@@ -382,7 +543,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
           style: FilledButton.styleFrom(elevation: 1, backgroundColor: const Color(0xfff1f1f3), foregroundColor: desktopForeground),
         )),
       ),
-    ]));
+    ])));
   }
 
   Widget _buildContent(List<ChatEntry> entries) {
@@ -406,8 +567,105 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final historyOffset = task.historyBefore != null ? 1 : 0;
     final itemCount = count + historyOffset;
     final indices = {for (var i = 0; i < rows.length; i++) rows[i].id: count - 1 - i};
+    _prompts = [];
+    for (final entry in entries) {
+      if (entry.role == 'You' && indices.containsKey(entry.id)) {
+        _prompts.add((id: entry.id, text: entry.text.trim(), response: null, index: indices[entry.id]!, liveResponse: null));
+      } else if (entry.role == 'Happen' && _prompts.isNotEmpty) {
+        final prompt = _prompts.last;
+        _prompts[_prompts.length - 1] = (id: prompt.id, text: prompt.text, index: prompt.index,
+          response: entry.text, liveResponse: entry.streaming ? task.liveText : null);
+      }
+    }
+    _promptForRow = List.filled(itemCount, null);
+    final promptIds = _prompts.map((entry) => entry.id).toSet();
+    _promptKeys.removeWhere((id, _) => !promptIds.contains(id));
+    for (final id in promptIds) { _promptKeys.putIfAbsent(id, GlobalKey.new); }
+    String? promptId;
+    for (final row in rows) {
+      if (row.kind == 'message' && row.entries.single.role == 'You') promptId = row.id;
+      _promptForRow[indices[row.id]!] = promptId;
+    }
+    _scheduleRailRead();
     final started = task.runStartedAt;
     final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
+    Widget buildRow(BuildContext context, int index) {
+      if (historyOffset == 1 && index == count) return Column(
+        key: const ValueKey('transcript-history'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (task.loadError != null) TextButton(
+            onPressed: widget.onLoadEarlier, child: const Text('Could not load earlier messages. Retry'))
+          else if (task.loadingEarlier) const Padding(padding: EdgeInsets.all(16),
+            child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5)))
+          else const SizedBox(height: 1),
+        ],
+      );
+      final row = rows[count - 1 - index];
+      if (row.kind == 'working') {
+        if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
+          return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
+        }
+        return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
+          status: task.retryStatus?['message'] as String? ?? row.label);
+      }
+      if (row.kind == 'turn') return Padding(
+        key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 6),
+        child: Builder(builder: (context) => _TurnFold(
+          label: row.label!, expanded: _expandedTurns.contains(row.id),
+          onToggle: () => _toggleTurn(context, row.id))));
+      if (row.kind == 'changes') return Padding(
+        key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
+        child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
+          files: changesForSource(task, 'turn:${row.label}'), directory: widget.directory));
+      if (row.kind == 'images') return Padding(
+        key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
+        child: ConversationGeneratedImages(items: row.entries, directory: widget.directory,
+          conversationImages: entries.where((entry) => entry.image != null).toList(growable: false),
+          onExpand: _expand));
+      if (row.kind == 'imageViews') return Padding(
+        key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 8),
+        child: ConversationInspectedImages(tools: row.entries.map((entry) => entry.tool!).toList(growable: false),
+          directory: widget.directory, onExpand: _expand));
+      final entry = row.kind == 'message' ? row.entries.single : null;
+      return Padding(
+        key: ValueKey(row.id),
+        padding: EdgeInsets.only(
+          top: entry?.role == 'You' && index > 0 ? 8 : 0,
+          bottom: entry == null ? 8 : entry.role == 'You' || entry.response != null ? 16 : 8),
+        child: entry == null ? _ActivityGroup(
+          key: PageStorageKey(row.id), entries: row.entries,
+          active: _indicatingWork(task, row.entries.last) && row.id == latestRowID &&
+            task.retryStatus?['error'] == null && task.retryStatus?['provider_delay'] != true,
+          directory: widget.directory, onExpand: _expand,
+        ) : switch (entry.role) {
+          'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: _expand),
+          'Compaction' => _CompactionRow(
+            entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
+            onExpand: _expand,
+          ),
+          'Reasoning' => _ReasoningRow(entry: entry, active: entry.streaming && identical(entry, latest),
+            directory: widget.directory, onExpand: _expand),
+          'Status' => _TurnStatus(entry: entry),
+          'Answer' => QuestionAnswerRow(id: entry.id, answers: entry.questionAnswers,
+            onExpand: _expand),
+          'Error' => _ErrorMessage(entry: entry,
+            onRetry: !task.running && !task.archived && entry.id == latest?.id ? widget.onRetryTurn : null),
+          _ => Padding(padding: EdgeInsets.symmetric(horizontal: entry.role == 'You' || entry.role == 'Queued' ? 0 : 4),
+            child: ResponseAnnotationContext(annotations: annotationContexts[entry.id] ?? const [],
+            child: _Message(key: _promptKeys[entry.id], entry: entry, directory: widget.directory,
+            running: task.running,
+            onExpand: _expand,
+            onFork: widget.onFork == null || task.archiving || task.sideParentID != null ||
+                entry.response == null || entry.turnId == null || task.turns[entry.turnId]?['status'] == 'inProgress'
+              ? null : () => widget.onFork!(task, entry.turnId!),
+            onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
+                task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
+              : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
+            liveText: entry.streaming ? task.liveText : null))),
+        },
+      );
+    }
     return LayoutBuilder(builder: (context, constraints) {
         final sidePadding = constraints.maxWidth > desktopConversationWidth + 40
           ? (constraints.maxWidth - desktopConversationWidth) / 2 : 20.0;
@@ -416,100 +674,36 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
               if (notification.depth == 0) {
                 _follow();
                 _loadEarlier(notification.metrics);
+                _scheduleRailRead();
               }
               return false;
             },
             child: NotificationListener<ScrollNotification>(
               onNotification: _onScroll,
-              child: Scrollbar(
+              child: _scrollInput(CustomScrollView(
+                key: PageStorageKey((task.id, AxisDirection.up)),
                 controller: _scroll,
-                child: ListView.builder(
-                  key: PageStorageKey((task.id, AxisDirection.up)),
-                  controller: _scroll,
-                  reverse: true,
-                  scrollCacheExtent: const ScrollCacheExtent.pixels(0),
+                reverse: true,
+                semanticChildCount: itemCount,
+                physics: const SuperRangeMaintainingScrollPhysics(),
+                // Keep nearby messages laid out without mounting all history.
+                scrollCacheExtent: const ScrollCacheExtent.viewport(1),
+                slivers: [SliverPadding(
                   padding: EdgeInsets.fromLTRB(sidePadding, 24, sidePadding, 24),
-                  itemCount: itemCount,
-                  findChildIndexCallback: (key) => key is ValueKey<String> ? indices[key.value] : null,
-                  itemBuilder: (context, index) {
-                    if (historyOffset == 1 && index == count) return Column(
-                      key: const ValueKey('transcript-history'),
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (task.loadError != null) TextButton(
-                          onPressed: widget.onLoadEarlier, child: const Text('Could not load earlier messages. Retry'))
-                        else if (task.loadingEarlier) const Padding(padding: EdgeInsets.all(16),
-                          child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5)))
-                        else const SizedBox(height: 1),
-                      ],
-                    );
-                    final row = rows[count - 1 - index];
-                    if (row.kind == 'working') {
-                      if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
-                        return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
-                      }
-                      return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
-                        status: task.retryStatus?['message'] as String? ?? row.label);
-                    }
-                    if (row.kind == 'turn') return Padding(
-                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 6),
-                      child: Builder(builder: (context) => _TurnFold(
-                        label: row.label!, expanded: _expandedTurns.contains(row.id),
-                        onToggle: () => _toggleTurn(context, row.id))));
-                    if (row.kind == 'changes') return Padding(
-                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
-                      child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
-                        files: changesForSource(task, 'turn:${row.label}'), directory: widget.directory));
-                    if (row.kind == 'images') return Padding(
-                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
-                      child: ConversationGeneratedImages(items: row.entries, directory: widget.directory,
-                        conversationImages: entries.where((entry) => entry.image != null).toList(growable: false),
-                        onExpand: () => _following = false));
-                    if (row.kind == 'imageViews') return Padding(
-                      key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 8),
-                      child: ConversationInspectedImages(tools: row.entries.map((entry) => entry.tool!).toList(growable: false),
-                        directory: widget.directory, onExpand: () => _following = false));
-                    final entry = row.kind == 'message' ? row.entries.single : null;
-                    return Padding(
-                      key: ValueKey(row.id),
-                      padding: EdgeInsets.only(
-                        top: entry?.role == 'You' && index > 0 ? 8 : 0,
-                        bottom: entry == null ? 8 : entry.role == 'You' || entry.response != null ? 16 : 8),
-                      child: entry == null ? _ActivityGroup(
-                        key: PageStorageKey(row.id), entries: row.entries,
-                        active: _indicatingWork(task, row.entries.last) && row.id == latestRowID &&
-                          task.retryStatus?['error'] == null && task.retryStatus?['provider_delay'] != true,
-                        directory: widget.directory, onExpand: () => _following = false,
-                      ) : switch (entry.role) {
-                        'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: () => _following = false),
-                        'Compaction' => _CompactionRow(
-                          entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
-                          onExpand: () => _following = false,
-                        ),
-                        'Reasoning' => _ReasoningRow(entry: entry, active: entry.streaming && identical(entry, latest),
-                          directory: widget.directory, onExpand: () => _following = false),
-                        'Status' => _TurnStatus(entry: entry),
-                        'Answer' => QuestionAnswerRow(id: entry.id, answers: entry.questionAnswers,
-                          onExpand: () => _following = false),
-                        'Error' => _ErrorMessage(entry: entry,
-                          onRetry: !task.running && !task.archived && entry.id == latest?.id ? widget.onRetryTurn : null),
-                        _ => Padding(padding: EdgeInsets.symmetric(horizontal: entry.role == 'You' || entry.role == 'Queued' ? 0 : 4),
-                          child: ResponseAnnotationContext(annotations: annotationContexts[entry.id] ?? const [],
-                          child: _Message(entry: entry, directory: widget.directory,
-                          running: task.running,
-                          onExpand: () => _following = false,
-                          onFork: widget.onFork == null || task.archiving || task.sideParentID != null ||
-                              entry.response == null || entry.turnId == null || task.turns[entry.turnId]?['status'] == 'inProgress'
-                            ? null : () => widget.onFork!(task, entry.turnId!),
-                          onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
-                              task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
-                            : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
-                          liveText: entry.streaming ? task.liveText : null))),
-                      },
-                    );
-                  },
-                ),
-              ),
+                  sliver: SuperSliverList.builder(
+                    listController: _list,
+                    delayPopulatingCacheArea: true,
+                    itemCount: itemCount,
+                    findChildIndexCallback: (key) => key == const ValueKey('transcript-history') && historyOffset == 1
+                      ? count : key is ValueKey<String> ? indices[key.value] : null,
+                    itemBuilder: (context, index) {
+                      final id = index == count ? 'transcript-history' : rows[count - 1 - index].id;
+                      return ConversationScrollAnchor(key: ValueKey(id), id: id, anchors: _rowAnchors,
+                        child: buildRow(context, index));
+                    },
+                  ),
+                )],
+              )),
             ),
           );
       });
@@ -612,7 +806,7 @@ class _TurnFold extends StatelessWidget {
 }
 
 class _Message extends StatefulWidget {
-  const _Message({required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork,
+  const _Message({super.key, required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork,
     this.onExpand, this.running = false});
   final ChatEntry entry;
   final String directory;

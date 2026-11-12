@@ -23,6 +23,7 @@ import 'panel_state.dart';
 import 'notification_preferences.dart';
 import 'desktop_notice.dart';
 import 'pin_state.dart';
+import 'pinned_sidebar_preferences.dart';
 import 'file_change.dart';
 import 'git_actions_state.dart';
 import 'project_actions_state.dart';
@@ -240,7 +241,7 @@ class DesktopSession extends ChangeNotifier {
       target._historyRead?.cancel();
       target._needsHistoryRefresh = true;
     }
-    unawaited(_dictation?.cancel());
+    unawaited(sidebarOwner == null ? _dictation?.cancel() : _cancelSessionDictation());
     if (!_lifetime.isCancelled) notifyListeners();
   }
 
@@ -274,6 +275,9 @@ class DesktopSession extends ChangeNotifier {
   }
   AppearanceController? _appearance;
   AppearanceController get appearance => sidebarOwner?.appearance ?? (_appearance ??= AppearanceController(database));
+  PinnedSidebarController? _pinnedSidebar;
+  PinnedSidebarController get pinnedSidebar => sidebarOwner?.pinnedSidebar ??
+    (_pinnedSidebar ??= PinnedSidebarController(database));
   PromptHistoryShortcutController? _promptHistoryShortcut;
   PromptHistoryShortcutController get promptHistoryShortcut => sidebarOwner?.promptHistoryShortcut ??
     (_promptHistoryShortcut ??= PromptHistoryShortcutController(database));
@@ -335,7 +339,16 @@ class DesktopSession extends ChangeNotifier {
   String? attachmentStatus;
   void cancelUpload({DesktopTask? target}) => (target == null ? _submission : target.sideSubmission)?.cancel();
   DictationService? _dictation;
-  DictationService get dictation => _dictation ??= DictationService(client);
+  // The local desktop owns the microphone/account; machine sessions borrow it.
+  DictationService get dictation => sidebarOwner?.dictation ?? (_dictation ??= DictationService(client));
+  Future<void> _cancelSessionDictation({String? draftKey}) async {
+    final voice = sidebar._dictation;
+    final conversation = voice?.conversation;
+    if (voice != null && conversation != null && conversation.machineAlias == machineAlias &&
+        (draftKey == null || conversation.draftKey == draftKey)) {
+      await voice.cancel();
+    }
+  }
   final _lifetime = CancellationToken();
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
@@ -352,7 +365,12 @@ class DesktopSession extends ChangeNotifier {
   List<Json> providers = [];
   String? _provider, _model, _reasoning;
   String deliveryMode = 'steer';
-  String dictationMode = 'live';
+  late String _dictationMode = 'live';
+  String get dictationMode => sidebarOwner?.dictationMode ?? _dictationMode;
+  set dictationMode(String mode) {
+    if (sidebarOwner case final desktop?) { desktop.dictationMode = mode; }
+    else { _dictationMode = mode; }
+  }
   String projectAvatarStyle = 'letters';
   String notificationMode = defaultNotificationMode;
   bool inAppNotificationsEnabled = false;
@@ -511,6 +529,7 @@ class DesktopSession extends ChangeNotifier {
         }
         final updated = (info['updatedAt'] as int? ?? info['createdAt'] as int? ?? 0) * 1000;
         if (!target.loaded || updated > target.lastActivity) target.lastActivity = updated;
+        _replayEarlyEvents(target);
         await _databaseCall('task.add', {
           'id': id, 'checkout_key': project.checkoutKey, 'title': target.title,
           'archived': target.archived, 'last_activity': target.lastActivity,
@@ -585,6 +604,11 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> chooseDictationMode(String mode) async {
     if (!{'live', 'on_stop'}.contains(mode)) throw ArgumentError('Invalid dictation mode');
+    if (sidebarOwner case final desktop?) {
+      await desktop.chooseDictationMode(mode);
+      if (!_lifetime.isCancelled) notifyListeners();
+      return;
+    }
     await _setting('dictation_mode', mode);
     dictationMode = mode;
     notifyListeners();
@@ -1192,7 +1216,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<bool> signIn(String provider, Future<void> Function(String) openBrowser) async {
     if (signingIn || !connected) return false;
-    if (provider == 'openai') await _dictation?.cancel();
+    if (provider == 'openai' && sidebarOwner == null) await _dictation?.cancel();
     final id = _loginId = newId();
     signingIn = true;
     loginProvider = provider;
@@ -1238,7 +1262,7 @@ class DesktopSession extends ChangeNotifier {
 
   Future<void> signOut(String provider) async {
     if (signingOut != null || signingIn) return;
-    if (provider == 'openai') await _dictation?.cancel();
+    if (provider == 'openai' && sidebarOwner == null) await _dictation?.cancel();
     signingOut = provider;
     loginError = null;
     loginProvider = provider;
@@ -1479,9 +1503,10 @@ class DesktopSession extends ChangeNotifier {
     );
     final settings = jsonObject(saved['settings'] ?? {});
     await appearance.ready;
+    await pinnedSidebar.ready;
     await promptHistoryShortcut.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
-    dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
+    if (sidebarOwner == null) dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
     final savedNotificationMode = settings['notification_mode'] as String?;
     notificationMode = notificationModes.containsKey(savedNotificationMode) ? savedNotificationMode! : defaultNotificationMode;
@@ -1714,7 +1739,7 @@ class DesktopSession extends ChangeNotifier {
     notifyListeners();
     try {
       await closingTerminals;
-      if (project == target) await _dictation?.cancel();
+      if (project == target) await _cancelSessionDictation();
       for (final task in target.tasks.where((task) => task.running).toList()) {
         await _request('task.cancel', {'task_id': task.id});
       }
@@ -2084,14 +2109,19 @@ class DesktopSession extends ChangeNotifier {
             }),
           );
           final title = prompt.trim().isEmpty ? annotations.isEmpty ? attachments.first.name : annotations.first.text : prompt.trim().split('\n').first;
-          final created = DesktopTask(
-            requiredString(reply, 'sessionID'),
+          final id = requiredString(reply, 'sessionID');
+          // Discovery can finish while the first turn is being admitted. Keep
+          // its live object so one native thread always has one sidebar entry.
+          final discovered = owner.tasks.where((task) => task.id == id).firstOrNull;
+          final created = discovered ?? (DesktopTask(
+            id,
             title.length > 72 ? '${title.substring(0, 72)}…' : title,
             tracing: tracing,
           )..running = true
-            ..lastActivity = DateTime.now().millisecondsSinceEpoch;
+            ..lastActivity = DateTime.now().millisecondsSinceEpoch);
           bindTraceSession(created.id);
           if (tracing) client.traceSession(created.id);
+          created.tracing = tracing;
           created.loaded = true;
           created.provider = provider;
           created.model = model;
@@ -2099,9 +2129,11 @@ class DesktopSession extends ChangeNotifier {
           created.reasoningUpdates = info?['reasoning_updates'] == true;
           final config = jsonObject(reply['configuration']);
           created.contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
-          created.pending.addAll(local!.pending);
+          if (discovered == null) {
+            created.pending.addAll(local!.pending);
+            owner.tasks.insert(0, created);
+          }
           created.lastSentID = messageID;
-          owner.tasks.insert(0, created);
           adoptedDraft = created.draftKey;
           _rememberTab(created);
           terminals.adoptDraft(owner.checkoutKey, created.id, draft: draft?.id);
@@ -2118,9 +2150,7 @@ class DesktopSession extends ChangeNotifier {
           }
           if (_activeDraftId == draft?.id) _activeDraftId = null;
           _saveNavigation('open_tabs', jsonEncode(openTabIds));
-          for (final event in _earlyEvents) {
-            if (event['params']?['threadId'] == created.id) _applyEvent(created, event);
-          }
+          _replayEarlyEvents(created);
           if (created.archived) {
             await terminals.removeTask(created.id);
             if (task == created) task = null;
@@ -2345,7 +2375,7 @@ class DesktopSession extends ChangeNotifier {
     for (final side in sideChats.values.where((side) => side.sideParentID == target.id).toList()) {
       await _discardSideChat(target, side.id);
     }
-    if (task == target) await _dictation?.cancel();
+    if (task == target) await _cancelSessionDictation(draftKey: target.draftKey);
     for (final attachment in attachments) { await attachment.discard(); }
   }
 
@@ -2428,7 +2458,7 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
-      unawaited(_dictation?.cancel());
+      if (sidebarOwner == null) unawaited(_dictation?.cancel());
       return;
     }
     if (event['type'] == 'auth.login') {
@@ -2493,6 +2523,12 @@ class DesktopSession extends ChangeNotifier {
   void _applyEvent(DesktopTask target, Json event) {
     if (target.loading) target.liveEvents.add(event);
     if (_applyThreadEvent(target, event)) _notifyEvent(target, event);
+  }
+
+  void _replayEarlyEvents(DesktopTask target) {
+    final events = _earlyEvents.where((event) => event['params']?['threadId'] == target.id).toList();
+    _earlyEvents.removeWhere((event) => event['params']?['threadId'] == target.id);
+    for (final event in events) { _applyEvent(target, event); }
   }
 
   void _notifyEvent(DesktopTask target, Json event) {
@@ -2594,6 +2630,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> close() async {
     _draftSave?.cancel();
     await _appearance?.close();
+    await _pinnedSidebar?.close();
     await _promptHistoryShortcut?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();
@@ -2608,9 +2645,11 @@ class DesktopSession extends ChangeNotifier {
       side.sidePreparation?.cancel();
       side.sideSubmission?.cancel();
     }
-    await _dictation?.cancel();
-    _dictation?.dispose();
-    _dictation = null;
+    if (sidebarOwner == null) {
+      await _dictation?.cancel();
+      _dictation?.dispose();
+      _dictation = null;
+    } else { await _cancelSessionDictation(); }
     _lifetime.cancel();
     await Future.wait(_synchronizations.toList());
     _stopIconWatch();

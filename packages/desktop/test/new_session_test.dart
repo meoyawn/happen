@@ -14,6 +14,78 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  for (final completed in [false, true]) {
+    test('catalog discovery during submission keeps one ${completed ? 'completed' : 'running'} thread', () async {
+      final root = await Directory.systemTemp.createTemp('new-thread-discovery-');
+      final database = await openDesktopDatabase(root.path);
+      final client = _Client()
+        ..startingTurn = Completer<void>()..releaseTurn = Completer<void>();
+      final session = DesktopSession(client, database);
+      addTearDown(() async {
+        if (!client.releaseTurn!.isCompleted) client.releaseTurn!.complete();
+        await session.close();
+        await root.delete(recursive: true);
+      });
+      await session.load();
+      await session.addProject(root.path);
+      session.providers = [{'id': 'openai', 'status': 'signed_in', 'models': [
+        {'id': 'fixture', 'reasoning_levels': <String>[]},
+      ]}];
+      session.chooseModel('fixture');
+      final owner = session.project!, draft = session.currentDraft;
+      final sending = session.send('Keep the new thread visible');
+      await client.startingTurn!.future.timeout(const Duration(seconds: 5));
+      client.events.add({'method': 'turn/started', 'params': {
+        'threadId': 'created', 'turn': {'id': 'turn', 'status': 'inProgress'},
+      }});
+      client.events.add({'method': 'happen/inbox/enqueued', 'params': {
+        'threadId': 'created', 'input': {'id': client.messageID, 'prompt': 'Keep the new thread visible'},
+      }});
+      client.events.add({'method': 'item/started', 'params': {
+        'threadId': 'created', 'turnId': 'turn',
+        'item': {'id': 'reply', 'type': 'agentMessage', 'text': ''},
+      }});
+      client.events.add({'method': 'item/agentMessage/delta', 'params': {
+        'threadId': 'created', 'turnId': 'turn', 'itemId': 'reply', 'delta': 'Live ',
+      }});
+      await Future<void>.delayed(Duration.zero);
+      client.threads = [{'id': 'created', 'cwd': owner.path, 'name': 'Discovered thread',
+        'status': {'type': 'active'}, 'updatedAt': 1}];
+      await session.refreshSessions();
+      final discovered = owner.tasks.single;
+      client.events.add({'method': 'happen/inbox/delivered', 'params': {
+        'threadId': discovered.id, 'id': client.messageID,
+      }});
+      client.events.add({'method': 'item/agentMessage/delta', 'params': {
+        'threadId': discovered.id, 'turnId': 'turn', 'itemId': 'reply', 'delta': 'reply',
+      }});
+      if (completed) {
+        client.events.add({'method': 'item/completed', 'params': {
+          'threadId': discovered.id, 'turnId': 'turn',
+          'item': {'id': 'reply', 'type': 'agentMessage', 'text': 'Live reply'},
+        }});
+        client.events.add({'method': 'turn/completed', 'params': {
+          'threadId': discovered.id, 'turn': {'id': 'turn', 'status': 'completed'},
+        }});
+      }
+      await Future<void>.delayed(Duration.zero);
+      client.releaseTurn!.complete();
+      expect(await sending, isTrue, reason: session.error);
+      expect(owner.tasks, hasLength(1));
+      expect(session.task, same(discovered));
+      expect(session.task!.title, 'Discovered thread');
+      expect(session.task!.running, !completed);
+      expect(session.task!.turns['turn']?['status'], completed ? 'completed' : 'inProgress');
+      expect(session.task!.messages['reply']?['text'], 'Live reply');
+      expect(session.task!.pending, isEmpty);
+      expect(session.sessionDrafts, isNot(contains(draft)));
+      expect(session.openTabIds, [discovered.id]);
+      final saved = jsonObject(await callIsolate(database.port, 'load', {}));
+      expect((saved['tasks'] as List).single['id'], discovered.id);
+      expect((saved['tasks'] as List).single['title'], 'Discovered thread');
+    });
+  }
+
   test('restored empty duplicates are removed while active and invested drafts survive', () async {
     final root = await Directory.systemTemp.createTemp('restored-drafts-');
     final attachment = await File('${root.path}/keep.txt').writeAsString('Keep this attachment');
@@ -187,14 +259,26 @@ void main() {
 class _Client implements AgentClient {
   @override final events = StreamController<Json>.broadcast();
   @override bool get sharedFilesystem => true;
-  @override Future<Object?> request(String method, [Json params = const {}]) async => switch (method) {
-    'client.capabilities' => <String, Object?>{},
-    'providers.list' => {'providers': <Object?>[]},
-    'thread/list' => {'data': <Object?>[], 'nextCursor': null},
-    'workspace.inspect' => {'available': true, 'identity': 'path:${params['path']}',
-      'path': params['path'], 'branch': null},
-    _ => throw StateError('Unexpected client request: $method'),
-  };
+  List<Json> threads = [];
+  Completer<void>? startingTurn, releaseTurn;
+  String? messageID;
+  @override Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'turn/start') {
+      messageID = params['clientUserMessageId'] as String;
+      startingTurn!.complete();
+      await releaseTurn!.future;
+      return <String, Object?>{};
+    }
+    return switch (method) {
+      'client.capabilities' => <String, Object?>{},
+      'providers.list' => {'providers': <Object?>[]},
+      'thread/list' => {'data': params['archived'] == true ? <Json>[] : threads, 'nextCursor': null},
+      'thread/start' => {'thread': {'id': 'created'}, 'configuration': <String, Object?>{}},
+      'workspace.inspect' => {'available': true, 'identity': 'path:${params['path']}',
+        'path': params['path'], 'branch': null},
+      _ => throw StateError('Unexpected client request: $method'),
+    };
+  }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     jsonObject(await request(method, params));
   @override Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
