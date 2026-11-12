@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cancellation_token/cancellation_token.dart';
+import 'package:mcp/mcp.dart' show mcpEnvironment;
 import 'package:path/path.dart' as p;
 
 typedef McpExecutable = ({List<String> paths, String revision});
@@ -11,6 +12,7 @@ typedef McpExecutable = ({List<String> paths, String revision});
 Future<Map<String, McpExecutable>> readMcpExecutables(
   Map<String, dynamic> servers,
   CancellationToken cancellation,
+  {String? hostPath}
 ) async {
   final result = <String, McpExecutable>{};
   for (final entry in servers.entries) {
@@ -19,8 +21,7 @@ Future<Map<String, McpExecutable>> readMcpExecutables(
     if (server['enabled'] == false || server['command'] is! String) continue;
     final command = server['command'] as String;
     final cwd = p.absolute(server['cwd'] as String? ?? Directory.current.path);
-    final searchPath = (server['env'] as Map?)?['PATH'] as String? ??
-        Platform.environment['PATH'] ?? '';
+    final searchPath = mcpEnvironment(Map<String, dynamic>.from(server), hostPath: hostPath)['PATH'] ?? '';
     final candidates = p.isAbsolute(command) || p.split(command).length > 1
         ? [p.normalize(p.join(cwd, command))]
         : [

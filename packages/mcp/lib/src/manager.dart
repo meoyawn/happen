@@ -12,7 +12,7 @@ import 'timeouts.dart';
 
 /// The network isolate owns this registry and its shared process generations.
 class McpManager {
-  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.onAuthChanged, this.acceptThreadEvent, this.persistSubscription,
+  McpManager({required this.http, required this.onEvent, this.publicUrl, this.directory, this.hostPath, this.onAuthChanged, this.acceptThreadEvent, this.persistSubscription,
     this.clientCapabilities = const {}, this.requestMetadata});
   final Json clientCapabilities;
   final McpRequestMetadata? requestMetadata;
@@ -20,6 +20,7 @@ class McpManager {
   final void Function(String owner, Json event) onEvent;
   final String? publicUrl;
   final String? directory;
+  final String? hostPath;
   final void Function(String server)? onAuthChanged;
   final Future<void> Function(Json event, CancellationToken cancellation)? acceptThreadEvent;
   final Future<void> Function(String operation, Json params, CancellationToken cancellation)? persistSubscription;
@@ -46,7 +47,7 @@ class McpManager {
   Json _launch(Json config) => config['command'] == null ? config : {
     'command': config['command'], 'args': config['args'] ?? <String>[],
     'cwd': Directory(config['cwd'] as String? ?? Directory.current.path).absolute.uri.normalizePath().toFilePath(),
-    'env': mcpEnvironment(config),
+    'env': mcpEnvironment(config, hostPath: hostPath),
   };
 
   _Server _server(String name, Json config, String? executableRevision, String? scope) {

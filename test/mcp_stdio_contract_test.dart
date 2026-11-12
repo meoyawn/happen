@@ -100,6 +100,39 @@ void main() {
       'EXTRA_RMCP_ENV': 'from-env', 'UNSET_RMCP_ENV': null, for (final key in restricted) key: null,
     });
   });
+  test('macOS GUI MCP launches commands from the account login PATH', () async {
+    final tools = await Directory('${root.path}/user-tools/bin').create(recursive: true);
+    final home = await Directory('${root.path}/home').create();
+    final shell = File('${root.path}/login-shell');
+    const command = 'happen-mcp-path-probe';
+    await Link('${tools.path}/$command').create(Platform.resolvedExecutable);
+    await shell.writeAsString(r'''#!/bin/sh
+PATH="$GUI_LOGIN_PATH"; export PATH
+exec /bin/sh -c "$3"
+''');
+    expect((await Process.run('/bin/chmod', ['+x', shell.path])).exitCode, 0);
+    final environment = {
+      'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+      'HOME': home.path,
+      'SHELL': shell.path,
+      'GUI_LOGIN_PATH': '${tools.path}:/usr/bin:/bin',
+    };
+    final process = await Process.start(Platform.resolvedExecutable,
+      ['--disable-dart-dev', '--packages=$_packages', File('test/fixtures/mcp_login_path_client.dart').absolute.path,
+        jsonEncode({'probe': {'command': command, 'args': [fixture], 'cwd': root.path}})],
+      workingDirectory: root.path, environment: environment);
+    final output = utf8.decoder.bind(process.stdout).join(), errors = utf8.decoder.bind(process.stderr).join();
+    final hook = CancellationHook(lifetime, () => process.kill(ProcessSignal.sigkill));
+    try {
+      expect(await process.exitCode.asCancellable(lifetime), 0, reason: await errors);
+      final result = jsonObject(jsonDecode(await output));
+      expect((result['host_path'] as String).split(':').first, tools.path);
+      expect(result['revision'], contains('${tools.path}/$command'));
+      expect(result['inventory']['servers'][0]['state'], 'ready');
+      expect(result['inventory']['servers'][0]['tools'], contains('probe'));
+      expect(result['explicit_path'], '/usr/bin:/bin');
+    } finally { hook.dispose(); process.kill(ProcessSignal.sigkill); }
+  }, skip: !Platform.isMacOS);
   for (final marker in ['2026-07-28', '1999-01-01']) {
     test('Codex legacy stdio preserves an explicit protocol marker without interpreting it: $marker', () async {
       final output = await _client(root.path, {

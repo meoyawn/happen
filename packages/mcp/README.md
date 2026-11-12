@@ -43,6 +43,9 @@ ChatGPT connectors, enterprise-managed authorization or plugins.
   contacted. Authentication challenges preserve scope/error distinctions and a
   rejected tool call is not replayed during credential repair.
 - Stdio inherits Codex's core environment and nonempty CA bundle variables.
+  On macOS, the server captures the account login shell's PATH for MCP command
+  lookup, preserving its order. Package managers and shims resolve tools through
+  that PATH according to their own rules. An explicit `env.PATH` stays exact.
   Inherited relative CA paths resolve against the host launch cwd; explicit
   `env` overrides stay literal and replace CA casing variants. Host-only
   workload/identity and process-control credentials are scrubbed even from

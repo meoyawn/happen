@@ -10,6 +10,7 @@ import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
 import 'package:mcp/mcp.dart';
 import 'package:telemetry/telemetry.dart';
+import 'package:tool_runtime/tool_runtime.dart' show loginShellPath;
 import 'package:storage/src/codex_native.dart' show projectedCodexItem;
 
 import 'agents_md.dart';
@@ -114,6 +115,7 @@ Future<void> _networkMain(List<Object?> args) async {
   String? loginId, loginOwner;
   CancellationToken? loginCancellation;
   final pending = <Future<void>>{};
+  final hostPath = await loginShellPath(directory, lifetime);
   final mcp = McpManager(
     http: http,
     clientCapabilities: mcpInputCapabilities,
@@ -125,6 +127,7 @@ Future<void> _networkMain(List<Object?> args) async {
         'codex/network-policy-meta': {'enabled': false},
     },
     directory: directory,
+    hostPath: hostPath,
     onAuthChanged: (server) => sendHost({
       'event': {'type': 'mcp.auth.changed', 'server': server},
     }),
@@ -148,7 +151,7 @@ Future<void> _networkMain(List<Object?> args) async {
   );
   final startupServers = resolveMcpCwds(jsonObject(global['mcp_servers'] ?? {}),
     base: Directory.current.path, defaultCwd: Directory.current.path);
-  final startupExecutables = await readMcpExecutables(startupServers, lifetime);
+  final startupExecutables = await readMcpExecutables(startupServers, lifetime, hostPath: hostPath);
   Map<String, String> revisions(Map<String, McpExecutable> executables) => {
     for (final entry in executables.entries) entry.key: entry.value.revision,
   };
@@ -196,7 +199,7 @@ Future<void> _networkMain(List<Object?> args) async {
         name: mergeMcpConfig(jsonObject(acceptedServers[name] ?? {}), jsonObject(local[name]))}, base: scope, defaultCwd: scope);
       parseConfig(jsonEncode({'mcp_servers': servers}));
       validateMcpServers(servers);
-      final executables = await readMcpExecutables(servers, cancellation);
+      final executables = await readMcpExecutables(servers, cancellation, hostPath: hostPath);
       final encoded = fingerprint(servers, executables);
       localExecutables[scope] = executables;
       watcher.updatePaths(watchedPaths(acceptedExecutables));
@@ -241,7 +244,7 @@ Future<void> _networkMain(List<Object?> args) async {
         }
         final servers = resolveMcpCwds(jsonObject(updated.values['mcp_servers'] ?? {}),
           base: Directory.current.path, defaultCwd: Directory.current.path);
-        final executables = await readMcpExecutables(servers, cancellation);
+        final executables = await readMcpExecutables(servers, cancellation, hostPath: hostPath);
         cancellation.throwIfCancelled();
         lifetime.throwIfCancelled();
         acceptedExecutables = executables;

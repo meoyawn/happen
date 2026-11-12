@@ -705,7 +705,7 @@ const _hostOnlyEnvironment = {'codex_exec_server_noise_auth_token', 'node_repl_a
   'codex_guardian_decisions_api_key', 'openai_federation_rule_id',
   'openai_identity_token_file', 'openai_workload_identity_context'};
 
-Map<String, String> mcpEnvironment(Json config) {
+Map<String, String> mcpEnvironment(Json config, {String? hostPath}) {
   final defaults = Platform.isWindows ? ['PATH', 'PATHEXT', 'SHELL', 'COMSPEC', 'SYSTEMROOT', 'WINDIR',
     'SYSTEMDRIVE', 'USERNAME', 'USERDOMAIN', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'PROGRAMFILES',
     'PROGRAMFILES(X86)', 'PROGRAMW6432', 'PROGRAMDATA', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP',
@@ -715,6 +715,7 @@ Map<String, String> mcpEnvironment(Json config) {
     for (final name in [...defaults, ...(config['inherit_env'] as List? ?? []).cast<String>()])
       if (Platform.environment[name] case final String value) name: value,
   };
+  if (hostPath != null && hostPath.isNotEmpty) environment['PATH'] = hostPath;
   for (final name in _caEnvironment) {
     final value = Platform.environment[name];
     if (value == null || value.isEmpty) { environment.remove(name); continue; }
