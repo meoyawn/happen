@@ -13,7 +13,7 @@ void main() {
     final config = File('${root.path}/config.yaml');
     await config.writeAsString(jsonEncode({'mcp_servers': {
       'healthy': {'command': Platform.resolvedExecutable, 'args': [fixture], 'legacy_fallback': false},
-      'missing': {'command': '${root.path}/missing-command', 'args': [fixture], 'legacy_fallback': false},
+      'missing': {'command': 'go', 'args': [fixture], 'env': {'PATH': root.path}, 'legacy_fallback': false},
       'exits': {'command': Platform.resolvedExecutable, 'args': ['${root.path}/missing.dart'], 'legacy_fallback': false},
     }}));
     final server = await AgentServer.startEmbedded(directory: '${root.path}/data', configPath: config.path);
@@ -31,7 +31,7 @@ void main() {
         expect(byName[name]?['tool_count'], 0, reason: name);
         expect(byName[name]?['error'], contains('MCP startup failed'), reason: name);
       }
-      expect(byName['missing']?['error'], contains('missing-command'));
+      expect(byName['missing']?['error'], contains('command "go"'));
       expect(byName['exits']?['error'], contains('exited'));
       final statuses = (await client.request('mcp.status') as List).map(jsonObject).toList();
       for (final name in ['missing', 'exits']) {
@@ -41,7 +41,7 @@ void main() {
         expect(status['capabilities'], isEmpty, reason: name);
       }
       final healthyPid = statuses.singleWhere((row) => row['name'] == 'healthy')['pid'];
-      await Link('${root.path}/missing-command').create(Platform.resolvedExecutable);
+      await Link('${root.path}/go').create(Platform.resolvedExecutable);
       final reloaded = (await client.request('mcp.reload', {}) as List).map(jsonObject).toList();
       expect(reloaded.singleWhere((row) => row['name'] == 'missing')['state'], 'ready');
       expect(reloaded.singleWhere((row) => row['name'] == 'missing')['pid'], isA<int>());
