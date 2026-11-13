@@ -202,7 +202,9 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
       emit('turn/completed', {'turn': {'id': state['turnID'] ?? turn, 'items': <Json>[],
         'status': record['type'] == 'turn.failed' ? 'failed' : record['type'] == 'turn.cancelled' ? 'interrupted' : 'completed',
         'error': record['type'] == 'turn.failed' ? {'message': data['error'].toString()} : null,
-        'startedAt': (state['turnStarted'] as int? ?? now) ~/ 1000, 'completedAt': now ~/ 1000}});
+        'startedAt': (state['turnStarted'] as int? ?? now) ~/ 1000, 'completedAt': now ~/ 1000,
+        'durationMs': (now - (state['turnStarted'] as int? ?? now)).clamp(0, 0x7fffffffffffffff),
+        'tokenUsage': ?data['tokenUsage']}});
   }
   return result;
 }

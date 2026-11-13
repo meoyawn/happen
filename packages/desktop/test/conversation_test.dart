@@ -26,6 +26,32 @@ void main() {
     'phase': 'final_answer', 'turnId': 'turn', 'startedAtMs': order * 1000, 'completedAtMs': order * 1000 + 1};
   DesktopTask task() => DesktopTask('thread', 'Conversation')..loaded = true;
 
+  testWidgets('each finished turn shows its own statistics without hovering, including an empty interrupted response', (tester) async {
+    final current = task()..running = true
+      ..turns['turn'] = {'id': 'turn', 'status': 'inProgress'}
+      ..messages.addAll({
+        'user': {'id': 'user', 'type': 'userMessage', 'turnId': 'turn', 'order': 0,
+          'content': [{'type': 'text', 'text': 'First question'}]},
+        'reply': answer('reply', 'First answer', 1),
+      });
+    addTearDown(current.liveText.dispose);
+    await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
+    expect(find.text('5.6s · 13.3k in · 39 out'), findsNothing);
+    current.running = false;
+    current.turns['turn'] = {'id': 'turn', 'status': 'completed', 'durationMs': 5600,
+      'tokenUsage': {'input_tokens': 13300, 'output_tokens': 39}};
+    await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
+    expect(find.text('5.6s · 13.3k in · 39 out').hitTestable(), findsOneWidget);
+    current.turns['next'] = {'id': 'next', 'status': 'interrupted', 'durationMs': 1200,
+      'tokenUsage': {'input_tokens': 240, 'output_tokens': 0}};
+    current.messages['next-user'] = {'id': 'next-user', 'type': 'userMessage', 'turnId': 'next', 'order': 2,
+      'content': [{'type': 'text', 'text': 'Second question'}]};
+    await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
+    expect(find.text('5.6s · 13.3k in · 39 out').hitTestable(), findsOneWidget);
+    expect(find.text('1.2s · 240 in · 0 out').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('incoming events show publisher metadata with opaque expandable payloads and queue actions', (tester) async {
     String? clipboard;
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {

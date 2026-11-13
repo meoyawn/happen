@@ -95,7 +95,7 @@ class OpenAIProvider implements ModelProvider {
     if (!{'low', 'medium', 'high'}.contains(verbosity)) {
       throw ArgumentError('Unsupported GPT verbosity');
     }
-    final transport = selected['transport'] ?? 'http';
+    final transport = selected['transport'] ?? client.defaultTransport;
     if (!{'http', 'websocket'}.contains(transport)) {
       throw ArgumentError('Unsupported GPT transport');
     }
@@ -187,7 +187,7 @@ class OpenAIProvider implements ModelProvider {
       reasoning: request.settings['reasoning'] as String,
       cancellation: cancellation,
       toolChoice: request.toolChoice,
-      transport: request.settings['transport'] as String? ?? 'http',
+      transport: request.settings['transport'] as String? ?? client.defaultTransport,
       verbosity: request.settings['verbosity'] as String? ?? 'low',
       reasoningSummary:
           request.settings['reasoning_summary'] as String? ?? 'auto',

@@ -11,18 +11,19 @@ Change that source and regenerate; do not draw separate versions of the mark.
 | Surface | Treatment | Output |
 | --- | --- | --- |
 | macOS release / Profile | Lime `#B8F38A` on deep green `#303A31` → `#19221C` | `AppIcon.appiconset`, 16–1024 px |
-| macOS Debug | Dark `#483011` on amber `#FFDC8C` → `#EDA93F` | `AppIconDebug.appiconset`, 16–1024 px |
+| macOS Debug | Release icon with Flutter's red `DEBUG` corner ribbon | `AppIconDebug.appiconset`, 16–1024 px |
 | macOS menu bar | Transparent monochrome template, 18 pt at 1×/2× | `HappenStatus.imageset` |
 | Project sidebar | Lime on a flat `#233027` tile; expanded mark, no Dock padding | `happen-sidebar.svg` |
 
-Debug uses an amber background so it remains easy to identify beside release
-even at small Dock sizes. Menu bar appearance is supplied by macOS through
+Debug uses the same lime mark and dark background as release, with Flutter's
+`BannerPainter` adding the standard red `DEBUG` ribbon in the top-right corner.
+The ribbon is clipped to the tile's rounded silhouette. Menu bar appearance is supplied by macOS through
 [`NSImage.isTemplate`](https://developer.apple.com/documentation/appkit/nsimage/istemplate).
 
 The Dock tile occupies an exact 824 × 824 rectangle at (100, 100) on the 1024 px
 canvas, with a 185 px corner radius. Its clean alpha mask avoids the extra
-background that macOS can add to irregular artwork. No shadow, bevel, or rim is
-baked into the PNG; macOS applies its native finishing. Every size renders from
+background that macOS can add to irregular artwork. The base tile has no baked
+shadow, bevel, or rim; macOS applies its native finishing. Every size renders from
 the vector source, with supersampling for the smallest rasters.
 
 Regenerate from the repository root using a Flutter SDK with desktop artifacts:

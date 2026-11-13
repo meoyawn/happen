@@ -458,7 +458,8 @@ development commands. Reusing a running supervisor repairs the workspace's
 package resolution; hot reload then applies the vendored framework. Replacing
 the supervisor's toolchain requires exiting and launching development again.
 
-Debug builds use the amber Relay tile and bundle ID `com.adelnz.happen.debug`.
+Debug builds use the release icon with Flutter's red `DEBUG` ribbon and bundle
+ID `com.adelnz.happen.debug`.
 Release and Profile use lime on deep green and `com.adelnz.happen`. The
 [icon design and generation guide](design/README.md) covers all three surfaces.
 Separate IDs keep macOS from reusing the installed release's Dock icon for

@@ -12,16 +12,20 @@ import 'retry.dart';
 import 'trace.dart';
 import 'request.dart';
 import 'catalog.dart';
+import 'records.dart';
+
+part 'response_socket.dart';
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
 class ResponsesReply {
-  const ResponsesReply(this.output, this.usage, {this.endTurn = true, this.reasoningTimes = const {}, this.observedUsage});
+  const ResponsesReply(this.output, this.usage, {this.endTurn = true, this.reasoningTimes = const {}, this.observedUsage, this.responseId});
   final List<Json> output;
   final Json usage;
   final bool endTurn;
   final Map<String, Json> reasoningTimes;
   final Json? observedUsage;
+  final String? responseId;
   String get text => output
       .where((item) => item['type'] == 'message')
       .expand((item) => (item['content'] as List? ?? []).whereType<Map<Object?, Object?>>())
@@ -45,6 +49,10 @@ class ResponsesClient {
   final bool _ownsHttp;
   Future<Directory?>? _requestDump;
   bool _httpFallback = false;
+  final _sockets = <String, _ResponsesSocket>{};
+
+  // Custom endpoints may only support SSE. Official endpoints support both.
+  String get defaultTransport => {'chatgpt.com', 'api.openai.com'}.contains(endpoint.host) ? 'websocket' : 'http';
 
   Future<({Json? body, String? etag})> models(Json auth, {String? etag, required CancellationToken cancellation}) async {
     final response = await httpRequest(_http, 'GET', endpoint.resolve('models').replace(
@@ -253,7 +261,7 @@ class ResponsesClient {
       Future<void> Function()? closeBody;
       try {
         if (transport == 'websocket') {
-          return await _websocket(body, headers, cancellation, onEvent);
+          return await _websocket(body, sessionId, headers, cancellation, onEvent);
         }
         final response = await retryRequest(() => _post(endpoint, body,
           {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
@@ -261,7 +269,7 @@ class ResponsesClient {
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
-          decodeSse(incoming.stream.timeout(const Duration(seconds: 60))),
+          StreamIterator(decodeSse(incoming.stream.timeout(const Duration(seconds: 60)))),
           cancellation,
           onEvent,
         );
@@ -331,65 +339,25 @@ class ResponsesClient {
 
   Future<ResponsesReply> _websocket(
     Json body,
+    String sessionId,
     Map<String, String> headers,
     CancellationToken cancellation,
     void Function(Json)? onEvent,
   ) async {
-    WebSocket? socket;
-    var abandoned = false;
-    final hook = CancellationHook(cancellation, () {
-      if (socket != null) unawaited(socket.close());
-    });
-    try {
-      final uri = endpoint.replace(
-        scheme: endpoint.scheme == 'https' ? 'wss' : 'ws',
-      );
-      socket =
-          await traceAsync('openai.websocket.connect', () => WebSocket.connect(
-                uri.toString(),
-                headers: headers,
-                customClient: _http,
-              )
-              .then((value) {
-                if (cancellation.isCancelled || abandoned) {
-                  unawaited(value.close());
-                }
-                return value;
-              })
-              .timeout(const Duration(seconds: 10))
-              .asCancellable(cancellation), category: 'websocket',
-              attributes: {'server.address': uri.host, 'url.path': uri.path});
-      cancellation.throwIfCancelled();
-      final encoded = jsonEncode(body);
-      await _dump(() => encoded, cancellation);
-      cancellation.throwIfCancelled();
-      traceSync('openai.websocket.send', () => socket!.add(encoded), category: 'websocket',
-        attributes: {'bytes': utf8.encode(encoded).length});
-      final events = socket!.timeout(const Duration(seconds: 60)).map((raw) {
-        final text = raw is String ? raw : utf8.decode(raw as List<int>);
-        traceInstant('openai.websocket.receive', category: 'websocket',
-          attributes: {'bytes': utf8.encode(text).length});
-        if (utf8.encode(text).length > 8 * 1024 * 1024) {
-          throw const FormatException('GPT event too large');
-        }
-        return jsonObject(jsonDecode(text));
+    final session = _sockets.putIfAbsent(sessionId, () => _ResponsesSocket());
+    return session.respond(this, body, headers, cancellation, onEvent,
+      onIdle: () {
+        if (identical(_sockets[sessionId], session)) closeSession(sessionId);
       });
-      return await _consume(events, cancellation, onEvent);
-    } catch (_) {
-      cancellation.throwIfCancelled();
-      rethrow;
-    } finally {
-      abandoned = true;
-      hook.dispose();
-      await socket?.close();
-    }
   }
 
   Future<ResponsesReply> _consume(
-    Stream<Json> events,
+    StreamIterator<Json> iterator,
     CancellationToken cancellation,
-    void Function(Json)? onEvent,
-  ) async {
+    void Function(Json)? onEvent, {
+    bool cancelIterator = true,
+    Duration? idleTimeout,
+  }) async {
     final items = <int, Json>{};
     final reasoningStarts = <String, int>{};
     final reasoningParts = <String, String>{};
@@ -443,13 +411,17 @@ class ResponsesClient {
       final reported = _reportedUsage(response['usage']);
       return ResponsesReply(output, jsonObject(response['usage'] ?? {}),
         endTurn: !interrupted && response['end_turn'] != false, reasoningTimes: reasoningTimes,
+        responseId: interrupted ? null : response['id'] as String?,
         observedUsage: reported != null && response['id'] is String ? {'response_id': response['id'], 'usage': reported} : null);
     }
     // Transport activity resets the idle deadline, including SSE heartbeats
     // during long reasoning. A healthy response has no wall-clock limit.
-    final iterator = StreamIterator(events);
     try {
-      while (await iterator.moveNext().asCancellable(
+      Future<bool> next() {
+        final pending = iterator.moveNext();
+        return idleTimeout == null ? pending : pending.timeout(idleTimeout);
+      }
+      while (await next().asCancellable(
         cancellation,
         onCancel: () => unawaited(iterator.cancel()),
       )) {
@@ -537,7 +509,7 @@ class ResponsesClient {
     } finally {
       // Let the transport's finally block abort/close the underlying connection.
       // Waiting for an async* SSE iterator here can wait on its blocked read.
-      unawaited(iterator.cancel().catchError((Object _) {}));
+      if (cancelIterator) unawaited(iterator.cancel().catchError((Object _) {}));
     }
   }
 
@@ -642,7 +614,11 @@ class ResponsesClient {
     }
   }
 
+  void closeSession(String sessionId) => _sockets.remove(sessionId)?.close();
+
   void close() {
+    for (final socket in _sockets.values) { socket.close(); }
+    _sockets.clear();
     if (_ownsHttp) _http.close(force: true);
   }
 }

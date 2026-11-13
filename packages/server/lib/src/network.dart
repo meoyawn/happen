@@ -376,8 +376,9 @@ Future<void> _networkMain(List<Object?> args) async {
         )});
         return;
       }
-      if (request['method'] == 'agents.forget') {
-        if (id == null) throw ArgumentError('Repository instructions require a task');
+      if (request['method'] == 'thread.release') {
+        if (id == null) throw ArgumentError('Thread release requires a task');
+        gptClient.closeSession(id);
         repositoryInstructions.forget(id);
         reply?.send({'result': null});
         return;
@@ -813,6 +814,7 @@ Future<void> _networkMain(List<Object?> args) async {
         await automaticReload;
         await reloads;
         await mcp.close();
+        gptClient.close();
         auth.close();
         consoleAuth.close();
         http.close(force: true);

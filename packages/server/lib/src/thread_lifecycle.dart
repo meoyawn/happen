@@ -33,7 +33,7 @@ extension _ThreadLifecycle on AgentServer {
       if (_networkExited) return;
       try {
         await Future.wait([
-          callIsolate(network.port, 'agents.forget', {'task_id': id}, cancellation: _lifetime),
+          callIsolate(network.port, 'thread.release', {'task_id': id}, cancellation: _lifetime),
           callIsolate(network.port, 'mcp.detach', {'owner': 'thread:$id', 'persist': false}, cancellation: _lifetime),
         ]);
       } on RemoteFailure catch (error) {
@@ -184,7 +184,7 @@ extension _ThreadLifecycle on AgentServer {
         await _taskTools.release(task.id);
         _clientTools.archive(task.id);
         _goals.remove(task.id);
-        if (!_networkExited) await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
+        if (!_networkExited) await callIsolate(network.port, 'thread.release', {'task_id': task.id}, cancellation: _lifetime);
         await (task.memoryStore ?? task.writer)?.close();
         task.writer = null; task.memoryStore = null;
         task.loaded = false;

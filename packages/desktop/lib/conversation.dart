@@ -78,18 +78,28 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   ];
   final rows = <_TranscriptRow>[];
   // Steering and question replies can split one turn into several segments.
-  final lastResponses = {
+  final lastEntries = {
     for (final entry in entries)
-      if (entry.turnId != null && !{'You', 'Answer', 'Queued'}.contains(entry.role)) entry.turnId!: entry,
+      if (entry.turnId != null && entry.role != 'Queued') entry.turnId!: entry,
   };
   final queued = <ChatEntry>[];
   var response = <ChatEntry>[];
   String? responseTurnId;
   var segment = 'initial';
   void flush({bool latest = false}) {
-    if (response.isEmpty && !(latest && task.running)) return;
     final turnId = responseTurnId;
     final turn = task.turns[turnId];
+    void stats() {
+      if (turn?['durationMs'] is! int || turn?['tokenUsage'] is! Map ||
+          turn?['status'] == 'inProgress' ||
+          !response.contains(lastEntries[turnId]) && lastEntries[turnId]?.id != segment) { return; }
+      rows.add((id: 'stats:$turnId', kind: 'stats', entries: const [], label: turnId));
+    }
+    if (response.isEmpty && !(latest && task.running)) {
+      stats();
+      responseTurnId = null;
+      return;
+    }
     final active = task.running && (turn?['status'] == 'inProgress' || latest && turn == null);
     if (active) {
       rows.addAll(_workRows(response));
@@ -114,9 +124,10 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       } else {
         rows.addAll(_workRows(response));
       }
-      if (turn?['diff'] case final String diff when diff.isNotEmpty && response.contains(lastResponses[turnId])) {
+      if (turn?['diff'] case final String diff when diff.isNotEmpty && response.contains(lastEntries[turnId])) {
         rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
       }
+      stats();
     }
     response = [];
     responseTurnId = null;
@@ -126,6 +137,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
     if (entry.role == 'You' || entry.role == 'Answer') {
       flush();
       segment = entry.id;
+      responseTurnId = entry.turnId;
       rows.addAll(_workRows([entry]));
     } else {
       // Retrying starts a new turn without another user message. Its live
@@ -614,6 +626,12 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         child: Builder(builder: (context) => _TurnFold(
           label: row.label!, expanded: _expandedTurns.contains(row.id),
           onToggle: () => _toggleTurn(context, row.id))));
+      if (row.kind == 'stats') {
+        final turn = task.turns[row.label]!, usage = turn['tokenUsage'] as Map;
+        return Padding(key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
+          child: ConversationTurnStats(durationMs: turn['durationMs'] as int,
+            inputTokens: usage['input_tokens'] as int?, outputTokens: usage['output_tokens'] as int?));
+      }
       if (row.kind == 'changes') return Padding(
         key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
         child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',

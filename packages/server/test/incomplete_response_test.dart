@@ -125,8 +125,13 @@ void main() {
       await launch(transport: transport);
       final id = await startThread(), first = await runTurn(client, id, prompt: 'first');
       expect(first['status'], 'completed');
+      expect(first['tokenUsage'], containsPair('input_tokens', 180));
+      expect(first['tokenUsage'], containsPair('output_tokens', 20));
+      expect(first['durationMs'], isA<int>().having((value) => value, 'elapsed milliseconds', greaterThanOrEqualTo(0)));
       await subscription.cancel(); await client.close(); await server.close(); await launch(transport: transport);
       final second = await runTurn(client, id, prompt: 'second'); await runTurn(client, id, prompt: 'third');
+      expect(second['tokenUsage'], containsPair('input_tokens', 20));
+      expect(second['tokenUsage'], containsPair('output_tokens', 10));
       final records = await usageRecords(id);
       expect(records.map((record) => [record['response_id'], record['turn_token_usage']['total_tokens'], record['thread_token_usage']['total_tokens']]), [
         ['response-a', 120, 120], ['response-b', 200, 200], ['response-c', 30, 230],

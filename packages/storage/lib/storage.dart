@@ -158,6 +158,10 @@ class TaskStore {
       if (type == 'tool_runtime.started') {
         next['runtimeID'] = data['id']; next['runtimeHasHandles'] = false;
       }
+      if (const {'turn.completed', 'turn.failed', 'turn.cancelled'}.contains(type)) {
+        // Completion stats travel to clients; the rollout keeps its existing receipts.
+        data['tokenUsage'] = next['turnTokenUsage'];
+      }
       if ({'tool.started', 'host_tool.started'}.contains(type) &&
           {'exec_command', 'write_stdin', 'shell'}.contains(data['name'])) {
         next['runtimeHasHandles'] = true;

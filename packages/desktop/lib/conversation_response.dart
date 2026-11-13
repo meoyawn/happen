@@ -1,7 +1,32 @@
 import 'package:flutter/material.dart';
 
+import 'appearance.dart';
 import 'conversation_markdown.dart';
 import 'session.dart';
+
+class ConversationTurnStats extends StatelessWidget {
+  const ConversationTurnStats({super.key, required this.durationMs, this.inputTokens, this.outputTokens});
+  final int durationMs;
+  final int? inputTokens, outputTokens;
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = Duration(milliseconds: durationMs);
+    final elapsed = duration.inMinutes < 1 ? '${(durationMs / 1000).toStringAsFixed(1)}s'
+      : duration.inHours < 1 ? '${duration.inMinutes}m ${duration.inSeconds % 60}s'
+      : '${duration.inHours}h ${duration.inMinutes % 60}m';
+    String tokens(int? value) => switch (value) {
+      null => '—',
+      >= 1000000 => '${(value / 1000000).toStringAsFixed(1)}m',
+      >= 1000 => '${(value / 1000).toStringAsFixed(1)}k',
+      _ => '$value',
+    };
+    return Tooltip(message: 'Turn duration: $elapsed\nInput tokens: ${inputTokens ?? '—'}\nOutput tokens: ${outputTokens ?? '—'}',
+      child: Text('$elapsed · ${tokens(inputTokens)} in · ${tokens(outputTokens)} out',
+        style: const TextStyle(fontSize: 12, height: 1.5, color: desktopSecondary,
+          fontFeatures: [FontFeature.tabularFigures()])));
+  }
+}
 
 /// Port of T3Code TimelineAssistantRows: a quiet copy/fork/timestamp action strip,
 /// visible on hover or keyboard focus, without a second message projection.

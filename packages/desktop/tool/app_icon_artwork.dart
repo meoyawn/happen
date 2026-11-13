@@ -8,15 +8,15 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 const _ink = Color(0xff26332a), _lime = Color(0xffb8f38a);
-const _release = [Color(0xff303a31), Color(0xff19221c)];
-const _debug = [Color(0xffffdc8c), Color(0xffeda93f)];
-const _debugInk = Color(0xff483011);
+const _dockBackground = [Color(0xff303a31), Color(0xff19221c)];
 
 Future<void> main() async {
   try {
     WidgetsFlutterBinding.ensureInitialized();
     final (source, fontBytes) = await Isolate.run(() => (
       File('assets/app-icons/happen-mark.svg').readAsStringSync(), File('assets/fonts/Inter.ttf').readAsBytesSync()));
+    final font = FontLoader('Inter')..addFont(Future.value(ByteData.sublistView(fontBytes)));
+    await font.load();
     final mark = await vg.loadPicture(SvgStringLoader(source.replaceAll('currentColor', '#ffffff')), null);
     try {
       for (final (name, debug) in [('AppIcon', false), ('AppIconDebug', true)]) {
@@ -39,8 +39,6 @@ Future<void> main() async {
         '  <g transform="translate(-4 -4) scale(1.08)">')
         .replaceAll('currentColor', '#b8f38a').replaceFirst('</svg>', '  </g>\n</svg>');
       await _writeText('assets/app-icons/happen-sidebar.svg', sidebar);
-      final font = FontLoader('Inter')..addFont(Future.value(ByteData.sublistView(fontBytes)));
-      await font.load();
       await _png('design/icon-preview.png', 1440, 960, (canvas) => _preview(canvas, mark.picture));
     } finally { mark.picture.dispose(); }
     exit(0);
@@ -66,10 +64,26 @@ void _tile(Canvas canvas, ui.Picture mark, Rect rect, {bool debug = false, bool 
   final shape = RRect.fromRectAndRadius(tile, Radius.circular(tile.width * (dock ? 185 / 824 : .22)));
   final paint = Paint();
   if (dock) {
-    paint.shader = ui.Gradient.linear(tile.topLeft, tile.bottomRight, debug ? _debug : _release);
+    paint.shader = ui.Gradient.linear(tile.topLeft, tile.bottomRight, _dockBackground);
   } else { paint.color = const Color(0xff233027); }
   canvas.drawRRect(shape, paint);
-  _mark(canvas, mark, dock ? tile : tile.inflate(tile.width * .04), debug ? _debugInk : _lime);
+  _mark(canvas, mark, dock ? tile : tile.inflate(tile.width * .04), _lime);
+  if (debug) {
+    final ribbon = BannerPainter(message: 'DEBUG', textDirection: TextDirection.ltr,
+      location: BannerLocation.topEnd, layoutDirection: TextDirection.ltr,
+      textStyle: const TextStyle(fontFamily: 'Inter', color: Color(0xffffffff),
+        fontSize: 10.2, fontWeight: FontWeight.w900, height: 1));
+    canvas.save();
+    try {
+      canvas.clipRRect(shape);
+      canvas.translate(tile.left, tile.top);
+      canvas.scale(tile.width / 192);
+      ribbon.paint(canvas, const Size(192, 192));
+    } finally {
+      canvas.restore();
+      ribbon.dispose();
+    }
+  }
 }
 
 Future<void> _png(String path, int width, int height, void Function(Canvas) draw) async {
@@ -160,5 +174,5 @@ void _preview(Canvas canvas, ui.Picture mark) {
   }
   _tile(canvas, mark, const Rect.fromLTWH(876, 789, 104, 104), dock: true, debug: true);
   _text(canvas, 'Debug', const Offset(1008, 803), 18, weight: FontWeight.w600);
-  _text(canvas, 'Amber tile / dark mark', const Offset(1008, 840), 16, color: muted);
+  _text(canvas, 'Release icon + Flutter ribbon', const Offset(1008, 840), 16, color: muted);
 }
