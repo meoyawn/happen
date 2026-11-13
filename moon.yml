@@ -263,6 +263,19 @@ tasks:
       shell: false
       outputStyle: stream
 
+  release-ci-pub-get:
+    description: Resolve Dart workspace packages for macOS CI releases
+    command: flutter
+    args: [pub, get]
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      runInCI: true
+      outputStyle: stream
+
   release-native-source:
     description: Fetch the QuickJS source needed by macOS releases
     command: git submodule update --init --depth 1 packages/code_mode/native/quickjs

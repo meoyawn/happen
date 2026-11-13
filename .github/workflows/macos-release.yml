@@ -23,6 +23,8 @@ jobs:
         with:
           version: '2026.11.7'
           cache: false
+      - name: Resolve Dart packages
+        run: moon run release-ci-pub-get
       - name: Import Apple signing credentials
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
