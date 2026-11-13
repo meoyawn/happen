@@ -272,18 +272,21 @@ Future<Json> gitFileDiff(Json status, String path, CancellationToken cancellatio
   return {...file, 'diff': result.output, 'truncated': truncated};
 }
 
-/// An isolated index previews exactly the selected working files, preserving the user's index.
+/// A null selection stages the whole checkout, as in t3code's GitVcsDriverCore.
+/// Preserve staged removals when those files are now ignored but still on disk.
 Future<({String tree, String summary, String patch})> gitCommitContext(
-  Json status, List<String> paths, String index, CancellationToken cancellation, {bool includeUnstaged = true}
+  Json status, List<String>? paths, String index, CancellationToken cancellation, {bool includeUnstaged = true}
 ) async {
   final root = requiredString(status, 'root');
   final env = {'GIT_INDEX_FILE': index};
-  if (includeUnstaged) {
+  if (includeUnstaged && paths != null) {
     await runGit(root, ['read-tree', if (status['head'] == null) '--empty' else status['head'] as String], cancellation, environment: env);
-    await runGit(root, ['add', '--all', '--', ...paths], cancellation, environment: env);
   } else {
     final staged = (await runGit(root, ['write-tree'], cancellation)).output.trim();
     await runGit(root, ['read-tree', staged], cancellation, environment: env);
+  }
+  if (includeUnstaged) {
+    await runGit(root, ['add', '--all', if (paths != null) ...['--', ...paths]], cancellation, environment: env);
   }
   final changed = await runGit(root, ['diff', '--cached', '--quiet'], cancellation, environment: env, accepted: {0, 1});
   if (changed.code == 0) throw StateError('The selected files have no changes to commit');
@@ -293,7 +296,7 @@ Future<({String tree, String summary, String patch})> gitCommitContext(
   return (tree: tree, summary: clippedText(summary, 8000), patch: clippedText(patch, 50000));
 }
 
-List<String> gitSelectedPaths(Json status, Object? selection) {
+List<String>? gitSelectedPaths(Json status, Object? selection) {
   final files = (status['files'] as List).map(jsonObject).toList();
   if (selection != null && (selection is! List || selection.any((path) => path is! String))) {
     throw const FormatException('filePaths must contain changed file paths');
@@ -314,5 +317,5 @@ List<String> gitSelectedPaths(Json status, Object? selection) {
       throw const FormatException('Commit paths must stay within the repository');
     }
   }
-  return paths.toList()..sort();
+  return selection == null ? null : (paths.toList()..sort());
 }

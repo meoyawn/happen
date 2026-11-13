@@ -18,9 +18,9 @@ final class _GitGenerating extends _GitWriteState {
 }
 final class _GitCreatingBranch extends _GitWriteState { const _GitCreatingBranch(); }
 final class _GitCommitting extends _GitWriteState {
-  _GitCommitting(this.message, List<String> paths, this.tree) : paths = List.unmodifiable(paths);
+  _GitCommitting(this.message, List<String>? paths, this.tree) : paths = paths == null ? null : List.unmodifiable(paths);
   final String message, tree;
-  final List<String> paths;
+  final List<String>? paths;
 }
 final class _GitCommitted extends _GitWriteState {
   const _GitCommitted(this.receipt);
@@ -243,18 +243,22 @@ extension _GitRequests on AgentServer {
           final messageFile = File('${temp.path}/message.txt');
           await messageFile.writeAsString(message);
           if (includeUnstaged) {
-            final indexed = (await runGit(root, ['ls-files', '--cached', '-z', '--', ...paths], cancellation))
-              .output.split('\u0000').toSet();
-            final stage = <String>[];
-            for (final path in paths) {
-              if (indexed.contains(path) || await FileSystemEntity.type(p.join(root, path), followLinks: false) != FileSystemEntityType.notFound) {
-                stage.add(path);
+            if (paths == null) {
+              await runGit(root, ['add', '--all'], cancellation, write: true);
+            } else {
+              final indexed = (await runGit(root, ['ls-files', '--cached', '-z', '--', ...paths], cancellation))
+                .output.split('\u0000').toSet();
+              final stage = <String>[];
+              for (final path in paths) {
+                if (indexed.contains(path) || await FileSystemEntity.type(p.join(root, path), followLinks: false) != FileSystemEntityType.notFound) {
+                  stage.add(path);
+                }
               }
+              if (stage.isNotEmpty) await runGit(root, ['add', '--all', '--', ...stage], cancellation, write: true);
             }
-            if (stage.isNotEmpty) await runGit(root, ['add', '--all', '--', ...stage], cancellation, write: true);
           }
-          await runGit(root, ['commit', if (includeUnstaged) '--only', '--file', messageFile.path,
-            if (includeUnstaged) ...['--', ...paths]], cancellation,
+          await runGit(root, ['commit', if (paths != null) '--only', '--file', messageFile.path,
+            if (paths != null) ...['--', ...paths]], cancellation,
             write: true, onOutput: (output) => progress(output: output));
           final sha = (await runGit(root, ['rev-parse', 'HEAD'], cancellation)).output.trim();
           advance(_GitCommitted((sha: sha, subject: message.split('\n').first)));

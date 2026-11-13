@@ -163,6 +163,33 @@ void main() {
     expect(jsonObject(await client.request('thread/list', {'cwd': repo.path}))['data'], isEmpty);
   });
 
+  test('commit all preserves ignored files removed from the index through generation and push', () async {
+    final generated = File('${repo.path}/web/api/client.dart');
+    await generated.parent.create(recursive: true);
+    await generated.writeAsString('GENERATED_CONTENT\n');
+    await git(['add', 'web/api']); await git(['commit', '-m', 'Track generated client']);
+    final remote = '${root.path}/remote.git';
+    await git(['init', '--bare', remote]); await git(['remote', 'add', 'origin', remote]);
+    await git(['rm', '-r', '--cached', 'web/api']);
+    await File('${repo.path}/.gitignore').writeAsString('web/api/\n');
+    await File('${repo.path}/web/api/ignored.dart').writeAsString('IGNORED_CONTENT\n');
+    await File('${repo.path}/tracked.txt').writeAsString('working change\n');
+    await File('${repo.path}/new.txt').writeAsString('new addition\n');
+    final result = await run('commit_push');
+    expect(result['status'], 'completed', reason: '${result['message']}');
+    final sha = await git(['rev-parse', 'HEAD']);
+    expect(result['commit']['sha'], sha);
+    expect(await git(['rev-parse', 'refs/heads/main'], cwd: remote), sha);
+    expect(await git(['ls-tree', '-r', '--name-only', 'HEAD']), '.gitignore\nnew.txt\ntracked.txt');
+    expect(await git(['show', 'HEAD:tracked.txt']), 'working change');
+    expect(await generated.readAsString(), 'GENERATED_CONTENT\n');
+    expect((await status())['files'], isEmpty);
+    final input = jsonEncode(requests.single['input']);
+    expect(input, contains('-GENERATED_CONTENT'));
+    expect(input, isNot(contains('+GENERATED_CONTENT')));
+    expect(input, isNot(contains('IGNORED_CONTENT')));
+  });
+
   for (final base in ['main', 'master']) {
     test('pull fast-forwards a worktree from remote $base and preserves local work on failure', () async {
       final remote = '${root.path}/upstream.git', writer = '${root.path}/writer', linked = '${root.path}/thread checkout';
