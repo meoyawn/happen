@@ -272,7 +272,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release:
@@ -286,7 +286,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release-dmg:
@@ -300,7 +300,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release-notary-log:
@@ -324,7 +324,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release-ci-signing-cleanup:
@@ -336,7 +336,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release-publish:
@@ -348,7 +348,7 @@ tasks:
       cache: false
       interactive: false
       shell: false
-      runInCI: false
+      runInCI: true
       outputStyle: stream
 
   release-reinstall:
