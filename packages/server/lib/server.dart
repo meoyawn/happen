@@ -2020,9 +2020,9 @@ class AgentClient {
   late final _tracedSessions = <String>{};
   bool _disconnectRecorded = false;
   late final _connectionDone = Completer<void>();
-  final _traceLifetime = CancellationToken();
+  final _lifetime = CancellationToken();
   Future<TraceStore> startTracing(String directory) => _tracing ??=
-    TraceStore.open('$directory/telemetry-desktop.sqlite', cancellation: _traceLifetime)
+    TraceStore.open('$directory/telemetry-desktop.sqlite', cancellation: _lifetime)
       .then((store) => _traceStore = store);
   void traceSession(String sessionID) {
     final store = _traceStore;
@@ -2266,8 +2266,10 @@ class AgentClient {
       throw StateError('Connection is closed');
     }
     if (_worker case final worker?) {
+      // The transport worker owns the deadline and reconnects on timeout.
+      // A second timer here can win the race and expose its stale timeout.
       return callIsolate(worker.port, 'request', {'method': method, 'params': params, 'timeout': timeout.inMilliseconds},
-        cancellation: cancellation, timeout: timeout);
+        cancellation: cancellation?.merge(_lifetime) ?? _lifetime, timeout: null);
     }
     if (_localServer case final server?) {
       final state = _localClient!;
@@ -2366,6 +2368,7 @@ class AgentClient {
   Future<void> close() => _closingClient ??= _closeClient();
   Future<void> _closeClient() async {
     _closed = true;
+    _lifetime.cancel();
     try {
       if (_localClient case final state?) {
         _localServer!._detach(state);
@@ -2382,7 +2385,6 @@ class AgentClient {
     } finally {
       await _subscription.cancel();
       _disconnected();
-      _traceLifetime.cancel();
       if (_tracing != null) {
         try { await (await _tracing!).close(); }
         on CancelledException { /* Shutdown can cancel recorder startup. */ }

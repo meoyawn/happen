@@ -214,16 +214,16 @@ Future<void> _sshMain(List<Object?> arguments) async {
         }
       } else {
         final current = state;
-        if (current is! _SshReady) throw StateError('Remote machine is reconnecting');
+        if (current is! _SshReady) throw CancelledException();
         final cancellation = token.merge(lifetime).merge(current.cancellation);
         try {
           result = await current.client._request(params['method'] as String,
             jsonObject(params['params']), cancellation: cancellation, timeout: Duration(milliseconds: params['timeout'] as int));
           cancellation.throwIfCancelled();
-        } catch (_) {
-          // Pending replies can fail before the event stream reports its close.
-          // Invalidate the transport's operations before publishing stale errors.
-          if (current.client.isClosed) current.cancellation.cancel();
+        } catch (error) {
+          // A peer can stop answering requests while its socket stays open.
+          // Retire this connection and its operations before returning a failure.
+          if (error is TimeoutException || current.client.isClosed) current.cancellation.cancel();
           cancellation.throwIfCancelled();
           rethrow;
         }
