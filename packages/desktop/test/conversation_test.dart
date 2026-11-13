@@ -228,6 +228,44 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Mermaid flowchart with HTML breaks and labelled links renders as a diagram', (tester) async {
+    const source = '''flowchart LR
+    B[Binance WebSocket<br/>REST full seed every 23h] --> I[Shared ingester]
+    I --> K[(Kafka<br/>7 day compact + delete)]
+    K --> M[Price materializer]
+    M --> R[(Redis<br/>latest prices + Kafka offsets)]
+    R -->|live updates| D1[Delivery pod A<br/>local price map]
+    R -->|live updates| D2[Delivery pod B<br/>local price map]
+    R -.->|snapshot + cursor on startup| D1
+    R -.->|snapshot + cursor on startup| D2
+    P[(PostgreSQL<br/>markets, sessions, favourites)] --> D1
+    P --> D2
+    U[Browsers] <-->|SSE; reconnect on failure| L[Load balancer]
+    L --> D1
+    L --> D2''';
+    tester.view.physicalSize = const Size(1200, 900); tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
+    String? clipboard;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') clipboard = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    final semantics = tester.ensureSemantics();
+    try {
+      await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SingleChildScrollView(
+        child: ConversationCode(source: source, language: 'mermaid')))));
+      await tester.pump();
+      expect(find.text('Could not render diagram. Showing source.'), findsNothing);
+      expect(find.bySemanticsLabel('Binance WebSocket\nREST full seed every 23h'), findsOneWidget);
+      await tester.tap(find.byTooltip('Copy code')); await tester.pump();
+      expect(clipboard, source);
+      expect(tester.takeException(), isNull);
+    } finally {
+      semantics.dispose();
+    }
+  });
+
   testWidgets('context compaction preserves item order despite missing or reordered timestamps', (tester) async {
     final current = task()..running = true..messages['user'] = {
       'id': 'user', 'type': 'userMessage', 'order': 0, 'startedAtMs': 9000,

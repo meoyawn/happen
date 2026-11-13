@@ -366,6 +366,42 @@ class _CodeBuilder extends MarkdownElementBuilder {
   }
 }
 
+final _flowchartHeader = RegExp(r'^\s*(?:graph|flowchart(?:-elk)?)\b', multiLine: true);
+
+/// Mermaid treats a bare semicolon as a statement break, even inside an edge
+/// label delimited by pipes. Quote only those labels for the render input.
+String _mermaidRenderSource(String source) {
+  if (!source.contains(';') || !_flowchartHeader.hasMatch(source)) return source;
+  final rendered = StringBuffer();
+  var start = 0;
+  var depth = 0;
+  var quoted = false;
+  var comment = false;
+  for (var i = 0; i < source.length; i++) {
+    final char = source[i];
+    if (char == '\n') { comment = false; continue; }
+    if (comment) continue;
+    if (char == '"') { quoted = !quoted; continue; }
+    if (quoted) continue;
+    if (char == '%' && i + 1 < source.length && source[i + 1] == '%') { comment = true; i++; continue; }
+    if (char == '[' || char == '(' || char == '{') { depth++; continue; }
+    if (char == ']' || char == ')' || char == '}') { if (depth > 0) depth--; continue; }
+    if (char != '|' || depth != 0) continue;
+    final end = source.indexOf('|', i + 1);
+    if (end < 0 || source.substring(i + 1, end).contains('\n')) continue;
+    final label = source.substring(i + 1, end);
+    if (label.contains(';') && !label.contains('"')) {
+      rendered.write(source.substring(start, i + 1));
+      rendered.write('"$label"');
+      start = end;
+    }
+    i = end;
+  }
+  if (start == 0) return source;
+  rendered.write(source.substring(start));
+  return rendered.toString();
+}
+
 class ConversationCode extends StatefulWidget {
   const ConversationCode({super.key, required this.source, this.language = '', this.output});
   final String source, language;
@@ -393,7 +429,7 @@ class _ConversationCodeState extends State<ConversationCode> {
             onPressed: () => Navigator.of(context).pop()),
         ])),
         const Divider(height: 1, color: desktopBorder),
-        Expanded(child: MermaidView(source: source,
+        Expanded(child: MermaidView(source: _mermaidRenderSource(source),
           theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
           semanticNodes: true, allowFullscreen: false, keepLastGoodSceneOnError: false,
           backgroundColor: desktopSurface)),
@@ -431,7 +467,7 @@ class _ConversationCodeState extends State<ConversationCode> {
 
   Widget _diagramView(BuildContext context) => LayoutBuilder(builder: (context, constraints) =>
     Padding(padding: const EdgeInsets.all(14), child: FittedBox(fit: BoxFit.scaleDown,
-      child: MermaidDiagram(source: widget.source,
+      child: MermaidDiagram(source: _mermaidRenderSource(widget.source),
         theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
         semanticNodes: true, keepLastGoodSceneOnError: false,
         errorBuilder: (context, error) => SizedBox(
