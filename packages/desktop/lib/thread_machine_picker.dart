@@ -7,6 +7,7 @@ import 'add_project_dialog.dart';
 import 'add_project_state.dart';
 import 'appearance.dart';
 import 'checkout_pull.dart';
+import 'desktop_menu.dart';
 import 'machines.dart';
 import 'machine_icons.dart';
 import 'session.dart';
@@ -136,15 +137,18 @@ class ThreadMachineController extends ChangeNotifier {
 }
 
 class ThreadMachinePicker extends StatefulWidget {
-  const ThreadMachinePicker({super.key, required this.machines, required this.session});
+  const ThreadMachinePicker({super.key, required this.machines, required this.session, this.machineMenuController});
   final MachinesController? machines;
   final DesktopSession session;
+  final MenuController? machineMenuController;
   @override
   State<ThreadMachinePicker> createState() => _ThreadMachinePickerState();
 }
 
 class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
-  final _machineMenu = MenuController(), _workspaceMenu = MenuController();
+  late final _fallbackMachineMenu = MenuController();
+  MenuController get _machineMenu => widget.machineMenuController ?? _fallbackMachineMenu;
+  final _workspaceMenu = MenuController();
   ThreadMachineController? _controller;
   MachineSession? _pendingMachine;
   MachinesController? _machines;
@@ -211,9 +215,9 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
   Widget get _progress => const SizedBox(width: 12, height: 12,
     child: CircularProgressIndicator(strokeWidth: 1.5, color: desktopSecondary));
 
-  Widget _control(Widget icon, String label, VoidCallback? onPressed, String tooltip, {bool loading = false}) => Tooltip(
+  Widget _control(Widget icon, String label, VoidCallback? onPressed, String tooltip, {required FocusNode focusNode, bool loading = false}) => Tooltip(
     message: tooltip,
-    child: TextButton(onPressed: onPressed, style: TextButton.styleFrom(foregroundColor: desktopSecondary,
+    child: TextButton(focusNode: focusNode, onPressed: onPressed, style: TextButton.styleFrom(foregroundColor: desktopSecondary,
       minimumSize: const Size(0, 24), tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
       textStyle: const TextStyle(fontFamily: desktopFontFamily, fontSize: 12, fontWeight: FontWeight.w400),
@@ -309,19 +313,19 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final loading = machines.any((machine) => _machineStatus(machine.alias, machine.session).loading);
     final workspaceStatus = _machineStatus(targetMachine.alias, targetMachine.session);
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Flexible(child: MenuAnchor(controller: _machineMenu, style: _menuStyle,
+      Flexible(child: DesktopMenuAnchor(controller: _machineMenu, style: _menuStyle,
         menuChildren: [_heading('Run on'),
           for (final target in machines) _machineItem(target.alias, target.name, target.session, ready, busy, machine.alias),
           if (ready != null) ...[
             if (ready.repository == null) const MenuItemButton(onPressed: null, child: Text('No Git remote to match')),
             if (ready.truncated) const MenuItemButton(onPressed: null, child: Text('Some locations were not checked')),
           ], ..._status(state)],
-        builder: (_, controller, _) => _control(MachineGlyph(owner?.iconFor(machine.alias) ??
+        builder: (_, controller, focus) => _control(MachineGlyph(owner?.iconFor(machine.alias) ??
           parseMachineIcon(null, remote: machine.alias != null), size: 13),
           machine.name, busy ? null : () => controller.isOpen ? controller.close() : controller.open(), 'Run on',
-          loading: loading || state is ThreadMachineSelecting))),
+          focusNode: focus, loading: loading || state is ThreadMachineSelecting))),
       const SizedBox(width: 2),
-      Flexible(child: MenuAnchor(controller: _workspaceMenu, style: _menuStyle,
+      Flexible(child: DesktopMenuAnchor(controller: _workspaceMenu, style: _menuStyle,
         onClose: () { if (mounted && _pendingMachine != null) setState(() => _pendingMachine = null); },
         menuChildren: [_heading(_pendingMachine == null ? 'Workspace' : 'Workspace · ${targetMachine.name}'),
           for (final checkout in workspaceChoices) MenuItemButton(
@@ -338,9 +342,9 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
               ])))),
           if (workspaceStatus.loading) MenuItemButton(onPressed: null, leadingIcon: _progress, child: Text(workspaceStatus.label!)),
           ..._status(state)],
-        builder: (_, controller, _) => _control(Icon(selected?.worktree == true ? Icons.account_tree_outlined : Icons.folder_outlined, size: 13),
+        builder: (_, controller, focus) => _control(Icon(selected?.worktree == true ? Icons.account_tree_outlined : Icons.folder_outlined, size: 13),
           selected?.worktree == true ? 'Worktree' : 'Current checkout', _controller == null || busy ? null
-            : () => controller.isOpen ? controller.close() : controller.open(), 'Workspace', loading: workspaceStatus.loading))),
+            : () => controller.isOpen ? controller.close() : controller.open(), 'Workspace', focusNode: focus, loading: workspaceStatus.loading))),
       const SizedBox(width: 2),
       Flexible(child: CheckoutPullControl(session: widget.session,
         enabled: state is! ThreadMachineSelecting && !widget.session.submitting)),

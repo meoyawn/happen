@@ -7,6 +7,7 @@ import 'package:desktop/machine_icons.dart';
 import 'package:desktop/remote_settings.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -56,7 +57,8 @@ void main() {
       await tester.runAsync(() async {
         await tester.tap(find.byTooltip('Environment settings for $name'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Icon'));
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         await tester.pumpAndSettle();
         await tester.tap(find.text(machineIconLabel(icon)));
         await tester.pumpAndSettle();
@@ -92,7 +94,11 @@ void main() {
 }
 
 class _Client implements AgentClient {
+  @override final sharedFilesystem = false;
   @override final events = StreamController<Json>.broadcast();
+  @override Future<Json> discoverWorkspaces({required List<String> paths, String? repository,
+    String subdirectory = '', List<String> subdirectories = const [], required CancellationToken cancellation}) async =>
+    {'checkouts': <Object?>[], 'truncated': false};
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>
     method == 'thread/list' ? {'data': <Object?>[], 'nextCursor': null} : throw StateError('Unexpected read: $method');
   @override Future<void> close() => events.close();

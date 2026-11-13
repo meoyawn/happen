@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'desktop_menu.dart';
 import 'machines.dart';
 import 'machine_icons.dart';
 
@@ -37,7 +38,7 @@ class _RemoteSettingsState extends State<RemoteSettings> {
     catch (error) { if (mounted) widget.machines.local.showError(error, title: 'Could not save machine icon'); }
   }
 
-  Widget _environmentMenu(String? alias, String name, RemoteMachine? remote) => MenuAnchor(
+  Widget _environmentMenu(String? alias, String name, RemoteMachine? remote) => DesktopMenuAnchor(
     style: MenuStyle(padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
       backgroundColor: const WidgetStatePropertyAll(Colors.white),
       surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
@@ -62,7 +63,7 @@ class _RemoteSettingsState extends State<RemoteSettings> {
           child: const Text('Remove environment', style: TextStyle(color: desktopError))),
       ],
     ],
-    builder: (_, controller, _) => IconButton(tooltip: 'Environment settings for $name',
+    builder: (_, controller, focus) => IconButton(tooltip: 'Environment settings for $name', focusNode: focus,
       onPressed: widget.machines.saving ? null : () => controller.isOpen ? controller.close() : controller.open(),
       padding: EdgeInsets.zero, constraints: const BoxConstraints.tightFor(width: 32, height: 32),
       icon: const Icon(Icons.more_horiz, size: 18, color: desktopSecondary)),

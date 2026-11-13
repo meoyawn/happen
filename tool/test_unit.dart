@@ -5,6 +5,8 @@ import 'package:protocol/protocol.dart';
 
 /// Flutter widget tests run offscreen; package contracts use the Dart runner.
 Future<void> main(List<String> arguments) async {
+  final flutterOnly = arguments.contains('--flutter');
+  final focused = arguments.where((argument) => argument != '--flutter').toList();
   final cancellation = CancellationToken();
   Process? child;
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
@@ -12,9 +14,10 @@ Future<void> main(List<String> arguments) async {
   final hook = CancellationHook(cancellation, () => child?.kill(ProcessSignal.sigterm));
   try {
     for (final (executable, arguments) in [
-      (Platform.resolvedExecutable, ['test', '--exclude-tags', 'e2e',
+      if (!flutterOnly) (Platform.resolvedExecutable, ['test', '--exclude-tags', 'e2e',
         if (arguments.isEmpty) ...['test', 'packages/storage/test', 'packages/server/test', 'packages/agent/test'] else ...arguments]),
-      if (arguments.isEmpty) ('${Directory.current.path}/third_party/flutter/bin/flutter', ['test', '--exclude-tags', 'e2e']),
+      if (arguments.isEmpty || flutterOnly) ('${Directory.current.path}/third_party/flutter/bin/flutter',
+        ['test', '--exclude-tags', 'e2e', ...focused]),
     ]) {
       cancellation.throwIfCancelled();
       child = await Process.start(executable, arguments,

@@ -51,7 +51,7 @@ class DesktopSettingsScreen extends StatefulWidget {
   final bool windowControls;
   final String initialPage;
   final Project? initialProject;
-  final String? Function(SingleActivator)? shortcutError;
+  final String? Function(DesktopShortcut, SingleActivator)? shortcutError;
 
   @override
   State<DesktopSettingsScreen> createState() => _DesktopSettingsScreenState();
@@ -155,8 +155,14 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
                   : RemoteSettings(machines: widget.machines!),
                 'providers' => widget.accounts,
                 'appearance' => _appearance(),
-                'shortcuts' => _settingsList([_PromptHistoryShortcutSettings(
-                  controller: widget.session.promptHistoryShortcut, run: widget.run, shortcutError: widget.shortcutError)]),
+                'shortcuts' => _settingsList([
+                  _ShortcutSettings(title: 'Machine picker',
+                    description: 'Choose where a new session runs. Works while the composer is focused.',
+                    controller: widget.session.machinePickerShortcut, run: widget.run, shortcutError: widget.shortcutError),
+                  _ShortcutSettings(title: 'Prompt history',
+                    description: 'Search previous prompts in the current session. Also available in the command menu.',
+                    controller: widget.session.promptHistoryShortcut, run: widget.run, shortcutError: widget.shortcutError),
+                ]),
                 'projects' => project == null ? _projects() : _ProjectSettings(
                   key: ValueKey(projectIdentity(_source(project), project)), project: project, session: _source(project), run: widget.run,
                   removeProject: widget.removeProject),
@@ -315,17 +321,18 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
   }
 }
 
-class _PromptHistoryShortcutSettings extends StatefulWidget {
-  const _PromptHistoryShortcutSettings({required this.controller, required this.run, this.shortcutError});
-  final PromptHistoryShortcutController controller;
+class _ShortcutSettings extends StatefulWidget {
+  const _ShortcutSettings({required this.title, required this.description, required this.controller, required this.run, this.shortcutError});
+  final String title, description;
+  final ShortcutController controller;
   final Future<void> Function(Future<void> Function()) run;
-  final String? Function(SingleActivator)? shortcutError;
+  final String? Function(DesktopShortcut, SingleActivator)? shortcutError;
 
   @override
-  State<_PromptHistoryShortcutSettings> createState() => _PromptHistoryShortcutSettingsState();
+  State<_ShortcutSettings> createState() => _ShortcutSettingsState();
 }
 
-class _PromptHistoryShortcutSettingsState extends State<_PromptHistoryShortcutSettings> {
+class _ShortcutSettingsState extends State<_ShortcutSettings> {
   final _focus = FocusNode();
   bool _recording = false;
   String? _error;
@@ -350,7 +357,7 @@ class _PromptHistoryShortcutSettingsState extends State<_PromptHistoryShortcutSe
     final shortcut = SingleActivator(event.logicalKey, meta: keyboard.isMetaPressed,
       control: keyboard.isControlPressed, alt: keyboard.isAltPressed,
       shift: keyboard.isShiftPressed, includeRepeats: false);
-    final error = shortcutInputError(shortcut) ?? widget.shortcutError?.call(shortcut);
+    final error = shortcutInputError(shortcut) ?? widget.shortcutError?.call(widget.controller.command, shortcut);
     if (error != null) { setState(() => _error = error); }
     else { _save(shortcut); }
     return KeyEventResult.handled;
@@ -359,16 +366,16 @@ class _PromptHistoryShortcutSettingsState extends State<_PromptHistoryShortcutSe
   @override
   Widget build(BuildContext context) => ListenableBuilder(listenable: widget.controller, builder: (context, _) {
     final state = widget.controller.state;
-    final enabled = state is PromptHistoryShortcutReady || state is PromptHistoryShortcutFailed;
-    final shortcut = state is PromptHistoryShortcutSaving ? state.pending : state.value;
+    final enabled = state is ShortcutReady || state is ShortcutFailed;
+    final shortcut = state is ShortcutSaving ? state.pending : state.value;
     final description = _error ?? switch (state) {
-      PromptHistoryShortcutLoading() => 'Loading shortcut…',
-      PromptHistoryShortcutSaving() => 'Saving shortcut…',
-      PromptHistoryShortcutFailed() => 'Could not save the shortcut. Try again.',
+      ShortcutLoading() => 'Loading shortcut…',
+      ShortcutSaving() => 'Saving shortcut…',
+      ShortcutFailed() => 'Could not save the shortcut. Try again.',
       _ when _recording => 'Press a key combination. Escape cancels.',
-      _ => 'Search previous prompts in the current session. Also available in the command menu.',
+      _ => widget.description,
     };
-    return _settingsRow('Prompt history', description,
+    return _settingsRow(widget.title, description,
       Row(mainAxisSize: MainAxisSize.min, children: [
         Focus(focusNode: _focus, onKeyEvent: _key,
           onFocusChange: (focused) {

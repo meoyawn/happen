@@ -7,6 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
+import 'desktop_menu.dart';
 import 'git_action_glyphs.dart';
 import 'git_actions_state.dart';
 import 'details_row.dart';
@@ -223,7 +224,7 @@ class _CommitDialogState extends State<_CommitDialog> {
               return KeyEventResult.ignored;
             }, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.all(4),
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                MenuAnchor(controller: _branchMenu,
+                DesktopMenuAnchor(controller: _branchMenu,
                   style: MenuStyle(backgroundColor: const WidgetStatePropertyAll(desktopSidebar),
                     surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
                     padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
@@ -238,7 +239,7 @@ class _CommitDialogState extends State<_CommitDialog> {
                     MenuItemButton(leadingIcon: const Icon(Icons.add_rounded, size: 16),
                       trailingIcon: _newBranch ? const Icon(Icons.check_rounded, size: 14) : null,
                       onPressed: () => setState(() { _newBranch = true; _validation = null; }), child: const Text('New branch')),
-                  ], builder: (context, menu, _) => SizedBox(height: 32, child: TextButton(
+                  ], builder: (context, menu, focus) => SizedBox(height: 32, child: TextButton(focusNode: focus,
                     onPressed: () => menu.isOpen ? menu.close() : menu.open(),
                     style: TextButton.styleFrom(foregroundColor: desktopSecondary, minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap, padding: const EdgeInsets.symmetric(horizontal: 8),

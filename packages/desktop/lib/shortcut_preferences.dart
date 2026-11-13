@@ -5,6 +5,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:protocol/protocol.dart';
 
+enum DesktopShortcut { promptHistory, machinePicker }
+
+String _settingKey(DesktopShortcut command) => switch (command) {
+  DesktopShortcut.promptHistory => 'prompt_history_shortcut',
+  DesktopShortcut.machinePicker => 'machine_picker_shortcut',
+};
+
+SingleActivator? _defaultShortcut(DesktopShortcut command) => switch (command) {
+  DesktopShortcut.promptHistory => null,
+  DesktopShortcut.machinePicker => const SingleActivator(LogicalKeyboardKey.keyM, alt: true, includeRepeats: false),
+};
+
 const shortcutModifierKeys = [
   LogicalKeyboardKey.meta, LogicalKeyboardKey.metaLeft, LogicalKeyboardKey.metaRight,
   LogicalKeyboardKey.control, LogicalKeyboardKey.controlLeft, LogicalKeyboardKey.controlRight,
@@ -59,55 +71,57 @@ SingleActivator? _decode(String? value) {
   } on FormatException { return null; }
 }
 
-sealed class PromptHistoryShortcutState {
-  const PromptHistoryShortcutState(this.value);
+sealed class ShortcutState {
+  const ShortcutState(this.value);
   final SingleActivator? value;
 }
 
-final class PromptHistoryShortcutLoading extends PromptHistoryShortcutState {
-  const PromptHistoryShortcutLoading() : super(null);
+final class ShortcutLoading extends ShortcutState {
+  const ShortcutLoading(super.value);
 }
 
-final class PromptHistoryShortcutReady extends PromptHistoryShortcutState {
-  const PromptHistoryShortcutReady(super.value);
+final class ShortcutReady extends ShortcutState {
+  const ShortcutReady(super.value);
 }
 
-final class PromptHistoryShortcutSaving extends PromptHistoryShortcutState {
-  const PromptHistoryShortcutSaving(super.value, this.pending);
+final class ShortcutSaving extends ShortcutState {
+  const ShortcutSaving(super.value, this.pending);
   final SingleActivator? pending;
 }
 
-final class PromptHistoryShortcutFailed extends PromptHistoryShortcutState {
-  const PromptHistoryShortcutFailed(super.value, this.error);
+final class ShortcutFailed extends ShortcutState {
+  const ShortcutFailed(super.value, this.error);
   final Object error;
 }
 
-final class PromptHistoryShortcutClosed extends PromptHistoryShortcutState {
-  const PromptHistoryShortcutClosed(super.value);
+final class ShortcutClosed extends ShortcutState {
+  const ShortcutClosed(super.value);
 }
 
-PromptHistoryShortcutState _transition(PromptHistoryShortcutState current, PromptHistoryShortcutState next) =>
+ShortcutState _transition(ShortcutState current, ShortcutState next) =>
   switch ((current, next)) {
-    (PromptHistoryShortcutLoading(), PromptHistoryShortcutReady() || PromptHistoryShortcutFailed()) => next,
-    (PromptHistoryShortcutReady() || PromptHistoryShortcutFailed(), PromptHistoryShortcutSaving()) => next,
-    (PromptHistoryShortcutSaving(), PromptHistoryShortcutReady() || PromptHistoryShortcutFailed()) => next,
-    (_, PromptHistoryShortcutClosed()) when current is! PromptHistoryShortcutClosed => next,
-    _ => throw StateError('Invalid prompt history shortcut transition'),
+    (ShortcutLoading(), ShortcutReady() || ShortcutFailed()) => next,
+    (ShortcutReady() || ShortcutFailed(), ShortcutSaving()) => next,
+    (ShortcutSaving(), ShortcutReady() || ShortcutFailed()) => next,
+    (_, ShortcutClosed()) when current is! ShortcutClosed => next,
+    _ => throw StateError('Invalid shortcut transition'),
   };
 
-class PromptHistoryShortcutController extends ChangeNotifier {
-  PromptHistoryShortcutController(this.database) {
+class ShortcutController extends ChangeNotifier {
+  ShortcutController(this.database, this.command) {
+    _state = ShortcutLoading(_defaultShortcut(command));
     ready = _operation = _restore();
   }
 
   final IsolateOwner database;
+  final DesktopShortcut command;
   final _lifetime = CancellationToken();
   late final Future<void> ready;
   Future<void>? _operation, _closing;
-  PromptHistoryShortcutState _state = const PromptHistoryShortcutLoading();
-  PromptHistoryShortcutState get state => _state;
+  late ShortcutState _state;
+  ShortcutState get state => _state;
 
-  void _set(PromptHistoryShortcutState next) {
+  void _set(ShortcutState next) {
     _state = _transition(_state, next);
     notifyListeners();
   }
@@ -116,23 +130,24 @@ class PromptHistoryShortcutController extends ChangeNotifier {
     try {
       final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: _lifetime));
       _lifetime.throwIfCancelled();
-      _set(PromptHistoryShortcutReady(_decode(saved['settings']?['prompt_history_shortcut'] as String?)));
+      final value = saved['settings']?[_settingKey(command)] as String?;
+      _set(ShortcutReady(value == null ? _defaultShortcut(command) : _decode(value)));
     } on CancelledException { /* Closing cancels the read. */ }
     catch (error) {
-      if (!_lifetime.isCancelled) _set(PromptHistoryShortcutFailed(null, error));
+      if (!_lifetime.isCancelled) _set(ShortcutFailed(_state.value, error));
     }
   }
 
   Future<void> choose(SingleActivator? shortcut) {
     _lifetime.throwIfCancelled();
-    if (_state is! PromptHistoryShortcutReady && _state is! PromptHistoryShortcutFailed) {
-      throw StateError('Prompt history shortcut is still updating');
+    if (_state is! ShortcutReady && _state is! ShortcutFailed) {
+      throw StateError('Shortcut is still updating');
     }
     if (shortcut != null) {
       final error = shortcutInputError(shortcut);
       if (error != null) throw ArgumentError(error);
     }
-    if (_state is PromptHistoryShortcutReady &&
+    if (_state is ShortcutReady &&
         (shortcut == null && _state.value == null || shortcut != null && _state.value != null && sameShortcut(shortcut, _state.value!))) {
       return Future.value();
     }
@@ -141,16 +156,16 @@ class PromptHistoryShortcutController extends ChangeNotifier {
 
   Future<void> _save(SingleActivator? shortcut) async {
     final previous = _state.value;
-    _set(PromptHistoryShortcutSaving(previous, shortcut));
+    _set(ShortcutSaving(previous, shortcut));
     try {
       await callIsolate(database.port, 'settings.set', {
-        'key': 'prompt_history_shortcut', 'value': _encode(shortcut),
+        'key': _settingKey(command), 'value': _encode(shortcut),
       }, cancellation: _lifetime);
       _lifetime.throwIfCancelled();
-      _set(PromptHistoryShortcutReady(shortcut));
+      _set(ShortcutReady(shortcut));
     } on CancelledException { /* A closed owner ignores stale completion. */ }
     catch (error) {
-      if (!_lifetime.isCancelled) _set(PromptHistoryShortcutFailed(previous, error));
+      if (!_lifetime.isCancelled) _set(ShortcutFailed(previous, error));
       rethrow;
     }
   }
@@ -158,8 +173,8 @@ class PromptHistoryShortcutController extends ChangeNotifier {
   Future<void> close() => _closing ??= _close();
 
   Future<void> _close() async {
-    final pending = _state is PromptHistoryShortcutLoading || _state is PromptHistoryShortcutSaving ? _operation : null;
-    _set(PromptHistoryShortcutClosed(_state.value));
+    final pending = _state is ShortcutLoading || _state is ShortcutSaving ? _operation : null;
+    _set(ShortcutClosed(_state.value));
     _lifetime.cancel();
     try { await pending; }
     catch (_) { /* The settings action reports write failures. */ }

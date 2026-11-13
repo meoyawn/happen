@@ -278,9 +278,12 @@ class DesktopSession extends ChangeNotifier {
   PinnedSidebarController? _pinnedSidebar;
   PinnedSidebarController get pinnedSidebar => sidebarOwner?.pinnedSidebar ??
     (_pinnedSidebar ??= PinnedSidebarController(database));
-  PromptHistoryShortcutController? _promptHistoryShortcut;
-  PromptHistoryShortcutController get promptHistoryShortcut => sidebarOwner?.promptHistoryShortcut ??
-    (_promptHistoryShortcut ??= PromptHistoryShortcutController(database));
+  ShortcutController? _promptHistoryShortcut;
+  ShortcutController get promptHistoryShortcut => sidebarOwner?.promptHistoryShortcut ??
+    (_promptHistoryShortcut ??= ShortcutController(database, DesktopShortcut.promptHistory));
+  ShortcutController? _machinePickerShortcut;
+  ShortcutController get machinePickerShortcut => sidebarOwner?.machinePickerShortcut ??
+    (_machinePickerShortcut ??= ShortcutController(database, DesktopShortcut.machinePicker));
   final projects = <Project>[];
   final sideChats = <String, DesktopTask>{};
   late final terminals = DesktopTerminals(client);
@@ -1507,6 +1510,7 @@ class DesktopSession extends ChangeNotifier {
     await appearance.ready;
     await pinnedSidebar.ready;
     await promptHistoryShortcut.ready;
+    await machinePickerShortcut.ready;
     deliveryMode = settings['delivery_mode'] == 'queue' ? 'queue' : 'steer';
     if (sidebarOwner == null) dictationMode = settings['dictation_mode'] == 'on_stop' ? 'on_stop' : 'live';
     projectAvatarStyle = settings['project_avatar_style'] == 'generated' ? 'generated' : 'letters';
@@ -2634,6 +2638,7 @@ class DesktopSession extends ChangeNotifier {
     await _appearance?.close();
     await _pinnedSidebar?.close();
     await _promptHistoryShortcut?.close();
+    await _machinePickerShortcut?.close();
     await Future.wait(_git.values.map((controller) => controller.close()));
     _git.clear();
     await Future.wait(_projectActions.values.map((controller) => controller.close()));

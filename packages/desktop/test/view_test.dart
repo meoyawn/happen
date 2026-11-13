@@ -9,6 +9,7 @@ import 'package:desktop/composer_text_controller.dart';
 import 'package:desktop/conversation.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/inline_reference.dart';
+import 'package:desktop/machines.dart';
 import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/settings_screen.dart';
@@ -52,12 +53,12 @@ void main() {
     directory = null;
   });
 
-  Future<void> open(WidgetTester tester) async {
+  Future<void> open(WidgetTester tester, {MachinesController? machines}) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session, machines: machines)));
     await tester.pumpAndSettle();
     // Settle the conversation's initial connection inventory before exercising
     // a composer command. Auth rendering has its own browser/lifecycle tests.
@@ -1706,10 +1707,11 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-  testWidgets('Prompt history stays in command search and its recorded shortcut persists', (tester) async {
+  testWidgets('Prompt history and machine picker shortcuts persist and work from the composer', (tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
     late IsolateOwner database;
+    late MachinesController machines;
     await tester.runAsync(() async {
       directory = await Directory.systemTemp.createTemp('desktop-history-shortcut-');
       database = await openDesktopDatabase(directory!.path);
@@ -1723,18 +1725,23 @@ void main() {
       session = DesktopSession(client, database)
         ..providers = previous.providers..projects.add(project)..project = project..task = task;
       await session.promptHistoryShortcut.ready;
+      await session.machinePickerShortcut.ready;
+      machines = MachinesController(session, directory!.path);
+      await machines.refresh();
     });
     try {
       session.task!.messages['prompt'] = {'id': 'prompt', 'type': 'userMessage', 'order': 1,
         'content': [{'type': 'text', 'text': 'A previous prompt'}]};
-      await open(tester);
+      await open(tester, machines: machines);
       final editor = tester.widget<ComposerEditor>(find.byType(ComposerEditor));
       editor.controller.text = 'Unsent draft';
       await tester.pump();
-      Future<void> chord(LogicalKeyboardKey key, {bool command = false, bool control = false}) async {
+      Future<void> chord(LogicalKeyboardKey key, {bool command = false, bool control = false, bool option = false}) async {
         if (command) await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
         if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        if (option) await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
         await tester.runAsync(() => tester.sendKeyEvent(key));
+        if (option) await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
         if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
         if (command) await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
         await tester.pumpAndSettle();
@@ -1745,13 +1752,14 @@ void main() {
         await tester.tap(find.widgetWithText(TextButton, 'Shortcuts'));
         await tester.pumpAndSettle();
       }
-      Future<void> commit() async {
-        for (var attempt = 0; session.promptHistoryShortcut.state is PromptHistoryShortcutSaving && attempt < 100; attempt++) {
+      Future<void> commit([ShortcutController? preference]) async {
+        final controller = preference ?? session.promptHistoryShortcut;
+        for (var attempt = 0; controller.state is ShortcutSaving && attempt < 100; attempt++) {
           await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
           await tester.pump();
         }
         await tester.pumpAndSettle();
-        expect(session.promptHistoryShortcut.state, isA<PromptHistoryShortcutReady>());
+        expect(controller.state, isA<ShortcutReady>());
         expect(session.error, isNull);
       }
       await chord(LogicalKeyboardKey.keyK, command: true);
@@ -1774,11 +1782,14 @@ void main() {
       expect(find.byType(DesktopSettingsScreen), findsOneWidget);
       expect(session.promptHistoryShortcut.state.value, isNull);
       await tester.tap(find.text('Record shortcut'));
+      await chord(LogicalKeyboardKey.keyM, option: true);
+      expect(find.text('This shortcut is already in use. Choose another combination.'), findsOneWidget,
+        reason: 'Prompt history cannot take the machine picker shortcut');
       await chord(LogicalKeyboardKey.keyR, control: true);
       await commit();
       expect(find.text('⌃ R'), findsOneWidget);
       await tester.runAsync(() async {
-        final restored = PromptHistoryShortcutController(database);
+        final restored = ShortcutController(database, DesktopShortcut.promptHistory);
         try {
           await restored.ready;
           expect(restored.state.value!.trigger, LogicalKeyboardKey.keyR);
@@ -1797,7 +1808,7 @@ void main() {
       expect(find.text('Prompt history'), findsNothing);
 
       await openShortcuts();
-      await tester.runAsync(() => tester.tap(find.text('Clear')));
+      await tester.runAsync(() => tester.tap(find.text('Clear').last));
       await commit();
       expect(find.text('Record shortcut'), findsOneWidget);
       expect(session.promptHistoryShortcut.state.value, isNull);
@@ -1807,9 +1818,71 @@ void main() {
       expect(find.text('Prompt history'), findsNothing);
       await chord(LogicalKeyboardKey.keyK, command: true);
       expect(find.text('Prompt history'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      await chord(LogicalKeyboardKey.keyM, option: true);
+      expect(find.text('Run on'), findsNothing, reason: 'Machine picking is only available for a new session');
+      await tester.runAsync(() async { session.newSession(); });
+      await tester.pump();
+      for (final inventory in client.inventories) {
+        if (!inventory.reply.isCompleted) inventory.reply.complete({'servers': <Object?>[]});
+      }
+      client.inventories.clear();
+      await tester.pumpAndSettle();
+      final draftEditor = tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+      draftEditor.controller.text = 'Keep this draft';
+      draftEditor.focusNode.requestFocus();
+      await tester.pumpAndSettle();
+      await chord(LogicalKeyboardKey.keyM, option: true);
+      expect(find.text('Run on'), findsOneWidget);
+      expect(draftEditor.controller.text, 'Keep this draft');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('Run on'), findsNothing);
+
+      await openShortcuts();
+      await tester.tap(find.text('⌥ M'));
+      await chord(LogicalKeyboardKey.keyM, control: true);
+      await commit(session.machinePickerShortcut);
+      expect(find.text('⌃ M'), findsOneWidget);
+      await tester.runAsync(() async {
+        final restored = ShortcutController(database, DesktopShortcut.machinePicker);
+        try {
+          await restored.ready;
+          expect(restored.state.value!.trigger, LogicalKeyboardKey.keyM);
+          expect(restored.state.value!.control, isTrue);
+          expect(restored.state.value!.meta, isFalse);
+        } finally { await restored.close(); }
+      });
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      draftEditor.focusNode.requestFocus();
+      await tester.pumpAndSettle();
+      await chord(LogicalKeyboardKey.keyM, option: true);
+      expect(find.text('Run on'), findsNothing);
+      await chord(LogicalKeyboardKey.keyM, control: true);
+      expect(find.text('Run on'), findsOneWidget);
+      expect(draftEditor.controller.text, 'Keep this draft');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      await openShortcuts();
+      await tester.runAsync(() => tester.tap(find.text('Clear')));
+      await commit(session.machinePickerShortcut);
+      await tester.runAsync(() async {
+        final restored = ShortcutController(database, DesktopShortcut.machinePicker);
+        try { await restored.ready; expect(restored.state.value, isNull); }
+        finally { await restored.close(); }
+      });
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      await chord(LogicalKeyboardKey.keyM, control: true);
+      expect(find.text('Run on'), findsNothing);
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.runAsync(() async {
+        await machines.close();
         await session.close();
         sessionClosed = true;
       });
@@ -2004,6 +2077,9 @@ class _Client implements AgentClient {
     inspectedPaths.add(path);
     return {'available': false};
   }
+  @override Future<Json> discoverWorkspaces({required List<String> paths, String? repository,
+    String subdirectory = '', List<String> subdirectories = const [], required CancellationToken cancellation}) async =>
+    {'checkouts': <Object?>[], 'truncated': false};
   final sent = <Json>[];
   final restored = <String>[];
   final cancelled = <String>[];
@@ -2033,6 +2109,7 @@ class _Client implements AgentClient {
     jsonObject(await request(method, params));
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'client.capabilities') return null;
+    if (method == 'thread/list') return {'data': <Object?>[], 'nextCursor': null};
     if (method == 'session.list') return {'data': <Object?>[], 'cursor': <String, Object?>{}};
     if (method == 'session.active') return {'data': <String, Object?>{}};
     if (method == 'providers.list') return {'providers': providers, 'default_provider': 'openai'};

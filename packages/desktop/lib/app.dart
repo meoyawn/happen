@@ -69,6 +69,7 @@ class _DesktopViewState extends State<DesktopView> {
   String? _nativeLayout;
   final _sessionSearchFocus = FocusNode();
   final _projectMenu = MenuController();
+  late final _machineMenu = MenuController();
   double? _dragSidebarWidth;
   final _composer = GlobalKey<_ComposerState>();
   final _conversationPaneKey = GlobalKey();
@@ -88,7 +89,7 @@ class _DesktopViewState extends State<DesktopView> {
     _syncWindowChrome();
   }
 
-  Listenable get _viewChanges => Listenable.merge([session, session.promptHistoryShortcut, _windowChrome,
+  Listenable get _viewChanges => Listenable.merge([session, session.promptHistoryShortcut, session.machinePickerShortcut, _windowChrome,
     if (_homeOpen || session.task == null) widget.machines]);
   double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
 
@@ -382,6 +383,13 @@ class _DesktopViewState extends State<DesktopView> {
       _openPromptHistory();
       return KeyEventResult.handled;
     }
+    final machineShortcut = session.machinePickerShortcut.state.value;
+    if (!terminalHasFocus && !_homeOpen && session.task == null && session.currentDraft.submission == null &&
+        !_picking && !session.submitting && !session.pullingCheckout &&
+        machineShortcut?.accepts(event, keyboard) == true) {
+      if (_machineMenu.isOpen) { _machineMenu.close(); } else { _machineMenu.open(); }
+      return KeyEventResult.handled;
+    }
     if (!(mac ? keyboard.isMetaPressed : keyboard.isControlPressed) && !keyboard.isAltPressed) return KeyEventResult.ignored;
     if (const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true).accepts(event, keyboard)) {
       _selectAdjacentTask(-1);
@@ -457,7 +465,7 @@ class _DesktopViewState extends State<DesktopView> {
     };
   }
 
-  String? _shortcutError(SingleActivator shortcut) {
+  String? _shortcutError(DesktopShortcut command, SingleActivator shortcut) {
     final reserved = [
       ..._workspaceBindings(includeUnavailable: true).keys,
       const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true),
@@ -468,6 +476,10 @@ class _DesktopViewState extends State<DesktopView> {
           control: defaultTargetPlatform != TargetPlatform.macOS),
       const SingleActivator(LogicalKeyboardKey.enter, meta: true),
       const SingleActivator(LogicalKeyboardKey.enter, control: true),
+      if (command != DesktopShortcut.machinePicker)
+        ?session.machinePickerShortcut.state.value,
+      if (command != DesktopShortcut.promptHistory)
+        ?session.promptHistoryShortcut.state.value,
     ];
     if (reserved.any((binding) => sameShortcut(binding, shortcut))) {
       return 'This shortcut is already in use. Choose another combination.';
@@ -723,7 +735,7 @@ class _DesktopViewState extends State<DesktopView> {
                 child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, sources: _sources, picking: _picking,
-                    machinePicker: ThreadMachinePicker(machines: widget.machines, session: session),
+                    machinePicker: ThreadMachinePicker(machines: widget.machines, session: session, machineMenuController: _machineMenu),
                     projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
                     onRemoveProject: (project) => unawaited(_run(() => _removeProject(project))),

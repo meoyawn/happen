@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'appearance.dart';
 import 'checkout_pull.dart';
+import 'desktop_menu.dart';
 import 'session.dart';
 import 'project_avatar.dart';
 
@@ -30,7 +31,7 @@ class NewSessionScreen extends StatelessWidget {
       final narrow = bounds.maxWidth < 600;
       final heading = TextStyle(fontSize: narrow ? 24 : 30, height: 1.25,
         fontWeight: FontWeight.w400, letterSpacing: -.9, color: desktopForeground);
-      final projectSelector = MenuAnchor(
+      final projectSelector = DesktopMenuAnchor(
         controller: projectMenuController,
         onClose: onReturnFocus,
         style: MenuStyle(padding: const WidgetStatePropertyAll(EdgeInsets.zero),
@@ -45,7 +46,8 @@ class NewSessionScreen extends StatelessWidget {
           onSelect: (project) { MenuController.maybeOf(context)?.close(); onSelect(project); },
           onRemove: (project) { MenuController.maybeOf(context)?.close(); onRemoveProject(project); },
           onAdd: () { MenuController.maybeOf(context)?.close(); onAddProject(); }))],
-        builder: (context, controller, _) => Tooltip(message: 'Select project', child: TextButton(
+        builder: (context, controller, focus) => Tooltip(message: 'Select project', child: TextButton(
+          focusNode: focus,
           onPressed: picking || session.submitting ? null : hasProjects
             ? () => controller.isOpen ? controller.close() : controller.open() : onAddProject,
           style: TextButton.styleFrom(foregroundColor: desktopForeground, padding: const EdgeInsets.symmetric(horizontal: 2),

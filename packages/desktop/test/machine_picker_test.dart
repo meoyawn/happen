@@ -6,6 +6,7 @@ import 'package:desktop/machines.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/thread_machine_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
@@ -43,6 +44,19 @@ void main() {
       expect(find.text('Worktree · feature'), findsOneWidget);
       expect((client.inspections, client.discoveries), before,
         reason: 'Opening the checkout dropdown must not fetch locations');
+      if (opening == 0) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+        expect(find.ancestor(of: find.text('Current checkout · main'), matching: find.byType(MenuItemButton)),
+          _containsKeyboardFocus());
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+        expect(find.ancestor(of: find.text('Worktree · feature'), matching: find.byType(MenuItemButton)),
+          _containsKeyboardFocus());
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(find.text('Worktree · feature'), findsNothing);
+      }
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
       await tester.tap(find.text('local'));
@@ -50,6 +64,16 @@ void main() {
       expect(find.text('Run on'), findsOneWidget);
       expect((client.inspections, client.discoveries), before,
         reason: 'Opening the machine dropdown must not fetch or connect');
+      if (opening == 0) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.text('Run on'), findsNothing);
+        expect(find.text('Worktree · feature'), findsOneWidget,
+          reason: 'Down and Enter choose the machine and open its workspace choices');
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+      }
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
     }
@@ -57,6 +81,10 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }
+
+Matcher _containsKeyboardFocus() => predicate<Finder>((finder) => FocusManager.instance.primaryFocus?.context
+  ?.findAncestorWidgetOfExactType<MenuItemButton>() == finder.evaluate().single.widget,
+  'contains the keyboard focus');
 
 Json _checkout(String path, String branch, bool worktree) => {
   'available': true, 'path': path, 'repository': 'example/repo',
