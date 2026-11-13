@@ -70,6 +70,7 @@ extension _SideChats on AgentServer {
   }
 
   Future<_Task> _forkSide(_Task parent, String prompt, CancellationToken cancellation) async {
+    cancellation = cancellation.merge(_threadLifetime(parent.id).cancellation);
     if (parent.busy && parent.writer == null) await parent.ready?.future.asCancellable(cancellation);
     if (parent.finishing) await parent.running?.asCancellable(cancellation);
     final snapshot = jsonObject(await traceAsync('session.fork.snapshot', () =>
@@ -137,37 +138,9 @@ extension _SideChats on AgentServer {
 
   Future<void> _disposeSide(_Task task) async {
     task.disposing = true;
-    task.unloadTimer?.cancel();
-    task.cancelled = true;
-    try {
-      if (task.busy && task.agent == null) await task.ready?.future;
-      task.codeInterrupt?.interrupt();
-      if (task.agent case final agent?) await callIsolate(agent.port, 'cancel', {});
-      await task.running;
-      while (task.maintenance) { await task.maintenanceDone!.future; }
-      await _taskTools.release(task.id);
-      _clientTools.archive(task.id);
-      if (!_networkExited) await callIsolate(network.port, 'agents.forget', {'task_id': task.id});
-    } finally {
-      try {
-        try {
-          await task.agent?.close();
-          task.agent = null;
-        } finally {
-          await traceAsync('session.side.store.close', () async { await task.memoryStore?.close(); });
-        }
-        traceInstant('session.side.disposed', attributes: {
-          'store.stopped': true, 'agent.stopped': task.agent == null,
-        });
-      } finally {
-        _broadcast(task.id, {'type': 'side.closed', 'data': {'parentID': task.sideParentID}});
-        _tasks.remove(task.id);
-        for (final client in _clients) {
-          client.subscriptions.remove(task.id);
-          client.sideCreations.removeWhere((_, id) => id == task.id);
-        }
-        _activity.add(activeTaskCount);
-      }
-    }
+    final lifecycle = _threadLifetime(task.id);
+    lifecycle.cancellation.cancel();
+    await lifecycle.released;
+    traceInstant('session.side.disposed', attributes: {'store.stopped': true, 'agent.stopped': task.agent == null});
   }
 }

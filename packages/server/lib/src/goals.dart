@@ -48,7 +48,7 @@ extension _Goals on AgentServer {
     if (runtime == null || task == null || _closing || task.busy || task.maintenance || task.cancelled ||
         task.disposing || task.pending.isNotEmpty || task.goalContinuation != null) return;
     final cancellation = task.goalContinuation = CancellationToken();
-    try { await runtime.call('continuation', {}, cancellation: cancellation.merge(_lifetime)); }
+    try { await runtime.call('continuation', {}, cancellation: cancellation.merge(_threadLifetime(id).cancellation).merge(_lifetime)); }
     on CancelledException { /* Shutdown/maintenance never admits more work. */ }
     catch (error) { traceError(error); }
     finally { if (identical(task.goalContinuation, cancellation)) task.goalContinuation = null; cancellation.cancel(); }

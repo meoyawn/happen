@@ -21,17 +21,17 @@ String _threadNameUserText(Json item) {
 extension _ThreadNames on AgentServer {
   void _startThreadName(String id) {
     if (_closing || _tasks[id]?.sideParentID != null || _tasks[id]?.config?['ephemeral'] == true ||
-        _namingThreads.contains(id)) {
+        _namingThreads.containsKey(id)) {
       return;
     }
-    _namingThreads.add(id);
-    final generation = _generateThreadName(id, _lifetime);
+    final generation = _generateThreadName(id, _threadLifetime(id).cancellation.merge(_lifetime));
+    _namingThreads[id] = generation;
     _requests.add(generation);
     unawaited(generation.catchError((Object error) {
       if (error is! CancelledException) traceError(error);
     }).whenComplete(() {
       _requests.remove(generation);
-      _namingThreads.remove(id);
+      unawaited(_namingThreads.remove(id));
     }));
   }
 

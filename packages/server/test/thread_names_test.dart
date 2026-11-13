@@ -132,6 +132,26 @@ void main() {
     expect(requests, hasLength(1));
   });
 
+  test('archive cancels title generation and rejects its late result', () async {
+    hold = true;
+    final completed = client.events.stream.firstWhere((event) =>
+      event['method'] == 'turn/completed' && event['params']['threadId'] == 'saved');
+    await client.request('turn/start', {'threadId': 'saved',
+      'input': [{'type': 'text', 'text': 'Fix the sidebar thread title'}]});
+    await arrived.future.timeout(const Duration(seconds: 10));
+    await completed.timeout(const Duration(seconds: 10));
+    final renamed = observer.events.stream.firstWhere((event) =>
+      event['method'] == 'thread/name/updated' && event['params']['threadId'] == 'saved');
+    final lateResult = expectLater(renamed.timeout(const Duration(seconds: 1)), throwsA(isA<TimeoutException>()));
+    await client.request('thread/archive', {'threadId': 'saved'});
+    expect(await File('${root.path}/tasks/saved/history.sqlite-wal').exists(), false);
+    release.complete();
+    await lateResult;
+    final archived = await read();
+    expect(archived['thread']['name'], isNull);
+    expect(archived['thread']['status'], {'type': 'notLoaded'});
+  });
+
   test('the persistence owner preserves a manual name over a late automatic result', () async {
     await observer.request('thread/name/set', {'threadId': 'saved', 'name': 'My chosen thread name'});
     final store = TaskStore(root.path, 'saved', create: false);

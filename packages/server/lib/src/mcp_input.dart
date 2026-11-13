@@ -21,16 +21,18 @@ extension _McpInputs on AgentServer {
     final operation = requiredString(message, 'operation_id'), id = requiredString(params, 'request_id');
     final token = CancellationToken(); _mcpOperations[operation] = token;
     final owner = params['owner'] as String?, threadId = params['threadId'] as String?;
+    final cancellation = token.merge(_lifetime);
+    final threadCancellation = threadId == null ? cancellation : cancellation.merge(_threadLifetime(threadId).cancellation);
     final clients = _clients.where((c) => c.mcpInputs && !c.cancellation.isCancelled &&
       (owner != null ? c.id == owner : threadId != null && c.subscriptions.contains(threadId))).toList();
     try {
+      threadCancellation.throwIfCancelled();
       if (_closing || _mcpInputs.length >= 256 || clients.isEmpty || _mcpInputs.containsKey(id)) throw StateError('No capable MCP input client is available');
       final answer = Completer<Json>(), request = <String, dynamic>{'request_id': id, 'source': params['source'],
         'request': jsonObject(params['request']), if (threadId != null) 'threadId': threadId};
       _mcpInputs[id] = (request: request, answer: answer, owner: owner, threadId: threadId);
       for (final client in clients) { client.event({'method': 'mcp.input.requested', 'params': request}); }
-      final cancellation = token.merge(_lifetime);
-      final result = await answer.future.asCancellable(owner == null ? cancellation : cancellation.merge(clients.single.cancellation));
+      final result = await answer.future.asCancellable(owner == null ? threadCancellation : threadCancellation.merge(clients.single.cancellation));
       reply.send({'result': result});
     } catch (error) {
       reply.send({'error': 'MCP input ended without an available caller response', if (error is CancelledException) 'code': 'cancelled'});

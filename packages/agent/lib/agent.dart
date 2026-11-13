@@ -26,6 +26,7 @@ Future<IsolateOwner> startAgent({
   required SendPort taskTools,
   required SendPort questions,
   required int codeInterrupt,
+  CancellationToken? cancellation,
 }) => IsolateOwner.start(_agentMain, {
   ...config,
   'task_id': taskId,
@@ -36,7 +37,7 @@ Future<IsolateOwner> startAgent({
   'task_tools': taskTools,
   'questions': questions,
   'code_interrupt': codeInterrupt,
-}, service: 'agent');
+}, service: 'agent', cancellation: cancellation);
 
 Future<void> _agentMain(List<Object?> args) async {
   final actor = _Agent(jsonObject(args[1]));

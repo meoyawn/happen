@@ -86,7 +86,8 @@ void main() {
     expect(calls.where((c) => c['method'] == 'resources/read'), hasLength(1));
   });
 
-  test('agent-owned inputs stay with their thread; Stop cancels only that invocation', () async {
+  for (final archive in [false, true]) {
+  test('agent-owned inputs stay with their thread; ${archive ? 'archive' : 'Stop'} cancels only that invocation', () async {
     final first = await client(), second = await client();
     final aThread = jsonObject(await first.request('thread/start', {'cwd': root.path}))['thread']['id'] as String;
     final bThread = jsonObject(await second.request('thread/start', {'cwd': root.path}))['thread']['id'] as String;
@@ -99,13 +100,35 @@ void main() {
       final b = agentRead(bThread, 'memo://agent-second'); unawaited(b.then<void>((_) {}, onError: (Object _) {})); final bi = await input(second, b);
       expect(ai['threadId'], aThread); expect(bi['threadId'], bThread);
       await expectLater(first.request('mcp.input.reply', {'request_id': bi['request_id'], 'response': {'action': 'accept'}}), throwsStateError);
-      await callIsolate(server.network.port, 'cancel', {'task_id': aThread}, cancellation: lifetime);
-      await expectLater(a, throwsA(isA<CancelledException>()));
+      if (archive) await first.request('thread/archive', {'threadId': aThread});
+      else await callIsolate(server.network.port, 'cancel', {'task_id': aThread}, cancellation: lifetime);
+      await expectLater(a.timeout(const Duration(seconds: 2)), throwsA(isA<CancelledException>()));
+      if (archive) {
+        expect(jsonObject(await first.request('thread/loaded/list'))['data'], isNot(contains(aThread)));
+        expect(await File('${root.path}/tasks/$aThread/history.sqlite-wal').exists(), false,
+          reason: 'Archiving must close the SQLite writer before acknowledging completion.');
+        await expectLater(first.request('thread/resume', {'threadId': aThread}), throwsStateError);
+        await first.request('thread/archive', {'threadId': aThread});
+        expect(await File('${root.path}/tasks/$aThread/history.sqlite-wal').exists(), false,
+          reason: 'Repeated archive must also release its temporary writer.');
+      }
       await second.request('mcp.input.reply', {'request_id': bi['request_id'], 'response': {'action': 'accept', 'content': {'answer': 'agent-second'}}});
       expect((await b)['contents'].single['text'], 'agent-second');
       expect(jsonObject(await first.request('thread/read', {'threadId': aThread, 'includeTurns': true}))['thread']['turns'], isEmpty);
       expect(jsonObject(await second.request('thread/read', {'threadId': bThread, 'includeTurns': true}))['thread']['turns'], isEmpty);
       expect(server.activeTaskCount, 0, reason: 'Transport input is not a model/history injection.');
+      if (archive) {
+        await first.request('thread/unarchive', {'threadId': aThread});
+        await first.request('thread/resume', {'threadId': aThread});
+        final resumed = agentRead(aThread, 'memo://restored');
+        unawaited(resumed.then<void>((_) {}, onError: (Object _) {}));
+        final prompt = await input(first, resumed);
+        await first.request('mcp.input.reply', {'request_id': prompt['request_id'],
+          'response': {'action': 'accept', 'content': {'answer': 'restored'}}});
+        expect((await resumed)['contents'].single['text'], 'restored',
+          reason: 'Unarchive must create a fresh lifetime for the same thread.');
+      }
     } finally { lifetime.cancel(); }
   });
+  }
 }

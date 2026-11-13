@@ -593,10 +593,10 @@ Future<void> _networkMain(List<Object?> args) async {
             result = mcp.subscriptions(requiredString(params, 'owner'));
           case 'mcp.detach':
             final owner = requiredString(params, 'owner');
-            for (final token
-                in active['client:$owner']?.values.toList() ??
-                    <CancellationToken>[]) {
-              if (!identical(token, cancellation)) token.cancel();
+            for (final key in ['client:$owner', if (owner.startsWith('thread:')) owner.substring(7)]) {
+              for (final token in active[key]?.values.toList() ?? <CancellationToken>[]) {
+                if (!identical(token, cancellation)) token.cancel();
+              }
             }
             await mcp.detach(owner, persist: params['persist'] != false);
             result = null;

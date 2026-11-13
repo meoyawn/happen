@@ -71,7 +71,8 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
-  late final _namingThreads = <String>{};
+  late final _namingThreads = <String, Future<void>>{};
+  late final _threadLifetimes = <String, ({CancellationToken cancellation, Future<void> released})>{};
   late final _gitActions = <String, String>{};
   final _sideForks = <String, Future<_Task>>{};
   final _goals = <String, GoalRuntime>{};
@@ -639,11 +640,14 @@ class AgentServer {
   }
 
   Future<Object?> _dispatchPrepared(String method, Json params, _Client client, Object requestId, String receivedAt, String identityKey) async {
-    final cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
+    var cancellation = client.sessionReads[requestId]?.merge(client.cancellation) ?? client.cancellation;
     if (method == 'mcp.input.list') return _listMcpInputs(client, params['threadId'] as String?);
     if (method == 'mcp.input.reply') { _replyMcpInput(client, params); return null; }
     if (method.startsWith('mcp.') && params['threadId'] != null) {
       final id = requiredString(params, 'threadId'); validateTaskId(id);
+      if (method == 'mcp.events.subscribe' || method == 'mcp.request') {
+        cancellation = cancellation.merge(_threadLifetime(id).cancellation);
+      }
       final page = await _readSession(_tasks[id] ?? _Task(id, null), 'thread/read', {'includeTurns': false}, cancellation);
       params = {...params, 'task_id': id, 'cwd': page['thread']['cwd']};
     }
@@ -695,7 +699,7 @@ class AgentServer {
       return _callNetwork(method, {
         ...params,
         'owner': owner,
-      }, cancellation: client.cancellation);
+      }, cancellation: cancellation);
     }
     switch (method) {
       case 'client.capabilities':
@@ -1227,59 +1231,44 @@ class AgentServer {
     task.goalContinuation?.cancel();
     task.maintenance = true;
     final settled = task.maintenanceDone = Completer<void>();
+    final committed = archived ? task.archiveCommit = Completer<void>() : null;
     _tasks[task.id] = task;
-    IsolateOwner? writer;
+    if (archived && _threadLifetimes[task.id]?.cancellation.isCancelled == true) _threadLifetimes.remove(task.id);
+    final lifecycle = _threadLifetime(task.id);
+    if (archived) lifecycle.cancellation.cancel();
     String? archivedAt;
     try {
-      if (task.busy) {
-        task.cancelled = true;
-        task.codeInterrupt?.interrupt();
-        if (task.agent != null) await callIsolate(task.agent!.port, 'cancel', {});
-        await task.running;
-      }
+      await task.running;
+      if (task.writerRequests > 0) await (task.writerDrained ??= Completer<void>()).future.asCancellable(_lifetime);
       _lifetime.throwIfCancelled();
-      if (archived) {
-        for (final side in _tasks.values.where((side) => side.sideParentID == task.id).toList()) {
-          await _closeSide(side);
-        }
-      }
-      writer = task.memoryStore ?? task.writer ?? await _startStore(task.id, create: false);
+      final writer = task.writer ??= task.memoryStore ?? await _startStore(task.id, create: false);
       if (archived) await _discardPending(task, 'archived', writer: writer);
       final event = jsonObject(await callIsolate(writer.port, 'archive', {'archived': archived}, cancellation: _lifetime));
       archivedAt = jsonObject(event['data'])['archived_at'] as String?;
-      // Publish the committed membership change before draining resources. MCP
-      // initialization or remote cleanup must not hold the archive UI open.
       _broadcast(task.id, event);
       if (archived) {
         _setMcpSubscriptions(task.id, {});
         final index = await _serverStore;
         await callIsolate(index.port, 'mcp.forget', {'threadId': task.id}, cancellation: _lifetime);
-        _goals.remove(task.id);
-        _clientTools.archive(task.id);
-        for (final client in _clients) {
-          client.subscriptions.remove(task.id);
-          client.observations.remove(task.id);
-          client.contextSnapshots.removeWhere((_, snapshot) => snapshot['sessionID'] == task.id);
-          client.sessionTraces.remove(task.id);
-        }
-        await _taskTools.release(task.id);
-        await callIsolate(network.port, 'agents.forget', {'task_id': task.id}, cancellation: _lifetime);
-        // Archive already cleared desired subscriptions in its own commit. Do
-        // not start a second writer operation while holding maintenance here.
-        await callIsolate(network.port, 'mcp.detach', {'owner': 'thread:${task.id}', 'persist': false}, cancellation: _lifetime);
+      } else if (lifecycle.cancellation.isCancelled) {
+        // Restoring durable data admits a fresh lifetime. Old completions keep
+        // the cancelled token and cannot act on the restored thread.
+        _threadLifetimes.remove(task.id);
       }
     } finally {
-      try { await writer?.close(); if (task.writer == writer) task.writer = null; }
-      finally {
+      try {
         if (archived) {
-          task.loaded = false;
-          if (identical(task.memoryStore, writer)) task.memoryStore = null;
-          task.unloadTimer?.cancel(); task.unloadTimer = null;
+          committed!.complete();
+          await lifecycle.released;
+        } else {
+          await task.writer?.close(); task.writer = null;
         }
+      } finally {
+        task.archiveCommit = null;
         task.maintenance = false;
         task.maintenanceDone = null;
         settled.complete();
-        _forgetIdle(task);
+        if (!archived) _forgetIdle(task);
       }
     }
     return archivedAt;
@@ -1397,6 +1386,7 @@ class AgentServer {
     Json settings = const {},
   }) {
     _lifetime.throwIfCancelled();
+    _threadLifetime(task.id).cancellation.throwIfCancelled();
     if (task.disposing) throw StateError('Side chat is closing');
     if (task.busy || task.maintenance) throw StateError('Task is busy');
     if (!compact && !retry && settings['goalContinuation'] != true && prompt.isEmpty && (settings['attachments'] as List? ?? []).isEmpty) {
@@ -1447,12 +1437,14 @@ class AgentServer {
     // Stop/archive/shutdown cancel the agent through its mailbox. Observe until
     // it commits its terminal event, regardless of the turn's total duration.
     final turnLifetime = CancellationToken();
+    final threadCancellation = _threadLifetime(task.id).cancellation;
+    final startup = turnLifetime.merge(threadCancellation).merge(_lifetime);
+    final stop = CancellationHook(threadCancellation, () {
+      task.cancelled = true;
+      task.codeInterrupt?.interrupt();
+      task.agent?.port.send({'method': 'cancel', 'params': <String, Object?>{}});
+    });
     try {
-      task.turnNetwork = await _acquireNetwork(turnLifetime.merge(_lifetime));
-      task.turnCancellation = turnLifetime;
-      if (_networkExited || !identical(network, task.turnNetwork)) {
-        throw const RemoteFailure('The local chat service stopped before the turn started', code: 'network_unavailable');
-      }
       task.writer ??= task.memoryStore ?? await _startStore(
         task.id,
         create: task.config != null,
@@ -1474,18 +1466,24 @@ class AgentServer {
         _broadcast(task.id, created);
       }
       if (await callIsolate(task.writer!.port, 'metadata', {'key': 'archived_at'}) != null) {
+        task.loaded = false;
         throw StateError('Restore this task before sending another message');
       }
       task.config ??= jsonObject(
         await callIsolate(task.writer!.port, 'metadata', {'key': 'config'}),
       );
+      task.turnNetwork = await _acquireNetwork(startup);
+      task.turnCancellation = turnLifetime;
+      if (_networkExited || !identical(network, task.turnNetwork)) {
+        throw const RemoteFailure('The local chat service stopped before the turn started', code: 'network_unavailable');
+      }
       if (task.pending.isEmpty) {
-        await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: turnLifetime);
-        final inbox = await _readSession(task, 'session.inbox', {}, turnLifetime);
+        await callIsolate(task.writer!.port, 'session.prepare', {}, cancellation: startup);
+        final inbox = await _readSession(task, 'session.inbox', {}, startup);
         task.pending.addAll((inbox['data'] as List).map(jsonObject));
       }
       final receipts = (await callIsolate(task.writer!.port, 'metadata', {'key': 'mcp_event_receipts'},
-        cancellation: turnLifetime) as List? ?? []).cast<String>().toSet();
+        cancellation: startup) as List? ?? []).cast<String>().toSet();
       task.mcpInputs.addAll(task.pending.map((message) => message['id'] as String).where(receipts.contains));
       if (!compact && !retry && settings['goalContinuation'] != true && !task.pending.any((message) => message['id'] == settings['message_id'])) {
         final message = <String, dynamic>{
@@ -1496,14 +1494,14 @@ class AgentServer {
         };
         final admitted = jsonObject(await callIsolate(task.writer!.port, 'append', {
           'type': 'input.pending', 'data': message,
-        }, cancellation: turnLifetime));
+        }, cancellation: startup));
         task.pending.add(message);
         _broadcast(task.id, admitted);
       }
       if (!compact) _startThreadName(task.id);
       for (final record in await _taskTools.prepare(task.id, task.config!['tool_interface'] as String,
         settings['cwd'] as String? ?? task.config!['cwd'] as String, task.writer!.port,
-        cancellation: turnLifetime)) {
+        cancellation: startup)) {
         _broadcast(task.id, record);
       }
       task.codeInterrupt = CodeInterrupt();
@@ -1517,6 +1515,7 @@ class AgentServer {
         taskTools: _taskTools.port,
         questions: _questions.port,
         codeInterrupt: task.codeInterrupt!.address,
+        cancellation: startup,
       );
       task.ready!.complete();
       if (task.cancelled) {
@@ -1565,18 +1564,19 @@ class AgentServer {
       traceError(error);
       terminal = {
         'task_id': task.id,
-        'type': 'turn.failed',
+        'type': task.cancelled ? 'turn.cancelled' : 'turn.failed',
         'data': {'error': error.toString()},
       };
       if (!_closing && task.writer != null) {
         try {
           terminal = jsonObject(await callIsolate(task.writer!.port, 'append', {
-            'type': 'turn.failed', 'data': terminal!['data'],
+            'type': terminal!['type'], 'data': terminal!['data'],
           }, cancellation: turnLifetime));
         } catch (_) { /* A failed persistence owner still permits a live terminal notification. */ }
       }
     } finally {
       task.finishing = true;
+      stop.dispose();
       turnLifetime.cancel();
       if (!task.ready!.isCompleted) task.ready!.complete();
       if (task.writerRequests > 0) {
@@ -1779,6 +1779,8 @@ class AgentServer {
     await Future.wait(_tasks.values.where((task) => task.memoryStore != null)
       .map((task) => task.memoryStore!.close()));
     _tasks.clear();
+    await Future.wait(_threadLifetimes.values.map((lifecycle) => lifecycle.released.catchError((Object error) { traceError(error); })));
+    _threadLifetimes.clear();
     _goals.clear();
     await _goalSubscription?.cancel();
     _goalRequests.close();
@@ -1840,6 +1842,7 @@ class _Task {
   CodeInterrupt? codeInterrupt;
   Future<void>? running;
   Completer<void>? backgroundMaintenance;
+  Completer<void>? archiveCommit;
   Completer<void>? maintenanceDone, writerDrained;
   int writerRequests = 0;
   int eventAdmissions = 0;

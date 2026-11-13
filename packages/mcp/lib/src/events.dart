@@ -175,6 +175,7 @@ class McpEventSubscription {
   }
 
   Future<void> _event(Json params, CancellationToken cancellation, {bool poll = false, bool batchEnd = false, String? batchCursor}) async {
+    cancellation.throwIfCancelled();
     if (state != 'active') {
       throw const McpFailure('MCP event arrived before activation');
     }
@@ -198,6 +199,7 @@ class McpEventSubscription {
     if (_delivering.length >= 32) throw const McpFailure('MCP event delivery backlog is full', status: 503);
     final delivery = () async {
       await acceptEvent?.call(params, {...toSnapshot(), 'cursor': nextCursor}, cancellation);
+      cancellation.throwIfCancelled();
       _seen.add(key);
       if (_seen.length > 2048) _seen.remove(_seen.first);
       _emit('notifications/events/event', params);
@@ -340,6 +342,7 @@ class McpEventSubscription {
         activation.cancel();
         liveness?.cancel();
         attempt.cancel();
+        await notifications;
       }
       if (_terminated) return;
       if (connected.elapsed > const Duration(minutes: 1)) failures = 0;
@@ -574,6 +577,7 @@ class McpEventSubscription {
   Future<void> _stop(bool preserveRemote) async {
     lifetime.cancel();
     await _running;
+    await Future.wait(_delivering.values.toList().map((delivery) => delivery.then<void>((_) {}, onError: (Object _) {})));
     if (!preserveRemote && mode == 'webhook' && _webhookAttempted && !_terminated) {
       final cancellation = TimeoutCancellationToken(const Duration(seconds: 5));
       try {

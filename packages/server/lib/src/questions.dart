@@ -79,6 +79,14 @@ class SessionQuestions {
     }
   }
 
+  void release(String sessionID) {
+    for (final request in list(sessionID)) {
+      final question = _pending.remove(request['id'])!;
+      question.cancellation.cancel();
+      _emit('question.rejected', request);
+    }
+  }
+
   void _emit(String type, Json request, [Json data = const {}]) =>
     emit(request['sessionID'] as String, {
       'type': type, 'data': {'requestID': request['id'], ...data},

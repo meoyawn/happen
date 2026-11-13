@@ -39,12 +39,13 @@ extension _McpEvents on AgentServer {
       final event = accepting ? jsonObject(params['event']) : params;
       final id = requiredString(accepting || params['snapshot'] == null ? event : jsonObject(params['snapshot']), 'threadId');
       final key = requiredString(message, 'operation_id'), token = _mcpOperations[requiredString(message, 'operation_id')] = CancellationToken();
+      final cancellation = token.merge(_threadLifetime(id).cancellation).merge(_lifetime);
       // packages/mcp owns protocol control. Its private checkpoints share this
       // per-thread queue but never load a thread or start a model; occurrences
       // wait for atomic durable admission before the network owner ACKs them.
       final operation = (_mcpDeliveries[id] ?? Future<void>.value())
-        .then((_) => accepting ? _deliverMcpEvent(id, event, token.merge(_lifetime))
-          : _saveMcpSubscription(id, message['method'] as String, params, token.merge(_lifetime)))
+        .then((_) => accepting ? _deliverMcpEvent(id, event, cancellation)
+          : _saveMcpSubscription(id, message['method'] as String, params, cancellation))
         .then<void>((_) { reply.send({'result': null}); }, onError: (Object error, StackTrace stack) {
           traceError(error);
           reply.send({'error': 'Unable to admit MCP event to its thread', if (error is CancelledException) 'code': 'cancelled'});
@@ -61,6 +62,7 @@ extension _McpEvents on AgentServer {
     final event = jsonObject(message['event']);
     final id = event['threadId'];
     if (event['type'] == 'mcp.event' && id is String) {
+      if (_threadLifetimes[id]?.cancellation.isCancelled == true) return;
       for (final client in _clients.where((client) => client.subscriptions.contains(id))) { client.event(event); }
       return;
     }
@@ -81,6 +83,7 @@ extension _McpEvents on AgentServer {
       if (task.finishing) { await task.running!.asCancellable(cancellation); continue; }
       if (task.busy && task.writer == null) { await task.ready!.future.asCancellable(cancellation); continue; }
       final saved = jsonObject(await _withWriter(task, (writer) => callIsolate(writer.port, method, params, cancellation: cancellation)));
+      cancellation.throwIfCancelled();
       final subscriptions = (saved['subscriptions'] as List).cast<String>().toSet();
       _setMcpSubscriptions(id, subscriptions);
       if (subscriptions.isEmpty && saved['pending'] != true) {
@@ -115,22 +118,23 @@ extension _McpEvents on AgentServer {
   }
 
   Future<void> _restoreMcpEventOwner(Json owner, IsolateOwner networkOwner, {bool resumePending = true}) async {
+    final id = requiredString(owner, 'threadId');
+    final cancellation = _threadLifetime(id).cancellation.merge(_lifetime);
     try {
-      _lifetime.throwIfCancelled();
+      cancellation.throwIfCancelled();
       if (_networkExited || !identical(network, networkOwner)) return;
-      final id = requiredString(owner, 'threadId');
       if (resumePending && owner['pending'] == true) {
         // An ACK can precede a crash while another turn owns the thread. Wake
         // the already-admitted inbox even if no upstream occurrence follows.
-        final task = await _loadThread(id, _lifetime);
+        final task = await _loadThread(id, cancellation);
         if (!task.busy && task.pending.isNotEmpty) {
           final next = task.pending.first;
           _begin(task, next['prompt'] as String, settings: {'message_id': next['id'], 'sent_at': next['created_at']});
         }
       }
       if (_networkExited || !identical(network, networkOwner)) return;
-      await callIsolate(networkOwner.port, 'mcp.events.restore', owner, cancellation: _lifetime);
-    } on CancelledException { if (!_closing) rethrow; }
+      await callIsolate(networkOwner.port, 'mcp.events.restore', owner, cancellation: cancellation);
+    } on CancelledException { if (!cancellation.isCancelled) rethrow; }
     catch (error) { traceError(error); }
   }
 
@@ -160,6 +164,7 @@ extension _McpEvents on AgentServer {
         return null;
       });
       final pending = task.pending.where((message) => message['id'] == receipt).firstOrNull;
+      cancellation.throwIfCancelled();
       if (pending != null) {
         task.mcpInputs.add(receipt);
         _offerSteering(task, pending);
