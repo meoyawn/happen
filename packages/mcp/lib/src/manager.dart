@@ -171,9 +171,9 @@ class McpManager {
       {
         'name': server.name,
         'state': server.state,
-        'protocol_version': server.connection?.version,
+        'protocol_version': server.state == 'ready' ? server.connection?.version : null,
         'pid': server.connection?.processId,
-        'capabilities': server.connection?.discovery['capabilities'] ?? <String, Object?>{},
+        'capabilities': server.state == 'ready' ? server.connection?.discovery['capabilities'] ?? <String, Object?>{} : <String, Object?>{},
         if (server.error != null) 'error': server.error,
       },
   ];
@@ -676,6 +676,20 @@ class _Server {
   void close() => lifetime.cancel();
 }
 
+String _stdioStartupError(Object failure, String command) {
+  final name = jsonEncode(command);
+  return switch (failure) {
+    ProcessException(errorCode: 2) => 'MCP startup failed: command $name was not found or its working directory is missing',
+    ProcessException(errorCode: 13) => 'MCP startup failed: permission denied for command $name',
+    ProcessException(:final errorCode) => 'MCP startup failed: command $name could not start (OS error $errorCode)',
+    McpFailure(:final message) when message.startsWith('MCP connection closed') =>
+      'MCP startup failed: command $name exited or closed stdout before startup completed',
+    McpFailure(:final message) => 'MCP startup failed: $message',
+    TimeoutException() => 'MCP startup failed: command $name did not complete startup in time',
+    _ => 'MCP startup failed: command $name could not start',
+  };
+}
+
 /// Physical ownership is independent of aliases, config scope and request waiters.
 class _Connection {
   _Connection(this.config, this.http, this.oauth, this.onAuthChanged, this.clientCapabilities, this.requestMetadata);
@@ -703,9 +717,11 @@ class _Connection {
 
   Future<void> _run() async {
     var failures = 0;
+    var everReady = false;
     while (!lifetime.isCancelled && failures < 6) {
       final since = Stopwatch()..start();
       var credentialFailure = false;
+      var terminalStartupFailure = false;
       String? startupAccess;
       final current = McpConnection(config, http, _notification,
         authorization: oauth == null ? null : (token) async =>
@@ -723,6 +739,7 @@ class _Connection {
         await current.connect(lifetime);
         await _refresh();
         state = 'ready';
+        everReady = true;
         error = null;
         final wasRequired = authenticationRequired;
         authenticationRequired = false;
@@ -734,16 +751,20 @@ class _Connection {
         if (lifetime.isCancelled) break;
       } catch (failure) {
         credentialFailure = failure is McpCredentialFailure;
+        terminalStartupFailure = config['command'] is String && (!everReady || failure is ProcessException);
         authenticationRequired = failure is McpCredentialFailure ? failure.authenticationRequired
           : failure is McpFailure && (failure.status == 401 || failure.status == 403);
-        error = authenticationRequired ? 'MCP server requires authentication' : 'MCP connection unavailable';
+        error = authenticationRequired ? 'MCP server requires authentication'
+          : terminalStartupFailure ? _stdioStartupError(failure, config['command'] as String)
+          : 'MCP connection unavailable';
         if (authenticationRequired) onAuthChanged();
       } finally {
         await current.close();
         tools = {};
+        if (terminalStartupFailure) state = 'failed';
         if (!initial.isCompleted) initial.complete();
       }
-      if (lifetime.isCancelled) break;
+      if (lifetime.isCancelled || terminalStartupFailure) break;
       if (authenticationRequired && (credentialFailure || oauth?.canRefresh != true)) { state = 'failed'; break; }
       if (since.elapsed > const Duration(minutes: 1)) failures = 0;
       failures++;

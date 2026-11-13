@@ -678,6 +678,7 @@ class McpConnection {
       await process.stop();
       await drained;
       await process.dispose();
+      _process = null;
     }
     await _stdout?.cancel();
     await _stderr?.cancel();

@@ -149,7 +149,7 @@ Future<void> _networkMain(List<Object?> args) async {
       'event': event,
     }),
   );
-  final startupServers = resolveMcpCwds(jsonObject(global['mcp_servers'] ?? {}),
+  final startupServers = resolveMcpPaths(jsonObject(global['mcp_servers'] ?? {}),
     base: Directory.current.path, defaultCwd: Directory.current.path);
   final startupExecutables = await readMcpExecutables(startupServers, lifetime, hostPath: hostPath);
   Map<String, String> revisions(Map<String, McpExecutable> executables) => {
@@ -193,9 +193,9 @@ Future<void> _networkMain(List<Object?> args) async {
         if (path == configPath) continue;
         final reader = localReaders.putIfAbsent(path, () => ConfigReader(partialMcp: true));
         final layer = await reader.load(path, cancellation: cancellation);
-        local = mergeMcpConfig(local, resolveMcpCwds(jsonObject(layer.values['mcp_servers'] ?? {}), base: File(path).parent.path));
+        local = mergeMcpConfig(local, resolveMcpPaths(jsonObject(layer.values['mcp_servers'] ?? {}), base: File(path).parent.path));
       }
-      final servers = resolveMcpCwds({for (final name in local.keys)
+      final servers = resolveMcpPaths({for (final name in local.keys)
         name: mergeMcpConfig(jsonObject(acceptedServers[name] ?? {}), jsonObject(local[name]))}, base: scope, defaultCwd: scope);
       parseConfig(jsonEncode({'mcp_servers': servers}));
       validateMcpServers(servers);
@@ -242,7 +242,7 @@ Future<void> _networkMain(List<Object?> args) async {
             'Configuration file is missing; keeping the running MCP servers',
           );
         }
-        final servers = resolveMcpCwds(jsonObject(updated.values['mcp_servers'] ?? {}),
+        final servers = resolveMcpPaths(jsonObject(updated.values['mcp_servers'] ?? {}),
           base: Directory.current.path, defaultCwd: Directory.current.path);
         final executables = await readMcpExecutables(servers, cancellation, hostPath: hostPath);
         cancellation.throwIfCancelled();

@@ -15,6 +15,7 @@ ChatGPT connectors, enterprise-managed authorization or plugins.
   the thread's cwd. As in Codex, tables merge recursively and arrays/scalars
   replace; explicit relative `cwd` values resolve beside their config file.
   Only MCP settings are reloaded from project files.
+- Stdio `command` paths and `cwd` accept `~/` for the user's home directory.
 - Equivalent stdio launches share one process across names, threads and config
   scopes, including equivalent global/local declarations and legacy peers.
   Identity includes command/arguments, effective cwd/environment and executable

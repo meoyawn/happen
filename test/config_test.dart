@@ -7,6 +7,22 @@ import 'package:protocol/protocol.dart'
 import 'package:test/test.dart';
 
 void main() {
+  test('MCP launch paths expand home while arguments and environment remain literal', () {
+    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    expect(home, isNotNull);
+    final base = Directory.systemTemp.path;
+    final resolved = resolveMcpPaths({
+      'home': {'command': '~/bin/mcp', 'cwd': '~/projects/app', 'args': ['~/literal'], 'env': {'VALUE': '~/literal'}},
+      'relative': {'command': './bin/mcp', 'cwd': './app'},
+    }, base: base);
+    expect(resolved['home']['command'], '$home/bin/mcp');
+    expect(resolved['home']['cwd'], '$home/projects/app');
+    expect(resolved['home']['args'], ['~/literal']);
+    expect(resolved['home']['env'], {'VALUE': '~/literal'});
+    expect(resolved['relative']['command'], './bin/mcp');
+    expect(resolved['relative']['cwd'], '$base/app');
+  });
+
   test('YAML preserves command arguments and strings in immutable data', () {
     expect(globalConfigSchema, jsonDecode(File('packages/config/schema.json').readAsStringSync()));
     final config = parseConfig(r'''

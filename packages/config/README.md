@@ -34,6 +34,10 @@ for new GPT threads, including after a config reload; an explicit thread setting
 overrides it. Existing threads retain their selected settings. This option is
 global.
 
+MCP `command` paths and `cwd` accept `~/` (or `~`) for the user's home directory.
+Relative `cwd` paths resolve beside their config file in project layers. Arguments
+and environment values remain literal strings.
+
 Project icons are saved in the project's `.happen/config.yaml`, alongside its
 MCP configuration. Use the project schema (`#/definitions/project`) for this file.
 An icon can be an arbitrary local image path, including SVG and PNG:

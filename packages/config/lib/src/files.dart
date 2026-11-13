@@ -97,11 +97,19 @@ Map<String, dynamic> mergeMcpConfig(Map<String, dynamic> base, Map<String, dynam
     ? mergeMcpConfig(Map<String, dynamic>.from(base[entry.key] as Map), Map<String, dynamic>.from(entry.value as Map)) : entry.value,
 };
 
-Map<String, dynamic> resolveMcpCwds(Map<String, dynamic> servers, {required String base, String? defaultCwd}) => {
+String _expandHomePath(String value) {
+  if (value != '~' && !value.startsWith('~/') && !(Platform.isWindows && value.startsWith('~\\'))) return value;
+  final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  if (home == null || home.isEmpty) throw const FormatException('Cannot resolve ~ without a home directory');
+  return p.normalize(p.join(home, value == '~' ? '' : value.substring(2)));
+}
+
+Map<String, dynamic> resolveMcpPaths(Map<String, dynamic> servers, {required String base, String? defaultCwd}) => {
   for (final entry in servers.entries) entry.key: {
     ...entry.value as Map,
+    if (entry.value['command'] case final String command) 'command': _expandHomePath(command),
     if (entry.value['cwd'] != null || entry.value['command'] != null && defaultCwd != null)
-      'cwd': p.normalize(p.absolute(p.join(base, entry.value['cwd'] as String? ?? defaultCwd!))),
+      'cwd': p.normalize(p.absolute(p.join(base, _expandHomePath(entry.value['cwd'] as String? ?? defaultCwd!)))),
   },
 };
 

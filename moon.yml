@@ -234,6 +234,27 @@ tasks:
       shell: false
       outputStyle: stream
 
+  test-mcp:
+    description: Run focused MCP command and configuration tests in isolation
+    command: dart --disable-dart-dev tool/test_isolated.dart test test/config_test.dart test/config_reload_test.dart test/mcp_inventory_test.dart test/mcp_pool_test.dart test/mcp_test.dart
+    preset: utility
+    inputs:
+      - pubspec.yaml
+      - pubspec.lock
+      - test/config_test.dart
+      - test/config_reload_test.dart
+      - test/mcp_inventory_test.dart
+      - test/mcp_pool_test.dart
+      - test/mcp_test.dart
+      - test/fixtures/mcp_stdio.dart
+      - packages/config/**/*
+      - packages/mcp/**/*
+      - packages/server/**/*
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
   test-e2e:
     description: Compare real outbound OpenAI requests and behavior against Codex
     command: dart --disable-dart-dev tool/test_isolated.dart run tool/test_e2e.dart

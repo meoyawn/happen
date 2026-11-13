@@ -335,7 +335,7 @@ class _SkillLinkBuilder extends MarkdownElementBuilder {
   Widget visitElementAfterWithContext(BuildContext context, md.Element element,
       TextStyle? preferredStyle, TextStyle? parentStyle) {
     final href = element.attributes['href']!;
-    return Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
+    final link = Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
       child: GestureDetector(onTap: () => unawaited(openDesktopLink(context, href,
         directory: directory, cancellation: cancellation)),
         onSecondaryTapUp: (details) => unawaited(_showLinkMenu(context, href, details.globalPosition)),
@@ -347,6 +347,9 @@ class _SkillLinkBuilder extends MarkdownElementBuilder {
           fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
       ),
     ));
+    // MarkdownBuilder merges adjacent Text spans into one paragraph. Keep the
+    // interactive link atomic, but let the sentence wrap as a single text run.
+    return Text.rich(TextSpan(children: [WidgetSpan(alignment: PlaceholderAlignment.middle, child: link)]));
   }
 }
 

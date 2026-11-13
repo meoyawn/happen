@@ -9,6 +9,7 @@ import 'package:desktop/inline_reference.dart';
 import 'package:desktop/image_preview.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
@@ -89,6 +90,26 @@ void main() {
     expect(find.byTooltip('/skills/dart/SKILL.md'), findsOneWidget);
     expect(find.textContaining(r'[$code](/skills/code/SKILL.md)', findRichText: true), findsOneWidget);
     expect(find.textContaining('guide', findRichText: true), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('text after a skill link starts a new line at the paragraph edge', (tester) async {
+    tester.view.physicalSize = const Size(1300, 600); tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
+    const prompt = r'bottlenecks in [AGENTS.md](AGENTS.md) ? [$hh](/skills/hh/SKILL.md) ? '
+      '/workspace/developer/career-mcp\n?';
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Center(child: SizedBox(width: 1050,
+      child: ConversationMarkdown(text: prompt, directory: '/project', fitContent: true))))));
+
+    final paragraphs = tester.renderObjectList<RenderParagraph>(find.byType(RichText)).toList();
+    final start = paragraphs.firstWhere((paragraph) => paragraph.text.toPlainText().contains('bottlenecks'));
+    final end = paragraphs.firstWhere((paragraph) => paragraph.text.toPlainText().contains('career-mcp'));
+    final endText = end.text.toPlainText();
+    double glyphX(RenderParagraph paragraph, int offset) {
+      final box = paragraph.getBoxesForSelection(TextSelection(baseOffset: offset, extentOffset: offset + 1)).single;
+      return paragraph.localToGlobal(Offset(box.left, box.top)).dx;
+    }
+    expect((glyphX(end, endText.lastIndexOf('?')) - glyphX(start, 0)).abs(), lessThan(2));
     expect(tester.takeException(), isNull);
   });
 

@@ -8,6 +8,52 @@ import 'package:test/test.dart';
 
 void main() {
   final fixture = File('test/fixtures/mcp_stdio.dart').absolute.path;
+  test('missing and failed stdio commands report startup failure without hiding healthy servers', () async {
+    final root = await Directory.systemTemp.createTemp('mcp-command-failure-');
+    final config = File('${root.path}/config.yaml');
+    await config.writeAsString(jsonEncode({'mcp_servers': {
+      'healthy': {'command': Platform.resolvedExecutable, 'args': [fixture], 'legacy_fallback': false},
+      'missing': {'command': '${root.path}/missing-command', 'args': [fixture], 'legacy_fallback': false},
+      'exits': {'command': Platform.resolvedExecutable, 'args': ['${root.path}/missing.dart'], 'legacy_fallback': false},
+    }}));
+    final server = await AgentServer.startEmbedded(directory: '${root.path}/data', configPath: config.path);
+    final client = await AgentClient.connect(server.uri);
+    final token = CancellationToken();
+    try {
+      final rows = (jsonObject(await client.mcpInventory(cancellation: token))['servers'] as List)
+          .map(jsonObject).toList();
+      expect(rows.map((row) => row['name']), ['exits', 'healthy', 'missing']);
+      final byName = {for (final row in rows) row['name'] as String: row};
+      expect(byName['healthy']?['state'], 'ready');
+      expect(byName['healthy']?['tool_count'], 1);
+      for (final name in ['missing', 'exits']) {
+        expect(byName[name]?['state'], 'failed', reason: name);
+        expect(byName[name]?['tool_count'], 0, reason: name);
+        expect(byName[name]?['error'], contains('MCP startup failed'), reason: name);
+      }
+      expect(byName['missing']?['error'], contains('missing-command'));
+      expect(byName['exits']?['error'], contains('exited'));
+      final statuses = (await client.request('mcp.status') as List).map(jsonObject).toList();
+      for (final name in ['missing', 'exits']) {
+        final status = statuses.singleWhere((row) => row['name'] == name);
+        expect(status['pid'], isNull, reason: name);
+        expect(status['protocol_version'], isNull, reason: name);
+        expect(status['capabilities'], isEmpty, reason: name);
+      }
+      final healthyPid = statuses.singleWhere((row) => row['name'] == 'healthy')['pid'];
+      await Link('${root.path}/missing-command').create(Platform.resolvedExecutable);
+      final reloaded = (await client.request('mcp.reload', {}) as List).map(jsonObject).toList();
+      expect(reloaded.singleWhere((row) => row['name'] == 'missing')['state'], 'ready');
+      expect(reloaded.singleWhere((row) => row['name'] == 'missing')['pid'], isA<int>());
+      expect(reloaded.singleWhere((row) => row['name'] == 'healthy')['pid'], healthyPid);
+    } finally {
+      token.cancel();
+      await client.close();
+      await server.close();
+      await root.delete(recursive: true);
+    }
+  });
+
   test('client inventory includes disabled servers, pages resources, and keeps credentials private', () async {
     final root = await Directory.systemTemp.createTemp('mcp-inventory-');
     final peer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
