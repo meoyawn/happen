@@ -276,6 +276,18 @@ tasks:
       runInCI: true
       outputStyle: stream
 
+  release-prepare:
+    description: Reserve the next desktop patch version for a master release
+    command: dart --disable-dart-dev packages/desktop/tool/prepare_release.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      runInCI: true
+      outputStyle: stream
+
   release-native-source:
     description: Fetch the QuickJS source needed by macOS releases
     command: git submodule update --init --depth 1 packages/code_mode/native/quickjs

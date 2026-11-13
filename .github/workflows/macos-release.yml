@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: macos-release-version
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: macos-26
@@ -25,7 +29,11 @@ jobs:
           cache: false
       - name: Resolve Dart packages
         run: moon run release-ci-pub-get
+      - name: Reserve desktop patch version
+        id: version
+        run: moon run release-prepare
       - name: Import Apple signing credentials
+        if: steps.version.outputs.tag != ''
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -36,12 +44,15 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: moon run release-ci-signing-setup
       - name: Build, notarize, and package DMG
+        if: steps.version.outputs.tag != ''
         run: moon run release-dmg
       - name: Remove Apple credentials
-        if: always()
+        if: always() && steps.version.outputs.tag != ''
         run: moon run release-ci-signing-cleanup
       - name: Publish this master commit
+        if: steps.version.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          HAPPEN_RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: moon run release-publish

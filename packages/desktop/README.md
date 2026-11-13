@@ -499,9 +499,12 @@ result is copied to
 Flutter, Dart and engine versions recorded alongside it in `toolchain.json`.
 `release-dmg` notarizes and staples the app and DMG, then writes
 `build/macos/Build/Products/Release/Happen-macos.dmg`. Every push to `master`
-publishes that DMG as a commit-specific GitHub prerelease. The workflow imports
-the Developer ID certificate and notary key from repository secrets into an
-ephemeral macOS keychain.
+reserves a desktop release tag, starting with `v0.1.0` and increasing the patch
+version for later pushes. The tag points to a release-only commit that sets the
+desktop pubspec version and records its source commit. A rerun reuses the same
+tag. The workflow builds that tagged version, notarizes it, and publishes a
+stable GitHub release with the DMG. It imports the Developer ID certificate and
+notary key from repository secrets into an ephemeral macOS keychain.
 `release-reinstall` builds first, stages and verifies the bundle, and installs
 it at `/Applications/Happen.app`.
 It stops the installed release before replacing the bundle and leaves it
