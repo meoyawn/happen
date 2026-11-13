@@ -1,0 +1,10 @@
+[settings]
+download_cache_max_size = "4GiB"
+
+[tool_alias]
+moon = "aqua:moonrepo/moon"
+
+[tools]
+flutter = "3.47.9"
+github-cli = "2.103.3"
+moon = "2.6.5"

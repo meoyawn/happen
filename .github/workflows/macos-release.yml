@@ -1,0 +1,42 @@
+name: macOS release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/mise/downloads-cas
+          key: mise-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v5
+        with:
+          version: '2026.11.7'
+          cache: false
+      - name: Import Apple signing credentials
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: moon run release-ci-signing-setup
+      - name: Build, notarize, and package DMG
+        run: moon run release-dmg
+      - name: Remove Apple credentials
+        if: always()
+        run: moon run release-ci-signing-cleanup
+      - name: Publish this master commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: moon run release-publish

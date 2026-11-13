@@ -4,6 +4,9 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
+import 'release_credentials.dart';
+import 'release_signature.dart';
+
 Future<void> main(List<String> arguments) async {
   if (!Platform.isMacOS) throw UnsupportedError('This target builds the macOS release');
   final root = File.fromUri(Platform.script).absolute.parent.parent.parent.parent;
@@ -20,17 +23,32 @@ Future<void> main(List<String> arguments) async {
     locked = true;
     cancelLock.dispose();
     cancellation.throwIfCancelled();
-    final sdk = await _homebrewFlutter(root, cancellation);
+    final sdk = await _releaseFlutter(root, cancellation);
     final flutter = '${sdk.path}/bin/flutter';
-    final environment = {'FLUTTER_ROOT': sdk.path, 'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}'};
+    final credentials = releaseCredentials();
+    final identity = await _signingIdentity(root, cancellation, credentials.identity);
+    final environment = {
+      'FLUTTER_ROOT': sdk.path,
+      'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}',
+      'FLUTTER_XCODE_CODE_SIGN_IDENTITY': identity.$1,
+      'FLUTTER_XCODE_CODE_SIGN_STYLE': 'Manual',
+      'FLUTTER_XCODE_ENABLE_HARDENED_RUNTIME': 'YES',
+      // Xcode's direct build defaults are unsuitable for notarization.
+      'FLUTTER_XCODE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS': 'NO',
+      if (identity.$2 == 'Developer ID Application')
+        'FLUTTER_XCODE_OTHER_CODE_SIGN_FLAGS': '--timestamp',
+      if (credentials.teamId case final team? when team.isNotEmpty)
+        'FLUTTER_XCODE_DEVELOPMENT_TEAM': team,
+    };
     final version = jsonObject(jsonDecode(await _run(flutter, ['--version', '--machine'], sdk.path,
       cancellation, capture: true, environment: environment)));
     final revision = (await _run('git', ['rev-parse', 'HEAD'], sdk.path, cancellation, capture: true)).trim();
     if (version['channel'] != 'stable' || version['frameworkRevision'] != revision) {
-      throw StateError('Homebrew Flutter does not match its stable checkout: $version');
+      throw StateError('Release Flutter does not match its stable checkout: $version');
     }
-    stdout.writeln('Release toolchain: Homebrew Flutter ${version['frameworkVersion']}, '
+    stdout.writeln('Release toolchain: Flutter ${version['frameworkVersion']}, '
       'bundled Dart ${version['dartSdkVersion']}, revision $revision, SDK ${sdk.path}.');
+    stdout.writeln('Release signing: ${identity.$2}.');
 
     // Flutter rewrites package_config.json and Xcode's generated SDK paths.
     // Build a working-source snapshot so release cannot redirect a live reload
@@ -50,7 +68,8 @@ Future<void> main(List<String> arguments) async {
       cancellation, environment: environment);
     await _requireClean(sdk, cancellation);
     final bundle = '$desktop/build/macos/Build/Products/Release/Happen.app';
-    await _run('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], desktop, cancellation);
+    verifyReleaseSignature(Directory(bundle), requireDeveloperId: _requireDeveloperId,
+      expectedTeamId: credentials.teamId);
     final output = Directory('${root.path}/packages/desktop/build/macos/Build/Products/Release');
     await output.create(recursive: true);
     final staged = await output.createTemp('.release-');
@@ -62,11 +81,12 @@ Future<void> main(List<String> arguments) async {
       await Directory('${staged.path}/Happen.app').rename(destination.path);
       await File('${output.path}/toolchain.json').writeAsString('${const JsonEncoder.withIndent('  ').convert({
         'upstream': version['repositoryUrl'], 'channel': 'stable', 'framework_revision': revision,
-        'distribution': 'homebrew',
+        'distribution': Platform.environment['GITHUB_ACTIONS'] == 'true' ? 'mise' :
+          Platform.environment.containsKey('HAPPEN_RELEASE_FLUTTER_EXECUTABLE') ? 'provided' : 'homebrew',
         'flutter': version['frameworkVersion'], 'dart': version['dartSdkVersion'],
         'engine_revision': version['engineRevision'], 'sdk': sdk.path,
       })}\n');
-      stdout.writeln('Built ${destination.path} with Homebrew Flutter and Dart.');
+      stdout.writeln('Built ${destination.path} with Flutter and Dart.');
     } finally { await staged.delete(recursive: true); }
   } finally {
     if (work != null) await work.delete(recursive: true);
@@ -77,13 +97,44 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-Future<Directory> _homebrewFlutter(Directory root, CancellationToken cancellation) async {
-  final prefix = (await _run('brew', ['--prefix'], root.path, cancellation, capture: true)).trim();
-  final executable = File('$prefix/bin/flutter');
-  if (!await executable.exists()) throw StateError('Install Flutter with Homebrew before building a release');
+bool get _requireDeveloperId => Platform.environment['HAPPEN_REQUIRE_DEVELOPER_ID'] == '1';
+
+Future<Directory> _releaseFlutter(Directory root, CancellationToken cancellation) async {
+  final configured = Platform.environment['HAPPEN_RELEASE_FLUTTER_EXECUTABLE'] ??
+    (Platform.environment['GITHUB_ACTIONS'] == 'true'
+      ? (await _run('mise', ['which', 'flutter'], root.path, cancellation, capture: true)).trim()
+      : null);
+  final executable = configured == null
+    ? File('${(await _run('brew', ['--prefix'], root.path, cancellation, capture: true)).trim()}/bin/flutter')
+    : File(configured);
+  if (!await executable.exists()) throw StateError('Release Flutter SDK not found: ${executable.path}');
   final sdk = File(await executable.resolveSymbolicLinks()).parent.parent;
   await _requireClean(sdk, cancellation);
   return sdk;
+}
+
+Future<(String, String)> _signingIdentity(Directory root, CancellationToken cancellation, String? requested) async {
+  final available = await _run('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning'],
+    root.path, cancellation, capture: true);
+  final identities = [
+    for (final match in RegExp(r'^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"', multiLine: true).allMatches(available))
+      (match.group(1)!, match.group(2)!),
+  ];
+  final eligible = identities.where((identity) =>
+    identity.$2.startsWith('Developer ID Application: ') ||
+    !_requireDeveloperId && identity.$2.startsWith('Apple Development: ')).toList();
+  if (requested != null && requested.isNotEmpty) {
+    final matches = eligible.where((identity) => identity.$1 == requested || identity.$2 == requested).toSet();
+    if (matches.length != 1) throw StateError('HAPPEN_CODESIGN_IDENTITY must select one valid release signing identity');
+    final selected = matches.single;
+    return (selected.$1, selected.$2.startsWith('Developer ID Application: ') ? 'Developer ID Application' : 'Apple Development');
+  }
+  for (final kind in ['Developer ID Application: ', if (!_requireDeveloperId) 'Apple Development: ']) {
+    final matches = eligible.where((identity) => identity.$2.startsWith(kind)).map((identity) => identity.$1).toSet();
+    if (matches.length > 1) throw StateError('Multiple ${kind.trim()} identities; set HAPPEN_CODESIGN_IDENTITY');
+    if (matches.length == 1) return (matches.single, kind.trim().replaceFirst(':', ''));
+  }
+  throw StateError('No release signing identity found. Install a Developer ID Application certificate or Apple Development certificate.');
 }
 
 Future<void> _requireClean(Directory sdk, CancellationToken cancellation) async {

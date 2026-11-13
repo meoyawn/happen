@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'run_flutter.dart' as launcher;
+import 'release_signature.dart';
 
 final _release = Directory('${launcher.desktopRoot.path}/build/macos/Build/Products/Release/${launcher.app}');
 const _register = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
@@ -17,7 +18,7 @@ void _verify(Directory bundle) {
     'Frameworks/code_mode.framework/code_mode', 'Resources/AppIcon.icns']) {
     if (!File('${bundle.path}/Contents/$relative').existsSync()) throw StateError('Incomplete release bundle: missing $relative');
   }
-  _run('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle.path]);
+  verifyReleaseSignature(bundle);
 }
 
 List<int> _releasePids(Directory bundle) {

@@ -470,13 +470,25 @@ Flutter hot reload and hot restart do not update the macOS app bundle.
 
 ```sh
 moon run release
+moon run release-dmg
 moon run release-reinstall
 ```
 
 `release` uses Homebrew's installed Flutter and its bundled Dart SDK, locating
-the installation through `brew --prefix`. It requires a clean stable SDK and
-records the installed versions without fetching or upgrading Flutter. The
+the installation through `brew --prefix`. CI installs Flutter, Moon, and GitHub CLI
+from `mise.toml` and `mise.lock` using `jdx/mise-action`; the release tool selects
+mise's Flutter SDK in GitHub Actions. Both paths require a clean
+stable SDK and record the installed versions without fetching or upgrading Flutter. The
 development fork is excluded from the release source snapshot.
+
+The build selects a Developer ID Application certificate from Keychain (or an
+Apple Development certificate for local builds), signs with hardened runtime,
+and rejects ad hoc output. `HAPPEN_CODESIGN_IDENTITY` selects a specific
+certificate when needed. Local signing and notarization details can live in
+`~/.secrets/happen/config.json` and `~/.secrets/happen/notary.p8`; they are never
+copied into the source snapshot. The first signed installation may request
+microphone access once because older ad hoc builds had a different identity.
+Subsequent releases with the same certificate identity retain that permission.
 
 The build uses a snapshot of the working sources, including uncommitted changes
 and submodules. Its package configuration, Xcode files and native build products
@@ -485,6 +497,11 @@ Dart's automatic package resolution before the snapshot is created. The signed
 result is copied to
 `build/macos/Build/Products/Release/Happen.app` under this package, with exact
 Flutter, Dart and engine versions recorded alongside it in `toolchain.json`.
+`release-dmg` notarizes and staples the app and DMG, then writes
+`build/macos/Build/Products/Release/Happen-macos.dmg`. Every push to `master`
+publishes that DMG as a commit-specific GitHub prerelease. The workflow imports
+the Developer ID certificate and notary key from repository secrets into an
+ephemeral macOS keychain.
 `release-reinstall` builds first, stages and verifies the bundle, and installs
 it at `/Applications/Happen.app`.
 It stops the installed release before replacing the bundle and leaves it

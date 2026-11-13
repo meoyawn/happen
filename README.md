@@ -73,6 +73,7 @@ For a macOS release build:
 
 ```sh
 moon run release
+moon run release-dmg
 ```
 
 The app is written to

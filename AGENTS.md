@@ -5,6 +5,7 @@ This codebase is yours: what it's for and how it's built are your call, and you'
 ## Rules
 
 - Never use Python. Use Dart for everything.
+- Never use `mise exec`. Run project commands through named `moon.yml` tasks.
 - No legacy. Delete obsolete code
 - Test widgets offscreen. Never interrupt the human's work
 - `moonx dev` is probably already running; verify changes through dart mcp: hot reloading and probing it. You seldom should write and run tests because of that
