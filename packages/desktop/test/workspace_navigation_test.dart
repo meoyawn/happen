@@ -234,6 +234,58 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('changing a pinned project disclosure preserves scroll until the selected thread changes', (tester) async {
+    tester.view.physicalSize = const Size(900, 450);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    late DesktopSession session;
+    late Directory root;
+    late Project project;
+    late String projectId;
+    late DesktopTask next;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('sidebar-reveal-selection-');
+      session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      await session.pinnedSidebar.ready;
+      final pinned = [for (var index = 0; index < 3; index++) DesktopTask('pin-$index', 'Pinned $index')];
+      final others = [for (var index = 0; index < 20; index++)
+        DesktopTask('other-$index', 'Other $index')..lastActivity = 20 - index];
+      next = others[18];
+      project = Project('project', '/project', '/project', [...pinned, ...others]);
+      projectId = projectIdentity(session, project);
+      session.projects.add(project);
+      session.project = project;
+      session.task = others.last;
+      for (final task in pinned) { await session.pinTask(task, true); }
+      await session.pinnedSidebar.chooseCollapsed(projectId, true);
+    });
+    addTearDown(() => tester.runAsync(() async {
+      await session.close(); await root.delete(recursive: true);
+    }));
+    await tester.pumpWidget(sidebar(session, home: false));
+    await tester.pumpAndSettle();
+    final scroller = tester.widget<CustomScrollView>(find.byKey(const PageStorageKey('thread-sidebar'))).controller!;
+    expect(scroller.position.maxScrollExtent, greaterThan(0));
+    scroller.jumpTo(0);
+    await tester.pumpAndSettle();
+
+    final folder = find.byKey(ValueKey('pinned-project:$projectId'));
+    await tester.runAsync(() => tester.tap(folder));
+    await tester.pumpAndSettle();
+    expect(scroller.offset, closeTo(0, 1), reason: 'Disclosing the folder must not seek the selected thread below the viewport');
+    await tester.runAsync(() => tester.tap(folder));
+    await tester.pumpAndSettle();
+    expect(scroller.offset, closeTo(0, 1), reason: 'Closing the folder must also preserve manual scroll');
+
+    session.task = next;
+    session.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(scroller.offset, greaterThan(0), reason: 'Changing threads must still reveal the newly selected card');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('project folders keep pin order and disclosure through dragging, layout changes, and relaunch', (tester) async {
     tester.view.physicalSize = const Size(900, 1000);
     tester.view.devicePixelRatio = 1;

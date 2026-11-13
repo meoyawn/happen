@@ -182,11 +182,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
   GlobalKey _anchor(String id) => _rowAnchors.putIfAbsent(id, () => GlobalKey());
   late final _scroll = ScrollController();
   late final _rows = <String, ({Object state, Widget row})>{};
-  (String?, String?)? _selection;
-  List<String>? _selectionPins;
-  (PinnedSidebarPreferences, bool)? _selectionPinnedView;
-  GlobalKey? _selectionList;
-  int? _selectionIndex;
+  (DesktopSession, String?)? _selection;
   int _revealRevision = 0;
   late final _reorderFocus = FocusNode(debugLabel: 'Pinned thread reorder');
   bool get _reordering => _reorder is ThreadReorderDragging || _reorder is ThreadReorderDropping;
@@ -321,7 +317,10 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
 
   void _revealSelection(List<_PinnedGroup> pinned, List<(String?, Widget)> rows) {
     final id = widget.home ? null : session.sidebarId(session.draftKey);
-    final selection = (id, widget.projectKey);
+    final selection = (session, id);
+    if (_selection == selection) return;
+    _selection = selection;
+    final revision = ++_revealRevision;
     final pin = preferences.collapsedSidebarSections.contains('pinned') ? -1 : pinned.indexWhere((group) =>
       group.threads.any((entry) => _taskKey(entry.$1, entry.$2) == id));
     final index = pin >= 0 ? pin : rows.indexWhere((entry) => entry.$1 == id);
@@ -330,19 +329,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
     final folder = pin >= 0 && pinned[pin].threads.length > 1 &&
       preferences.pinnedSidebar.value.collapsedProjects.contains(pinned[pin].id);
     final anchor = folder ? _folderAnchors[pinned[pin].id] : id == null ? null : _anchor(id);
-    final pinOrder = [for (final group in pinned) for (final entry in group.threads) _taskKey(entry.$1, entry.$2)];
-    final view = (preferences.pinnedSidebar.value, preferences.collapsedSidebarSections.contains('pinned'));
-    if (_selection == selection && _selectionList == list && _selectionIndex == index && identical(_selectedRow, anchor) &&
-        listEquals(_selectionPins, pinOrder) && _selectionPinnedView == view) {
-      return;
-    }
-    _selectionPins = pinOrder;
-    _selectionPinnedView = view;
     _selectedRow = anchor;
-    _selection = selection;
-    _selectionList = list;
-    _selectionIndex = index;
-    final revision = ++_revealRevision;
     if (id == null || index < 0) return;
     final count = pin >= 0 ? pinned.length : rows.length;
     // Mounted cards already have usable bounds. Scroll before layout so held
