@@ -139,7 +139,7 @@ class _ResponsesSocket {
           headers: headers, customClient: client._http).then((socket) {
             if (token.isCancelled || !identical(_state, connecting)) unawaited(socket.close().catchError((Object _) {}));
             return socket;
-          }).timeout(const Duration(seconds: 15)).asCancellable(token), category: 'websocket',
+          }).asCancellable(token), category: 'websocket',
           attributes: {'server.address': uri.host, 'url.path': uri.path});
         token.throwIfCancelled();
         connection = _SocketConnection(socket, credentials);

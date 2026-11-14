@@ -82,7 +82,6 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
 }) async {
   var retries = 0;
   var connectionRetries = 0;
-  var connectionDelay = const Duration(seconds: 5);
   while (true) {
     cancellation.throwIfCancelled();
     try {
@@ -103,17 +102,19 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
       if (!retryable) rethrow;
       if (unboundedConnections && (error is SocketException || error is HandshakeException || error is HttpException)) {
         await _waitForRetry(error, ++connectionRetries, null, 'connection', cancellation, onEvent,
-          delay: connectionDelay, message: 'Reconnecting… waiting for network');
-        connectionDelay = Duration(seconds: min(60, connectionDelay.inSeconds * 2));
+          delay: const Duration(seconds: 5), message: 'Reconnecting… waiting for network');
         continue;
       }
-      if (retries >= maxStreamRetries) {
-        if (fallbackTransport?.call() != true) rethrow;
-        // Switching transport cannot bypass the provider's original deadline.
-        await _waitForRetry(error, 1, 1, 'fallback', cancellation, onEvent,
-          delay: Duration.zero, message: 'Switching to HTTPS');
-        retries = 0;
-        continue;
+      if (retries >= maxStreamRetries || error is TimeoutException || error is WebSocketException) {
+        if (fallbackTransport?.call() == true) {
+          // A stalled or rejected upgrade should try HTTPS immediately.
+          // Switching transport cannot bypass the provider's original deadline.
+          await _waitForRetry(error, 1, 1, 'fallback', cancellation, onEvent,
+            delay: Duration.zero, message: 'Switching to HTTPS');
+          retries = 0;
+          continue;
+        }
+        if (retries >= maxStreamRetries) rethrow;
       }
       await _waitForRetry(error, ++retries, maxStreamRetries, 'stream', cancellation, onEvent);
     }

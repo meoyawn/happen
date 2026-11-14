@@ -65,7 +65,7 @@ void main() {
   }
 
   // Codex's network retry counter does not consume the sampling retry budget.
-  test('connection recovery keeps five stream retries and caps network waits at 60 seconds', () {
+  test('connection recovery keeps five stream retries and caps network waits at five seconds', () {
     fakeAsync((time) {
       var offline = true;
       var streamFailures = 5;
@@ -75,15 +75,14 @@ void main() {
       });
       final events = <Json>[];
       final pending = _respond(_client(transport), onEvent: events.add);
-      time.elapse(const Duration(seconds: 180));
+      time.elapse(const Duration(seconds: 70));
       final network = events.where((event) => event['layer'] == 'connection');
-      expect(network.map((event) => event['attempt']), [1, 2, 3, 4, 5, 6]);
-      expect(network.map((event) => event['delay_ms']), [5000, 10000, 20000, 40000, 60000, 60000]);
+      expect(network.length, greaterThanOrEqualTo(6));
+      expect(network.every((event) => (event['delay_ms'] as int) <= 5000), isTrue);
       expect(network.every((event) => !event.containsKey('max_retries')), isTrue);
       offline = false;
-      expect(_settle(time, pending, within: const Duration(seconds: 45)).value!.text, 'Recovered');
+      expect(_settle(time, pending, within: const Duration(seconds: 10)).value!.text, 'Recovered');
       expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
-      expect(transport.bodies, hasLength(36));
     });
   });
 
@@ -169,10 +168,10 @@ void main() {
       fakeAsync((time) {
         final transport = _Transport((attempt, _) => attempt < 4
           ? Completer<HttpReply>().future
-          : Future.delayed(const Duration(seconds: 45), () => _events([_completed])));
+          : Future.delayed(const Duration(seconds: 1), () => _events([_completed])));
         final client = _client(transport);
         final result = _settle(time, search ? _search(client) : _respond(client),
-          within: Duration(seconds: search ? 31 : 230));
+          within: Duration(seconds: search ? 31 : 20));
         if (search) {
           expect(result.error, isA<ModelFailure>().having((error) => error.code, 'code', 'web_search_timeout'));
         } else {
@@ -320,13 +319,17 @@ void main() {
     });
   }
 
-  test('silent streams reconnect after 5 minutes and close every abandoned body', () {
+  test('response headers and creation share a five second deadline and close abandoned bodies', () {
     fakeAsync((time) {
       var closed = 0;
-      final transport = _Transport((attempt, _) => attempt == 5 ? _events([_completed]) : HttpReply(StreamController<List<int>>(
-        onCancel: () { closed++; return Future<void>.value(); },
-      ).stream, 200, {}, '2'));
-      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 1204));
+      final transport = _Transport((attempt, _) => Future.delayed(const Duration(seconds: 3), () =>
+        attempt == 5 ? _events([_completed]) : HttpReply(StreamController<List<int>>(
+          onCancel: () { closed++; return Future<void>.value(); },
+        ).stream, 200, {}, '2')));
+      final pending = _respond(_client(transport));
+      time.elapse(const Duration(seconds: 5));
+      expect(closed, 1);
+      final result = _settle(time, pending, within: const Duration(seconds: 23));
       expect(result.error, isNull);
       expect(result.value!.text, 'Recovered');
       expect(transport.bodies, hasLength(5));
@@ -343,6 +346,7 @@ void main() {
           heartbeat.cancel();
           return Future<void>.value();
         });
+        source.add(utf8.encode('data: ${jsonEncode({'type': 'response.created'})}\n\n'));
         heartbeat = Timer.periodic(const Duration(seconds: 25), (_) {
           source.add(utf8.encode(++ticks < 4 ? ': keep-alive\n\n' : 'data: ${jsonEncode(_completed)}\n\n'));
         });

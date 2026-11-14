@@ -19,6 +19,7 @@ part 'response_socket.dart';
 
 // codex/model-provider-info: DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000.
 const _streamIdleTimeout = Duration(minutes: 5);
+const _responseConnectTimeout = Duration(seconds: 5);
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -264,19 +265,41 @@ class ResponsesClient {
         'x-client-request-id': newId(),
       };
       Future<void> Function()? closeBody;
+      CancellationToken? connection;
+      Timer? connectionTimer;
+      CancellationToken connect() {
+        connectionTimer?.cancel();
+        connection?.cancel();
+        final deadline = connection = CancellationToken();
+        connectionTimer = Timer(_responseConnectTimeout, () => deadline.cancel(
+          TimeoutException('GPT response connection timed out', _responseConnectTimeout)));
+        return cancellation.merge(deadline);
+      }
+      void receive(Json event) {
+        if (event['type'] == 'model.connected') connectionTimer?.cancel();
+        onEvent?.call(event);
+      }
       try {
         if (transport == 'websocket') {
-          return await _websocket(body, sessionId, headers, cancellation, onEvent);
+          return await _websocket(body, sessionId, headers, connect(), receive);
         }
-        final response = await retryRequest(() => _post(endpoint, body,
-          {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
-          headersTimeout: const Duration(seconds: 60)), cancellation, onEvent: onEvent);
-        final incoming = ownStream(response, cancellation);
+        var token = cancellation;
+        final response = await retryRequest(() async {
+          token = connect();
+          try {
+            return await _post(endpoint, body,
+              {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, token);
+          } catch (_) {
+            connectionTimer?.cancel();
+            rethrow;
+          }
+        }, cancellation, onEvent: onEvent);
+        final incoming = ownStream(response, token);
         closeBody = incoming.close;
         return await _consume(
           StreamIterator(decodeSse(incoming.stream.timeout(_streamIdleTimeout))),
-          cancellation,
-          onEvent,
+          token,
+          receive,
         );
       } on ResponseFailure catch (error) {
         if (error.status == 401 && attempt == 0) continue;
@@ -285,6 +308,8 @@ class ResponsesClient {
         cancellation.throwIfCancelled();
         rethrow;
       } finally {
+        connectionTimer?.cancel();
+        connection?.cancel();
         await closeBody?.call();
       }
     }
