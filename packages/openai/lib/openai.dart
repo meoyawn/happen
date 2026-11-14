@@ -1,5 +1,6 @@
 export 'auth.dart';
 export 'src/provider.dart';
+export 'src/thread_title.dart' show threadTitleRequest, parseThreadTitle;
 export 'src/catalog.dart';
 export 'src/model_catalog.dart';
 export 'src/tool_interface.dart';

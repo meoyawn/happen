@@ -8,6 +8,7 @@ import 'records.dart';
 import 'responses.dart';
 import 'catalog.dart';
 import 'model_catalog.dart';
+import 'thread_title.dart';
 import 'web_search.dart';
 import 'image_generation.dart' as image_generation;
 
@@ -175,11 +176,15 @@ class OpenAIProvider implements ModelProvider {
     CancellationToken cancellation,
     void Function(Json)? onEvent, {
     Future<void> Function(ConversationItem)? onRecovery,
+    int? maxOutputTokens,
+    Json? outputSchema,
   }) {
     _validate(request);
     return client.respond(
       model: request.model,
       modelInfo: request.modelInfo,
+      maxOutputTokens: maxOutputTokens,
+      outputSchema: outputSchema,
       instructions: request.instructions,
       input: input,
       tools: gptTools(request.tools),
@@ -216,6 +221,8 @@ class OpenAIProvider implements ModelProvider {
     required CancellationToken cancellation,
     void Function(Json)? onEvent,
     Future<void> Function(ConversationItem)? onRecovery,
+    int? maxOutputTokens,
+    Json? outputSchema,
   }) async {
     final completed = <Object, ConversationItem>{};
     Object key(Json item) => item['id'] as String? ?? item;
@@ -243,7 +250,7 @@ class OpenAIProvider implements ModelProvider {
         if (completed.containsKey(id)) return;
         completed[id] = item;
         onEvent?.call({'type': 'model.output', 'item': item.toJson()});
-      }, onRecovery: onRecovery,
+      }, onRecovery: onRecovery, maxOutputTokens: maxOutputTokens, outputSchema: outputSchema,
     );
     return ModelReply(
       reply.output.map((item) => completed[key(item)] ??
@@ -252,6 +259,25 @@ class OpenAIProvider implements ModelProvider {
       endTurn: reply.endTurn,
       observedUsage: reply.observedUsage,
     );
+  }
+
+  Future<String> title(ModelRequest request, {required CancellationToken cancellation}) async {
+    // Codex's title model is Luna. Only the subscription backend's catalog
+    // can authorize a switch; custom endpoints retain their selected model.
+    const preferred = 'gpt-6-luna';
+    final useLuna = client.endpoint.path.endsWith('/backend-api/codex/responses') && (catalog?.available(preferred) ?? true);
+    final model = useLuna ? preferred : request.model;
+    final info = useLuna ? modelInfo(model).data : request.modelInfo;
+    final settings = resolveSettings({
+      'reasoning': 'low', 'verbosity': 'low', 'reasoning_summary': 'none',
+      'transport': request.settings['transport'] ?? client.defaultTransport,
+      'web_search': 'disabled', 'image_generation': false,
+    }, model: model, modelInfo: info);
+    final reply = await respond(threadTitleRequest(request, model: model, modelInfo: info, settings: settings, reasoning: 'low'),
+      cancellation: cancellation, maxOutputTokens: 256, outputSchema: threadTitleOutputSchema);
+    final title = parseThreadTitle(reply.text);
+    if (title == null) throw const ModelFailure('title_generation_invalid', 'The model returned an invalid thread title');
+    return title;
   }
 
   @override

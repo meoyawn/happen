@@ -50,7 +50,7 @@ extension _ThreadLifecycle on AgentServer {
       _questions.release(id);
       await release(() async { await task.running; });
     }
-    await release(() async { await _namingThreads[id]; });
+    await release(() async { await _titleRequests[id]?.done; });
     await release(() async { await _mcpDeliveries[id]; });
     await release(() async { await _sideForks[id]; });
     for (final side in _tasks.values.where((side) => side.sideParentID == id).toList()) {
@@ -180,6 +180,7 @@ extension _ThreadLifecycle on AgentServer {
       task.maintenance = true;
       final settled = task.maintenanceDone = Completer<void>();
       try {
+        await _releaseThreadName(task.id);
         if (task.writerRequests > 0) await (task.writerDrained ??= Completer<void>()).future.asCancellable(_lifetime);
         await _taskTools.release(task.id);
         _clientTools.archive(task.id);

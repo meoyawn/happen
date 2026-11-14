@@ -14,7 +14,7 @@ class _SocketStreaming extends _SocketState {
 class _SocketReady extends _SocketState {
   const _SocketReady(this.connection, this.continuation);
   final _SocketConnection connection;
-  final _ResponseContinuation? continuation;
+  final Json? continuation;
 }
 class _SocketClosed extends _SocketState { const _SocketClosed(); }
 
@@ -41,62 +41,50 @@ class _SocketConnection {
   final age = Stopwatch()..start();
 
   void close() {
-    unawaited(socket.close().catchError((Object _) {}));
-    unawaited(events.cancel().catchError((Object _) {}));
+    unawaited(socket.close().catchError((Object _) {})
+      .whenComplete(() => events.cancel().catchError((Object _) {})));
   }
 }
 
-// Only a successful terminal event establishes a continuation. The next full
-// request remains authoritative: edits, compaction and model changes replay it.
-class _ResponseContinuation {
-  _ResponseContinuation(Json body, ResponsesReply reply)
-    : responseId = reply.responseId!, model = body['model'] as String,
-      input = (body['input'] as List).map(jsonObject).toList(), output = reply.output,
-      replay = [for (final item in reply.output) _replayedOutput(item)];
-  final String responseId, model;
-  final List<Json> input, output;
-  final List<Json?> replay;
-
-  Json request(Json body) {
-    final next = body['input'] as List;
-    final length = input.length + output.length;
-    if (body['model'] != model || next.length < length) return body;
-    for (var index = 0; index < input.length; index++) {
-      if (!_sameJson(input[index], next[index])) return body;
-    }
-    for (var index = 0; index < output.length; index++) {
-      if (!_sameJson(output[index], next[input.length + index]) &&
-          !_sameJson(replay[index], next[input.length + index])) return body;
-    }
-    return {...body, 'previous_response_id': responseId, 'input': next.sublist(length)};
-  }
-}
-
-Json? _replayedOutput(Json item) {
+Json _replayedOutput(Json item) {
   // The provider preserves native output while adding its durable message
   // metadata. Direct transport callers may instead replay the original item.
   try { return gptInput([gptItemFromNative(item)]).single; }
-  catch (_) { return null; }
+  catch (_) { return item; }
 }
 
-bool _sameJson(Object? left, Object? right) {
-  if (identical(left, right)) return true;
-  if (left is Map && right is Map) {
-    return left.length == right.length && left.keys.every((key) => right.containsKey(key) && _sameJson(left[key], right[key]));
+Object? _orderedJson(Object? value) {
+  if (value is Map<String, dynamic>) {
+    final keys = value.keys.toList()..sort();
+    return {for (final key in keys) key: _orderedJson(value[key])};
   }
-  if (left is List && right is List) {
-    if (left.length != right.length) return false;
-    for (var index = 0; index < left.length; index++) {
-      if (!_sameJson(left[index], right[index])) return false;
-    }
-    return true;
-  }
-  return left == right;
+  if (value is List) return [for (final item in value) _orderedJson(item)];
+  return value;
+}
+
+String _inputHash(List<Object?> input) => sha256.convert(utf8.encode(jsonEncode(_orderedJson(input)))).toString();
+
+// Connection-local identity and digests only. The full history stays with the
+// agent. Edits, forks and compaction cannot silently drop context.
+Json? _responseCursor(Json body, ResponsesReply reply) => reply.responseId == null ? null : {
+    'response_id': reply.responseId, 'model': body['model'],
+    'input_count': (body['input'] as List).length + reply.output.length,
+    'input_hash': _inputHash([...body['input'] as List, ...reply.output.map(_replayedOutput)]),
+    'wire_input_hash': _inputHash([...body['input'] as List, ...reply.output]),
+  };
+
+Json _continuedRequest(Json body, Json? cursor) {
+  if (cursor == null || cursor['model'] != body['model'] || cursor['response_id'] is! String) return body;
+  final input = body['input'] as List;
+  final count = cursor['input_count'];
+  if (count is! int || count < 0 || count > input.length) return body;
+  final hash = _inputHash(input.sublist(0, count));
+  if (hash != cursor['input_hash'] && hash != cursor['wire_input_hash']) return body;
+  return {...body, 'previous_response_id': cursor['response_id'], 'input': input.sublist(count)};
 }
 
 class _ResponsesSocket {
   _SocketState _state = const _SocketIdle();
-  Timer? _expiry;
 
   void _transition(_SocketState next) {
     if (!_validSocketTransition(_state, next)) throw StateError('Invalid Responses socket transition');
@@ -116,14 +104,13 @@ class _ResponsesSocket {
   }
 
   Future<ResponsesReply> respond(ResponsesClient client, Json body, Map<String, String> headers,
-    CancellationToken cancellation, void Function(Json)? onEvent, {required void Function() onIdle}) async {
+    CancellationToken cancellation, void Function(Json)? onEvent) async {
     cancellation.throwIfCancelled();
     var current = _state;
     if (current is _SocketClosed) throw CancelledException();
     if (current is _SocketConnecting || current is _SocketStreaming) {
       throw StateError('A Responses session already has an active request');
     }
-    _expiry?.cancel();
     final credentials = (headers[HttpHeaders.authorizationHeader], headers['chatgpt-account-id']);
     if (current is _SocketReady && (current.connection.credentials != credentials ||
         current.connection.socket.readyState != WebSocket.open || current.connection.age.elapsed >= const Duration(hours: 1))) {
@@ -150,21 +137,21 @@ class _ResponsesSocket {
           headers: headers, customClient: client._http).then((socket) {
             if (token.isCancelled || !identical(_state, connecting)) unawaited(socket.close().catchError((Object _) {}));
             return socket;
-          }).timeout(const Duration(seconds: 10)).asCancellable(token), category: 'websocket',
+          }).timeout(const Duration(seconds: 15)).asCancellable(token), category: 'websocket',
           attributes: {'server.address': uri.host, 'url.path': uri.path});
         token.throwIfCancelled();
         connection = _SocketConnection(socket, credentials);
         _transition(_SocketStreaming(connection, operation));
       }
-      final encoded = jsonEncode(continuation?.request(body) ?? body);
+      final encoded = jsonEncode(_continuedRequest(body, continuation));
       await client._dump(() => encoded, token);
       token.throwIfCancelled();
       traceSync('openai.websocket.send', () => connection!.socket.add(encoded), category: 'websocket',
         attributes: {'bytes': utf8.encode(encoded).length});
       final reply = await client._consume(connection.events, token, onEvent,
-        cancelIterator: false, idleTimeout: const Duration(seconds: 60));
+        cancelIterator: false, idleTimeout: _streamIdleTimeout);
       token.throwIfCancelled();
-      _transition(_SocketReady(connection, reply.responseId == null ? null : _ResponseContinuation(body, reply)));
+      _transition(_SocketReady(connection, _responseCursor(body, reply)));
       return reply;
     } catch (_) {
       _cancel(operation);
@@ -173,14 +160,12 @@ class _ResponsesSocket {
     } finally {
       hook.dispose();
       operation.cancel();
-      if (_state is _SocketReady || _state is _SocketIdle) _expiry = Timer(const Duration(minutes: 5), onIdle);
     }
   }
 
   void close() {
     final current = _state;
     if (current is _SocketClosed) return;
-    _expiry?.cancel();
     _transition(const _SocketClosed());
     switch (current) {
       case _SocketConnecting(:final cancellation): cancellation.cancel();

@@ -34,6 +34,7 @@ void main() {
   late AgentClient client;
   late StreamSubscription<Json> subscription;
   final sockets = <WebSocket>[], requests = <Json>[], events = <Json>[], scripts = <List<Json>>[];
+  final connections = <String, List<WebSocket>>{};
   Json threadSettings = {};
   Future<String> startThread() => createThread(client, {'cwd': root.path, 'settings': threadSettings});
   Future<Json> context(String id) async => jsonObject(await client.request('session.context', {'sessionID': id}));
@@ -56,13 +57,14 @@ void main() {
   }
   setUp(() async {
     root = await Directory.systemTemp.createTemp('codex-incomplete-loop-');
-    requests.clear(); events.clear(); sockets.clear(); scripts.clear();
+    requests.clear(); events.clear(); sockets.clear(); scripts.clear(); connections.clear();
     await File('${root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture',
       'refresh_token': 'fixture', 'account_id': 'fixture', 'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     provider.listen((request) async {
       if (WebSocketTransformer.isUpgradeRequest(request)) {
         final socket = await WebSocketTransformer.upgrade(request); sockets.add(socket);
+        (connections[request.headers.value('session-id')!] ??= []).add(socket);
         socket.listen((raw) {
           for (final event in reply(jsonObject(jsonDecode(raw as String)))) { socket.add(jsonEncode(event)); }
         });
@@ -79,6 +81,48 @@ void main() {
     await Future.wait(sockets.map((socket) => socket.close()));
     await provider.close(force: true); await root.delete(recursive: true);
   });
+
+  for (final release in ['unload', 'archive']) {
+    test('WebSocket $release closes only its thread and resumes with full durable history', () async {
+      scripts.addAll([for (var index = 1; index <= 5; index++) [
+        message('message-$index', 'Reply $index'), completed('response-$index', reported),
+      ]]);
+      await launch(transport: 'websocket');
+      final id = await createThread(client, {'cwd': root.path, 'settings': threadSettings,
+        'config': {'thread_unload_delay_secs': 0}});
+      final sibling = await startThread();
+      for (final prompt in ['First turn', 'Second turn']) {
+        expect((await runTurn(client, id, prompt: prompt))['status'], 'completed');
+      }
+      expect(connections[id], hasLength(1));
+      expect(requests[1]['previous_response_id'], 'response-1');
+      expect((await runTurn(client, sibling, prompt: 'Sibling turn'))['status'], 'completed');
+      expect(connections[sibling], hasLength(1));
+      final released = connections[id]!.single.done.timeout(const Duration(seconds: 5));
+      if (release == 'unload') {
+        await unloadThread(client, id);
+      } else {
+        await client.request('thread/archive', {'threadId': id});
+      }
+      await released;
+      expect(connections[sibling]!.single.readyState, WebSocket.open, reason: 'Sibling inference must retain its connection.');
+      if (release == 'archive') await client.request('thread/unarchive', {'threadId': id});
+      await client.request('thread/resume', {'threadId': id});
+      expect((await runTurn(client, id, prompt: 'Resumed turn'))['status'], 'completed');
+      expect(connections[id], hasLength(2));
+      expect(requests[3].containsKey('previous_response_id'), isFalse);
+      final restored = jsonEncode(requests[3]['input']);
+      for (final text in ['First turn', 'Second turn', 'Reply 1', 'Reply 2', 'Resumed turn']) {
+        expect(restored, contains(text));
+      }
+      expect((await runTurn(client, sibling, prompt: 'Sibling continuation'))['status'], 'completed');
+      expect(connections[sibling], hasLength(1));
+      expect(requests.last['previous_response_id'], 'response-3');
+      for (final entry in connections.entries.where((entry) => !{id, sibling}.contains(entry.key))) {
+        await Future.wait(entry.value.map((socket) => socket.done)).timeout(const Duration(seconds: 5));
+      }
+    });
+  }
 
   test('retry removes a retired saved setting and retains the failed turn context across restart', () async {
     scripts.addAll([

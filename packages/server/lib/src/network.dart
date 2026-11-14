@@ -727,7 +727,7 @@ Future<void> _networkMain(List<Object?> args) async {
         reply?.send({'result': settings});
         return;
       }
-      if (!{'respond', 'compact', 'web.search', 'image.generate'}.contains(request['method'])) {
+      if (!{'respond', 'title.generate', 'compact', 'web.search', 'image.generate'}.contains(request['method'])) {
         throw StateError('Unknown network operation');
       }
       final lab = requiredString(params, 'provider');
@@ -765,6 +765,16 @@ Future<void> _networkMain(List<Object?> args) async {
           cancellation: cancellation,
           onEvent: onEvent,
         )).toJson();
+      } else if (request['method'] == 'title.generate') {
+        if (provider is OpenAIProvider) {
+          result = await provider.title(input, cancellation: cancellation);
+        } else {
+          final settings = provider.resolveSettings({...input.settings, 'reasoning': 'off', 'max_output_tokens': 256}, model: input.model);
+          final reply = await provider.respond(threadTitleRequest(input, settings: settings, reasoning: 'off'), cancellation: cancellation);
+          final title = parseThreadTitle(reply.text);
+          if (title == null) throw const ModelFailure('title_generation_invalid', 'The model returned an invalid thread title');
+          result = title;
+        }
       } else if (provider is OpenAIProvider) {
         result = (await provider.respond(input, cancellation: cancellation, onEvent: onEvent,
           onRecovery: (item) async {
@@ -794,6 +804,8 @@ Future<void> _networkMain(List<Object?> args) async {
         if (error is CancelledException) 'code': 'cancelled',
       });
     } finally {
+      if (id != null && (request['method'] == 'title.generate' ||
+          request['method'] == 'respond' && params['release_inference'] == true)) gptClient.closeSession(id);
       operations.remove(operationId);
       active[ownerId]?.remove(operationId);
       if (active[ownerId]?.isEmpty == true) active.remove(ownerId);
@@ -830,7 +842,7 @@ Future<void> _networkMain(List<Object?> args) async {
       }
     }
     final operation = traceIncoming(request, () => handle(request),
-      service: {'respond', 'compact', 'web.search', 'image.generate'}.contains(request['method']) &&
+      service: {'respond', 'title.generate', 'compact', 'web.search', 'image.generate'}.contains(request['method']) &&
         request['params']?['provider'] == 'openai' ? 'openai' : 'network');
     pending.add(operation);
     unawaited(operation.catchError((Object error, StackTrace stack) {

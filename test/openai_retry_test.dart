@@ -320,13 +320,13 @@ void main() {
     });
   }
 
-  test('silent streams reconnect after 60 seconds and close every abandoned body', () {
+  test('silent streams reconnect after 5 minutes and close every abandoned body', () {
     fakeAsync((time) {
       var closed = 0;
       final transport = _Transport((attempt, _) => attempt == 5 ? _events([_completed]) : HttpReply(StreamController<List<int>>(
         onCancel: () { closed++; return Future<void>.value(); },
       ).stream, 200, {}, '2'));
-      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 244));
+      final result = _settle(time, _respond(_client(transport)), within: const Duration(seconds: 1204));
       expect(result.error, isNull);
       expect(result.value!.text, 'Recovered');
       expect(transport.bodies, hasLength(5));
@@ -517,8 +517,9 @@ void main() {
     expect(fixture.requests, hasLength(2));
   });
 
-  test('WebSocket fallback preserves the last provider deadline and stays on HTTP', () async {
-    final fixture = await _websocketFixture((attempt, transport) => transport == 'websocket' ? [
+  test('WebSocket fallback preserves the provider deadline and isolates HTTP fallback to its session', () async {
+    var failing = true;
+    final fixture = await _websocketFixture((attempt, transport) => transport == 'websocket' && failing ? [
       {'type': 'response.failed', 'response': {'error': {
         'code': 'server_error', 'message': 'Temporary stream failure.',
         'headers': {'Retry-After': attempt == 6 ? '1' : '0'},
@@ -543,6 +544,9 @@ void main() {
     expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');
     expect(fixture.requests, hasLength(8));
     expect(fixture.requests.last.transport, 'http');
+    failing = false;
+    expect((await _respond(fixture.client, sessionId: 'sibling', transport: 'websocket')).text, 'Recovered');
+    expect(fixture.requests.last.transport, 'websocket');
   });
 
   for (final code in ['server_is_overloaded', 'policy_capacity_unavailable']) {
@@ -730,8 +734,9 @@ ResponsesClient _client(_Transport transport, {List<bool>? refreshes}) {
 
 Future<ResponsesReply> _respond(ResponsesClient client, {
   CancellationToken? cancellation, List<Json> input = const [], void Function(Json)? onEvent, String transport = 'http',
+  String sessionId = 'fixture',
 }) => client.respond(model: 'gpt-6.1-sol', instructions: '', input: input, tools: [],
-  sessionId: 'fixture', cancellation: cancellation ?? CancellationToken(), onEvent: onEvent, transport: transport);
+  sessionId: sessionId, cancellation: cancellation ?? CancellationToken(), onEvent: onEvent, transport: transport);
 
 Future<String> _search(ResponsesClient client, [CancellationToken? cancellation]) => client.search(
   model: 'gpt-6.1-sol', sessionId: 'fixture', commands: {}, input: [], cancellation: cancellation ?? CancellationToken());

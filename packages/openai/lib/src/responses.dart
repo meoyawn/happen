@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:ai/ai.dart' show ModelFailure, decodeSse, HttpReply, httpRequest;
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
+import 'package:crypto/crypto.dart' show sha256;
 
 import 'web_pages.dart';
 import 'retry.dart';
@@ -15,6 +16,9 @@ import 'catalog.dart';
 import 'records.dart';
 
 part 'response_socket.dart';
+
+// codex/model-provider-info: DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000.
+const _streamIdleTimeout = Duration(minutes: 5);
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -48,7 +52,7 @@ class ResponsesClient {
   final HttpClient _http;
   final bool _ownsHttp;
   Future<Directory?>? _requestDump;
-  bool _httpFallback = false;
+  final _httpFallbackSessions = <String>{};
   final _sockets = <String, _ResponsesSocket>{};
 
   // Custom endpoints may only support SSE. Official endpoints support both.
@@ -189,16 +193,17 @@ class ResponsesClient {
     String verbosity = 'low',
     String reasoningSummary = 'auto',
     int? maxOutputTokens,
+    Json? outputSchema,
     void Function(Json event)? onEvent,
     Future<void> Function(Json item)? onRecovery,
     Json? modelInfo,
   }) async {
-    var activeTransport = transport == 'websocket' && _httpFallback ? 'http' : transport;
+    var activeTransport = transport == 'websocket' && _httpFallbackSessions.contains(sessionId) ? 'http' : transport;
     var body = responsesRequest(model: model, instructions: instructions, input: input,
       modelInfo: modelInfo,
       tools: tools, sessionId: sessionId, reasoning: reasoning, toolChoice: toolChoice,
       transport: activeTransport, verbosity: verbosity, reasoningSummary: reasoningSummary,
-      maxOutputTokens: maxOutputTokens);
+      maxOutputTokens: maxOutputTokens, outputSchema: outputSchema);
     final sampling = !input.any((item) => item['type'] == 'compaction_trigger');
     final delivered = <Json>[];
     final retained = <Object>{for (final item in body['input'] as List) if (item['id'] != null) item['id'] as Object};
@@ -227,7 +232,7 @@ class ResponsesClient {
       fallbackTransport: () {
         if (activeTransport != 'websocket') return false;
         activeTransport = 'http';
-        _httpFallback = true;
+        _httpFallbackSessions.add(sessionId);
         body = {...body, 'stream': true}..remove('type');
         body.remove('client_metadata');
         return true;
@@ -269,7 +274,7 @@ class ResponsesClient {
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
-          StreamIterator(decodeSse(incoming.stream.timeout(const Duration(seconds: 60)))),
+          StreamIterator(decodeSse(incoming.stream.timeout(_streamIdleTimeout))),
           cancellation,
           onEvent,
         );
@@ -345,10 +350,7 @@ class ResponsesClient {
     void Function(Json)? onEvent,
   ) async {
     final session = _sockets.putIfAbsent(sessionId, () => _ResponsesSocket());
-    return session.respond(this, body, headers, cancellation, onEvent,
-      onIdle: () {
-        if (identical(_sockets[sessionId], session)) closeSession(sessionId);
-      });
+    return session.respond(this, body, headers, cancellation, onEvent);
   }
 
   Future<ResponsesReply> _consume(
@@ -423,7 +425,7 @@ class ResponsesClient {
       }
       while (await next().asCancellable(
         cancellation,
-        onCancel: () => unawaited(iterator.cancel()),
+        onCancel: cancelIterator ? () => unawaited(iterator.cancel().catchError((Object _) {})) : null,
       )) {
         cancellation.throwIfCancelled();
         final event = iterator.current;
@@ -500,7 +502,7 @@ class ResponsesClient {
     } catch (error) {
       cancellation.throwIfCancelled();
       if (error is TimeoutException) {
-        throw const ModelFailure('stream_idle_timeout', 'GPT stream was idle for 60 seconds');
+        throw const ModelFailure('stream_idle_timeout', 'GPT stream was idle for 5 minutes');
       }
       if (transportFailure(error)) {
         throw const ModelFailure('stream_disconnected', 'GPT stream disconnected before completion');
@@ -614,11 +616,15 @@ class ResponsesClient {
     }
   }
 
-  void closeSession(String sessionId) => _sockets.remove(sessionId)?.close();
+  void closeSession(String sessionId) {
+    _sockets.remove(sessionId)?.close();
+    _httpFallbackSessions.remove(sessionId);
+  }
 
   void close() {
     for (final socket in _sockets.values) { socket.close(); }
     _sockets.clear();
+    _httpFallbackSessions.clear();
     if (_ownsHttp) _http.close(force: true);
   }
 }

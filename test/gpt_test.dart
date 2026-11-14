@@ -142,6 +142,7 @@ void main() {
             jsonEncode({
               'type': 'response.completed',
               'response': {
+                'id': 'response-${bodies.length}',
                 'status': 'completed',
                 'end_turn': bodies.length != 1,
                 // The completion packet is a summary, not a second delivery of
@@ -191,6 +192,7 @@ void main() {
           }
         });
         addTearDown(() async {
+          raw.close();
           for (final socket in sockets) {
             await socket.close();
           }
@@ -236,9 +238,18 @@ void main() {
           cancellation: CancellationToken(),
         );
         expect(second.text, 'Done ✓');
-        // Request inspection must match the packet received by inference,
-        // including the base prompt, tool schemas, native items and settings.
-        expect(gptRequest(request(context)), bodies[1]);
+        // Inspection shows the complete logical context. A warm socket sends
+        // only the suffix after the previous request and its durable output.
+        final inspected = gptRequest(request(context));
+        final packet = {...bodies[1]};
+        if (transport == 'websocket') {
+          expect(sockets, hasLength(1), reason: 'Completed turns must reuse the live inference connection.');
+          expect(packet.remove('previous_response_id'), 'response-1');
+          expect((packet['input'] as List).map((item) => item['type']),
+            ['custom_tool_call_output', 'configuration_update', 'message']);
+          packet['input'] = [...bodies[0]['input'] as List, ...gptInput(restored), ...packet['input'] as List];
+        }
+        expect(inspected, packet);
         expect(protocol, isNotEmpty);
         expect(protocol, everyElement({
           'lite': 'true',
@@ -248,7 +259,7 @@ void main() {
           expect(body['client_metadata'], transport == 'websocket'
             ? {'ws_request_header_x_openai_internal_codex_responses_lite': 'true'} : isNull);
         }
-        expect((bodies[1]['input'] as List).sublist(3, 6), [
+        expect((inspected['input'] as List).sublist(3, 6), [
           native[0],
           {...native[1], 'internal_chat_message_metadata_passthrough': {'content_item_kinds': ['unknown']}},
           native[2],
@@ -259,7 +270,7 @@ void main() {
           'configuration_update',
         );
         expect(bodies[1].containsKey('tools'), false);
-        final declared = bodies[1]['input'][0]['tools'][0]['tools'][0];
+        final declared = inspected['input'][0]['tools'][0]['tools'][0];
         expect(declared['name'], 'exec');
         expect(declared['type'], 'custom');
         if (transport == 'websocket') {
@@ -300,7 +311,7 @@ void main() {
           return;
         }
         for (var i = 0; i < 2; i++) {
-          // The client clock runs 100x faster: each gap stays below the idle
+          // The client clock runs 500x faster: each gap stays below the idle
           // limit, while the whole response lasts longer than that limit.
           await Future<void>.delayed(const Duration(milliseconds: 380));
           await send({'type': 'response.output_text.delta', 'delta': 'tick'});
@@ -373,7 +384,7 @@ void main() {
             },
           ),
           zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
-            parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 100
+            parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 500
                 : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
         );
       }

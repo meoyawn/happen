@@ -28,6 +28,9 @@ class GptCatalog {
   }
 
   GptModel model(String id) => GptModel(id, metadata: _snapshot?.models[id]);
+  bool available(String id) => _snapshot == null
+    ? supportedGptModels.contains(id) && model(id).data['supported_in_api'] == true
+    : _snapshot!.models.containsKey(id) && _snapshot!.models[id]!['supported_in_api'] == true;
   String get defaultModel => catalogDefaultGptModel([
     for (final id in supportedGptModels) model(id).data,
   ]);

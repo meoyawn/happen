@@ -71,7 +71,7 @@ class AgentServer {
   FileStat? _socketStat;
   final _clients = <_Client>{};
   final _tasks = <String, _Task>{};
-  late final _namingThreads = <String, Future<void>>{};
+  late final _titleRequests = <String, ({CancellationToken cancellation, Future<void> done})>{};
   late final _threadLifetimes = <String, ({CancellationToken cancellation, Future<void> released})>{};
   late final _gitActions = <String, String>{};
   final _sideForks = <String, Future<_Task>>{};

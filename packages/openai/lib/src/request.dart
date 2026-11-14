@@ -17,6 +17,7 @@ Json responsesRequest({
   String verbosity = 'low',
   String reasoningSummary = 'auto',
   int? maxOutputTokens,
+  Json? outputSchema,
   Json? modelInfo,
 }) {
   if (!{'http', 'websocket'}.contains(transport)) {
@@ -63,7 +64,8 @@ Json responsesRequest({
       if (reasoningSummary != 'none') 'summary': reasoningSummary,
       'context': 'all_turns',
     },
-    'text': {'verbosity': verbosity},
+    'text': {'verbosity': verbosity,
+      if (outputSchema != null) 'format': {'type': 'json_schema', 'name': 'response', 'strict': true, 'schema': outputSchema}},
     'max_output_tokens': ?maxOutputTokens,
   };
 }
