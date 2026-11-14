@@ -14,6 +14,16 @@ Saved JSON stays with the Dart owner. Each cell captures its admitted store view
 `load(key)` synchronously materializes only that key as a fresh JavaScript value.
 Unused keys consume no cell heap, and completion transfers only new writes.
 
+Execution and observation policy also follows Codex `38cdc4d65` from the local
+`/Users/meoyawn/Developer/github/codex` checkout: `src/service.rs`,
+`src/cell_actor/mod.rs` and `src/runtime/mod.rs`. Each interpreter runs in a Dart
+isolate inside this process. Observation deadlines yield output without stopping
+JavaScript, including CPU-bound code. There is no implicit CPU or cell timeout;
+termination, session shutdown and caller cancellation signal the native atomic
+interrupt. An explicitly supplied `CodeMode.execute(timeout: ...)` still limits
+the whole operation. Exec and wait observations default to 10 seconds, with the
+upstream one-second completion grace for observations of at least 10 seconds.
+
 The settlement combinators in `lib/src/settled.dart` retain upstream
 `src/runtime/settled.js` with only its engine-specific comment changed. Other
 runtime code is a modified Dart/JavaScript implementation. Codex is Copyright
@@ -36,7 +46,7 @@ mean every upstream case in that family has been ported or independently rerun.
 | Notifications and timers | `src/runtime/{callbacks,timers}.rs`; notification/cleanup cases in `src/service_contract_tests.rs` | Adapted. Server coverage exercises notification delivery, awaited timers and discarding unawaited timers. `notify` cleanup cancellation, timer argument conversion, duplicate observers and callback admission ordering need the remaining upstream cases. |
 | Output retention, diagnostics and budgets | `src/service_output_collection_tests.rs` | Adapted. `test/code_mode_test.dart` covers byte/item head-tail retention, token budgets and UTF-8 boundaries. Full terminal-diagnostic caps, mixed-media retention and diagnostics across observation budgets remain open. |
 | Image/audio/generated-image helpers | `src/service_tests.rs`, `src/service_audio_tests.rs` | Adapted. Helpers emit ordered content items. `test/fixtures/context_contract/cases.dart` contains generated-image/audio vectors; those vectors were not rerun in this change. Full accepted/rejected-input and audio-duration matrices remain open. |
-| Interrupts and resource limits | `src/runtime/mod.rs`, service yield-grace cases | Adapted policies. CPU/native cancellation and host cleanup are covered in `test/code_mode_test.dart`. OpenAI cells use 256 MiB, a 1 s budget per native execution slice, 256 KiB source characters, 64 outstanding host calls and 32 uncollected cells. These are Happen limits; complete boundary/platform proof remains open. |
+| Interrupts and resource limits | `src/runtime/mod.rs`, service yield-grace cases | Adapted policies. `test/code_mode_test.dart` covers CPU-bound cells yielding without an implicit cutoff, explicit termination/shutdown, native cancellation and host cleanup. OpenAI cells retain Happen's limits of 256 MiB, 256 KiB source characters, 64 outstanding host calls and 32 uncollected cells; complete boundary/platform proof remains open. |
 | V8/ICU and native serialization details | Locale/Intl cases; Serde marker/depth regressions | Engine-specific differences. QuickJS has no `Intl`; locale formatting/error strings/global built-ins differ. Serde private markers and its recursion bugs do not apply to Dart's decoder. Do not add V8, ICU shims or Rust-specific guards to claim engine identity. |
 | Remote/pending-frontier execution | `execute_to_pending`, `wait_to_pending`, remote/delegate/UI runtime cases | Excluded where they require remote execution, subagents or upstream-only session options absent from Happen. Ordinary embedded lifecycle and cancellation cases remain applicable. |
 

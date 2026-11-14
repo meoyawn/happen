@@ -499,14 +499,16 @@ if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'yield_cell',
         'input': 'export const moduleValue = 7; text({moduleValue,moduleThis:this === undefined,console:typeof console,missingTool:typeof tools.not_registered}); '
+          'const initialEnd = Date.now() + 1300; while (Date.now() < initialEnd) {} text("CPU_INITIAL_DONE"); '
           r'text({clock:/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/.test((await tools.clock__curr_time({})).current_time)}); '
           'text("BEFORE_WAIT"); notify("CELL_NOTICE"); yield_control(); '
-          'await new Promise(resolve => setTimeout(resolve, 500)); text("AFTER_WAIT");'}],
+          'await new Promise(resolve => setTimeout(resolve, 500)); '
+          'const resumedEnd = Date.now() + 1300; while (Date.now() < resumedEnd) {} text("CPU_RESUMED_DONE"); text("AFTER_WAIT");'}],
       [{'type': 'function_call', 'name': 'wait', 'call_id': 'resume_cell',
-        'arguments': '{"cell_id":"1","yield_time_ms":1000}'}],
+        'arguments': '{"cell_id":"1","yield_time_ms":60000}'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'terminate_cell',
         'input': 'text("BEFORE_TERMINATE"); yield_control(); '
-          'await new Promise(resolve => setTimeout(resolve, 60000)); text("UNEXPECTED_AFTER_TERMINATE");'}],
+          'while (true) {} text("UNEXPECTED_AFTER_TERMINATE");'}],
       [{'type': 'function_call', 'name': 'wait', 'call_id': 'stop_cell',
         'arguments': '{"cell_id":"2","terminate":true}'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'exit_cell',

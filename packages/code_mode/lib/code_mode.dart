@@ -11,9 +11,8 @@ export 'src/session.dart' show CodeSession;
 class CodeMode {
   const CodeMode({
     this.memoryLimit = 32 * 1024 * 1024,
-    this.cpuBudgetMs = 1000,
   });
-  final int memoryLimit, cpuBudgetMs;
+  final int memoryLimit;
 
   Future<Json> execute(
     String source, {
@@ -21,7 +20,7 @@ class CodeMode {
     required CancellationToken cancellation,
     Json values = const {},
     List<Json> catalog = const [],
-    Duration timeout = const Duration(seconds: 60),
+    Duration? timeout,
     bool awaitPending = true,
   }) async {
     cancellation.throwIfCancelled();
@@ -34,7 +33,6 @@ class CodeMode {
         values: values,
         catalog: catalog,
         timeout: timeout,
-        cpuBudgetMs: cpuBudgetMs,
         awaitPending: awaitPending,
       );
     } finally {

@@ -35,26 +35,26 @@ class QuickJs {
   void Function()? _closeExit;
   void Function()? _closeMedia;
   void Function()? _closeValues;
+  void Function()? _closeEvents;
   bool _exited = false;
 
-  Object? evaluate(String source, {int cpuBudgetMs = 1000}) {
+  Object? evaluate(String source, {int timeoutMs = 0}) {
     if (_handle == nullptr) throw StateError('QuickJS is closed');
     final native = source.toNativeUtf8();
     try {
-      return _decode(jsEval(_handle, native, cpuBudgetMs));
+      return _decode(jsEval(_handle, native, timeoutMs));
     } finally {
       malloc.free(native);
     }
   }
 
-  void _evaluateModule(String source, int cpuBudgetMs) {
-    // Use the bridge to establish the same native CPU/interrupt deadline, then
-    // evaluate actual module grammar with QuickJS's public embedding API.
-    evaluate('null', cpuBudgetMs: cpuBudgetMs);
+  void _evaluateModule(String source, int timeoutMs) {
+    // Refresh the stack top and optional caller deadline before module grammar.
+    evaluate('null', timeoutMs: timeoutMs);
     final native = source.toNativeUtf8();
     try {
       final failed = jsEvaluateModule(_handle, native, utf8.encode(source).length);
-      evaluate('__cell.module(__moduleResult, $failed); delete globalThis.__moduleResult; null', cpuBudgetMs: cpuBudgetMs);
+      evaluate('__cell.module(__moduleResult, $failed); delete globalThis.__moduleResult; null', timeoutMs: timeoutMs);
     } finally { malloc.free(native); }
   }
 
@@ -75,23 +75,9 @@ class QuickJs {
     _closeExit?.call(); _closeExit = null;
     _closeMedia?.call(); _closeMedia = null;
     _closeValues?.call(); _closeValues = null;
+    _closeEvents?.call(); _closeEvents = null;
     _exited = false;
   }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
-
-  /// Consume only output produced since the preceding observation.
-  Json takeOutput({int maxTokens = 10000}) => traceSync('code_mode.cell.output.render', () {
-    final result = takeCollectedOutput();
-    final rendered = renderCellContent(jsonObject(result['output']), maxTokens);
-    return {
-      'output': rendered.items.where((part) => part['type'] == 'input_text').map((part) => part['text']).toList(),
-      'content': rendered.items,
-      if (rendered.items.any((part) => part['type'] != 'input_text')) 'text_audio_tokens': rendered.textAudioTokens,
-      if ((result['images'] as List).isNotEmpty) 'images': result['images'],
-    };
-  }, category: 'code_mode', includeErrorMessage: false);
-
-  Json takeCollectedOutput() => traceSync('code_mode.cell.output.collect',
-    () => jsonObject(evaluate('__cell.takeOutput()')), category: 'code_mode', includeErrorMessage: false);
 
   Future<Json> run(
     String source, {
@@ -99,15 +85,13 @@ class QuickJs {
     required CancellationToken cancellation,
     Json values = const {},
     List<Json> catalog = const [],
-    Duration? timeout = const Duration(seconds: 60),
-    int cpuBudgetMs = 1000,
+    Duration? timeout,
     bool awaitPending = true,
     bool retainOutput = false,
     bool module = false,
     String? cellId,
-    CodeCancellationToken? interrupt,
-    void Function()? onYield,
     Future<void> Function(String)? onNotify,
+    void Function(Json)? onEvent,
   }) => traceAsync('code_mode.cell', () async {
     cancellation.throwIfCancelled();
     if (_running) throw StateError('Only one cell may run in a context');
@@ -121,7 +105,7 @@ class QuickJs {
     final maxOutputTokens = cellOutputTokens(source);
     // A borrowed task interrupt must never be signalled by normal cell cleanup:
     // doing so would cancel sibling yielded cells sharing the task's signal.
-    final signal = interrupt ?? (cancellation is CodeCancellationToken ? cancellation : null);
+    final signal = cancellation is CodeCancellationToken ? cancellation : null;
     final localSignal = signal == null ? CodeCancellationToken() : null;
     final cell = localSignal ?? CancellationToken();
     final link = CancellationHook(cancellation, cell.cancel);
@@ -144,19 +128,19 @@ class QuickJs {
         timings.update('$operation.calls', (value) => value + 1, ifAbsent: () => 1);
       }
     }
-    int budget() {
+    int remainingTime() {
       cell.throwIfCancelled();
       signal?.throwIfCancelled();
-      if (timeout == null) return cpuBudgetMs;
+      if (timeout == null) return 0;
       final remaining = timeout - clock.elapsed;
       if (remaining <= Duration.zero) {
         cell.cancel(TimeoutException('JavaScript cell timed out', timeout));
         cell.throwIfCancelled();
       }
-      return cpuBudgetMs.clamp(1, remaining.inMilliseconds.clamp(1, cpuBudgetMs));
+      return (remaining.inMicroseconds + 999) ~/ 1000;
     }
     Object? evaluateCell(String source) =>
-      measure('code.evaluate', () => evaluate(source, cpuBudgetMs: budget()));
+      measure('code.evaluate', () => evaluate(source, timeoutMs: remainingTime()));
     Json snapshot() => traceSync('code_mode.cell.output.collect', () {
       // CodeSession owns the saved values and merges only this cell's writes.
       // Copying its full store back can exhaust the runtime after successful work.
@@ -175,11 +159,17 @@ class QuickJs {
     jsSetInterrupt(_handle, Pointer.fromAddress(signal?.address ?? localSignal!.address), signal?.generation ?? localSignal!.generation);
     try {
       traceSync('code_mode.cell.init', () {
+        if (onEvent != null) {
+          _closeEvents = jsInstallJsonCallback(_handle, '__cellEvent', (value) {
+            onEvent(jsonObject(jsonDecode(value)));
+            return {};
+          });
+        }
         evaluateCell(_bootstrap);
         _closeExit = jsInstallExit(_handle, () { _exited = true; });
-        if (module) _closeMedia = jsInstallJsonCallback(_handle, '__audioMetadata', (url) { budget(); final value = audioMetadata(url); budget(); return value; });
+        if (module) _closeMedia = jsInstallJsonCallback(_handle, '__audioMetadata', (url) { remainingTime(); final value = audioMetadata(url); remainingTime(); return value; });
         _closeValues = jsInstallJsonCallback(_handle, '__loadStoredValue', (key) {
-          budget();
+          remainingTime();
           return storedValues.containsKey(key) ? {'value': storedValues[key]} : {};
         });
         evaluateCell('ALL_TOOLS.push(...${jsonEncode(catalog)}); null');
@@ -188,17 +178,17 @@ class QuickJs {
         'code.catalog_count': catalog.length, 'code.values_count': values.length,
       }, includeErrorMessage: false);
       traceSync('code_mode.cell.start', () {
-        if (module) { measure('code.module', () => _evaluateModule(source, budget())); }
+        if (module) { measure('code.module', () => _evaluateModule(source, remainingTime())); }
         else { evaluateCell('__cell.start(${jsonEncode(source)}); null'); }
       }, category: 'code_mode', includeErrorMessage: false);
       while (true) {
-        budget();
+        remainingTime();
         while (replies.isNotEmpty) {
           evaluateCell(
             '__cell.resolve(${jsonEncode(replies.removeAt(0))}); null',
           );
         }
-        final error = measure('code.pump', () => jsPump(_handle, 128, budget()));
+        final error = measure('code.pump', () => jsPump(_handle, 128, remainingTime()));
         if (error != nullptr) _decode(error);
         final state = jsonObject(evaluateCell('__cell.poll()'));
         for (final timer in state['timers'] as List) {
@@ -217,10 +207,9 @@ class QuickJs {
         }
         if (state['yielded'] == true) {
           traceInstant('code_mode.yield', category: 'code_mode');
-          onYield?.call();
         }
         for (final raw in state['requests'] as List) {
-          budget();
+          remainingTime();
           final request = jsonObject(raw);
           final id = request['id'] as int;
           final operation = traceAsync<Object?>('code_mode.host_tool',
@@ -242,7 +231,7 @@ class QuickJs {
         if (state['done'] == true && (!awaitPending || pending.isEmpty && replies.isEmpty)) {
           return snapshot();
         }
-        // Let cancellation and async host I/O run between bounded native calls.
+        // Let cancellation and async host I/O run between native calls.
         if (jsHasJobs(_handle) == 0 && replies.isEmpty) {
           await traceAsync('code_mode.cell.idle', () => wake.future.asCancellable(cell),
             category: 'code_mode', attributes: {
@@ -256,7 +245,7 @@ class QuickJs {
     } catch (_) {
       // Native execution may observe the atomic signal before Dart can service
       // the cancellation mailbox or deadline timer.
-      budget();
+      remainingTime();
       if (_exited) {
         jsClearExit(_handle);
         final state = jsonObject(evaluateCell('__cell.poll()'));
@@ -284,7 +273,7 @@ class QuickJs {
   }, category: 'code_mode', attributes: {
     'code.cell_id': ?cellId, 'code.source_length': source.length,
     'code.mode': module ? 'module' : 'script', 'runtime.name': 'quickjs',
-    'code.cpu_budget_ms': cpuBudgetMs, 'code.await_pending': awaitPending,
+    'code.await_pending': awaitPending,
     'code.retain_output': retainOutput,
     if (timeout != null) 'code.timeout_ms': timeout.inMilliseconds,
   }, includeErrorMessage: false);
@@ -296,6 +285,7 @@ class QuickJs {
       _closeExit?.call(); _closeExit = null;
       _closeMedia?.call(); _closeMedia = null;
       _closeValues?.call(); _closeValues = null;
+      _closeEvents?.call(); _closeEvents = null;
     }
   }, category: 'code_mode', attributes: {'runtime.name': 'quickjs'}, includeErrorMessage: false);
 }
@@ -338,7 +328,12 @@ var __cell = (() => {
   }}.parse;
   const pending = new Map();
   const requests = [];
-  let output = __createOutput();
+  const emit = typeof __cellEvent === "function" ? __cellEvent : null;
+  function createOutput() {
+    const collected = __createOutput();
+    return emit ? {push: value => emit(JSON.stringify({output: value})), collect: () => collected.collect()} : collected;
+  }
+  let output = createOutput();
   let images = [];
   const timers = [], timeouts = new Map(), notices = [];
   let imageBytes = 0;
@@ -377,7 +372,7 @@ var __cell = (() => {
     },
     takeOutput() {
       const result = {output: output.collect(), images};
-      output = __createOutput(); images = []; imageBytes = 0;
+      output = createOutput(); images = []; imageBytes = 0;
       return result;
     },
     resolve(reply) {
@@ -424,7 +419,11 @@ var __cell = (() => {
     timeouts.delete(id);
     timers.push({id});
   }
-  function yield_control() { if (!exited) yielded = true; }
+  function yield_control() {
+    if (exited) return;
+    if (emit) emit(JSON.stringify({yield: true}));
+    else yielded = true;
+  }
   function exit() { exited = true; done = true; __nativeExit(); }
   function legacyImage(value, detail) {
     if (exited) return;

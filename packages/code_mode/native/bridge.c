@@ -53,7 +53,7 @@ static int interrupted(JSRuntime *runtime, void *opaque) {
   (void)runtime;
   EmbeddedJs *js = opaque;
   return (js->interrupt && embedded_js_interrupt_generation(js->interrupt) != js->generation)
-    || monotonic_ns() >= js->deadline_ns;
+    || (js->deadline_ns && monotonic_ns() >= js->deadline_ns);
 }
 
 static char *copy_result(char kind, const char *value) {
@@ -96,10 +96,10 @@ void embedded_js_reset_context(EmbeddedJs *js) {
   js->context = JS_NewContext(js->runtime);
 }
 
-char *embedded_js_eval(EmbeddedJs *js, const char *source, int64_t budget_ms) {
+char *embedded_js_eval(EmbeddedJs *js, const char *source, int64_t timeout_ms) {
   if (!js->context) return copy_result('E', "QuickJS context allocation failed");
   JS_UpdateStackTop(js->runtime);
-  js->deadline_ns = monotonic_ns() + budget_ms * 1000000;
+  js->deadline_ns = timeout_ms > 0 ? monotonic_ns() + timeout_ms * 1000000 : 0;
   JSValue value = JS_Eval(js->context, source, strlen(source), "<cell>", JS_EVAL_TYPE_GLOBAL);
   if (JS_IsException(value)) return exception(js);
   JSValue json = JS_JSONStringify(js->context, value, JS_UNDEFINED, JS_UNDEFINED);
@@ -113,13 +113,13 @@ char *embedded_js_eval(EmbeddedJs *js, const char *source, int64_t budget_ms) {
   return result;
 }
 
-char *embedded_js_pump(EmbeddedJs *js, int32_t limit, int64_t budget_ms) {
+char *embedded_js_pump(EmbeddedJs *js, int32_t limit, int64_t timeout_ms) {
   JS_UpdateStackTop(js->runtime);
-  js->deadline_ns = monotonic_ns() + budget_ms * 1000000;
+  js->deadline_ns = timeout_ms > 0 ? monotonic_ns() + timeout_ms * 1000000 : 0;
   for (int32_t i = 0; i < limit && JS_IsJobPending(js->runtime); i++) {
     JSContext *context = NULL;
     if (JS_ExecutePendingJob(js->runtime, &context) < 0) return exception(js);
-    if (monotonic_ns() >= js->deadline_ns) break;
+    if (js->deadline_ns && monotonic_ns() >= js->deadline_ns) break;
   }
   return NULL;
 }

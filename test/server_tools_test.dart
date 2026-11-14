@@ -25,8 +25,8 @@ void main() {
       final output = <Json>[];
       if (requests.length == 1 || requests.length == 4 || requests.length == 6) {
         output.add({'type': 'custom_tool_call', 'name': 'exec', 'namespace': 'functions', 'call_id': 'cell_${requests.length}',
-          'input': requests.length != 1 ? 'text(load("done"));' : '''// @exec: {"yield_time_ms": 0}
-text("first"); notify("live notification");
+          'input': requests.length != 1 ? 'text(load("done"));' : '''
+text("first"); notify("live notification"); yield_control();
 await new Promise(resolve => setTimeout(resolve, 100));
 text(await tools.exec_command({cmd: "printf receipt > receipt.txt; printf second", login: false}));
 const pending = await tools.exec_command({cmd: "read value", shell: "/bin/sh", login: false, yield_time_ms: 250});
@@ -36,7 +36,7 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
 '''});
       } else if (requests.length == 2) {
         final input = (body['input'] as List).map(jsonObject);
-        final status = input.where((item) => item['type'] == 'custom_tool_call_output')
+        final status = input.where((item) => item['type'] == 'custom_tool_call_output' && item['output'] is List)
           .expand((item) => (item['output'] as List).map(jsonObject)).map((part) => part['text']).whereType<String>()
           .firstWhere((text) => text.startsWith('Script running with cell ID '));
         final id = RegExp(r'Script running with cell ID ([^\n]+)').firstMatch(status)![1]!;

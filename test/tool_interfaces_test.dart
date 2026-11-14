@@ -287,7 +287,7 @@ text(results[1].value.structuredContent);
       });
     Future<Json> exec(String source) => runtime.execute(ToolCall(id: newId(), namespace: 'functions',
       name: 'exec', input: source), context);
-    final running = await exec('// @exec: {"yield_time_ms": 0}\ntext("first"); text(await tools.block({})); store("answer", 42);');
+    final running = await exec('text("first"); yield_control(); text(await tools.block({})); store("answer", 42);');
     await entered.future;
     expect(running['output'], ['first']);
     final id = running['cell_id'] as String;
@@ -305,15 +305,18 @@ text(results[1].value.structuredContent);
     expect((await runtime.execute(_call('wait', {'cell_id': id}), context))['error'], 'exec cell $id not found');
 
     CancellationToken? blocked;
+    final blockedStarted = Completer<void>();
     final yielded = await runtime.execute(ToolCall(id: newId(), name: 'exec',
       input: 'text("before"); yield_control(); await tools.block({}); text("after");'),
       ToolExecution(catalog: (_) async => [{'name': 'block', 'description': 'Wait for cancellation'}], values: const {}, cancellation: cancellation,
         call: (_, _, {required cancellation}) {
           blocked = cancellation;
+          blockedStarted.complete();
           return CancellableCompleter<Object?>(cancellation).future;
         }));
     expect(yielded['output'], ['before']);
     expect(yielded['cell_id'], '2');
+    await blockedStarted.future;
     final stopped = await runtime.execute(_call('wait', {'cell_id': yielded['cell_id'], 'terminate': true}), context);
     expect(stopped['terminated'], isTrue);
     expect(stopped['output'], isEmpty);

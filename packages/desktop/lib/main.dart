@@ -6,6 +6,7 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 import 'app.dart';
+import 'app_icon.dart';
 import 'appearance.dart';
 import 'database.dart';
 import 'desktop_notifications.dart';
@@ -46,6 +47,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   @override
   void initState() {
     super.initState();
+    unawaited(_restoreAppIcon());
     // Hot reload never re-enters initState: the server, socket, database owner,
     // selections, and composer state live for this application instance.
     _opening = _open();
@@ -65,10 +67,21 @@ class _HappenDesktopState extends State<HappenDesktop> {
   @override
   void reassemble() {
     super.reassemble();
+    unawaited(_restoreAppIcon());
     _session?.watchProjectIcons();
     _watchLocalTasks();
     _watchMachines();
     _machines?.syncProjectIcons();
+  }
+
+  Future<void> _restoreAppIcon() async {
+    try {
+      await restoreAppIcon(_lifetime);
+    } on CancelledException {
+      // Application exit cancels native setup.
+    } catch (error, stack) {
+      FlutterError.reportError(FlutterErrorDetails(exception: error, stack: stack, library: 'app icon'));
+    }
   }
 
   void _watchMachines() {

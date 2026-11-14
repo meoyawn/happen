@@ -5,9 +5,10 @@ import 'conversation_markdown.dart';
 import 'session.dart';
 
 class ConversationTurnStats extends StatelessWidget {
-  const ConversationTurnStats({super.key, required this.durationMs, this.inputTokens, this.outputTokens});
-  final int durationMs;
-  final int? inputTokens, outputTokens;
+  const ConversationTurnStats({super.key, required this.durationMs, required this.toolCalls,
+    this.inputTokens, this.outputTokens, this.cachedTokens});
+  final int durationMs, toolCalls;
+  final int? inputTokens, outputTokens, cachedTokens;
 
   @override
   Widget build(BuildContext context) {
@@ -21,9 +22,12 @@ class ConversationTurnStats extends StatelessWidget {
       >= 1000 => '${(value / 1000).toStringAsFixed(1)}k',
       _ => '$value',
     };
-    return Tooltip(message: 'Turn duration: $elapsed\nInput tokens: ${inputTokens ?? '—'}\nOutput tokens: ${outputTokens ?? '—'}',
-      child: Text('$elapsed · ${tokens(inputTokens)} in · ${tokens(outputTokens)} out',
-        style: const TextStyle(fontSize: 12, height: 1.5, color: desktopSecondary,
+    return Tooltip(message: 'Turn duration: $elapsed\nTool calls: $toolCalls\nInput tokens: ${inputTokens ?? '—'}'
+        '\nOutput tokens: ${outputTokens ?? '—'}\nCached tokens: ${cachedTokens ?? '—'}',
+      child: Text('— $elapsed · $toolCalls tool ${toolCalls == 1 ? 'call' : 'calls'}'
+        ' · ${tokens(inputTokens)} in · ${tokens(outputTokens)} out · ${tokens(cachedTokens)} cached',
+        maxLines: 1, overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 1.5, color: desktopSecondary,
           fontFeatures: [FontFeature.tabularFigures()])));
   }
 }
@@ -31,15 +35,19 @@ class ConversationTurnStats extends StatelessWidget {
 /// Port of T3Code TimelineAssistantRows: a quiet copy/fork/timestamp action strip,
 /// visible on hover or keyboard focus, without a second message projection.
 class ConversationResponseFooter extends StatelessWidget {
-  const ConversationResponseFooter({super.key, required this.entry, required this.visible, this.onFork, this.forking = false});
+  const ConversationResponseFooter({super.key, required this.entry, required this.visible, this.turn, this.toolCalls = 0,
+    this.onFork, this.forking = false});
   final ChatEntry entry;
   final bool visible;
+  final Map<String, Object?>? turn;
+  final int toolCalls;
   final Future<void> Function()? onFork;
   final bool forking;
 
   @override
   Widget build(BuildContext context) {
     final timestamp = entry.timestamp;
+    final duration = turn?['durationMs'], usage = turn?['tokenUsage'];
     return AnimatedOpacity(opacity: visible ? 1 : 0, duration: const Duration(milliseconds: 200),
       alwaysIncludeSemantics: true, child: IgnorePointer(ignoring: !visible, child: Padding(
         padding: const EdgeInsets.only(top: 6), child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -52,6 +60,11 @@ class ConversationResponseFooter extends StatelessWidget {
             child: Text('${timestamp.toLocal().hour.toString().padLeft(2, '0')}:${timestamp.toLocal().minute.toString().padLeft(2, '0')}',
               style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()])))),
           if (entry.response?.interrupted == true) const Padding(padding: EdgeInsets.only(left: 8), child: Text('Interrupted', style: TextStyle(fontSize: 12))),
+          if (turn?['status'] != 'inProgress' && duration is int && usage is Map)
+            Flexible(child: Padding(padding: const EdgeInsets.only(left: 8),
+              child: ConversationTurnStats(durationMs: duration, toolCalls: toolCalls,
+                inputTokens: usage['input_tokens'] as int?, outputTokens: usage['output_tokens'] as int?,
+                cachedTokens: usage['cached_input_tokens'] as int?))),
         ])),
       ));
   }

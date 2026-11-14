@@ -5,10 +5,12 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:desktop/conversation.dart';
 import 'package:desktop/conversation_activity.dart';
 import 'package:desktop/conversation_markdown.dart';
+import 'package:desktop/conversation_response.dart';
 import 'package:desktop/inline_reference.dart';
 import 'package:desktop/image_preview.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -26,29 +28,63 @@ void main() {
     'phase': 'final_answer', 'turnId': 'turn', 'startedAtMs': order * 1000, 'completedAtMs': order * 1000 + 1};
   DesktopTask task() => DesktopTask('thread', 'Conversation')..loaded = true;
 
-  testWidgets('each finished turn shows its own statistics without hovering, including an empty interrupted response', (tester) async {
+  testWidgets('finished turn statistics share the response hover footer and count nested calls across steering', (tester) async {
     final current = task()..running = true
       ..turns['turn'] = {'id': 'turn', 'status': 'inProgress'}
       ..messages.addAll({
         'user': {'id': 'user', 'type': 'userMessage', 'turnId': 'turn', 'order': 0,
           'content': [{'type': 'text', 'text': 'First question'}]},
-        'reply': answer('reply', 'First answer', 1),
+        'early': answer('early', 'Early answer', 1),
+        'cell': {'id': 'cell', 'type': 'dynamicToolCall', 'turnId': 'turn', 'order': 2, 'startedAtMs': 2000,
+          'tool': 'functions.exec', 'status': 'completed', 'arguments': 'await tools.read()'},
+        'read': {'id': 'read', 'type': 'dynamicToolCall', 'turnId': 'turn', 'order': 3, 'startedAtMs': 3000,
+          'parentCallId': 'cell', 'tool': 'read_file', 'status': 'completed', 'arguments': {'path': '/first'}},
+        'search': {'id': 'search', 'type': 'dynamicToolCall', 'turnId': 'turn', 'order': 4, 'startedAtMs': 4000,
+          'parentCallId': 'cell', 'tool': 'search', 'status': 'completed', 'arguments': {'query': 'second'}},
+        'steer': {'id': 'steer', 'type': 'userMessage', 'turnId': 'turn', 'order': 5,
+          'content': [{'type': 'text', 'text': 'Continue with this'}]},
+        'reply': answer('reply', 'First answer', 6),
       });
     addTearDown(current.liveText.dispose);
     await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
-    expect(find.text('5.6s · 13.3k in · 39 out'), findsNothing);
+    const summary = '— 5.6s · 3 tool calls · 13.3k in · 39 out · 12.0k cached';
+    expect(find.text(summary), findsNothing);
     current.running = false;
     current.turns['turn'] = {'id': 'turn', 'status': 'completed', 'durationMs': 5600,
-      'tokenUsage': {'input_tokens': 13300, 'output_tokens': 39}};
+      'tokenUsage': {'input_tokens': 13300, 'output_tokens': 39, 'cached_input_tokens': 12000}};
     await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
-    expect(find.text('5.6s · 13.3k in · 39 out').hitTestable(), findsOneWidget);
+    expect(find.text(summary), findsOneWidget);
+    expect(find.text(summary).hitTestable(), findsNothing);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(find.text('First answer', findRichText: true)));
+    await tester.pumpAndSettle();
+    expect(find.text(summary).hitTestable(), findsOneWidget);
+    final footer = find.ancestor(of: find.text(summary), matching: find.byType(ConversationResponseFooter));
+    final copy = find.descendant(of: footer, matching: find.byTooltip('Copy response'));
+    expect(copy.hitTestable(), findsOneWidget);
+    expect(tester.getCenter(copy).dy, closeTo(tester.getCenter(find.text(summary)).dy, 1));
+    expect(find.descendant(of: footer, matching: find.byTooltip(DateTime.fromMillisecondsSinceEpoch(6001).toLocal().toString())), findsOneWidget);
+    await mouse.moveTo(Offset.zero); await tester.pumpAndSettle();
+    expect(find.text(summary).hitTestable(), findsNothing);
     current.turns['next'] = {'id': 'next', 'status': 'interrupted', 'durationMs': 1200,
-      'tokenUsage': {'input_tokens': 240, 'output_tokens': 0}};
-    current.messages['next-user'] = {'id': 'next-user', 'type': 'userMessage', 'turnId': 'next', 'order': 2,
+      'tokenUsage': {'input_tokens': 240, 'output_tokens': 0, 'cached_input_tokens': 0}};
+    current.messages['next-user'] = {'id': 'next-user', 'type': 'userMessage', 'turnId': 'next', 'order': 7,
       'content': [{'type': 'text', 'text': 'Second question'}]};
     await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
-    expect(find.text('5.6s · 13.3k in · 39 out').hitTestable(), findsOneWidget);
-    expect(find.text('1.2s · 240 in · 0 out').hitTestable(), findsOneWidget);
+    expect(find.text(summary), findsOneWidget);
+    expect(find.byType(ConversationTurnStats), findsOneWidget);
+    current.messages['next-tool'] = {'id': 'next-tool', 'type': 'commandExecution', 'turnId': 'next', 'order': 8, 'startedAtMs': 8000,
+      'command': 'pwd', 'status': 'interrupted'};
+    current.messages['next-reply'] = {...answer('next-reply', 'Partial answer', 9), 'turnId': 'next'};
+    await open(tester, current, size: const Size(360, 900)); await tester.pumpAndSettle();
+    const interrupted = '— 1.2s · 1 tool call · 240 in · 0 out · 0 cached';
+    expect(find.text(interrupted).hitTestable(), findsNothing);
+    await mouse.moveTo(tester.getCenter(find.text('Partial answer', findRichText: true)));
+    await tester.pumpAndSettle();
+    expect(find.text(interrupted).hitTestable(), findsOneWidget);
+    expect(find.text(summary).hitTestable(), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -356,7 +392,9 @@ void main() {
 
   testWidgets('long history opens at the newest row without mounting the entire transcript', (tester) async {
     final current = task();
-    for (var i = 1; i <= 500; i++) { current.messages['$i'] = answer('$i', 'Answer $i\n\n${'A detailed paragraph.\n\n' * 4}', i); }
+    for (var i = 1; i <= 500; i++) {
+      current.messages['$i'] = {...answer('$i', 'Answer $i\n\n${'A detailed paragraph.\n\n' * 4}', i), 'turnId': 'turn$i'};
+    }
     await open(tester, current, size: const Size(800, 650));
     expect(find.textContaining('Answer 500', findRichText: true).hitTestable(), findsOneWidget);
     expect(find.textContaining('Answer 1\n', findRichText: true), findsNothing);
@@ -368,13 +406,22 @@ void main() {
 
   testWidgets('appending output preserves a reader position until Jump to latest', (tester) async {
     final current = task();
-    for (var i = 1; i <= 30; i++) { current.messages['$i'] = answer('$i', 'Message $i\n\n${'A detailed paragraph.\n\n' * 4}', i); }
+    for (var i = 1; i <= 30; i++) {
+      current.messages['$i'] = {...answer('$i', 'Message $i\n\n${'A detailed paragraph.\n\n' * 4}', i), 'turnId': 'turn$i'};
+    }
     await open(tester, current, size: const Size(800, 650)); await tester.pumpAndSettle();
-    await tester.drag(find.byType(ListView), const Offset(0, 550)); await tester.pumpAndSettle();
-    final position = tester.state<ScrollableState>(find.byType(Scrollable).first).position, offset = position.pixels;
-    current.messages['31'] = answer('31', 'The latest answer', 31);
+    await tester.sendEventToBinding(PointerScrollEvent(position: tester.getCenter(find.byType(Scrollable).first),
+      scrollDelta: const Offset(0, -550)));
+    await tester.pumpAndSettle();
+    final position = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
+    expect(position.extentBefore, greaterThan(100));
+    final heading = find.textContaining(RegExp(r'^Message \d+$'), findRichText: true).hitTestable().first;
+    final passage = find.text(tester.widget<RichText>(heading).text.toPlainText(), findRichText: true);
+    final top = tester.getTopLeft(passage).dy;
+    current.messages['31'] = {...answer('31', 'The latest answer', 31), 'turnId': 'turn31'};
     await open(tester, current, size: const Size(800, 650)); await tester.pumpAndSettle();
-    expect(position.pixels, closeTo(offset, 1));
+    expect(passage.hitTestable(), findsOneWidget);
+    expect(tester.getTopLeft(passage).dy, closeTo(top, 1));
     await tester.tap(find.text('Jump to latest')); await tester.pumpAndSettle();
     expect(position.extentBefore, lessThan(1));
     expect(find.text('The latest answer', findRichText: true).hitTestable(), findsOneWidget);

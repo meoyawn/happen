@@ -324,25 +324,52 @@ void main() {
     });
 
     test(
-      'CPU deadline interrupts a runaway cell without poisoning the next',
+      'finite CPU work is not interrupted by an implicit execution deadline',
       () async {
-        const mode = CodeMode(cpuBudgetMs: 30);
-        await expectLater(
-          mode.execute(
-            'while (true) {}',
-            tool: (_, _, {required cancellation}) async => null,
-            cancellation: CancellationToken(),
-          ),
-          throwsStateError,
-        );
-        final next = await mode.execute(
-          'text(42);',
-          tool: (_, _, {required cancellation}) async => null,
-          cancellation: CancellationToken(),
-        );
+        final cancellation = CancellationToken();
+        final session = CodeSession(cancellation);
+        addTearDown(() async { await session.close(); cancellation.cancel(); });
+        Future<Json> execute(String source) => session.execute(source,
+          cancellation: cancellation, values: {}, catalog: [],
+          tool: (_, _, {required cancellation}) async => fail('Unexpected host call'));
+        for (final prefix in ['', 'await Promise.resolve(); ']) {
+          final result = await execute('// @exec: {"yield_time_ms": 50}\n'
+            "${prefix}text('started'); const until = Date.now() + 1300; let n = 0; while (Date.now() < until) n++; text('completed');");
+          expect(result['error'], isNull);
+          expect(result['cell_id'], isNotNull);
+          final completed = await session.wait({'cell_id': result['cell_id']}, cancellation: cancellation);
+          expect(completed['error'], isNull);
+          expect([...(result['output'] as List), ...(completed['output'] as List)], ['started', 'completed']);
+        }
+        final next = await execute('text(42);');
         expect(next['output'], ['42']);
       },
     );
+
+    test('termination and session shutdown interrupt CPU-bound yielded cells', () async {
+      for (final terminate in [true, false]) {
+        final cancellation = CancellationToken();
+        final session = CodeSession(cancellation);
+        addTearDown(() async { await session.close(); cancellation.cancel(); });
+        final entered = Completer<void>();
+        final pending = await session.execute('// @exec: {"yield_time_ms": 50}\n'
+          'await tools.ready({}); text("started"); while (true) {}',
+          cancellation: cancellation, values: {}, catalog: [{'name': 'ready', 'description': ''}],
+          tool: (_, _, {required cancellation}) async { entered.complete(); return null; });
+        expect(pending['cell_id'], isNotNull);
+        await entered.future;
+        if (terminate) {
+          final stopped = await session.wait({'cell_id': pending['cell_id'], 'terminate': true},
+            cancellation: cancellation).timeout(const Duration(seconds: 3));
+          expect(stopped['terminated'], isTrue);
+          expect(stopped['error'], isNull);
+          expect([...(pending['output'] as List), ...(stopped['output'] as List)], ['started']);
+        } else {
+          await session.close().timeout(const Duration(seconds: 3));
+        }
+        expect(session.hasRunningCells, isFalse);
+      }
+    });
 
     test(
       'cancellation reaches pending host calls before releasing the cell',
@@ -368,7 +395,8 @@ void main() {
     );
 
     test('cell timeout, failure, and early return cancel pending host work', () async {
-      for (final source in ['await tools.wait({});', 'tools.wait({}); await tools.ready({}); throw new Error("failed");', 'tools.wait({}); return 42;']) {
+      for (final source in ['while (true) {}', 'tools.wait({}); await tools.ready({}); while (true) {}',
+        'await tools.wait({});', 'tools.wait({}); await tools.ready({}); throw new Error("failed");', 'tools.wait({}); return 42;']) {
         CancellationToken? child;
         var released = false;
         final running = const CodeMode().execute(source,
@@ -383,8 +411,10 @@ void main() {
         } else {
           await expectLater(running, source.contains('throw') ? throwsStateError : throwsA(isA<TimeoutException>()));
         }
-        expect(child!.isCancelled, isTrue);
-        expect(released, isTrue);
+        if (source != 'while (true) {}') {
+          expect(child!.isCancelled, isTrue);
+          expect(released, isTrue);
+        }
       }
       final cancelled = CancellationToken()..cancel();
       await expectLater(const CodeMode().execute('while (true) {}', cancellation: cancelled,
@@ -392,7 +422,7 @@ void main() {
         throwsA(isA<CancelledException>()));
     });
 
-    test('another isolate interrupts CPU-bound native JS before its CPU deadline', () async {
+    test('another isolate interrupts CPU-bound native JS without an execution deadline', () async {
       final interrupt = CodeInterrupt();
       final messages = ReceivePort(), exited = ReceivePort();
       final entered = Completer<void>(), result = Completer<bool>();
@@ -421,7 +451,7 @@ Future<void> _cpuBoundCell(List<Object?> arguments) async {
   final parent = arguments[0] as SendPort;
   final token = CodeCancellationToken.shared(arguments[1] as int);
   try {
-    await const CodeMode(cpuBudgetMs: 10000).execute('await tools.entered({}); while (true) {}',
+    await const CodeMode().execute('await tools.entered({}); while (true) {}',
       cancellation: token, tool: (_, _, {required cancellation}) async { parent.send('entered'); return null; });
     parent.send('completed');
   } on CancelledException {

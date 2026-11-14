@@ -13,13 +13,13 @@ external Pointer<Void> jsNew(int memoryLimit);
 external Pointer<Utf8> jsEval(
   Pointer<Void> runtime,
   Pointer<Utf8> source,
-  int budgetMs,
+  int timeoutMs,
 );
 
 @Native<Pointer<Utf8> Function(Pointer<Void>, Int32, Int64)>(
   symbol: 'embedded_js_pump',
 )
-external Pointer<Utf8> jsPump(Pointer<Void> runtime, int jobs, int budgetMs);
+external Pointer<Utf8> jsPump(Pointer<Void> runtime, int jobs, int timeoutMs);
 
 @Native<Void Function(Pointer<Void>)>(symbol: 'embedded_js_reset_context')
 external void jsResetContext(Pointer<Void> runtime);

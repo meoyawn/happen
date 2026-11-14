@@ -89,14 +89,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   void flush({bool latest = false}) {
     final turnId = responseTurnId;
     final turn = task.turns[turnId];
-    void stats() {
-      if (turn?['durationMs'] is! int || turn?['tokenUsage'] is! Map ||
-          turn?['status'] == 'inProgress' ||
-          !response.contains(lastEntries[turnId]) && lastEntries[turnId]?.id != segment) { return; }
-      rows.add((id: 'stats:$turnId', kind: 'stats', entries: const [], label: turnId));
-    }
     if (response.isEmpty && !(latest && task.running)) {
-      stats();
       responseTurnId = null;
       return;
     }
@@ -127,7 +120,6 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
       if (turn?['diff'] case final String diff when diff.isNotEmpty && response.contains(lastEntries[turnId])) {
         rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
       }
-      stats();
     }
     response = [];
     responseTurnId = null;
@@ -562,10 +554,17 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     final task = widget.task;
     _follow();
     final rows = _transcriptRows(entries, task, _expandedTurns);
+    final responses = <String, String>{}, toolCalls = <String, int>{};
+    int calls(ToolActivity tool) => 1 + tool.children.fold(0, (count, child) => count + calls(child));
     final annotationContexts = <String, List<ResponseAnnotation>>{};
     var annotations = const <ResponseAnnotation>[];
     for (final entry in entries) {
       if (entry.role == 'Queued') continue;
+      final turnId = entry.turnId;
+      if (turnId != null) {
+        if (entry.response != null) responses[turnId] = entry.id;
+        if (entry.tool case final tool?) toolCalls[turnId] = (toolCalls[turnId] ?? 0) + calls(tool);
+      }
       if (entry.role == 'You') annotations = entry.annotations;
       annotationContexts[entry.id] = annotations;
     }
@@ -626,12 +625,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         child: Builder(builder: (context) => _TurnFold(
           label: row.label!, expanded: _expandedTurns.contains(row.id),
           onToggle: () => _toggleTurn(context, row.id))));
-      if (row.kind == 'stats') {
-        final turn = task.turns[row.label]!, usage = turn['tokenUsage'] as Map;
-        return Padding(key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
-          child: ConversationTurnStats(durationMs: turn['durationMs'] as int,
-            inputTokens: usage['input_tokens'] as int?, outputTokens: usage['output_tokens'] as int?));
-      }
       if (row.kind == 'changes') return Padding(
         key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
         child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
@@ -673,6 +666,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
             child: ResponseAnnotationContext(annotations: annotationContexts[entry.id] ?? const [],
             child: _Message(key: _promptKeys[entry.id], entry: entry, directory: widget.directory,
             running: task.running,
+            turn: responses[entry.turnId] == entry.id ? task.turns[entry.turnId] : null,
+            toolCalls: toolCalls[entry.turnId] ?? 0,
             onExpand: _expand,
             onFork: widget.onFork == null || task.archiving || task.sideParentID != null ||
                 entry.response == null || entry.turnId == null || task.turns[entry.turnId]?['status'] == 'inProgress'
@@ -825,13 +820,15 @@ class _TurnFold extends StatelessWidget {
 
 class _Message extends StatefulWidget {
   const _Message({super.key, required this.entry, required this.directory, this.liveText, this.onPendingAction, this.onFork,
-    this.onExpand, this.running = false});
+    this.onExpand, this.running = false, this.turn, this.toolCalls = 0});
   final ChatEntry entry;
   final String directory;
   final ValueListenable<String>? liveText;
   final Future<void> Function(String action)? onPendingAction;
   final Future<void> Function()? onFork;
   final bool running;
+  final Map<String, Object?>? turn;
+  final int toolCalls;
   final VoidCallback? onExpand;
 
   @override
@@ -921,6 +918,7 @@ class _MessageState extends State<_Message> {
           ConversationImageParts(parts: entry.attachments, directory: widget.directory),
         if (!user) ...[
           if (entry.response != null) SelectionContainer.disabled(child: ConversationResponseFooter(entry: entry, visible: _hovered || _focused,
+            turn: widget.turn, toolCalls: widget.toolCalls,
             onFork: widget.onFork == null ? null : _fork, forking: _forking)),
         ] else ...[
         const SizedBox(height: 4),

@@ -321,9 +321,14 @@ loops must request it, install the synthetic native checkpoint, restore rules
 and skills once, and remove the old real shell receipt from visible context.
 The resumable-cell case also executes real module syntax, checks unavailable
 globals/tools, validates UTC clock output, yields and resumes timers, delivers
-notifications, terminates a cell, exits through a `finally` block, and checks the
+notifications, terminates a CPU-bound infinite loop, exits through a `finally` block, and checks the
 missing-cell diagnostic after completion. Single-text output encoding and the
 notification's name, encoding, and position remain part of exact equality.
+Its initial module and async continuation each execute a bounded 1.3-second CPU
+loop, crossing the former implicit one-second cutoff. The next actual inference
+must receive their completion markers, a live cell receipt, the successful wait
+receipt, and explicit termination of the infinite loop. These are lifecycle and
+output assertions against both real engines; elapsed time is not a verdict.
 
 Results are written to a new ignored `.local/context-contract/TIMESTAMP/`
 directory. It retains both configs, the catalog

@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'cancellation.dart';
+import 'cell.dart';
 import 'content.dart';
 import 'output.dart';
 import 'quickjs.dart';
@@ -37,25 +39,26 @@ class CodeSession {
     final id = '${_nextCell++}';
     _cells[id] = cell;
     final link = CancellationHook(this.cancellation, cell.cancellation.cancel);
+    final storedValues = {...(_values ??= {...values})};
     cell.done = () async {
       Json result;
       try {
-        result = await cell.engine.run(parsed.code, tool: tool, values: _values ??= {...values},
-          catalog: catalog, cancellation: cell.cancellation, timeout: null,
-          interrupt: cancellation is CodeCancellationToken ? cancellation : null,
-          awaitPending: false, retainOutput: true,
-          module: true, cellId: id,
-          onYield: () { cell.yielded = true; cell.changed(); }, onNotify: notify);
+        result = await runCell(parsed.code, tool: tool, values: storedValues,
+          catalog: catalog, cancellation: cell.cancellation, id: id, notify: notify,
+          onEvent: (event) {
+            if (event.containsKey('output')) cell.appendOutput(event['output']);
+            if (event['yield'] == true) { cell.yielded = true; cell.changed(); }
+          });
       } catch (error) {
         result = {'error': error is StateError ? error.message : error.toString()};
       }
       try {
         Json output;
-        try { output = cell.engine.takeCollectedOutput(); }
-        catch (_) { output = {'output': {'head': <String>[], 'tail': <String>[], 'omittedBytes': 0, 'omittedItems': 0}}; }
+        try { output = cell.takeOutput(); }
+        catch (_) { output = {'head': <String>[], 'tail': <String>[], 'omittedBytes': 0, 'omittedItems': 0}; }
         if (!cell.cancellation.isCancelled) {
           try {
-            final writes = jsonObject(result['writes'] ?? cell.engine.evaluate('__cell.writes'));
+            final writes = jsonObject(result['writes']);
             if (writes.isNotEmpty) {
               _values!.addAll(writes);
               _changedValues = _values;
@@ -64,11 +67,12 @@ class CodeSession {
             result.putIfAbsent('error', () => error.toString());
           }
         }
-        cell.result = {...result..remove('writes')..remove('values'), 'collected': output['output']};
+        cell.result = {...result..remove('writes')..remove('values'), 'collected': output};
       } finally {
         cell.engine.close();
         cell.cancellation.cancel();
         link.dispose();
+        cell.cancellation.close();
         cell.changed();
       }
     }();
@@ -110,7 +114,12 @@ class CodeSession {
       cell.yielded = false;
       final completed = cell.result;
       final Json result;
-      if (completed == null) { result = cell.engine.takeOutput(maxTokens: tokens); }
+      if (completed == null) {
+        final rendered = renderCellContent(cell.takeOutput(), tokens);
+        result = {'content': rendered.items,
+          'output': rendered.items.where((part) => part['type'] == 'input_text').map((part) => part['text']).toList(),
+          if (rendered.items.any((part) => part['type'] != 'input_text')) 'text_audio_tokens': rendered.textAudioTokens};
+      }
       else {
         final collected = jsonObject(completed['collected']);
         if (completed['error'] != null && !cell.terminated) collected['tail'] = [...(collected['tail'] as List), 'Script error:\n${completed['error']}'];
@@ -167,8 +176,16 @@ int _integer(Json input, String name, int fallback) {
 }
 
 class _Cell {
+  _Cell() {
+    engine.evaluate('${outputBootstrap}var __output = __createOutput();');
+  }
+  // This disposable collector never executes user code. It shares the runtime's
+  // bounded output algorithm while the worker's interpreter may be CPU-bound.
   final engine = QuickJs(memoryLimit: 256 * 1024 * 1024);
-  final cancellation = CancellationToken();
+  final cancellation = CodeCancellationToken();
+  void appendOutput(Object? value) => engine.evaluate('__output.push(${jsonEncode(value)}); null');
+  Json takeOutput() => jsonObject(engine.evaluate('(() => { const output = __output.collect(); '
+    '__output = __createOutput(); return output; })()'));
   late final Future<void> done;
   Json? result;
   bool yielded = false, terminated = false, observing = false;

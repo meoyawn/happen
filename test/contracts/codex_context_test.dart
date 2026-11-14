@@ -1058,6 +1058,17 @@ apps = false
           checks['${pair.$1}:cell_ids_are_session_counters:run-$iteration'] = printed.contains('Script running with cell ID 1') &&
             printed.contains('Script running with cell ID 2');
           checks['${pair.$1}:wait_terminated:run-$iteration'] = printed.contains('Script terminated') && !printed.contains('UNEXPECTED_AFTER_TERMINATE');
+          final initial = outputs.where((item) => item['call_id'] == 'yield_cell' && item['output'] is List).firstOrNull;
+          final resumed = outputs.where((item) => item['call_id'] == 'resume_cell').firstOrNull;
+          checks['${pair.$1}:cpu_work_survives_initial_execution:run-$iteration'] = initial != null &&
+            jsonEncode(initial['output']).contains('Script running with cell ID 1') &&
+            jsonEncode(initial['output']).contains('CPU_INITIAL_DONE');
+          checks['${pair.$1}:cpu_work_survives_async_resume:run-$iteration'] = resumed != null &&
+            jsonEncode(resumed['output']).contains('Script completed') &&
+            jsonEncode(resumed['output']).contains('CPU_RESUMED_DONE') &&
+            jsonEncode(resumed['output']).contains('AFTER_WAIT');
+          checks['${pair.$1}:no_implicit_cpu_interruption:run-$iteration'] = !printed.contains('Script failed') &&
+            !printed.contains('InternalError: interrupted');
           checks['${pair.$1}:native_exit_completed:run-$iteration'] = printed.contains('BEFORE_EXIT') && !printed.contains('UNEXPECTED_AFTER_EXIT') &&
             outputs.any((item) => item['call_id'] == 'exit_cell' && jsonEncode(item['output']).contains('Script completed'));
           checks['${pair.$1}:notification_delivered:run-$iteration'] = outputs.where((item) =>
