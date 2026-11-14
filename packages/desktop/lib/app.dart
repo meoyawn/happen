@@ -818,7 +818,7 @@ class _DesktopViewState extends State<DesktopView> {
             maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: desktopSecondary))),
         ])))),
         Expanded(child: LayoutBuilder(builder: (context, bounds) => Row(children: [
-          if (session.project != null) ...[
+          if (session.project != null && bounds.maxWidth >= 120) ...[
             ProjectAvatar(project: session.project!, size: 14, generated: session.projectAvatarStyle == 'generated'),
             const SizedBox(width: 7),
             ConstrainedBox(constraints: BoxConstraints(maxWidth: bounds.maxWidth * .4),
