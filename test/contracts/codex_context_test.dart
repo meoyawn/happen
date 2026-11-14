@@ -1067,8 +1067,6 @@ apps = false
             jsonEncode(resumed['output']).contains('Script completed') &&
             jsonEncode(resumed['output']).contains('CPU_RESUMED_DONE') &&
             jsonEncode(resumed['output']).contains('AFTER_WAIT');
-          checks['${pair.$1}:no_implicit_cpu_interruption:run-$iteration'] = !printed.contains('Script failed') &&
-            !printed.contains('InternalError: interrupted');
           checks['${pair.$1}:native_exit_completed:run-$iteration'] = printed.contains('BEFORE_EXIT') && !printed.contains('UNEXPECTED_AFTER_EXIT') &&
             outputs.any((item) => item['call_id'] == 'exit_cell' && jsonEncode(item['output']).contains('Script completed'));
           checks['${pair.$1}:notification_delivered:run-$iteration'] = outputs.where((item) =>

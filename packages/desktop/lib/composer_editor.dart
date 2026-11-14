@@ -40,6 +40,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
   bool _syncing = false;
   double _width = 0;
   TextScaler _scaler = TextScaler.noScaling;
+  Map<CodeLine, double> _lineHeights = Map.identity();
   ({PointerEvent event, int count})? _click;
 
   @override
@@ -340,16 +341,23 @@ class _ComposerEditorState extends State<ComposerEditor> {
   // large draft merely to decide the height of its composer.
   void _measure() {
     if (_width <= 0) return;
+    final previous = _lineHeights;
+    _lineHeights = Map.identity();
     if (_code.codeLines.length >= 8) { _height.value = 180; return; }
     var height = 0.0, count = 0;
     for (final segment in _code.codeLines.segments) {
       for (final line in segment.codeLines) {
         if (line.length > 1200) { _height.value = 180; return; }
-        final painter = TextPainter(text: TextSpan(text: line.text.isEmpty ? ' ' : line.text,
-          style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 14, height: 1.625)),
-          textDirection: TextDirection.ltr, textScaler: _scaler)..layout(maxWidth: (_width - 16).clamp(1, double.infinity));
-        height += painter.height;
-        painter.dispose();
+        var lineHeight = previous[line];
+        if (lineHeight == null) {
+          final painter = TextPainter(text: TextSpan(text: line.text.isEmpty ? ' ' : line.text,
+            style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 14, height: desktopProseHeight)),
+            textDirection: TextDirection.ltr, textScaler: _scaler)..layout(maxWidth: (_width - 16).clamp(1, double.infinity));
+          lineHeight = painter.height;
+          painter.dispose();
+        }
+        _lineHeights[line] = lineHeight;
+        height += lineHeight;
         if (++count >= 8 || height >= 156) { _height.value = 180; return; }
       }
     }
@@ -378,16 +386,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
         ContextMenuButtonItem(type: ContextMenuButtonType.selectAll, onPressed: () { onDismiss(); controller.selectAll(); }),
       ],
     ));
-    return LayoutBuilder(builder: (context, constraints) {
-      final scaler = MediaQuery.textScalerOf(context);
-      if (_width != constraints.maxWidth || _scaler != scaler) {
-        _width = constraints.maxWidth;
-        _scaler = scaler;
-        _measure();
-      }
-      return ValueListenableBuilder<double>(valueListenable: _height, builder: (context, height, _) => SizedBox(
-        height: height,
-        child: Semantics(label: widget.label, textField: true, multiline: true,
+    final editor = RepaintBoundary(child: Semantics(label: widget.label, textField: true, multiline: true,
           child: Listener(onPointerDown: _pointerDown, onPointerMove: _pointerMove,
             onPointerUp: _pointerUp, onPointerCancel: (_) => _click = null,
             child: CodeEditor(key: const ValueKey('composer-editor'), controller: _code,
@@ -459,8 +458,17 @@ class _ComposerEditorState extends State<ComposerEditor> {
               }),
             },
           )),
-        ),
-      ));
+        ));
+    return LayoutBuilder(builder: (context, constraints) {
+      final scaler = MediaQuery.textScalerOf(context);
+      if (_width != constraints.maxWidth || _scaler != scaler) {
+        _width = constraints.maxWidth;
+        _scaler = scaler;
+        _lineHeights.clear();
+        _measure();
+      }
+      return ValueListenableBuilder<double>(valueListenable: _height, child: editor,
+        builder: (context, height, child) => SizedBox(height: height, child: child));
     });
   }
 }

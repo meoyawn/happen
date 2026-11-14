@@ -21,6 +21,8 @@ Future<Json> runCell(String source, {
   final link = CancellationHook(cancellation, lifetime.cancel);
   final operations = <String, CancellationToken>{};
   final pending = <Future<void>>{};
+  Object? eventFailure;
+  StackTrace? eventStack;
   Future<void> handle(Json request) async {
     final reply = request['reply'] as SendPort;
     final operation = request['operation_id'] as String;
@@ -32,7 +34,7 @@ Future<Json> runCell(String source, {
       final params = jsonObject(request['params']);
       final Object? result;
       if (request['method'] == 'notify') {
-        await notify?.call(params['text'] as String);
+        await notify?.call(params['text'] as String).asCancellable(token);
         result = null;
       } else {
         result = await tool(params['name'] as String, params['arguments'], cancellation: token);
@@ -60,7 +62,16 @@ Future<Json> runCell(String source, {
     return await runIsolateEffect<Json>(_executeCell, {
       'source': source, 'values': values, 'catalog': catalog, 'cell_id': id,
       'host': port.sendPort, 'interrupt': cancellation.address, 'generation': cancellation.generation,
-    }, cancellation: cancellation, timeout: null, onEvent: onEvent);
+    }, cancellation: cancellation, timeout: null, onEvent: (event) {
+      try { onEvent(event); }
+      catch (error, stack) {
+        eventFailure ??= error;
+        eventStack ??= stack;
+        cancellation.cancel();
+      }
+    });
+  } catch (error, stack) {
+    Error.throwWithStackTrace(eventFailure ?? error, eventStack ?? stack);
   } finally {
     lifetime.cancel();
     await Future.wait(pending.toList());

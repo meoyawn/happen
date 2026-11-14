@@ -333,8 +333,8 @@ var __cell = (() => {
     const collected = __createOutput();
     return emit ? {push: value => emit(JSON.stringify({output: value})), collect: () => collected.collect()} : collected;
   }
-  let output = createOutput();
-  let images = [];
+  const output = createOutput();
+  const images = [];
   const timers = [], timeouts = new Map(), notices = [];
   let imageBytes = 0;
   let next = 1, nextTimeout = 1, done = false, error = null, yielded = false, exited = false;
@@ -369,11 +369,6 @@ var __cell = (() => {
       const state = {done, error, requests: requests.splice(0), timers: timers.splice(0), notices: notices.splice(0), yielded};
       yielded = false;
       return state;
-    },
-    takeOutput() {
-      const result = {output: output.collect(), images};
-      output = createOutput(); images = []; imageBytes = 0;
-      return result;
     },
     resolve(reply) {
       if (reply.timer !== undefined) {

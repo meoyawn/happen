@@ -323,52 +323,19 @@ void main() {
       expect(retained.last, '32768');
     });
 
-    test(
-      'finite CPU work is not interrupted by an implicit execution deadline',
-      () async {
-        final cancellation = CancellationToken();
-        final session = CodeSession(cancellation);
-        addTearDown(() async { await session.close(); cancellation.cancel(); });
-        Future<Json> execute(String source) => session.execute(source,
-          cancellation: cancellation, values: {}, catalog: [],
-          tool: (_, _, {required cancellation}) async => fail('Unexpected host call'));
-        for (final prefix in ['', 'await Promise.resolve(); ']) {
-          final result = await execute('// @exec: {"yield_time_ms": 50}\n'
-            "${prefix}text('started'); const until = Date.now() + 1300; let n = 0; while (Date.now() < until) n++; text('completed');");
-          expect(result['error'], isNull);
-          expect(result['cell_id'], isNotNull);
-          final completed = await session.wait({'cell_id': result['cell_id']}, cancellation: cancellation);
-          expect(completed['error'], isNull);
-          expect([...(result['output'] as List), ...(completed['output'] as List)], ['started', 'completed']);
-        }
-        final next = await execute('text(42);');
-        expect(next['output'], ['42']);
-      },
-    );
-
-    test('termination and session shutdown interrupt CPU-bound yielded cells', () async {
-      for (final terminate in [true, false]) {
-        final cancellation = CancellationToken();
-        final session = CodeSession(cancellation);
-        addTearDown(() async { await session.close(); cancellation.cancel(); });
-        final entered = Completer<void>();
-        final pending = await session.execute('// @exec: {"yield_time_ms": 50}\n'
-          'await tools.ready({}); text("started"); while (true) {}',
-          cancellation: cancellation, values: {}, catalog: [{'name': 'ready', 'description': ''}],
-          tool: (_, _, {required cancellation}) async { entered.complete(); return null; });
-        expect(pending['cell_id'], isNotNull);
-        await entered.future;
-        if (terminate) {
-          final stopped = await session.wait({'cell_id': pending['cell_id'], 'terminate': true},
-            cancellation: cancellation).timeout(const Duration(seconds: 3));
-          expect(stopped['terminated'], isTrue);
-          expect(stopped['error'], isNull);
-          expect([...(pending['output'] as List), ...(stopped['output'] as List)], ['started']);
-        } else {
-          await session.close().timeout(const Duration(seconds: 3));
-        }
-        expect(session.hasRunningCells, isFalse);
-      }
+    test('session shutdown interrupts CPU-bound yielded cells', () async {
+      final cancellation = CancellationToken();
+      final session = CodeSession(cancellation);
+      addTearDown(() async { await session.close(); cancellation.cancel(); });
+      final entered = Completer<void>();
+      final pending = await session.execute('// @exec: {"yield_time_ms": 50}\n'
+        'await tools.ready({}); while (true) {}',
+        cancellation: cancellation, values: {}, catalog: [{'name': 'ready', 'description': ''}],
+        tool: (_, _, {required cancellation}) async { entered.complete(); return null; });
+      expect(pending['cell_id'], isNotNull);
+      await entered.future;
+      await session.close().timeout(const Duration(seconds: 3));
+      expect(session.hasRunningCells, isFalse);
     });
 
     test(

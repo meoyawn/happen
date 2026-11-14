@@ -6,7 +6,7 @@ import 'dart:convert';
   final newline = source.indexOf('\n');
   final first = (newline < 0 ? source : source.substring(0, newline)).trimLeft();
   const prefix = '// @exec:';
-  if (!first.startsWith(prefix)) return (code: source, maxOutputTokens: 10000, yieldTimeMs: 10000);
+  if (!first.startsWith(prefix)) return (code: source, maxOutputTokens: 10000, yieldTimeMs: 30000);
   if (newline < 0 || source.substring(newline + 1).trim().isEmpty) {
     throw const FormatException('exec pragma must be followed by JavaScript source');
   }
@@ -27,7 +27,7 @@ import 'dart:convert';
     }
   }
   return (code: source.substring(newline + 1), maxOutputTokens: directive['max_output_tokens'] as int? ?? 10000,
-    yieldTimeMs: directive['yield_time_ms'] as int? ?? 10000);
+    yieldTimeMs: directive['yield_time_ms'] as int? ?? 30000);
 }
 
 int cellOutputTokens(String source) => parseExecSource(source).maxOutputTokens;
