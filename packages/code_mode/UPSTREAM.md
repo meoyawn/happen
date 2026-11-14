@@ -25,6 +25,18 @@ the whole operation. Observations retain their public defaults (30 seconds for
 exec, 10 seconds for wait) and the upstream one-second completion grace for
 observations of at least 10 seconds.
 
+Text observation rendering follows the bounded collector/observer separation in
+Codex `38cdc4d65561e35848d252276f015fbd909efb9b`, with one deliberate difference
+from `utils/output-truncation/src/lib.rs::formatted_output`: retained text items
+share the token budget instead of being flattened before truncation. Small
+items keep their full contents; unused shares go to larger items, which retain
+UTF-8-safe heads and tails. Truncation markers consume their item's share. This
+keeps a command completion receipt visible between large printed results.
+Single items, budgets too small to represent every item and its diagnostic, and
+observations with collector loss retain Codex's whole-observation head/tail
+policy. Mixed media continues to consume its budget in source order. The change
+does not prioritize particular tools or infer command state from printed text.
+
 The settlement combinators in `lib/src/settled.dart` retain upstream
 `src/runtime/settled.js` with only its engine-specific comment changed. Other
 runtime code is a modified Dart/JavaScript implementation. Codex is Copyright
@@ -45,7 +57,7 @@ mean every upstream case in that family has been ported or independently rerun.
 | Exec/wait, termination, observation ownership | `src/service_contract_tests.rs`; `src/service_tests.rs` | Adapted. `test/tool_interfaces_test.dart` checks incremental output, missing cells, pending host cancellation, concurrent-cell writes and completed success/failure taking precedence over late termination. `test/server_tools_test.dart` covers real server wait, notifications and cold resume. Observer preemption and the full callback lifecycle matrix remain open. |
 | Exit and explicit stores | `exit_stops_the_whole_cell_and_preserves_only_prior_writes`, `stored_values_are_shared_between_cells_but_not_sessions`, `storing_undefined_preserves_the_previous_value` | Adapted. `test/code_mode_test.dart` checks JSON snapshots, large stored values, unused saved data exceeding the cell heap, and snapshot reads across sibling commits; `test/tool_interfaces_test.dart` checks native exit through `finally` and timer callbacks. Full store-key conversion, failure/termination writes and session isolation matrices remain unverified. |
 | Notifications and timers | `src/runtime/{callbacks,timers}.rs`; notification/cleanup cases in `src/service_contract_tests.rs` | Adapted. Server coverage exercises notification delivery, awaited timers and discarding unawaited timers. `notify` cleanup cancellation, timer argument conversion, duplicate observers and callback admission ordering need the remaining upstream cases. |
-| Output retention, diagnostics and budgets | `src/service_output_collection_tests.rs` | Adapted. `test/code_mode_test.dart` covers byte/item head-tail retention, token budgets and UTF-8 boundaries. Full terminal-diagnostic caps, mixed-media retention and diagnostics across observation budgets remain open. |
+| Output retention, diagnostics and budgets | `src/service_output_collection_tests.rs`; `utils/output-truncation/src/lib.rs` | Adapted with the item-budget difference above. `test/code_mode_test.dart` covers byte/item head-tail retention, small receipts between large results, token budgets and UTF-8 boundaries. Full terminal-diagnostic caps, mixed-media retention and diagnostics across observation budgets remain open. |
 | Image/audio/generated-image helpers | `src/service_tests.rs`, `src/service_audio_tests.rs` | Adapted. Helpers emit ordered content items. `test/fixtures/context_contract/cases.dart` contains generated-image/audio vectors; those vectors were not rerun in this change. Full accepted/rejected-input and audio-duration matrices remain open. |
 | Interrupts and resource limits | `src/runtime/mod.rs`, service yield-grace cases | Adapted policies. The `resumable-cells` E2E replay crosses the former one-second cutoff during initial and resumed execution, and terminates a CPU-bound cell against real Codex. `test/code_mode_test.dart` covers CPU-bound shutdown, native cancellation and host cleanup. OpenAI cells retain Happen's limits of 256 MiB, 256 KiB source characters, 64 outstanding host calls and 32 uncollected cells; complete boundary/platform proof remains open. |
 | V8/ICU and native serialization details | Locale/Intl cases; Serde marker/depth regressions | Engine-specific differences. QuickJS has no `Intl`; locale formatting/error strings/global built-ins differ. Serde private markers and its recursion bugs do not apply to Dart's decoder. Do not add V8, ICU shims or Rust-specific guards to claim engine identity. |
@@ -61,6 +73,22 @@ mean every upstream case in that family has been ported or independently rerun.
 - Rerun the complete strict context corpus and platform checks before claiming
   final-source or cross-platform parity. Keep the existing context vectors and
   request-equality assertions intact.
+
+## Verification on November 14, 2026
+
+A small command completion receipt between oversized printed payloads reproduced
+the lost-result failure before the rendering change. The regression now checks
+the embedded `CodeSession` through both exec and resumed wait, with Unicode
+payloads, committed stores and bounded output. All **34 focused checks passed**:
+
+```sh
+moon run happen:test-unit -- test/code_mode_test.dart test/code_mode_settled_test.dart test/tool_interfaces_test.dart test/server_tools_test.dart --concurrency 1 --reporter expanded
+moon run happen:analyze -- packages/code_mode test/code_mode_test.dart
+```
+
+Analysis completed with five existing `no_adjacent_strings_in_list` notices.
+Dart MCP found no running debug app or DTD instance, so hot reload was
+unavailable. This verification does not claim full Codex output-byte parity.
 
 ## Verification on November 6, 2026
 

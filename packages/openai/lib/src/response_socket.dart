@@ -28,13 +28,15 @@ bool _validSocketTransition(_SocketState current, _SocketState next) => switch (
 
 class _SocketConnection {
   _SocketConnection(this.socket, this.credentials)
+    // Keep protocol pings and close frames flowing when the response iterator
+    // pauses between turns. Only inference events should wait for the consumer.
     : events = StreamIterator(socket.map((raw) {
         final text = raw is String ? raw : utf8.decode(raw as List<int>);
         final bytes = utf8.encode(text).length;
         traceInstant('openai.websocket.receive', category: 'websocket', attributes: {'bytes': bytes});
         if (bytes > 8 * 1024 * 1024) throw const FormatException('GPT event too large');
         return jsonObject(jsonDecode(text));
-      }));
+      }).asBroadcastStream());
   final WebSocket socket;
   final StreamIterator<Json> events;
   final (String?, String?) credentials;

@@ -175,31 +175,51 @@ void main() {
     });
 
     test(
-      'large batched output is truncated without aborting the cell',
+      'large batched output preserves small results between payloads',
       () async {
-        final result = await const CodeMode().execute(
-          '''
-          const results = await Promise.allSettled([tools.first({}), tools.second({})]);
-          for (const result of results) text(result.value.output);
+        for (final yielded in [false, true]) {
+          final lifetime = CancellationToken(), release = Completer<void>();
+          final session = CodeSession(lifetime);
+          try {
+            var result = await session.execute(
+              '''
+          ${yielded ? 'yield_control(); await tools.release({});' : ''}
+          const results = await Promise.allSettled([tools.first({}), tools.receipt({}), tools.second({})]);
+          for (const result of results) text(result.value);
           store("complete", true);
           text("finished");
           ''',
-          cancellation: CancellationToken(),
-          tool: (name, _, {required cancellation}) async => {
-            'output': name == 'first'
-                ? 'begin:${'a' * 39994}'
-                : '${'b' * 39996}end!',
-          },
-        );
-        expect(result['values'], {'complete': true});
-        final output = (result['output'] as List).single as String;
-        const header = 'Warning: truncated output (original token count: 20003)\n'
-            'Total output lines: 3\n\n';
-        const marker = '…10003 tokens truncated…';
-        expect(output, startsWith('${header}begin:${'a' * 19994}'));
-        expect(output, contains(marker));
-        expect(output, endsWith('${'b' * 19987}end!\nfinished'));
-        expect(output.length, 40000 + header.length + marker.length);
+              cancellation: lifetime, values: {},
+              catalog: [for (final name in ['first', 'receipt', 'second', 'release']) {'name': name, 'description': ''}],
+              tool: (name, _, {required cancellation}) async {
+                if (name == 'release') { await release.future.asCancellable(cancellation); return null; }
+                return switch (name) {
+                  'first' => 'begin:${'😀' * 9998}',
+                  'receipt' => {'exit_code': 0, 'output': '19/19 saved'},
+                  _ => '${'🎻' * 9999}end!',
+                };
+              },
+            );
+            if (yielded) {
+              expect(result['cell_id'], isNotNull);
+              expect(result['output'], isEmpty);
+              release.complete();
+              result = await session.wait({'cell_id': result['cell_id'], 'max_tokens': 10000}, cancellation: lifetime);
+            }
+            expect(result['error'], isNull);
+            expect(result['values'], {'complete': true});
+            final output = (result['output'] as List).cast<String>();
+            expect(output, contains('{"exit_code":0,"output":"19/19 saved"}'));
+            expect(output.first, startsWith('Warning: truncated output'));
+            final payloads = output.where((text) => text.contains('tokens truncated…') && !text.startsWith('Warning:')).toList();
+            expect(payloads, hasLength(2));
+            expect(payloads.first, startsWith('begin:'));
+            expect(payloads.last, endsWith('end!'));
+            expect(output.last, 'finished');
+            expect(output.join(), isNot(contains('\uFFFD')));
+            expect(output.skip(1).fold<int>(0, (bytes, text) => bytes + utf8.encode(text).length), lessThanOrEqualTo(40000));
+          } finally { await session.close(); lifetime.cancel(); }
+        }
       },
     );
 

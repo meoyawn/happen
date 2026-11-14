@@ -59,6 +59,7 @@ void main() {
         final bodies = <Json>[];
         final protocol = <Json>[];
         final sockets = <WebSocket>[];
+        final socketClosed = <Future<void>>[];
         final raw = ResponsesClient(
           http: http,
           endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
@@ -166,12 +167,14 @@ void main() {
           if (WebSocketTransformer.isUpgradeRequest(request)) {
             final socket = await WebSocketTransformer.upgrade(request);
             sockets.add(socket);
+            final closed = Completer<void>();
+            socketClosed.add(closed.future);
             socket.listen((message) async {
               await respond(
                 jsonObject(jsonDecode(message as String)),
                 socket.add,
               );
-            });
+            }, onDone: closed.complete);
           } else {
             final body = jsonObject(
               jsonDecode(await utf8.decoder.bind(request).join()),
@@ -216,6 +219,15 @@ void main() {
         expect(first.calls.single.input, 'text("✓");');
         expect(first.endTurn, isFalse);
         expect(first.usage.cachedInputTokens, 64);
+        if (transport == 'websocket') {
+          // A pooled inference connection must answer protocol heartbeats even
+          // while the agent is running tools or waiting for the next turn.
+          sockets.single.pingInterval = const Duration(milliseconds: 50);
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          expect(sockets.single.closeCode, isNull,
+            reason: 'The idle client must keep reading and replying to server pings.');
+          sockets.single.pingInterval = null;
+        }
         // Cross the actual durable record encoding before the next provider request.
         final restored =
             (jsonDecode(
@@ -277,10 +289,24 @@ void main() {
           expect(bodies[1]['type'], 'response.create');
         }
 
+        if (transport == 'websocket') {
+          // Observe an idle peer closing before sending another inference
+          // request, so normal connection replacement does not enter retries.
+          await sockets.single.close().timeout(const Duration(seconds: 1));
+          await socketClosed.single.timeout(const Duration(seconds: 1));
+        }
+        final retries = <Json>[];
         final compacted = await provider.compact(
           request([...context, ...second.output]),
           cancellation: CancellationToken(),
+          onEvent: (event) { if (event['type'] == 'model.retrying') retries.add(event); },
         );
+        expect(retries, isEmpty);
+        if (transport == 'websocket') {
+          expect(sockets, hasLength(2));
+          expect(bodies.last.containsKey('previous_response_id'), isFalse,
+            reason: 'A replacement connection must receive the complete context.');
+        }
         expect(
           compacted.context.last.native['gpt']['encrypted_content'],
           'opaque-compaction',

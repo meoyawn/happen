@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-// Codex's text output budgets and UTF-8 head/tail truncation; see decisions.md.
+// Codex's bounded observations and UTF-8 head/tail truncation. Printed items
+// share the presentation budget so large payloads cannot bury small results.
 ({String code, int maxOutputTokens, int yieldTimeMs}) parseExecSource(String source) {
   if (source.trim().isEmpty) throw const FormatException('exec expects non-empty raw JavaScript source');
   final newline = source.indexOf('\n');
@@ -79,6 +80,13 @@ List<String> renderCellOutput(Map<String, dynamic> collected, int maxTokens) {
   if (bytes.length <= budget) {
     return [...head, ?notice, ...tail];
   }
+  final lines = '\n'.allMatches(text).length + (text.endsWith('\n') ? 0 : 1);
+  final header = 'Warning: truncated output (original token count: ${(bytes.length + 3) ~/ 4})\n'
+      'Total output lines: $lines\n\n';
+  if (notice == null && collected['continuesHead'] != true) {
+    final rendered = _renderTextItems([...head, ...tail], maxTokens);
+    if (rendered != null) return [if (rendered.truncated) header, ...rendered.items];
+  }
   var left = budget ~/ 2, right = bytes.length - (budget - budget ~/ 2);
   while (left > 0 && bytes[left] & 0xc0 == 0x80) {
     left--;
@@ -88,9 +96,6 @@ List<String> renderCellOutput(Map<String, dynamic> collected, int maxTokens) {
   }
   final prefix = utf8.decode(bytes.sublist(0, left));
   final suffix = utf8.decode(bytes.sublist(right));
-  final lines = '\n'.allMatches(text).length + (text.endsWith('\n') ? 0 : 1);
-  final header = 'Warning: truncated output (original token count: ${(bytes.length + 3) ~/ 4})\n'
-      'Total output lines: $lines\n\n';
   final marker = '…${(bytes.length - budget + 3) ~/ 4} tokens truncated…';
   final rendered = '$header$prefix$marker$suffix';
   if (notice == null) return [rendered];
@@ -105,6 +110,40 @@ List<String> renderCellOutput(Map<String, dynamic> collected, int maxTokens) {
     notice,
     if (offset < rendered.length) rendered.substring(offset),
   ];
+}
+
+({List<String> items, bool truncated})? _renderTextItems(List<String> items, int tokens) {
+  if (items.length < 2) return null;
+  final costs = [for (final text in items) (utf8.encode(text).length + 3) ~/ 4];
+  final order = List.generate(items.length, (index) => index)..sort((a, b) {
+    final comparison = costs[a].compareTo(costs[b]);
+    return comparison == 0 ? a.compareTo(b) : comparison;
+  });
+  final allowances = List.filled(items.length, 0);
+  var remaining = tokens;
+  for (var rank = 0; rank < order.length; rank++) {
+    final index = order[rank], share = remaining ~/ (order.length - rank);
+    final cost = costs[index];
+    allowances[index] = cost < share ? cost : share;
+    remaining -= allowances[index];
+  }
+  final rendered = <String>[];
+  var truncated = false;
+  for (var index = 0; index < items.length; index++) {
+    final cost = costs[index], allowance = allowances[index];
+    if (cost <= allowance) {
+      rendered.add(items[index]);
+      continue;
+    }
+    // Reserve the longest possible marker before retaining payload bytes.
+    // If whole item boundaries and their diagnostics cannot fit, retain the
+    // observation's head/tail instead, as for a single oversized text item.
+    final markerTokens = (utf8.encode('…$cost tokens truncated…').length + 3) ~/ 4;
+    if (allowance <= markerTokens) return null;
+    rendered.add(truncateTokenText(items[index], maxTokens: allowance - markerTokens));
+    truncated = true;
+  }
+  return (items: rendered, truncated: truncated);
 }
 
 // Retain text in the runtime, before serializing it across FFI. The fixed head
