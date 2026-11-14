@@ -269,7 +269,7 @@ class _FileViewerState extends State<FileViewer> {
       return SingleChildScrollView(padding: const EdgeInsets.all(24),
         child: ConversationMarkdown(text: preview.text!, directory: File(widget.path).parent.path));
     }
-    return CodeEditor(key: const ValueKey('file-source'), controller: _code, scrollController: _scroll,
+    return RepaintBoundary(child: CodeEditor(key: const ValueKey('file-source'), controller: _code, scrollController: _scroll,
       readOnly: true, showCursorWhenReadOnly: false, autofocus: false, wordWrap: _wrap,
       chunkAnalyzer: const NonCodeChunkAnalyzer(), padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
       style: CodeEditorStyle(fontFamily: desktopMonoFamily, fontSize: 13, fontHeight: 20 / 13,
@@ -279,7 +279,7 @@ class _FileViewerState extends State<FileViewer> {
         padding: const EdgeInsets.only(left: 8, right: 8),
         child: DefaultCodeLineNumber(controller: controller, notifier: notifier,
           textStyle: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 20 / 12, color: desktopTertiary),
-          focusedTextStyle: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 20 / 12, color: desktopSecondary))));
+          focusedTextStyle: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12, height: 20 / 12, color: desktopSecondary)))));
   }
 
   @override

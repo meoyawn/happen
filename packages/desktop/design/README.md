@@ -16,7 +16,8 @@ Change that source and regenerate; do not draw separate versions of the mark.
 | Project sidebar | Lime on a flat `#233027` tile; expanded mark, no Dock padding | `happen-sidebar.svg` |
 
 Debug uses the same lime mark and dark background as release, with Flutter's
-`BannerPainter` adding the standard red `DEBUG` ribbon in the top-right corner.
+`BannerPainter` adding a red `DEBUG` ribbon in the top-right corner. The ribbon
+and its lettering are scaled 50% larger for readability at Dock sizes.
 The ribbon is clipped to the tile's rounded silhouette. Menu bar appearance is supplied by macOS through
 [`NSImage.isTemplate`](https://developer.apple.com/documentation/appkit/nsimage/istemplate).
 

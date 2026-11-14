@@ -1350,7 +1350,8 @@ class _ComposerState extends State<_Composer> {
         child: child,
       );
     }
-    return ListenableBuilder(listenable: session.annotationChanges, builder: (context, _) => DropTarget(
+    // Caret and send-button updates must not repaint the transcript or preview.
+    return ListenableBuilder(listenable: session.annotationChanges, builder: (context, _) => RepaintBoundary(child: DropTarget(
       enabled: answer == null && hasProject && session.connected && !_submitting && !_receivingAttachments,
       acceptedKinds: const {DropItemKind.file, DropItemKind.directory},
       onDrop: _drop,
@@ -1573,7 +1574,7 @@ class _ComposerState extends State<_Composer> {
         ),
       ),
       ),
-    ));
+    )));
   }
 }
 

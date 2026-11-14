@@ -77,8 +77,8 @@ void _tile(Canvas canvas, ui.Picture mark, Rect rect, {bool debug = false, bool 
     try {
       canvas.clipRRect(shape);
       canvas.translate(tile.left, tile.top);
-      canvas.scale(tile.width / 192);
-      ribbon.paint(canvas, const Size(192, 192));
+      canvas.scale(tile.width / 128);
+      ribbon.paint(canvas, const Size(128, 128));
     } finally {
       canvas.restore();
       ribbon.dispose();
