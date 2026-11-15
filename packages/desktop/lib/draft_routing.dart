@@ -1,13 +1,15 @@
 part of 'session.dart';
 
 typedef _DraftContents = ({String text, TextSelection? selection,
-  List<ComposerFileReference> files, List<ComposerAttachment> attachments, List<ResponseAnnotation> annotations});
+  List<ComposerFileReference> files, List<ComposerAttachment> attachments, List<ResponseAnnotation> annotations,
+  ComposerMode mode});
 
 _DraftContents _draftContents(DesktopSession session, String id) => (
   text: session.drafts[id] ?? '', selection: session.draftSelections[id],
   files: List.of(session.fileDrafts[id] ?? const []),
   attachments: List.of(session.attachmentDrafts[id] ?? const []),
   annotations: session.annotationsFor(id),
+  mode: session.composerMode(id),
 );
 
 List<ComposerFileReference> _retargetReferences(List<ComposerFileReference> files, String from, String to) => [
@@ -49,6 +51,7 @@ extension DraftRouting on DesktopSession {
     sessionDrafts.add(draft);
     openTabIds.add(draft.id);
     drafts[draft.id] = contents.text;
+    _composerModes[draft.id] = contents.mode;
     if (contents.selection != null) draftSelections[draft.id] = contents.selection!;
     fileDrafts[draft.id] = files;
     attachmentDrafts[draft.id] = attachments;
@@ -67,6 +70,7 @@ extension DraftRouting on DesktopSession {
     sessionDrafts.remove(draft);
     openTabIds.remove(draft.id);
     drafts.remove(draft.id);
+    _composerModes.remove(draft.id);
     draftSelections.remove(draft.id);
     fileDrafts.remove(draft.id);
     attachmentDrafts.remove(draft.id);
@@ -78,6 +82,7 @@ extension DraftRouting on DesktopSession {
       openTabIds..clear()..addAll(tabs);
       _activeDraftId = active;
       drafts[draft.id] = contents.text;
+      _composerModes[draft.id] = contents.mode;
       if (contents.selection != null) draftSelections[draft.id] = contents.selection!;
       fileDrafts[draft.id] = contents.files;
       attachmentDrafts[draft.id] = contents.attachments;

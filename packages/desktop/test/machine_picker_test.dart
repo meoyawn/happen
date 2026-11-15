@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:desktop/database.dart';
 import 'package:desktop/machines.dart';
+import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/thread_machine_picker.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,68 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('new-session project choices remember different machines after relaunch', (tester) async {
+    late Directory root;
+    late DesktopSession local, remote;
+    late MachinesController machines;
+    late Project localA, localB, remoteA, remoteB;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('project-machines-');
+      local = DesktopSession(_Client(), await openDesktopDatabase(root.path));
+      remote = DesktopSession(_Client(), local.database, sidebarOwner: local, machineAlias: 'vps');
+      localA = Project('local-a', 'https://example.com/a.git', '/local/A');
+      localB = Project('local-b', 'https://example.com/b.git', '/local/B');
+      remoteA = Project('remote-a', 'https://example.com/a.git', '/remote/A');
+      remoteB = Project('remote-b', 'https://example.com/b.git', '/remote/B');
+      for (final project in [localA, remoteA]) { project.displayName = 'Alpha project'; }
+      for (final project in [localB, remoteB]) { project.displayName = 'Beta project'; }
+      local.projects.addAll([localA, localB]);
+      remote.projects.addAll([remoteA, remoteB]);
+      machines = MachinesController(local, root.path);
+      await machines.refresh();
+      machines.rememberProjectMachine(remote, remoteA);
+      machines.rememberProjectMachine(local, localB);
+      await callIsolate(local.database.port, 'load', {});
+      await machines.close();
+      machines = MachinesController(local, root.path);
+      await machines.refresh();
+    });
+    addTearDown(() => tester.runAsync(() async {
+      await machines.close();
+      await remote.close();
+      await local.close();
+      await root.delete(recursive: true);
+    }));
+
+    Project? selected;
+    Widget screen() => MaterialApp(home: Scaffold(body: NewSessionScreen(
+      session: local, sources: [local, remote], lastMachineForProject: machines.lastMachineForProject,
+      composer: const SizedBox.shrink(), picking: false,
+      onSelect: (project) { selected = project; },
+      onAddProject: () {}, onRemoveProject: (_) {}, onReturnFocus: () {},
+    )));
+    await tester.pumpWidget(screen());
+    await tester.tap(find.byTooltip('Select project'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Alpha project'));
+    await tester.pumpAndSettle();
+    expect(selected, same(remoteA));
+    await tester.tap(find.byTooltip('Select project'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Beta project'));
+    await tester.pumpAndSettle();
+    expect(selected, same(localB), reason: 'Project B must not inherit project A’s machine');
+
+    remote.connected = false;
+    await tester.pumpWidget(screen());
+    await tester.tap(find.byTooltip('Select project'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Alpha project'));
+    expect(selected, same(localA), reason: 'A disconnected saved machine must not block a new session');
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('new-session dropdowns show cached checkouts without dispatching requests', (tester) async {
     final client = _Client();
     late Directory root;

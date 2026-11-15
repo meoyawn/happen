@@ -41,6 +41,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   LocalTaskSleepInhibitor? _sleep;
   StreamSubscription<int>? _activity;
   String? _error;
+  bool _quitting = false;
   late final Future<void> _opening;
   Future<void>? _closing;
 
@@ -170,6 +171,12 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   Future<void> _closeOwners() async {
     _lifetime.cancel();
+    if (mounted && !_quitting) {
+      setState(() => _quitting = true);
+      // Tray Quit also works while the window is hidden and frames are paused.
+      if (!WidgetsBinding.instance.framesEnabled) WidgetsBinding.instance.scheduleForcedFrame();
+      await WidgetsBinding.instance.endOfFrame;
+    }
     await _opening;
     await _activity?.cancel();
     _machines?.removeListener(_machineChanged);
@@ -199,12 +206,13 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   @override
   void dispose() {
+    _quitting = true;
     unawaited(_close());
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) => _quitting ? const SizedBox.shrink() : ListenableBuilder(
     listenable: Listenable.merge([_session?.appearance]),
     builder: (context, _) => MaterialApp(
     title: 'Happen',

@@ -28,6 +28,22 @@ void main() {
     'phase': 'final_answer', 'turnId': 'turn', 'startedAtMs': order * 1000, 'completedAtMs': order * 1000 + 1};
   DesktopTask task() => DesktopTask('thread', 'Conversation')..loaded = true;
 
+  testWidgets('an empty automatic turn shows Thinking after the previous final answer', (tester) async {
+    final current = task()..running = true
+      ..turns['turn'] = {'id': 'turn', 'status': 'completed'}
+      ..turns['continuation'] = {'id': 'continuation', 'status': 'inProgress'}
+      ..messages['answer'] = answer('answer', 'First milestone finished.', 1);
+    addTearDown(current.liveText.dispose);
+    await open(tester, current); await tester.pump();
+    expect(find.text('First milestone finished.', findRichText: true), findsOneWidget);
+    expect(find.text('Thinking'), findsOneWidget);
+    current.running = false;
+    current.turns['continuation'] = {'id': 'continuation', 'status': 'completed'};
+    await open(tester, current); await tester.pump();
+    expect(find.text('Thinking'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('finished turn statistics share the response hover footer and count nested calls across steering', (tester) async {
     final current = task()..running = true
       ..turns['turn'] = {'id': 'turn', 'status': 'inProgress'}

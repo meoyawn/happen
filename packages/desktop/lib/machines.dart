@@ -124,6 +124,8 @@ class MachinesController extends ChangeNotifier {
   final _icons = <String, MachineIcon>{};
   Future<void>? _iconsRead;
   MachineIcon iconFor(String? alias) => _icons[alias ?? 'local'] ?? parseMachineIcon(null, remote: alias != null);
+  final _projectMachines = <String, String>{};
+  String? lastMachineForProject(String id) => _projectMachines[id];
   String? _selected;
   late bool _selectionChanged = false;
   DesktopSession get active => _cachedSession(_states[_selected]) ?? local;
@@ -152,12 +154,27 @@ class MachinesController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void rememberProjectMachine(DesktopSession session, Project project) {
+    final id = projectIdentity(session, project);
+    final alias = session.machineAlias ?? '';
+    if (_projectMachines[id] == alias) return;
+    _projectMachines[id] = alias;
+    unawaited(callIsolate(local.database.port, 'settings.set',
+      {'key': 'project_machine:$id', 'value': alias}, cancellation: _lifetime)
+      .catchError((Object error) {
+        if (error is! CancelledException) local.showError(error, title: 'Could not save the project machine');
+        return null;
+      }));
+    notifyListeners();
+  }
+
   void openDraftOn(MachineSession machine, SessionDraft draft) {
     if (!sessions.any((current) => identical(current.session, machine.session)) || !machine.session.connected) {
       throw StateError('The target machine disconnected. Refresh the machine list.');
     }
     machine.session.openDraft(draft);
     activate(machine.session);
+    if (machine.session.project case final project?) rememberProjectMachine(machine.session, project);
   }
   Object? discoveryError;
   Future<void>? _refreshing, _closing;
@@ -205,6 +222,11 @@ class MachinesController extends ChangeNotifier {
     if (!_selectionChanged) {
       final selected = settings['active_machine'] as String?;
       _selected = selected == null || selected.isEmpty ? null : selected;
+    }
+    for (final entry in settings.entries) {
+      if (entry.key.startsWith('project_machine:') && entry.value is String) {
+        _projectMachines.putIfAbsent(entry.key.substring('project_machine:'.length), () => entry.value as String);
+      }
     }
     _icons.addAll({for (final entry in settings.entries)
       if (entry.key.startsWith('machine_icon:'))

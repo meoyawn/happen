@@ -14,23 +14,27 @@ String projectIdentity(DesktopSession source, Project project) {
     : jsonEncode([repository, project.workspace?['subdirectory'] as String? ?? '']);
 }
 
-List<DesktopProject> desktopProjects(Iterable<DesktopSession> sources, {DesktopSession? preferred}) {
+List<DesktopProject> desktopProjects(Iterable<DesktopSession> sources,
+    {DesktopSession? preferred, String? Function(String projectId)? lastMachineForProject}) {
   final groups = <String, List<ProjectCheckout>>{};
   for (final source in sources) {
     for (final project in source.projects.where((project) => !project.removing)) {
       (groups[projectIdentity(source, project)] ??= []).add((source: source, project: project));
     }
   }
-  int rank(ProjectCheckout checkout) {
+  int rank(ProjectCheckout checkout, String id) {
     final source = checkout.source, project = checkout.project;
     final availability = !project.available ? 2 : !source.connected ? 1 : 0;
-    final selection = identical(source, preferred) && identical(project, preferred?.project) ? 0
-      : identical(source, preferred) ? 1 : source.machineAlias == null ? 2 : 3;
+    final lastMachine = lastMachineForProject?.call(id);
+    final selectedHere = lastMachine == null
+      ? identical(source, preferred) && identical(project, preferred?.project)
+      : (source.machineAlias ?? '') == lastMachine;
+    final selection = selectedHere ? 0 : identical(source, preferred) ? 1 : source.machineAlias == null ? 2 : 3;
     return availability * 16 + selection * 2 + (project.workspace?['worktree'] == true ? 1 : 0);
   }
   return [for (final entry in groups.entries) (
     id: entry.key,
-    preferred: entry.value.reduce((a, b) => rank(a) <= rank(b) ? a : b),
+    preferred: entry.value.reduce((a, b) => rank(a, entry.key) <= rank(b, entry.key) ? a : b),
     checkouts: List.unmodifiable(entry.value),
   )];
 }

@@ -25,6 +25,8 @@ import 'dictation_state.dart';
 import 'dictation_controls.dart';
 import 'desktop_toast.dart';
 import 'file_autocomplete.dart';
+import 'goal_state.dart';
+import 'goal_status.dart';
 import 'model_picker.dart';
 import 'new_session.dart';
 import 'mcp_conversation.dart';
@@ -184,6 +186,7 @@ class _DesktopViewState extends State<DesktopView> {
         builder: (context) => CommandMenu(
           session: session,
           sources: _sources,
+          lastMachineForProject: widget.machines?.lastMachineForProject,
           pickProject: pickProject,
           onNewThread: (project) => unawaited(_run(() => _newChat(project))),
           onAddProject: () => unawaited(_addProject()),
@@ -536,11 +539,14 @@ class _DesktopViewState extends State<DesktopView> {
     WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Future<void> _selectProject(Project project, [DesktopTask? task]) {
+  Future<void> _selectProject(Project project, [DesktopTask? task]) async {
     _cancelProjectSelection();
     final source = _source(project);
     widget.machines?.activate(source);
-    return source.select(project, task);
+    await source.select(project, task);
+    if (task == null && identical(source.project, project) && source.task == null) {
+      widget.machines?.rememberProjectMachine(source, project);
+    }
   }
 
   Future<void> _newChat([Project? owner]) async {
@@ -553,6 +559,7 @@ class _DesktopViewState extends State<DesktopView> {
     if (owner.removing || !owner.available) return;
     widget.machines?.activate(source);
     source.newSession(owner);
+    widget.machines?.rememberProjectMachine(source, owner);
     if (mounted) _focusComposer();
   }
 
@@ -605,6 +612,7 @@ class _DesktopViewState extends State<DesktopView> {
     final source = _sources.firstWhere((source) => source.sessionDrafts.contains(draft));
     widget.machines?.activate(source);
     source.openDraft(draft);
+    if (source.project case final project?) widget.machines?.rememberProjectMachine(source, project);
     _focusComposer();
   }
 
@@ -735,6 +743,7 @@ class _DesktopViewState extends State<DesktopView> {
                 child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, sources: _sources, picking: _picking,
+                    lastMachineForProject: widget.machines?.lastMachineForProject,
                     machinePicker: ThreadMachinePicker(machines: widget.machines, session: session, machineMenuController: _machineMenu),
                     projectMenuController: _projectMenu,
                     onSelect: _openDraft, onAddProject: () => unawaited(_addProject()),
@@ -882,7 +891,9 @@ class _ComposerState extends State<_Composer> {
     : widget.session.projects.where((project) =>
         project.tasks.any((task) => task.id == widget.target!.sideParentID)).firstOrNull;
   String get _currentDraftKey => widget.target?.draftKey ?? widget.session.draftKey;
-  bool get _submitting => widget.target?.sideSubmitting ?? widget.session.submitting;
+  bool get _submitting => (widget.target?.sideSubmitting ?? widget.session.submitting) || _target?.goalWrite is GoalWritePending;
+  bool get _goalMode => widget.target == null && widget.session.composerMode(_draftKey) is GoalComposer;
+  bool get _canSetGoal => widget.target == null && (_target?.provider ?? widget.session.providerId) == 'openai';
   String? get _attachmentStatus => widget.target == null
     ? widget.session.attachmentStatus : widget.target!.sideAttachmentStatus;
   void _saveDrafts() { if (widget.target == null) widget.session.saveDrafts(); }
@@ -1050,6 +1061,15 @@ class _ComposerState extends State<_Composer> {
   }
 
   void _saveDraft() {
+    final command = _canSetGoal && _text.value.composing.isCollapsed ? goalCommand(_text.text) : null;
+    if (command != null && command.end > 0 && _text.text[command.end - 1].trim().isEmpty) {
+      _enableGoal();
+      final value = _text.value;
+      _text.value = value.copyWith(text: value.text.substring(command.end), composing: TextRange.empty,
+        selection: TextSelection(baseOffset: (value.selection.baseOffset - command.end).clamp(0, value.text.length - command.end),
+          extentOffset: (value.selection.extentOffset - command.end).clamp(0, value.text.length - command.end)));
+      return;
+    }
     widget.session.draftSelections[_draftKey] = _text.selection;
     if (_text.text.isEmpty) {
       widget.session.drafts.remove(_draftKey);
@@ -1063,6 +1083,40 @@ class _ComposerState extends State<_Composer> {
       widget.session.fileDrafts[_draftKey] = files;
     }
     _saveDrafts();
+  }
+
+  void _enableGoal() => widget.session.chooseComposerMode(_draftKey, const GoalComposer());
+
+  void _exitGoal() {
+    widget.session.chooseComposerMode(_draftKey, const MessageComposer());
+    _focus.requestFocus();
+  }
+
+  void _editGoal() {
+    final objective = _target?.goal?['objective'] as String?;
+    _enableGoal();
+    if (_text.text.isEmpty && objective != null) {
+      _text.value = TextEditingValue(text: objective, selection: TextSelection.collapsed(offset: objective.length));
+    }
+    _focus.requestFocus();
+  }
+
+  Future<void> _changeGoal({String? objective, String? status, bool clear = false}) async {
+    final target = _target;
+    if (target == null) return;
+    try {
+      await widget.session.changeGoal(target, objective: objective, status: status, clear: clear,
+        cancellation: _attachmentLifetime);
+    } on CancelledException {
+      // Navigation or application exit owns this operation.
+    }
+  }
+
+  void _retryGoal() {
+    if (_target?.goalWrite case GoalWriteFailed(:final write)) {
+      final mutation = write.mutation;
+      unawaited(_changeGoal(objective: mutation.objective, status: mutation.status, clear: mutation.clear));
+    }
   }
 
   Future<void> _copy({bool cut = false, TextEditingController? controller, FocusNode? focus}) async {
@@ -1183,6 +1237,13 @@ class _ComposerState extends State<_Composer> {
   Future<void> _sendPrompt() async {
     if (_receivingAttachments || _submitting) return;
     if (_autocomplete.currentState?.consumeCommand() == true) return;
+    if ((_canSetGoal ? goalCommand(_text.text) : null) case final command?) {
+      _enableGoal();
+      _text.value = TextEditingValue(text: _text.text.substring(command.end),
+        selection: TextSelection.collapsed(offset: _text.text.length - command.end));
+      if (_text.text.trim().isEmpty) return;
+    }
+    final goal = _goalMode;
     final controller = _text, draftKey = _draftKey;
     final value = controller.value;
     final files = controller.files;
@@ -1197,7 +1258,7 @@ class _ComposerState extends State<_Composer> {
       }
     }
     try {
-      final submission = widget.session.send(prompt, attachments: attachments, annotations: annotations, target: widget.target);
+      final submission = widget.session.send(prompt, attachments: attachments, annotations: annotations, target: widget.target, goal: goal);
       if (_submitting) {
         _autocomplete.currentState?.dismiss();
         // Keep the saved draft until acknowledgement so a failed send can be
@@ -1214,6 +1275,7 @@ class _ComposerState extends State<_Composer> {
           widget.session.draftSelections.remove(draftKey);
           widget.session.fileDrafts.remove(draftKey);
         }
+        if (goal) widget.session.chooseComposerMode(draftKey, const MessageComposer());
         final ids = attachments.map((attachment) => attachment.id).toSet();
         widget.session.attachmentDrafts[draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
         if (widget.session.attachmentDrafts[draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(draftKey);
@@ -1295,16 +1357,16 @@ class _ComposerState extends State<_Composer> {
     final hasProject = _project?.available == true && _project?.removing != true;
     final editable = hasProject && (answer?.enabled ?? true);
     final authenticated = session.authenticatedFor(widget.target);
-    final available =
+    final controlsEnabled =
         hasProject &&
         session.connected &&
         !_receivingAttachments &&
         !_submitting &&
-        !(newThread && session.pullingCheckout) &&
         _target?.sidePreparing != true &&
         _target?.archived != true && _target?.archiving != true &&
         _target?.loading != true &&
         _target?.loadError == null && (answer?.enabled ?? true);
+    final available = controlsEnabled && !(newThread && session.pullingCheckout);
     final controller = answer?.controller ?? _text;
     final focus = answer?.focus ?? _focus;
     Future<void> copy({bool cut = false}) => _copy(cut: cut, controller: controller, focus: focus);
@@ -1327,6 +1389,7 @@ class _ComposerState extends State<_Composer> {
         session: session,
         target: widget.target,
         commands: {
+          if (_canSetGoal) '/goal': (description: 'Set a goal to keep pursuing', run: _enableGoal),
           if (widget.target == null && _project != null)
             '/new': (description: 'Start a new session', run: () => session.newSession(_project!)),
           if (defaultTargetPlatform == TargetPlatform.macOS)
@@ -1367,6 +1430,11 @@ class _ComposerState extends State<_Composer> {
             constraints: BoxConstraints(maxHeight: answer == null ? double.infinity : MediaQuery.sizeOf(context).height * .65),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
           if (answer != null) Flexible(fit: FlexFit.loose, child: answer.panel),
+          if ((answer == null ? _target : null) case final target? when target.goal != null || target.goalWrite is! GoalWriteIdle)
+            GoalStatusRail(goal: target.goal, write: target.goalWrite,
+              enabled: available, onEdit: _editGoal, onRetry: _retryGoal,
+              onStatus: (status) => unawaited(_changeGoal(status: status)),
+              onClear: () => unawaited(_changeGoal(clear: true))),
           CallbackShortcuts(
             bindings: {
               if (answer == null || _ownsVoice && (_dictating || _voice.state is DictationFailed))
@@ -1447,12 +1515,14 @@ class _ComposerState extends State<_Composer> {
                             TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
-                      ConstrainedBox(constraints: BoxConstraints(minHeight: newThread ? 72 : 56), child: ComposerEditor(
+                      ConstrainedBox(constraints: BoxConstraints(minHeight: newThread || _goalMode ? 72 : 56), child: ComposerEditor(
                         controller: controller,
                         focusNode: focus,
                         enabled: editable,
-                        placeholder: answer?.placeholder ?? r'Ask anything, @ for files, $ for skills, / for commands',
-                        label: answer == null ? 'Message' : 'Answer',
+                        placeholder: answer?.placeholder ?? (_goalMode
+                          ? 'Describe your goal, define measurable outcomes for best results'
+                          : r'Ask anything, @ for files, $ for skills, / for commands'),
+                        label: answer == null ? _goalMode ? 'Goal' : 'Message' : 'Answer',
                         paste: paste, copy: copy,
                       )),
                       SizedBox(height: 40, child: Row(
@@ -1466,9 +1536,13 @@ class _ComposerState extends State<_Composer> {
                                 case 'commands': _autocomplete.currentState?.openCommands();
                                 case 'history': _autocomplete.currentState?.openHistory();
                                 case 'attach': unawaited(_pickAttachments());
+                                case 'goal': _enableGoal(); _focus.requestFocus();
                               }
                             },
                             itemBuilder: (_) => [
+                              if (_canSetGoal) const PopupMenuItem(value: 'goal', child: ListTile(dense: true,
+                                contentPadding: EdgeInsets.zero, mouseCursor: MouseCursor.defer,
+                                leading: Icon(Icons.track_changes_rounded, size: 16), title: Text('Goal'), trailing: Text('/goal'))),
                               const PopupMenuItem(value: 'context', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                 mouseCursor: MouseCursor.defer,
                                 leading: Icon(Icons.alternate_email_rounded, size: 16), title: Text('Add context'), trailing: Text('@'))),
@@ -1487,6 +1561,10 @@ class _ComposerState extends State<_Composer> {
                             child: MouseRegion(cursor: available && !_dictating ? SystemMouseCursors.click : SystemMouseCursors.basic,
                               child: const SizedBox.square(dimension: 32,
                                 child: Icon(Icons.add_rounded, size: 20, color: desktopSecondary)))),
+                          if (answer == null && _goalMode) ...[
+                            GoalModeButton(onClear: _submitting ? null : _exitGoal),
+                            const SizedBox(width: 6),
+                          ],
                           if (_dictating) ...[
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
@@ -1505,7 +1583,7 @@ class _ComposerState extends State<_Composer> {
                           ],
                           Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                             if (answer == null)
-                              Flexible(child: ComposerModelPicker(session: session, enabled: available, target: widget.target,
+                              Flexible(child: ComposerModelPicker(session: session, enabled: controlsEnabled, target: widget.target,
                                 modelMenuKey: _modelMenu, effortMenuKey: _effortMenu))
                             else if (!answer.sending)
                               const Flexible(child: Padding(padding: EdgeInsets.only(left: 16),
@@ -1532,7 +1610,7 @@ class _ComposerState extends State<_Composer> {
                                 : Text(answer.action, style: const TextStyle(fontSize: 12)))
                           else ValueListenableBuilder<TextEditingValue>(valueListenable: _text, builder: (context, value, _) {
                             final hasContent = value.text.trim().isNotEmpty || _attachments.isNotEmpty || session.annotationsFor(_draftKey).isNotEmpty;
-                            final stopWorking = running && !hasContent && !_dictating;
+                            final stopWorking = running && !hasContent && !_dictating && !_goalMode;
                             final dictationCanSend = _dictating && _voice.state is DictationRecording && !_finishingVoice;
                             return IconButton.filled(
                             style: IconButton.styleFrom(
@@ -1542,17 +1620,18 @@ class _ComposerState extends State<_Composer> {
                               shape: const CircleBorder(),
                             ),
                             tooltip: _target?.sidePreparing == true ? 'Preparing side chat…'
-                                : stopWorking ? 'Stop task and clear pending messages' : running
+                                : stopWorking ? 'Stop task and clear pending messages' : _goalMode
+                                ? (_target?.goal == null ? 'Start goal' : 'Update goal') : running
                                 ? (session.deliveryMode == 'steer'
                                       ? 'Steer task'
                                       : 'Queue message')
                                 : 'Send message',
-                            onPressed: stopWorking ? (session.connected ? _stop : null) : available && authenticated &&
+                            onPressed: stopWorking ? (session.connected ? _stop : null) : available && authenticated && (!_goalMode || _canSetGoal) &&
                                 (dictationCanSend || !_dictating && hasContent)
                                 ? _submit
                                 : null,
                             icon: Icon(
-                              stopWorking ? Icons.stop_rounded : running && session.deliveryMode == 'queue'
+                              stopWorking ? Icons.stop_rounded : _goalMode ? Icons.arrow_upward_rounded : running && session.deliveryMode == 'queue'
                                   ? Icons.playlist_add
                                   : Icons.arrow_upward_rounded,
                               size: 20,
@@ -1564,6 +1643,9 @@ class _ComposerState extends State<_Composer> {
                       if (answer == null && !authenticated)
                         const Align(alignment: Alignment.centerLeft, child: Text('Sign in to the selected provider to send',
                           style: TextStyle(fontSize: 11, color: Colors.black38))),
+                      if (answer == null && _goalMode && !_canSetGoal)
+                        const Align(alignment: Alignment.centerLeft, child: Text('Select a ChatGPT model to start a goal',
+                          style: TextStyle(fontSize: 11, color: desktopSecondary))),
                     ],
                   ),
                 ),

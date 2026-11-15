@@ -15,6 +15,113 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('goal command changes the draft composer and controls the acknowledged goal', (tester) async {
+    late Directory root;
+    late DesktopSession session;
+    final client = _GoalClient();
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-goal-');
+      session = DesktopSession(client, await openDesktopDatabase(root.path));
+    });
+    addTearDown(() => tester.runAsync(() async { await session.close(); await root.delete(recursive: true); }));
+    final project = Project('checkout', 'project', root.path);
+    session.projects.add(project);
+    session.project = project;
+    session.providers = [{'id': 'openai', 'status': 'signed_in', 'models': [
+      {'id': 'example', 'reasoning_levels': <String>[]},
+    ]}];
+    session.chooseModel('example');
+    tester.view.physicalSize = const Size(1100, 850); tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    await tester.pumpAndSettle();
+    ComposerEditor editor() => tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+    void type(String text) => editor().controller.value = TextEditingValue(text: text,
+      selection: TextSelection.collapsed(offset: text.length));
+    editor().focusNode.requestFocus();
+    await tester.pump();
+    type('/go');
+    await tester.pump(const Duration(milliseconds: 250)); await tester.pump(); await tester.pump();
+    expect(find.text('Set a goal to keep pursuing'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect(editor().placeholder, contains('Describe your goal'));
+    expect(editor().controller.text, isEmpty);
+    expect(find.byTooltip('Exit goal mode'), findsOneWidget);
+    final original = session.currentDraft;
+    type('Ship the desktop goal workflow');
+    session.newSession(project); await tester.pump();
+    expect(editor().placeholder, isNot(contains('Describe your goal')));
+    session.openDraft(original); await tester.pump();
+    expect(editor().placeholder, contains('Describe your goal'));
+    expect(editor().controller.text, 'Ship the desktop goal workflow');
+    await tester.tap(find.byTooltip('Exit goal mode')); await tester.pump();
+    expect(editor().controller.text, 'Ship the desktop goal workflow');
+    type('/goal Ship the desktop goal workflow'); await tester.pump();
+    expect(editor().controller.text, 'Ship the desktop goal workflow');
+    expect(editor().placeholder, contains('Describe your goal'));
+
+    client.goalReply = Completer<Json>();
+    await tester.runAsync(() async {
+      await tester.tap(find.byTooltip('Start goal'));
+      for (var i = 0; i < 100 && !client.requests.any((call) => call.method == 'thread/goal/set'); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pump();
+    final target = session.task!;
+    expect(find.textContaining('Saving goal…', findRichText: true), findsOneWidget);
+    expect(target.goal, isNull, reason: 'A pending write is not a saved goal');
+    expect(client.requests.where((call) => call.method == 'turn/start'), hasLength(1));
+    expect(client.requests.firstWhere((call) => call.method == 'turn/start').params['input'], [
+      {'type': 'text', 'text': 'Ship the desktop goal workflow'},
+    ]);
+    client.goalReply!.complete({'goal': client.goal});
+    client.goalReply = null;
+    await tester.runAsync(() async { await Future<void>.delayed(const Duration(milliseconds: 30)); });
+    await tester.pump();
+    expect(find.textContaining('Pursuing goal', findRichText: true), findsOneWidget);
+    expect(find.byTooltip('Pause goal'), findsOneWidget);
+    expect(find.byTooltip('Exit goal mode'), findsNothing);
+    expect(editor().controller.text, isEmpty);
+
+    client.goalReply = Completer<Json>();
+    await tester.tap(find.byTooltip('Pause goal')); await tester.pump();
+    expect(target.goal?['status'], 'active');
+    client.events.add({'method': 'thread/goal/updated', 'params': {
+      'threadId': target.id, 'goal': {...client.goal!, 'status': 'paused'},
+    }});
+    await tester.pump();
+    // An older acknowledgement must not overwrite a newer notification.
+    client.goalReply!.complete({'goal': {...client.goal!, 'status': 'active'}});
+    client.goalReply = null;
+    await tester.pump(); await tester.pump();
+    expect(find.textContaining('Paused goal', findRichText: true), findsOneWidget);
+    await tester.tap(find.byTooltip('Resume goal')); await tester.pump(); await tester.pump();
+    expect(find.byTooltip('Pause goal'), findsOneWidget);
+    expect(client.requests.where((call) => call.method == 'turn/start'), hasLength(1),
+      reason: 'The backend owns continuation; goal controls do not send chat messages');
+
+    client.failGoal = true;
+    await tester.tap(find.byTooltip('Pause goal')); await tester.pump(); await tester.pump();
+    expect(target.goal?['status'], 'active');
+    expect(find.byTooltip('Retry saving goal'), findsOneWidget);
+    client.failGoal = false;
+    await tester.tap(find.byTooltip('Retry saving goal')); await tester.pump(); await tester.pump();
+    expect(find.byTooltip('Resume goal'), findsOneWidget);
+    await tester.tap(find.byTooltip('Edit goal')); await tester.pump();
+    expect(editor().controller.text, 'Ship the desktop goal workflow');
+    await tester.tap(find.byTooltip('Exit goal mode')); await tester.pump();
+    await tester.tap(find.byTooltip('Clear goal')); await tester.pump(); await tester.pump();
+    expect(find.byKey(const ValueKey('goal-status')), findsNothing);
+    expect(editor().controller.text, 'Ship the desktop goal workflow');
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('holding Option and an arrow switches on each repeat and stops at the list boundary', (tester) async {
     late DesktopSession session;
     late Directory directory;
@@ -461,4 +568,33 @@ class _Client implements AgentClient {
   @override Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async => {'servers': <Object?>[]};
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _GoalClient extends _Client {
+  final requests = <({String method, Json params})>[];
+  Json? goal;
+  Completer<Json>? goalReply;
+  bool failGoal = false;
+  @override
+  Future<Object?> request(String method, [Json params = const {}]) async {
+    requests.add((method: method, params: params));
+    switch (method) {
+      case 'thread/start': return {'thread': {'id': 'goal-thread'}, 'configuration': <String, Object?>{}};
+      case 'turn/start': return <String, Object?>{};
+      case 'thread/goal/set':
+        if (failGoal) throw StateError('Goal store unavailable');
+        goal = {...?goal, 'threadId': params['threadId'],
+          if (params['objective'] != null) 'objective': params['objective'], 'status': params['status'],
+          'tokensUsed': 0, 'timeUsedSeconds': 0, 'updatedAt': DateTime.now().millisecondsSinceEpoch ~/ 1000};
+        return goalReply?.future ?? Future.value({'goal': goal});
+      case 'thread/goal/clear': goal = null; return <String, Object?>{};
+      default: return super.request(method, params);
+    }
+  }
+  @override
+  Future<Json> searchSkills(String cwd, String query, {String? provider, required CancellationToken cancellation}) async =>
+    {'skills': <Json>[], 'truncated': false};
+  @override
+  Future<Json> gitRequest(String method, Json params, {required CancellationToken cancellation}) async =>
+    {'isRepo': false, 'files': <Object?>[]};
 }

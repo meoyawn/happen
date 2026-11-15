@@ -102,7 +102,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   bool get _visible => _historyOpen || _mention != null || _command != null || _mcpAnchor != null;
   List<({String name, String description})> get _suggestions => [
     for (final command in _commands)
-      if (_fuzzyMatch(command.name, _normalizedCommand(_command?.text ?? ''))) command,
+      if (_fuzzyMatch(command.name, command.name == '/goal'
+        ? _normalizedCommand(_command?.text ?? '').replaceFirst(RegExp(r'^/go+'), '/go')
+        : _normalizedCommand(_command?.text ?? ''))) command,
   ];
   int get _choiceCount => _historyOpen ? _historyItems.length :
     (_command != null ? _suggestions.length : _paths.length) + _skills.length + _contextOptions.length;

@@ -18,6 +18,7 @@ import 'composer_text_controller.dart';
 import 'appearance_preferences.dart';
 import 'shortcut_preferences.dart';
 import 'archive_state.dart';
+import 'goal_state.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
@@ -33,6 +34,7 @@ import 'local_project_icons.dart';
 part 'draft_routing.dart';
 part 'annotation_drafts.dart';
 part 'project_identity.dart';
+part 'session_goals.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -111,6 +113,12 @@ class DesktopTask {
   String? loadError;
   String? provider, model, reasoning, nextReasoning;
   bool reasoningUpdates = false;
+  late Json? _goal = null;
+  Json? get goal => _goal;
+  late GoalWriteState _goalWrite = const GoalWriteIdle();
+  GoalWriteState get goalWrite => _goalWrite;
+  late int _goalRevision = 0;
+  late CancellationToken? _goalOperation = null;
   num? contextLimit;
   Json? _contextTokens;
   Json? get contextTokens => _contextTokens;
@@ -316,6 +324,7 @@ class DesktopSession extends ChangeNotifier {
   final _changedPanelLayouts = <String>{};
   bool _panelsLoaded = false;
   final drafts = <String, String>{};
+  late final _composerModes = <String, ComposerMode>{};
   late final _annotationDrafts = <String, List<ResponseAnnotation>>{};
   late final annotationChanges = ValueNotifier<int>(0);
   late _AnnotationWriteState _annotationWrite = const _AnnotationWriteIdle();
@@ -1362,6 +1371,7 @@ class DesktopSession extends ChangeNotifier {
         'recent': {'provider': _provider, 'model': _model, 'reasoning': _reasoning},
         'active': viewingConversation ? task?.id ?? _activeDraftId : 'home',
         'tabs': openTabIds,
+        'goalDrafts': [for (final entry in _composerModes.entries) if (entry.value is GoalComposer) entry.key],
         'annotations': {for (final entry in _annotationDrafts.entries)
           entry.key: entry.value.map((annotation) => annotation.toJson()).toList()},
         'drafts': [for (final draft in sessionDrafts) {
@@ -1403,6 +1413,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   bool _emptyDraft(SessionDraft draft) => draft.submission == null &&
+    composerMode(draft.id) is MessageComposer &&
     (drafts[draft.id] ?? '').trim().isEmpty &&
     (fileDrafts[draft.id]?.isEmpty ?? true) &&
     (attachmentDrafts[draft.id]?.isEmpty ?? true) && annotationsFor(draft.id).isEmpty;
@@ -1429,6 +1440,7 @@ class DesktopSession extends ChangeNotifier {
     openTabIds..clear()..addAll(tabs);
     for (final id in removed) {
       drafts.remove(id);
+      _composerModes.remove(id);
       draftSelections.remove(id);
       fileDrafts.remove(id);
       attachmentDrafts.remove(id);
@@ -1576,6 +1588,9 @@ class DesktopSession extends ChangeNotifier {
       } catch (_) { /* A malformed optional draft must not prevent startup. */ }
     }
     final recent = jsonObject(restored['recent'] ?? {});
+    for (final id in restored['goalDrafts'] as List? ?? const []) {
+      if (id is String) _composerModes[id] = const GoalComposer();
+    }
     _provider = recent['provider'] as String?;
     _model = recent['model'] as String?;
     _reasoning = recent['reasoning'] as String?;
@@ -1887,6 +1902,12 @@ class DesktopSession extends ChangeNotifier {
       target.model = config['model'] as String?;
       target.reasoning = page['reasoning'] as String? ?? config['provider_settings']?['reasoning'] as String?;
       target.reasoningUpdates = config['reasoning_updates'] == true;
+      final goalRevision = target._goalRevision;
+      if (target.sideParentID == null && config['tool_interface'] == 'openai') {
+        final response = await client.sessionRead('thread/goal/get', {'threadId': target.id}, cancellation: read);
+        read.throwIfCancelled();
+        if (target._goalRevision == goalRevision) target._goal = savedGoal(response['goal']);
+      }
       target.contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
       target.archived = page['archived'] == true;
       if (target.archived) await terminals.removeTask(target.id);
@@ -1992,23 +2013,41 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<bool> send(String prompt, {List<ComposerAttachment> attachments = const [],
-      List<ResponseAnnotation> annotations = const [], DesktopTask? target}) {
+      List<ResponseAnnotation> annotations = const [], DesktopTask? target, bool goal = false}) async {
+    if (goal) {
+      final objective = promptWithResponseAnnotations(prompt, annotations).trim();
+      if (objective.isEmpty || objective.runes.length > 4000) {
+        showError('Describe a goal in 1–4000 characters.');
+        return false;
+      }
+      final selected = target ?? task;
+      if (target != null || (selected?.provider ?? providerId) != 'openai') {
+        showError('Goals are available in main ChatGPT sessions.');
+        return false;
+      }
+      if (selected != null && attachments.isEmpty) {
+        final accepted = await changeGoal(selected, objective: objective, status: 'active');
+        if (accepted) _consumeAnnotations(selected.draftKey, annotations);
+        return accepted;
+      }
+    }
     final enabled = (target ?? task)?.tracing ?? currentDraft.tracing;
-    return _send(prompt, attachments: attachments, annotations: List.unmodifiable(annotations), target: target, tracing: enabled);
+    return _send(prompt, attachments: attachments, annotations: List.unmodifiable(annotations), target: target, tracing: enabled, goal: goal);
   }
 
   Future<bool> _send(String prompt, {List<ComposerAttachment> attachments = const [],
       List<ResponseAnnotation> annotations = const [], DesktopTask? target,
-      required bool tracing}) async {
+      required bool tracing, bool goal = false}) async {
     final owner = target == null ? project : projects.where((project) =>
       project.tasks.any((task) => task.id == target.sideParentID)).firstOrNull;
     final existing = target ?? task;
+    var goalTarget = existing;
     final draft = existing == null ? currentDraft : null;
     final wasRunning = existing?.running == true;
     final annotationDraft = target?.draftKey ?? existing?.draftKey ?? draft!.id;
     final inputPrompt = promptWithResponseAnnotations(prompt, annotations);
     String? adoptedDraft;
-    final sideCommand = target == null ? RegExp(r'^\s*/side(?:\s|$)').firstMatch(prompt) : null;
+    final sideCommand = target == null && !goal ? RegExp(r'^\s*/side(?:\s|$)').firstMatch(prompt) : null;
     if (sideCommand != null && existing == null) {
       showError('Send a message in the main session before starting a side chat.');
       return false;
@@ -2125,6 +2164,7 @@ class DesktopSession extends ChangeNotifier {
             tracing: tracing,
           )..running = true
             ..lastActivity = DateTime.now().millisecondsSinceEpoch);
+          goalTarget = created;
           bindTraceSession(created.id);
           if (tracing) client.traceSession(created.id);
           created.tracing = tracing;
@@ -2192,6 +2232,9 @@ class DesktopSession extends ChangeNotifier {
           });
         }
         admitted = true;
+        // The initial input (including attachments) is already admitted. A goal
+        // write failure belongs to its rail and must never offer to resend it.
+        if (goal) await changeGoal(goalTarget!, objective: inputPrompt.trim(), status: 'active');
         _consumeAnnotations(annotationDraft, annotations, adopt: adoptedDraft);
         return true;
       }));
@@ -2371,6 +2414,7 @@ class DesktopSession extends ChangeNotifier {
     target.questionDrafts.clear();
     target.loadError = null;
     drafts.remove(target.id);
+    _composerModes.remove(target.id);
     draftSelections.remove(target.id);
     fileDrafts.remove(target.id);
     _annotationDrafts.remove(target.id);
@@ -2560,6 +2604,12 @@ class DesktopSession extends ChangeNotifier {
     final data = jsonObject(event['params'] ?? {});
     applyThreadNotification(target.messages, event);
     switch (event['method']) {
+      case 'thread/goal/updated':
+        target._goal = savedGoal(data['goal']);
+        target._goalRevision++;
+      case 'thread/goal/cleared':
+        target._goal = null;
+        target._goalRevision++;
       case 'turn/started':
         target.turns[data['turn']['id'] as String] = jsonObject(data['turn']);
         target.running = true; target._stopRequested = false;

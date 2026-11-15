@@ -11,10 +11,12 @@ import 'project_avatar.dart';
 class NewSessionScreen extends StatelessWidget {
   const NewSessionScreen({super.key, required this.session, required this.composer,
     required this.picking, required this.onSelect, required this.onAddProject,
-    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController, this.machinePicker, this.sources});
+    required this.onRemoveProject, required this.onReturnFocus, this.onOpenFolder, this.projectMenuController, this.machinePicker,
+    this.sources, this.lastMachineForProject});
   final Widget? machinePicker;
   final DesktopSession session;
   final List<DesktopSession>? sources;
+  final String? Function(String projectId)? lastMachineForProject;
   final Widget composer;
   final bool picking;
   final ValueChanged<Project> onSelect, onRemoveProject;
@@ -25,7 +27,8 @@ class NewSessionScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final project = session.project;
-    final projects = desktopProjects(sources ?? [session], preferred: session);
+    final projects = desktopProjects(sources ?? [session], preferred: session,
+      lastMachineForProject: lastMachineForProject);
     final hasProjects = projects.isNotEmpty;
     return LayoutBuilder(builder: (context, bounds) {
       final narrow = bounds.maxWidth < 600;

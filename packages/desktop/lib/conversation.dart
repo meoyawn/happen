@@ -143,7 +143,10 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
     }
   }
   flush(latest: true);
-  final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
+  final lastEntry = entries.where((entry) => entry.role != 'Queued').lastOrNull;
+  final activeTurn = task.turns.values.lastOrNull;
+  final latest = activeTurn?['status'] == 'inProgress' && activeTurn?['id'] != lastEntry?.turnId
+    ? null : lastEntry;
   final activity = rows.lastOrNull;
   final activityOwnsStatus = activity?.kind == 'activity' && identical(activity?.entries.last, latest);
   final retrying = task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true;

@@ -38,8 +38,10 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
       onInactive: _dismissConfirmation,
       onHide: _dismissConfirmation,
       onExitRequested: () async {
-        await _close();
-        return AppExitResponse.exit;
+        // Flutter visits a snapshot of observers. Let that dispatch finish
+        // before shutdown disposes any of the later observers.
+        Timer.run(() => unawaited(_exit()));
+        return AppExitResponse.cancel;
       },
     );
   }

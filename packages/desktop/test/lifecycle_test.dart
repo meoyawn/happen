@@ -41,6 +41,25 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
 
+  testWidgets('native quit finishes dispatching exit requests before disposing observers', (tester) async {
+    late AppLifecycleListener later;
+    var closes = 0;
+    await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
+      hasActiveLocalTasks: false,
+      onQuit: () async { closes++; later.dispose(); },
+      child: const Scaffold(body: Text('Running')),
+    )));
+    later = AppLifecycleListener();
+
+    final response = await tester.binding.handleRequestAppExit();
+    expect(tester.takeException(), isNull);
+    expect(response, AppExitResponse.cancel);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(closes, 1);
+    expect(binding.exits, [AppExitType.required]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('active local tasks require two distinct quit presses and await shutdown', (tester) async {
     final platform = defaultTargetPlatform;
     final closed = Completer<void>();

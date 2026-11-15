@@ -18,9 +18,10 @@ typedef _Entry = ({
 class CommandMenu extends StatefulWidget {
   const CommandMenu({super.key, required this.session, required this.actions,
     required this.onOpen, required this.onNewThread, required this.onAddProject,
-    this.pickProject = false, this.sources});
+    this.pickProject = false, this.sources, this.lastMachineForProject});
   final DesktopSession session;
   final List<DesktopSession>? sources;
+  final String? Function(String projectId)? lastMachineForProject;
   final List<CommandMenuAction> actions;
   final void Function(Project, DesktopTask) onOpen;
   final ValueChanged<Project> onNewThread;
@@ -73,7 +74,8 @@ class _CommandMenuState extends State<CommandMenu> {
     if (_projectsOpen) {
       final session = widget.session;
       final sources = widget.sources ?? [session];
-      final allProjects = desktopProjects(sources, preferred: session);
+      final allProjects = desktopProjects(sources, preferred: session,
+        lastMachineForProject: widget.lastMachineForProject);
       final projects = allProjects.where((project) => matches(desktopProjectSearchText(project))).toList();
       final order = {for (final (index, project) in allProjects.indexed) project.id: index};
       bool current(DesktopProject project) => project.checkouts.any((checkout) => identical(checkout.project, session.project));
