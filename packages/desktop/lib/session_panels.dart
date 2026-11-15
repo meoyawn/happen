@@ -251,6 +251,14 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28), children: [
       const Text('Open a panel', style: TextStyle(fontSize: 13, color: desktopSecondary)),
       const SizedBox(height: 16),
+      if (widget.session.projects.where((project) => project.tasks.contains(widget.task)).firstOrNull?.path case final directory?)
+        ListTile(key: const ValueKey('open-files-panel'), contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.folder_outlined, size: 18, color: desktopSecondary),
+        title: const Text('Files', style: TextStyle(fontSize: 13)),
+        subtitle: const Text('Browse folders and preview files on this machine',
+          style: TextStyle(fontSize: 12, color: desktopTertiary)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: desktopTertiary),
+        onTap: () => _openFile((path: directory.endsWith('/') ? directory : '$directory/', line: null))),
       ListTile(key: const ValueKey('open-browser-panel'), contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.language_rounded, size: 18, color: desktopSecondary),
         title: const Text('Browser', style: TextStyle(fontSize: 13)),

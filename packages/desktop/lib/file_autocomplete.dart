@@ -516,7 +516,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
         for (var content in parts) {
           if (content is String) text.writeln(content);
         }
-        if (text.isNotEmpty) transcript..writeln('\n${message['type'] == 'user' ? 'User' : 'Assistant'}:')..write(text);
+        if (text.isNotEmpty) transcript..writeln('\n${message['type'] == 'userMessage' ? 'User' : 'Assistant'}:')..write(text);
       }
       if (!mounted || token.isCancelled || !identical(widget.controller, controller) || controller.value != before) return;
       controller.insertFile(TextRange(start: mention.start, end: mention.end), 'session:${item.path}',
@@ -596,7 +596,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
 
   bool completeSelection({bool completeQuery = false}) {
     if (!_visible) return false;
-    if (_choiceCount > 0) _chooseSelected(completeQuery: completeQuery);
+    if (_choiceCount > 0) { _chooseSelected(completeQuery: completeQuery); }
+    else if (!_loading && !_skillsLoading && _command == null && _mcpAnchor == null) { dismiss(); }
     return true;
   }
 
@@ -670,15 +671,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       bindings: {
         if (visible) ...{
           const SingleActivator(LogicalKeyboardKey.escape): dismiss,
-          const SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false): () {
-            if (_mcpAnchor != null) {
-              return;
-            } else if (_choiceCount > 0) {
-              _chooseSelected();
-            } else if (!_loading && !_skillsLoading && _command == null) {
-              dismiss();
-            }
-          },
+          const SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false): () { completeSelection(); },
           if (_mcpAnchor != null) ...{
             const SingleActivator(LogicalKeyboardKey.tab): () {},
             if (_mcpFilter.isEmpty) const SingleActivator(LogicalKeyboardKey.backspace): dismiss,

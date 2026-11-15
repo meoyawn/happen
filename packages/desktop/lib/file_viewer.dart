@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:server/server.dart';
@@ -15,8 +16,10 @@ import 'code_highlight.dart';
 import 'conversation_markdown.dart';
 import 'desktop_toast.dart';
 import 'file_icon.dart';
+import 'file_reference.dart';
+import 'folder_viewer.dart';
 
-typedef _FilePreview = ({String kind, String? text, Uint8List? bytes, int size, bool truncated});
+typedef _FilePreview = ({String kind, String? text, Uint8List? bytes, int? size, bool truncated});
 
 const _previewLimit = 2 * 1024 * 1024;
 const _imageExtensions = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'};
@@ -26,14 +29,13 @@ bool _isMarkdown(String path) => {'md', 'markdown', 'mdown', 'mkd'}.contains(_ex
 
 Future<_FilePreview> _readFilePreview(AgentClient client, String path, CancellationToken cancellation) async {
   final metadata = await client.fileSystemRequest('fs/getMetadata', path, cancellation: cancellation);
-  final size = metadata['size'] as int;
-  if (metadata['isDirectory'] == true) return (kind: 'directory', text: null, bytes: null, size: size, truncated: false);
-  if (metadata['isFile'] != true) return (kind: 'binary', text: null, bytes: null, size: size, truncated: false);
+  if (metadata['isDirectory'] == true) return (kind: 'directory', text: null, bytes: null, size: null, truncated: false);
+  if (metadata['isFile'] != true) return (kind: 'binary', text: null, bytes: null, size: null, truncated: false);
   final extension = _extension(path);
   final media = _imageExtensions.contains(extension) ? 'image'
     : extension == 'svg' ? 'svg' : extension == 'pdf' ? 'pdf' : null;
   if (media == 'pdf') {
-    return (kind: 'pdf', text: null, bytes: null, size: size, truncated: false);
+    return (kind: 'pdf', text: null, bytes: null, size: null, truncated: false);
   }
   final result = await client.fileSystemRequest('fs/readFile', path, cancellation: cancellation);
   return CancellableIsolate.run(() {
@@ -124,6 +126,7 @@ class _FileViewerState extends State<FileViewer> {
   CancellationToken? _read;
   _FilePreview? _preview;
   List<TextSpan> _lines = [];
+  int _folderReload = 0;
   bool _loading = false, _failed = false, _wrap = false, _source = false, _revealing = false;
 
   @override
@@ -243,13 +246,14 @@ class _FileViewerState extends State<FileViewer> {
     }
     final preview = _preview;
     if (preview == null) return const SizedBox.shrink();
-    if (preview.kind == 'directory') return _notice(Icons.folder_open_outlined, 'This path is a folder.');
+    if (preview.kind == 'directory') return FolderViewer(client: widget.client, path: widget.path,
+      active: widget.active, reloadRequest: _folderReload);
     if (preview.kind == 'binary') {
       return _notice(Icons.insert_drive_file_outlined,
-        'Preview is unavailable for this file type.', detail: _fileSize(preview.size));
+        'Preview is unavailable for this file type.', detail: preview.size == null ? null : _fileSize(preview.size!));
     }
     if (preview.kind == 'pdf' && !widget.client.sharedFilesystem) {
-      return _notice(Icons.insert_drive_file_outlined, 'PDF preview is unavailable for remote files.', detail: _fileSize(preview.size));
+      return _notice(Icons.insert_drive_file_outlined, 'PDF preview is unavailable for remote files.');
     }
     if (widget.client.sharedFilesystem && (preview.kind == 'pdf' || preview.kind == 'html' && (!_source || preview.text == null))) {
       return DesktopBrowser(key: ValueKey(widget.path), initialUrl: File(widget.path).absolute.uri.toString(),
@@ -285,6 +289,7 @@ class _FileViewerState extends State<FileViewer> {
   @override
   Widget build(BuildContext context) {
     final preview = _preview, text = preview?.text;
+    final folder = preview?.kind == 'directory', parent = p.dirname(p.normalize(widget.path));
     final canPreviewMarkdown = text != null && _isMarkdown(widget.path) && !preview!.truncated;
     final canPreviewHtml = widget.client.sharedFilesystem && text != null && preview?.kind == 'html';
     final canPreview = canPreviewMarkdown || canPreviewHtml;
@@ -293,6 +298,10 @@ class _FileViewerState extends State<FileViewer> {
       Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: desktopBorder, width: .5))),
         child: Row(children: [
+          _button('Open parent folder', Icons.arrow_upward_rounded,
+            parent == p.normalize(widget.path) ? null : () => ConversationFileScope.open(context,
+              (path: parent.endsWith('/') ? parent : '$parent/', line: null))),
+          const SizedBox(width: 4),
           Expanded(child: Tooltip(message: widget.path, child: Text(widget.path,
             maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: desktopSecondary)))),
           const SizedBox(width: 8),
@@ -307,20 +316,21 @@ class _FileViewerState extends State<FileViewer> {
               () => setState(() => _wrap = !_wrap), selected: _wrap),
             ConversationCopyButton(text: text, label: 'Copy file contents', compact: true),
           ],
-          _button('Reload file', Icons.refresh_rounded, _loading ? null : _load),
+          _button(folder ? 'Reload folder' : 'Reload file', Icons.refresh_rounded,
+            _loading ? null : folder ? () => setState(() => _folderReload++) : _load),
         ])),
       if (source && preview?.truncated == true) Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         color: desktopMuted, child: const Text('Showing the first 2 MB of this file.',
           style: TextStyle(fontSize: 12, color: desktopSecondary))),
       Expanded(child: _body()),
-      if (preview != null && !_loading && !_failed) Container(height: 28,
+      if (preview != null && !folder && !_loading && !_failed) Container(height: 28,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: const BoxDecoration(border: Border(top: BorderSide(color: desktopBorder, width: .5))),
         child: Row(children: [
           FileIcon(widget.path, size: 12), const SizedBox(width: 6),
           if (source) Text('${_code.lineCount} lines', style: const TextStyle(fontSize: 11, color: desktopTertiary)),
           const Spacer(),
-          Text(_fileSize(preview.size), style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+          if (preview.size case final size?) Text(_fileSize(size), style: const TextStyle(fontSize: 11, color: desktopTertiary)),
         ])),
     ]);
   }

@@ -408,9 +408,9 @@ void main() {
     final current = DesktopTask('current', 'Current'), other = DesktopTask('other', 'Planning');
     final session = _Session()..task = current..project = Project('project', 'project', '/project', [current, other]);
     final client = _Client()..paths = []..messages = {'data': [
-      {'type': 'user', 'text': 'Plan the release'},
-      {'type': 'assistant', 'content': [{'type': 'text', 'text': 'Ship on Monday'}]},
-      {'type': 'system', 'text': 'Private instructions'},
+      {'item': {'type': 'system', 'text': 'Private instructions'}},
+      {'item': {'type': 'agentMessage', 'text': 'Ship on Monday'}},
+      {'item': {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Plan the release'}]}},
     ]};
     final composer = await _open(tester, client: client, session: session);
     await _type(tester, composer, '@Planning');

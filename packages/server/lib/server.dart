@@ -19,6 +19,7 @@ import 'src/client_tools.dart';
 import 'src/task_tools.dart';
 import 'src/file_search.dart';
 import 'src/filesystem.dart';
+import 'src/filesystem_watch.dart';
 import 'src/attachments.dart';
 import 'src/questions.dart';
 import 'src/git.dart';
@@ -452,6 +453,7 @@ class AgentServer {
       }));
     }
     client.cancellation.cancel();
+    unawaited(client.closeFileWatches().catchError((Object _) {}));
     unawaited(_terminals.detach(client.id).catchError((Object _) {}));
     unawaited(client.attachments.close());
     _clientTools.detach(client.id);
@@ -712,8 +714,30 @@ class AgentServer {
       case 'ping':
         return {'version': '0.1.0'};
       case 'fs/readFile':
+      case 'fs/readDirectory':
       case 'fs/getMetadata':
+      case 'fs/writeFile':
+      case 'fs/createDirectory':
+      case 'fs/copy':
+      case 'fs/remove':
         return fileSystemRequest(method, params, client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+      case 'fs/watch':
+        final id = requiredString(params, 'watchId'), path = absoluteFileSystemPath(params);
+        if (client.fileWatches.containsKey(id)) throw FormatException('watchId already exists: $id');
+        final watch = FileSystemWatch({'watchId': id, 'path': path}, client.cancellation.merge(_lifetime), client.event);
+        client.fileWatches[id] = watch;
+        final cancellation = client.sessionReads[requestId]!;
+        final hook = CancellationHook(cancellation, () => unawaited(watch.close()));
+        try {
+          return await watch.ready.asCancellable(cancellation);
+        } catch (_) {
+          if (identical(client.fileWatches[id], watch)) client.fileWatches.remove(id);
+          await watch.close();
+          rethrow;
+        } finally { hook.dispose(); }
+      case 'fs/unwatch':
+        await client.fileWatches.remove(requiredString(params, 'watchId'))?.close();
+        return <String, dynamic>{};
       case 'files.search':
         client.fileSearch?.cancel();
         final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
@@ -1753,6 +1777,7 @@ class AgentServer {
     await _terminals.close();
     for (final client in _clients.toList()) {
       client.cancellation.cancel();
+      await client.closeFileWatches();
       await client.attachments.close();
       if (!_networkExited) {
         await callIsolate(network.port, 'mcp.detach', {'owner': client.id});
@@ -1873,6 +1898,7 @@ class _Client {
   final mcpInventories = <Object, CancellationToken>{};
   final mcpLogins = <Object, CancellationToken>{};
   final sessionReads = <Object, CancellationToken>{};
+  late final fileWatches = <String, FileSystemWatch>{};
   late final gitOperations = <Object, CancellationToken>{};
   final sideCreations = <Object, String>{};
   final contextSnapshots = <String, Json>{};
@@ -1931,8 +1957,15 @@ class _Client {
 
   Future<void> close({int? code, String? reason}) => _closing ??= _close(code, reason);
 
+  Future<void> closeFileWatches() async {
+    final watches = fileWatches.values.toList();
+    fileWatches.clear();
+    await Future.wait(watches.map((watch) => watch.close()));
+  }
+
   Future<void> _close(int? code, String? reason) async {
     cancellation.cancel();
+    await closeFileWatches();
     if (local != null) { await local!.close(); }
     else {
       await _outbound.close();

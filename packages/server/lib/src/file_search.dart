@@ -91,6 +91,12 @@ int? _score(String path, String query) {
   final basename = lower.substring(lower.lastIndexOf('/') + 1);
   if (query.isEmpty) return -path.length;
   final name = query.replaceFirst(RegExp(r'/$'), '');
+  if (query.contains('/')) {
+    if (lower == name) return query.endsWith('/') ? null : 100000 - path.length;
+    if (lower.startsWith(query)) return 60000 - path.length;
+    if (lower.contains('/$query')) return 20000 - path.length;
+    return null;
+  }
   if (lower == name || basename == name) return 100000 - path.length;
   if (basename.startsWith(query)) return 80000 - path.length;
   if (lower.startsWith(query)) return 60000 - path.length;
@@ -108,75 +114,81 @@ int? _score(String path, String query) {
 }
 
 Future<_Index> _scan(String cwd, CancellationToken cancellation) async {
+  final base = await _gitNames(cwd, ['--cached', '--others', '--exclude-standard'], cancellation);
+  if (base == null) return _walk(cwd, cancellation);
+  // The regular listing keeps untracked files and uninitialized gitlinks.
+  // Recursive cached mode contributes tracked files inside initialized submodules.
+  final nested = await _gitNames(cwd, ['--cached', '--recurse-submodules'], cancellation);
+  final paths = <String>{};
+  var pathBytes = 0;
+  final names = [...base.names, ...?nested?.names];
+  for (var i = 0; i < names.length; i++) {
+    if (i % 1024 == 0) await cancellableDelay(Duration.zero, cancellation);
+    final name = names[i];
+    if (!_usablePath(name)) continue;
+    var path = name;
+    // Deriving parents preserves Git's ignore rules without a second walk.
+    while (path.isNotEmpty && !paths.contains(path)) {
+      pathBytes += utf8.encode(path).length;
+      if (paths.length == _maxFiles || pathBytes > _maxIndexBytes) {
+        return (paths: paths.toList(), truncated: true, created: DateTime.now());
+      }
+      paths.add(path);
+      final slash = path.lastIndexOf('/', path.length - (path.endsWith('/') ? 2 : 1));
+      path = slash < 0 ? '' : path.substring(0, slash + 1);
+    }
+  }
+  return (paths: paths.toList(), truncated: base.truncated || (nested?.truncated ?? false), created: DateTime.now());
+}
+
+Future<({List<String> names, bool truncated})?> _gitNames(
+    String cwd, List<String> options, CancellationToken cancellation) async {
   cancellation.throwIfCancelled();
   Process? process;
   try {
-    process = await Process.start('git', [
-      '-C', cwd, 'ls-files', '-z', '--cached', '--others', '--exclude-standard',
-    ]);
+    process = await Process.start('git', ['-C', cwd, 'ls-files', '-z', ...options]);
   } on ProcessException {
     // Plain folders remain usable on hosts without Git.
   }
-  if (process != null) {
-    final running = process;
-    if (cancellation.isCancelled) {
-      running.kill(ProcessSignal.sigkill);
-      await Future.wait<Object?>([running.stdout.drain<void>(), running.stderr.drain<void>(), running.exitCode]);
-      cancellation.throwIfCancelled();
-    }
-    final hook = CancellationHook(cancellation, () => running.kill(ProcessSignal.sigkill));
-    final errors = running.stderr.drain<void>();
-    final output = ownStream(running.stdout, cancellation);
-    final bytes = BytesBuilder(copy: false);
-    var truncated = false;
-    try {
-      cancellation.throwIfCancelled();
-      await for (final chunk in output.stream) {
-        cancellation.throwIfCancelled();
-        final remaining = _maxIndexBytes - bytes.length;
-        if (chunk.length > remaining) {
-          bytes.add(chunk.sublist(0, remaining));
-          truncated = true;
-          running.kill(ProcessSignal.sigkill);
-          break;
-        }
-        bytes.add(chunk);
-      }
-      final code = await running.exitCode;
-      await errors;
-      cancellation.throwIfCancelled();
-      if (code == 0 || truncated) {
-        final names = utf8.decode(bytes.takeBytes(), allowMalformed: true).split('\x00');
-        names.removeLast(); // A truncated final record is never a complete path.
-        final paths = <String>{};
-        var pathBytes = 0;
-        for (var i = 0; i < names.length; i++) {
-          if (i % 1024 == 0) await cancellableDelay(Duration.zero, cancellation);
-          if (!_usablePath(names[i])) continue;
-          var path = names[i];
-          // Deriving parents preserves Git's ignore rules without a second walk.
-          while (path.isNotEmpty && !paths.contains(path)) {
-            pathBytes += utf8.encode(path).length;
-            if (paths.length == _maxFiles || pathBytes > _maxIndexBytes) {
-              return (paths: paths.toList(), truncated: true, created: DateTime.now());
-            }
-            paths.add(path);
-            final slash = path.lastIndexOf('/', path.length - (path.endsWith('/') ? 2 : 1));
-            path = slash < 0 ? '' : path.substring(0, slash + 1);
-          }
-        }
-        return (paths: paths.toList(), truncated: truncated, created: DateTime.now());
-      }
-    } finally {
-      hook.dispose();
-      running.kill(ProcessSignal.sigkill);
-      await output.close();
-      await running.exitCode;
-      await errors;
-    }
+  if (process == null) return null;
+  final running = process;
+  if (cancellation.isCancelled) {
+    running.kill(ProcessSignal.sigkill);
+    await Future.wait<Object?>([running.stdout.drain<void>(), running.stderr.drain<void>(), running.exitCode]);
+    cancellation.throwIfCancelled();
   }
-  cancellation.throwIfCancelled();
-  return _walk(cwd, cancellation);
+  final hook = CancellationHook(cancellation, () => running.kill(ProcessSignal.sigkill));
+  final errors = running.stderr.drain<void>();
+  final output = ownStream(running.stdout, cancellation);
+  final bytes = BytesBuilder(copy: false);
+  var truncated = false;
+  try {
+    cancellation.throwIfCancelled();
+    await for (final chunk in output.stream) {
+      cancellation.throwIfCancelled();
+      final remaining = _maxIndexBytes - bytes.length;
+      if (chunk.length > remaining) {
+        bytes.add(chunk.sublist(0, remaining));
+        truncated = true;
+        running.kill(ProcessSignal.sigkill);
+        break;
+      }
+      bytes.add(chunk);
+    }
+    final code = await running.exitCode;
+    await errors;
+    cancellation.throwIfCancelled();
+    if (code != 0 && !truncated) return null;
+    final names = utf8.decode(bytes.takeBytes(), allowMalformed: true).split('\x00');
+    names.removeLast(); // A truncated final record is never a complete path.
+    return (names: names, truncated: truncated);
+  } finally {
+    hook.dispose();
+    running.kill(ProcessSignal.sigkill);
+    await output.close();
+    await running.exitCode;
+    await errors;
+  }
 }
 
 bool _usablePath(String path) => path.isNotEmpty &&
