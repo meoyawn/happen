@@ -126,6 +126,14 @@ also requires an omitted first `@@`, whitespace matching, and EOF blank-line
 handling. Raw receipts are gated before comparison; only the Rust/Dart exception
 wrapper differs. Each harness replay starts from the same initial filesystem
 state, and every following request must retain receipts once and in order.
+The `patch-duplicate-path-recovery` case replays a delete and add targeting the
+same file, with another file proposed before them. Both harnesses must reject
+the duplicate path before writing either file and deliver the exact diagnostic
+to the next inference. A corrected patch uses one `Add File` per path, replacing
+the existing file, and real shell reads verify the resulting contents. Base
+instructions and nested tool declarations retain their strict equality checks.
+This scripted replay covers execution and context parity; it does not measure
+how often a live model chooses the invalid patch shape.
 The web case configures the real Dart MCP server and a metadata-only fixture
 skill alongside directly available web search, with ranked discovery both off
 and on. It replays search, batched open, targeted search, repository
@@ -221,9 +229,9 @@ explicit V8/QuickJS diagnostic variants to a common message for comparison;
 engine-specific stack frames and source excerpts differ. Independent checks on
 the unmodified requests require the expected diagnostic messages, runtime frame,
 failure status, preceding output and recovery. Unknown error messages are never
-normalized. The `patch-context-recovery` case removes only the known Rust/Dart
-exception wrapper from its failing call; the filename and complete missing
-context remain strict, with an independent gate on the original diagnostic.
+normalized. The two patch recovery cases remove only their known Rust/Dart
+exception wrappers from the failing calls; filenames and complete diagnostics
+remain strict, with independent gates on the original errors.
 Raw captures retain the complete native errors:
 object key order is immaterial; array order, message encodings, field presence,
 types and values are strict. No message reshaping or array sorting is permitted.

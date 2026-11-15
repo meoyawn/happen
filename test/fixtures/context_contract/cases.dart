@@ -433,6 +433,30 @@ const contextCases = <Map<String, dynamic>>[
     'result': 'PATCH_RECOVERY_RECEIPT',
   },
   {
+    'id': 'patch-duplicate-path-recovery', 'workflow': 'patch-recovery', 'reset_workspace': true,
+    'prompt': 'Replace cv.txt with the corrected summary, verify the files, then reply READY.',
+    'files': {'cv.txt': 'summary: before\n  - Ran the production product\n'},
+    'contains': <Object?>[], 'absent': ['PATCH_RECOVERY_RECEIPT'],
+    'responses': [
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_duplicate_path',
+        'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_RECOVERY_RECEIPT\\n'
+          '*** Delete File: cv.txt\\n*** Add File: cv.txt\\n+summary: after\\n'
+          '+  - Ran the production product reliably\\n*** End Patch"));\n'
+          'text("UNEXPECTED_AFTER_PATCH_FAILURE");'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_inspect_unchanged',
+        'input': '${_terminalShell}const result = await terminalShell({cmd:"cat cv.txt; test ! -e receipt.txt"}); '
+          'text({before:result.output,receiptAbsent:result.exit_code === 0});'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_recovery',
+        'input': 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: receipt.txt\\n+PATCH_RECOVERY_RECEIPT\\n'
+          '*** Add File: cv.txt\\n+summary: after\\n+  - Ran the production product reliably\\n*** End Patch"));'}],
+      [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'patch_inspect_recovered',
+        'input': '${_terminalShell}const result = await terminalShell({cmd:"cat cv.txt receipt.txt"}); '
+          'text({after:result.output,exit:result.exit_code});'}],
+      [_ready],
+    ],
+    'result': 'PATCH_RECOVERY_RECEIPT',
+  },
+  {
     'id': 'shell-snapshot-v2', 'workflow': 'shell-snapshot',
     'prompt': 'Run the initialized shell helper, alias and multiline export, then check a non-login shell and reply READY.',
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': ['SNAPSHOT_CONTEXT_RECEIPT'],

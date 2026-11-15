@@ -172,12 +172,15 @@ Json prepareComparison(Json received, {bool scriptErrors = false, bool patchErro
       for (var part = 0; part < output.length; part++) {
         final content = jsonObject(output[part]);
         if (content['type'] == 'input_text') content['text'] = outputText(content['text'] as String);
-        if (patchErrors && item['call_id'] == 'patch_missing_context' && content['type'] == 'input_text') {
+        if (patchErrors && content['type'] == 'input_text') {
           // Exception wrappers differ between Rust and Dart. Keep the path and
           // every expected context byte strict; the raw diagnostic is gated below.
-          content['text'] = (content['text'] as String).replaceFirst(
-            RegExp(r'^Script error:\n(?:Bad state: |apply_patch verification failed: )(?=Failed to find expected lines in )'),
-            'Script error:\n');
+          final wrapper = switch (item['call_id']) {
+            'patch_missing_context' => RegExp(r'^Script error:\n(?:Bad state: |apply_patch verification failed: )(?=Failed to find expected lines in )'),
+            'patch_duplicate_path' => RegExp(r'^Script error:\n(?:FormatException: |apply_patch verification failed: )(?=invalid patch: multiple operations target )'),
+            _ => null,
+          };
+          if (wrapper != null) content['text'] = (content['text'] as String).replaceFirst(wrapper, 'Script error:\n');
         }
         if (scriptErrors && content['type'] == 'input_text') {
           if (scriptErrorMessages[item['call_id']] case final List<String> messages) {
@@ -770,7 +773,8 @@ apps = false
         }
       }
       if (scenario['workflow'] == 'patch-recovery') {
-        final calls = ['patch_missing_context', 'patch_inspect_unchanged', terminalCall('patch_inspect_unchanged'),
+        final duplicatePath = scenario['id'] == 'patch-duplicate-path-recovery';
+        final calls = [duplicatePath ? 'patch_duplicate_path' : 'patch_missing_context', 'patch_inspect_unchanged', terminalCall('patch_inspect_unchanged'),
           'patch_recovery', 'patch_inspect_recovered', terminalCall('patch_inspect_recovered')];
         for (final pair in [('codex', a), ('happen', b)]) {
           List<Json> receipt(String call) {
@@ -785,10 +789,12 @@ apps = false
           }
           final failed = receipt(calls[0]);
           final diagnostic = failed.isEmpty ? '' : failed.last['text'] as String? ?? '';
-          checks['${pair.$1}:missing_patch_context_reaches_next_inference:run-$iteration'] = failed.length == 2 &&
+          final expected = duplicatePath ? 'invalid patch: multiple operations target $work/cv.txt'
+            : 'Failed to find expected lines in $work/cv.txt:\n  Ran the production product';
+          checks['${pair.$1}:${duplicatePath ? 'duplicate_patch_path' : 'missing_patch_context'}_reaches_next_inference:run-$iteration'] = failed.length == 2 &&
             (failed.first['text'] as String? ?? '').startsWith('Script failed\n') &&
             diagnostic.startsWith('Script error:\n') &&
-            diagnostic.trimRight().endsWith('Failed to find expected lines in $work/cv.txt:\n  Ran the production product') &&
+            diagnostic.trimRight().endsWith(expected) &&
             !jsonEncode(failed).contains('UNEXPECTED_AFTER_PATCH_FAILURE');
           final unchanged = receipt(calls[2]);
           checks['${pair.$1}:failed_patch_commits_no_files:run-$iteration'] = unchanged.length == 2 && unchanged.last['text'] ==
