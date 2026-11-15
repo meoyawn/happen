@@ -8,22 +8,28 @@ extension SessionGoals on DesktopSession {
     if (mode is MessageComposer) { _composerModes.remove(id); }
     else { _composerModes[id] = mode; }
     saveDrafts();
-    if (!_lifetime.isCancelled) notifyListeners();
+    if (!_lifetime.isCancelled) _notifyDraftChanges();
   }
 
   Future<bool> changeGoal(DesktopTask target, {String? objective, String? status,
       bool clear = false, CancellationToken? cancellation}) async {
     if (!connected || target.archived || target.archiving || target.sideParentID != null ||
-        target.goalWrite is GoalWritePending) return false;
+        target.goalWrite is GoalWritePending) { return false; }
     final mutation = (objective: objective, status: status, clear: clear);
     final write = GoalWritePending(mutation);
     target._goalWrite = transitionGoalWrite(target._goalWrite, write);
     final operation = target._goalOperation = CancellationToken();
     final token = operation.merge(cancellation?.merge(_lifetime) ?? _lifetime);
-    final revision = target._goalRevision;
     _taskChanged(target, sidebar: false);
     try {
-      final response = await client.sessionRead(clear ? 'thread/goal/clear' : 'thread/goal/set', {
+      if (!clear && status == 'active' && !target.running) {
+        // Reading a transcript only watches it. Resume the runtime before
+        // asking it to pursue a goal in a previously unloaded conversation.
+        await client.sessionRead('thread/resume', {'threadId': target.id, 'excludeTurns': true}, cancellation: token);
+        token.throwIfCancelled();
+      }
+      final revision = target._goalRevision;
+      final response = await client.goalRequest(clear ? 'thread/goal/clear' : 'thread/goal/set', {
         'threadId': target.id, 'origin': 'user',
         if (!clear) ...{'objective': ?objective, 'status': ?status},
       }, cancellation: token);

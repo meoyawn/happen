@@ -1093,7 +1093,10 @@ class _ComposerState extends State<_Composer> {
   }
 
   void _editGoal() {
-    final objective = _target?.goal?['objective'] as String?;
+    final objective = _target?.goal?['objective'] as String? ?? switch (_target?.goalWrite) {
+      GoalWriteFailed(:final write) => write.mutation.objective,
+      _ => null,
+    };
     _enableGoal();
     if (_text.text.isEmpty && objective != null) {
       _text.value = TextEditingValue(text: objective, selection: TextSelection.collapsed(offset: objective.length));
@@ -1244,13 +1247,14 @@ class _ComposerState extends State<_Composer> {
       if (_text.text.trim().isEmpty) return;
     }
     final goal = _goalMode;
+    final session = widget.session, target = widget.target;
     final controller = _text, draftKey = _draftKey;
     final value = controller.value;
     final files = controller.files;
     final draft = _text.text;
     final prompt = _text.serializePrompt();
     final attachments = List<ComposerAttachment>.of(_attachments);
-    final annotations = widget.session.annotationsFor(draftKey);
+    final annotations = session.annotationsFor(draftKey);
     void restore() {
       if (mounted && identical(_text, controller) && _text.text.isEmpty) {
         controller.value = value;
@@ -1258,7 +1262,7 @@ class _ComposerState extends State<_Composer> {
       }
     }
     try {
-      final submission = widget.session.send(prompt, attachments: attachments, annotations: annotations, target: widget.target, goal: goal);
+      final submission = session.send(prompt, attachments: attachments, annotations: annotations, target: target, goal: goal);
       if (_submitting) {
         _autocomplete.currentState?.dismiss();
         // Keep the saved draft until acknowledgement so a failed send can be
@@ -1270,20 +1274,20 @@ class _ComposerState extends State<_Composer> {
       final accepted = await submission;
       if (accepted) {
         if (mounted && identical(_text, controller)) _autocomplete.currentState?.dismiss();
-        if (widget.session.drafts[draftKey] == draft) {
-          widget.session.drafts.remove(draftKey);
-          widget.session.draftSelections.remove(draftKey);
-          widget.session.fileDrafts.remove(draftKey);
+        if (session.drafts[draftKey] == draft) {
+          session.drafts.remove(draftKey);
+          session.draftSelections.remove(draftKey);
+          session.fileDrafts.remove(draftKey);
+          if (goal) session.chooseComposerMode(draftKey, const MessageComposer());
         }
-        if (goal) widget.session.chooseComposerMode(draftKey, const MessageComposer());
         final ids = attachments.map((attachment) => attachment.id).toSet();
-        widget.session.attachmentDrafts[draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
-        if (widget.session.attachmentDrafts[draftKey]?.isEmpty == true) widget.session.attachmentDrafts.remove(draftKey);
+        session.attachmentDrafts[draftKey]?.removeWhere((attachment) => ids.contains(attachment.id));
+        if (session.attachmentDrafts[draftKey]?.isEmpty == true) session.attachmentDrafts.remove(draftKey);
         for (final attachment in attachments) {
-          if (attachment.image || !widget.session.client.sharedFilesystem) await attachment.discard();
+          if (attachment.image || !session.client.sharedFilesystem) await attachment.discard();
         }
         if (mounted && identical(_text, controller) && _text.text == draft) _text.clear();
-        _saveDrafts();
+        if (target == null) session.saveDrafts();
         if (mounted) setState(() {});
       } else { restore(); }
     } on CancelledException {

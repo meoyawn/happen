@@ -84,6 +84,9 @@ extension _Goals on AgentServer {
       : _loadedGoalRuntime(resident..config = config));
     final clearing = method == 'thread/goal/clear';
     final result = await runtime.call(clearing ? 'clear' : 'set', {...params, 'deferNotification': true}, cancellation: token);
+    // Stop cancels automatic continuation until the user explicitly activates
+    // the goal again. A resumed goal must be able to admit its next turn.
+    if (!clearing && params['status'] == 'active') resident?.cancelled = false;
     client.afterResponse[requestId] = () {
       if (_closing) return;
       if (!clearing || result['cleared'] == true) _broadcast(id, {'type': clearing ? 'goal.cleared' : 'goal.updated', 'data': {'goal': result['goal']}});

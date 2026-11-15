@@ -1790,6 +1790,7 @@ class DesktopSession extends ChangeNotifier {
       final attachments = <ComposerAttachment>[];
       for (final key in [target.checkoutKey, ...target.tasks.map((task) => task.id)]) {
         drafts.remove(key);
+        _composerModes.remove(key);
         fileDrafts.remove(key);
         _annotationDrafts.remove(key);
         attachments.addAll(attachmentDrafts.remove(key) ?? const []);
@@ -1904,9 +1905,12 @@ class DesktopSession extends ChangeNotifier {
       target.reasoningUpdates = config['reasoning_updates'] == true;
       final goalRevision = target._goalRevision;
       if (target.sideParentID == null && config['tool_interface'] == 'openai') {
-        final response = await client.sessionRead('thread/goal/get', {'threadId': target.id}, cancellation: read);
+        final response = await client.goalRequest('thread/goal/get', {'threadId': target.id}, cancellation: read);
         read.throwIfCancelled();
-        if (target._goalRevision == goalRevision) target._goal = savedGoal(response['goal']);
+        if (target._goalRevision == goalRevision) {
+          target._goal = savedGoal(response['goal']);
+          target._goalRevision++;
+        }
       }
       target.contextLimit = (config['context_window'] ?? config['provider_settings']?['context_limit']) as num?;
       target.archived = page['archived'] == true;
@@ -2590,6 +2594,7 @@ class DesktopSession extends ChangeNotifier {
       _ => null,
     };
     if (kind == null) return;
+    if (kind == TaskNotificationKind.completion && target.goal?['status'] == 'active') return;
     final key = kind == TaskNotificationKind.input
       ? 'question:${event['params']['request']['id']}' : event['params']['turn']['id'] as String;
     if (!target._notifiedEvents.add(key)) return;

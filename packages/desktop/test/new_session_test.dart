@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:desktop/composer_attachments.dart';
 import 'package:desktop/database.dart';
+import 'package:desktop/goal_state.dart';
 import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
@@ -104,6 +105,7 @@ void main() {
       {'id': 'active-empty', 'project': 'checkout', 'tracing': true},
       {'id': 'new-empty', 'project': 'checkout'},
       {'id': 'text', 'project': 'checkout', 'text': 'Keep this draft'},
+      {'id': 'goal-only', 'project': 'checkout'},
       {'id': 'attachment', 'project': 'checkout', 'attachments': [
         {'type': 'file', 'name': 'keep.txt', 'path': attachment.path},
       ]},
@@ -116,16 +118,18 @@ void main() {
       'key': 'session_drafts',
       'value': jsonEncode({
         'active': 'active-empty',
+        'goalDrafts': ['goal-only'],
         'tabs': [for (final draft in savedDrafts) draft['id']],
         'drafts': savedDrafts,
       }),
     });
     await session.load();
-    const remaining = ['active-empty', 'text', 'attachment', 'other-project', 'new-unscoped'];
+    const remaining = ['active-empty', 'text', 'goal-only', 'attachment', 'other-project', 'new-unscoped'];
     expect(session.sessionDrafts.map((draft) => draft.id), remaining);
     expect(session.openTabIds, remaining);
     expect(session.currentDraft.id, 'active-empty');
     expect(session.currentDraft.tracing, isTrue);
+    expect(session.composerMode('goal-only'), isA<GoalComposer>());
     expect(session.drafts['text'], 'Keep this draft');
     expect(session.attachmentDrafts['attachment']!.single.path, attachment.path);
     expect(await attachment.readAsString(), 'Keep this attachment');
@@ -141,6 +145,7 @@ void main() {
       final restored = jsonObject(jsonDecode(saved['settings']['session_drafts'] as String));
       expect((restored['drafts'] as List).map((draft) => draft['id']), remaining);
       expect(restored['tabs'], remaining);
+      expect(restored['goalDrafts'], ['goal-only']);
     } finally {
       await reopened.close();
     }

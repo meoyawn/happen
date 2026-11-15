@@ -2153,6 +2153,13 @@ class AgentClient {
     return jsonObject(await _request(method, params, cancellation: cancellation));
   }
 
+  Future<Json> goalRequest(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!{'thread/goal/get', 'thread/goal/set', 'thread/goal/clear'}.contains(method)) {
+      throw ArgumentError('Unknown goal operation');
+    }
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
   Future<void> answerQuestion(String sessionID, String requestID, List<List<String>>? answers, {
     required CancellationToken cancellation,
   }) async {

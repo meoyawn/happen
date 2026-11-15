@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show FontFeature;
-
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
 
@@ -47,7 +45,8 @@ class GoalStatusRail extends StatelessWidget {
       _ => null,
     };
     final status = goal?['status'];
-    final label = failed ? 'Goal not saved' : goal == null && pending ? 'Saving goal…' : switch (status) {
+    final label = failed ? mutation?.clear == true ? 'Could not clear goal' : 'Goal not saved'
+      : goal == null && pending ? 'Saving goal…' : switch (status) {
       'active' => 'Pursuing goal', 'paused' => 'Paused goal', 'blocked' => 'Goal stalled',
       'usageLimited' => 'Goal usage limited', 'budgetLimited' => 'Goal limited',
       'complete' => 'Goal achieved', _ => 'Goal',

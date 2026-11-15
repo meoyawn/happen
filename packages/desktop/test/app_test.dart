@@ -18,12 +18,19 @@ void main() {
   testWidgets('goal command changes the draft composer and controls the acknowledged goal', (tester) async {
     late Directory root;
     late DesktopSession session;
+    var closed = false;
     final client = _GoalClient();
     await tester.runAsync(() async {
       root = await Directory.systemTemp.createTemp('desktop-goal-');
       session = DesktopSession(client, await openDesktopDatabase(root.path));
     });
-    addTearDown(() => tester.runAsync(() async { await session.close(); await root.delete(recursive: true); }));
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async {
+        if (!closed) await session.close();
+        await root.delete(recursive: true);
+      });
+    });
     final project = Project('checkout', 'project', root.path);
     session.projects.add(project);
     session.project = project;
@@ -36,7 +43,8 @@ void main() {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
     await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
-    await tester.pumpAndSettle();
+    await tester.runAsync(() => session.gitForProject(project).refresh());
+    await tester.pump();
     ComposerEditor editor() => tester.widget<ComposerEditor>(find.byType(ComposerEditor));
     void type(String text) => editor().controller.value = TextEditingValue(text: text,
       selection: TextSelection.collapsed(offset: text.length));
@@ -99,10 +107,12 @@ void main() {
     client.goalReply = null;
     await tester.pump(); await tester.pump();
     expect(find.textContaining('Paused goal', findRichText: true), findsOneWidget);
+    target.running = false;
     await tester.tap(find.byTooltip('Resume goal')); await tester.pump(); await tester.pump();
     expect(find.byTooltip('Pause goal'), findsOneWidget);
     expect(client.requests.where((call) => call.method == 'turn/start'), hasLength(1),
       reason: 'The backend owns continuation; goal controls do not send chat messages');
+    expect(client.requests.where((call) => call.method == 'thread/resume'), hasLength(1));
 
     client.failGoal = true;
     await tester.tap(find.byTooltip('Pause goal')); await tester.pump(); await tester.pump();
@@ -120,6 +130,7 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() async { await session.close(); closed = true; });
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('holding Option and an arrow switches on each repeat and stops at the list boundary', (tester) async {
@@ -576,11 +587,15 @@ class _GoalClient extends _Client {
   Completer<Json>? goalReply;
   bool failGoal = false;
   @override
+  Future<Json> goalRequest(String method, Json params, {required CancellationToken cancellation}) async =>
+    jsonObject(await request(method, params));
+  @override
   Future<Object?> request(String method, [Json params = const {}]) async {
     requests.add((method: method, params: params));
     switch (method) {
       case 'thread/start': return {'thread': {'id': 'goal-thread'}, 'configuration': <String, Object?>{}};
-      case 'turn/start': return <String, Object?>{};
+      case 'turn/start':
+      case 'thread/resume': return <String, Object?>{};
       case 'thread/goal/set':
         if (failGoal) throw StateError('Goal store unavailable');
         goal = {...?goal, 'threadId': params['threadId'],

@@ -203,6 +203,7 @@ void main() {
       'notLoaded', reason: 'Archive releases the server runtime immediately');
     final completedRequestCount = requests.length;
     await session.loadHistory(completed);
+    expect(completed.loadError, isNull);
     expect(conversation(completed).where((entry) => entry.role == 'Happen').single.text, 'ChatGPT reply');
     session.releaseHistory(completed);
     expect(completed.messages, isEmpty, reason: 'Leaving an archived preview releases its history again');

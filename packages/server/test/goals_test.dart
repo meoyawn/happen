@@ -15,6 +15,7 @@ void main() {
   late AgentServer server;
   late AgentClient client;
   late HttpServer provider;
+  late CancellationToken operations;
   late Completer<void> compactStarted, compactRelease;
   String? failureCode;
   var sleeping = false;
@@ -24,9 +25,10 @@ void main() {
     endpoint: 'http://127.0.0.1:${provider.port}/responses');
   Future<String> start() async => jsonObject(await client.request('thread/start', {'cwd': root.path,
     'config': {'thread_unload_delay_secs': 0}}))['thread']['id'] as String;
-  Future<Json> goal(String id) async => jsonObject(await client.request('thread/goal/get', {'threadId': id}));
-  Future<Json> set(String id, Json params) async => jsonObject(await client.request('thread/goal/set', {'threadId': id, ...params}));
+  Future<Json> goal(String id) => client.goalRequest('thread/goal/get', {'threadId': id}, cancellation: operations);
+  Future<Json> set(String id, Json params) => client.goalRequest('thread/goal/set', {'threadId': id, ...params}, cancellation: operations);
   setUp(() async {
+    operations = CancellationToken();
     root = await Directory.systemTemp.createTemp('thread-goals-'); requests.clear();
     failureCode = null;
     sleeping = false;
@@ -57,6 +59,7 @@ void main() {
     server = await launch(); client = await AgentClient.connect(server.uri);
   });
   tearDown(() async {
+    operations.cancel();
     if (!compactRelease.isCompleted) compactRelease.complete();
     await client.close(); await server.close(); await provider.close(force: true); await root.delete(recursive: true);
   });
@@ -240,6 +243,15 @@ void main() {
       final snapshot = jsonObject(await client.request('thread/read', {'threadId': id, 'includeTurns': true}));
       expect(snapshot['thread']['turns'][0]['status'], 'interrupted');
       expect(snapshot['running'], false); expect(requests, hasLength(1));
+      if (method == 'turn/interrupt') {
+        final resumed = client.events.stream.firstWhere((event) => event['method'] == 'item/started' &&
+          event['params']['item']['type'] == 'sleep');
+        await client.request('thread/resume', {'threadId': id, 'excludeTurns': true});
+        await set(id, {'status': 'active', 'origin': 'user'});
+        final next = await resumed.timeout(const Duration(seconds: 5));
+        expect(requests, hasLength(2), reason: 'An explicit resume must admit a fresh goal turn after Stop');
+        await client.request('turn/interrupt', {'threadId': id, 'turnId': next['params']['turnId']});
+      }
     });
   }
 }
