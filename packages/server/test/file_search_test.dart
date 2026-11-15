@@ -35,11 +35,61 @@ void main() {
     Future<List<String>> paths(String query) async =>
       (await search.search({'cwd': checkout.path, 'query': query}, cancellation))['paths'] as List<String>;
 
+    expect((await search.search({'cwd': checkout.path, 'query': 'apps/client', 'limit': 2}, cancellation))['paths'],
+      ['apps/client/', 'apps/client/crates/']);
     expect(await paths('apps/client/crates/des'), contains('apps/client/crates/des/src/lib.rs'));
     final children = await paths('apps/client/');
     expect(children, isNotEmpty);
     expect(children.first, 'apps/client/crates/');
     expect(children, isNot(contains('apps/client/')));
     expect(children.where((path) => path.startsWith('apps/client-signing/')), isEmpty);
+  });
+
+  test('files and folders share match ranking within the result limit', () async {
+    final root = await Directory.systemTemp.createTemp('happen-file-ranking-');
+    addTearDown(() => root.delete(recursive: true));
+    Future<void> write(String path) async {
+      final file = File('${root.path}/$path');
+      await file.parent.create(recursive: true);
+      await file.writeAsString('');
+    }
+
+    await write('viewmodel/build.gradle.kts');
+    await write('feature/src/ChatViewModel.kt');
+    await write('b/target.txt');
+    await write('a/target.txt');
+    const desktopDart = 'third_party/flutter/packages/flutter_tools/lib/src/build_system/targets/desktop.dart';
+    await write(desktopDart);
+    await write('desktop_menu.dart');
+    await write('packages/desktop/lib/app.dart');
+    await Directory('${root.path}/src').create();
+    for (var i = 0; i < 80; i++) {
+      await Directory('${root.path}/parent-$i/viewmodel').create(recursive: true);
+      await write('source-$i.rs');
+    }
+
+    final search = FileSearch();
+    final cancellation = CancellationToken();
+    addTearDown(cancellation.cancel);
+    Future<List<String>> paths(String query, int limit) async =>
+      (await search.search({'cwd': root.path, 'query': query, 'limit': limit}, cancellation))['paths'] as List<String>;
+
+    for (final (query, limit, expected) in [
+      ('', 1, ['a/']),
+      ('ViewModel', 2, ['viewmodel/', 'parent-0/viewmodel/']),
+      ('VM', 1, ['viewmodel/']),
+      ('deskto', 2, ['packages/desktop/', desktopDart]),
+      ('deskto', 5, ['packages/desktop/', desktopDart, 'desktop_menu.dart', 'packages/desktop/lib/', 'packages/desktop/lib/app.dart']),
+      ('desktop', 2, ['packages/desktop/', desktopDart]),
+      ('src', 1, ['src/']),
+      ('viewmodel/', 1, ['viewmodel/build.gradle.kts']),
+      ('target', 3, ['third_party/flutter/packages/flutter_tools/lib/src/build_system/targets/', 'a/target.txt', 'b/target.txt']),
+    ]) {
+      expect(await paths(query, limit), expected, reason: query);
+    }
+
+    await write('feature/src/src');
+    search.clear();
+    expect(await paths('src', 1), ['src/']);
   });
 }

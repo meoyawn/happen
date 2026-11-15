@@ -19,6 +19,39 @@ void main() {
     expect(items['reply']?['live'], false);
   });
 
+  test('steering freezes unfinished text and reasoning before the next response streams', () {
+    final task = DesktopTask('thread', 'Steering')..running = true;
+    addTearDown(task.liveText.dispose);
+    final state = <String, dynamic>{};
+    void receive(String type, {Json data = const {}, String? delta}) {
+      for (final event in threadNotifications(task.id, {
+        'type': type, 'data': data, 'delta': ?delta,
+      }, state)) {
+        applyThreadNotification(task.messages, event);
+      }
+    }
+    receive('turn.started', data: {'turnId': 'turn'});
+    receive('model.started', data: {'assistantMessageID': 'before'});
+    receive('reasoning.delta', delta: 'Earlier thought');
+    receive('text.delta', delta: 'Original response');
+    receive('input.committed', data: {
+      'item': {'id': 'steer', 'role': 'user', 'content': [{'type': 'text', 'text': 'Change direction'}]},
+    });
+    expect(conversation(task).where((entry) => entry.streaming), isEmpty,
+      reason: 'Admitting steering ends the interrupted model stream, even without an item completion.');
+
+    receive('model.started', data: {'assistantMessageID': 'after'});
+    receive('text.delta', delta: 'New response');
+    applyThreadNotification(task.messages, {
+      'method': 'item/agentMessage/delta',
+      'params': {'turnId': 'turn', 'itemId': 'before:1', 'delta': ' stale text'},
+    });
+    final entries = conversation(task);
+    expect(entries.map((entry) => entry.text),
+      ['Earlier thought', 'Original response', 'Change direction', 'New response']);
+    expect(entries.where((entry) => entry.streaming).map((entry) => entry.text), ['New response']);
+  });
+
   testWidgets('the latest message renders in the first frame and transcript edits preserve the viewport', (tester) async {
     final task = DesktopTask('long-thread', 'Long conversation')..loaded = true;
     addTearDown(task.liveText.dispose);

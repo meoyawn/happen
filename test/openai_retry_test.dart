@@ -28,7 +28,7 @@ void main() {
         expect(transport.bodies, hasLength(4));
         expect(events.map((event) => event['layer']), ['http', 'http', 'stream']);
         expect(events.map((event) => event['attempt']), [1, 2, 1]);
-        expect(events.map((event) => event['max_retries']), [4, 4, 5]);
+        expect(events.map((event) => event['max_retries']), [4, 4, compaction ? 2 : 5]);
         expect(events.map((event) => event['delay_ms']), [
           inInclusiveRange(180, 220), inInclusiveRange(360, 440), inInclusiveRange(180, 220),
         ]);
@@ -64,8 +64,8 @@ void main() {
     });
   }
 
-  // Codex's network retry counter does not consume the sampling retry budget.
-  test('connection recovery keeps five stream retries and caps network waits at five seconds', () {
+  // Codex retry_after.rs: connection_failures_increment_retry_telemetry_without_consuming_retry_budget.
+  test('connection recovery keeps five stream retries and backs off from five to sixty seconds', () {
     fakeAsync((time) {
       var offline = true;
       var streamFailures = 5;
@@ -75,13 +75,13 @@ void main() {
       });
       final events = <Json>[];
       final pending = _respond(_client(transport), onEvent: events.add);
-      time.elapse(const Duration(seconds: 70));
+      time.elapse(const Duration(seconds: 205));
       final network = events.where((event) => event['layer'] == 'connection');
-      expect(network.length, greaterThanOrEqualTo(6));
-      expect(network.every((event) => (event['delay_ms'] as int) <= 5000), isTrue);
+      expect(network.map((event) => event['delay_ms']), [5000, 10000, 20000, 40000, 60000, 60000]);
+      expect(network.map((event) => event['attempt']), [1, 2, 3, 4, 5, 6]);
       expect(network.every((event) => !event.containsKey('max_retries')), isTrue);
       offline = false;
-      expect(_settle(time, pending, within: const Duration(seconds: 10)).value!.text, 'Recovered');
+      expect(_settle(time, pending, within: const Duration(seconds: 70)).value!.text, 'Recovered');
       expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
     });
   });
@@ -93,8 +93,8 @@ void main() {
       final result = _settle(time, _respond(_client(transport),
         input: [{'type': 'compaction_trigger'}], onEvent: events.add), within: const Duration(seconds: 30));
       expect(result.error, isA<SocketException>());
-      expect(transport.bodies, hasLength(30));
-      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
+      expect(transport.bodies, hasLength(15));
+      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2]);
       expect(events.any((event) => event['layer'] == 'connection'), isFalse);
     });
   });
@@ -197,16 +197,17 @@ void main() {
   // Ported from Codex core/tests/suite/retry_after.rs: HTTP and stream
   // budgets remain independent, including when the provider supplies advice.
   for (final compaction in [false, true]) {
-    for (final (name, status, code, advised, requests, httpRetries, streamRetries) in [
-      ('HTTP server failure', 500, 'server_error', false, 30, 24, 5),
+    final budget = compaction ? 2 : 5;
+    for (final (name, status, code, advised, attempts, httpRetries, streamRetries) in [
+      ('HTTP server failure', 500, 'server_error', false, 5, 4, budget),
       ('HTTP overload without advice', 503, 'server_is_overloaded', false, 5, 4, 0),
-      ('HTTP overload with advice', 503, 'server_is_overloaded', true, 30, 24, 5),
+      ('HTTP overload with advice', 503, 'server_is_overloaded', true, 5, 4, budget),
       ('HTTP rate limit without advice', 429, 'rate_limit_exceeded', false, 1, 0, 0),
-      ('HTTP rate limit with advice', 429, 'rate_limit_exceeded', true, 6, 0, 5),
-      ('stream server failure', null, 'server_error', false, 6, 0, 5),
-      ('stream rate limit without advice', null, 'rate_limit_exceeded', false, 6, 0, 5),
+      ('HTTP rate limit with advice', 429, 'rate_limit_exceeded', true, 1, 0, budget),
+      ('stream server failure', null, 'server_error', false, 1, 0, budget),
+      ('stream rate limit without advice', null, 'rate_limit_exceeded', false, 1, 0, budget),
       ('stream overload without advice', null, 'server_is_overloaded', false, 1, 0, 0),
-      ('stream overload with advice', null, 'server_is_overloaded', true, 6, 0, 5),
+      ('stream overload with advice', null, 'server_is_overloaded', true, 1, 0, budget),
     ]) {
       test('${compaction ? 'compaction' : 'sampling'} bounds $name using Codex retry budgets', () {
         fakeAsync((time) {
@@ -222,14 +223,15 @@ void main() {
           expect(result.error, isA<ResponseFailure>()
             .having((error) => error.code, 'code', code)
             .having((error) => error.message, 'message', 'Fixture provider failure.'));
-          expect(transport.bodies, hasLength(requests));
+          expect(transport.bodies, hasLength(attempts * (streamRetries + 1)));
           final http = events.where((event) => event['layer'] == 'http');
           final stream = events.where((event) => event['layer'] == 'stream');
-          expect(http, hasLength(httpRetries));
-          expect(http.map((event) => event['attempt']), [for (var i = 0; i < httpRetries; i++) i % 4 + 1]);
+          expect(http, hasLength(httpRetries * (streamRetries + 1)));
+          expect(http.map((event) => event['attempt']), [for (var i = 0; i <= streamRetries; i++)
+            for (var retry = 1; retry <= httpRetries; retry++) retry]);
           expect(http.every((event) => event['max_retries'] == 4), isTrue);
           expect(stream.map((event) => event['attempt']), [for (var i = 1; i <= streamRetries; i++) i]);
-          expect(stream.every((event) => event['max_retries'] == 5), isTrue);
+          expect(stream.every((event) => event['max_retries'] == budget), isTrue);
           final count = transport.bodies.length;
           time.elapse(const Duration(hours: 1));
           expect(transport.bodies, hasLength(count), reason: 'Exhaustion must leave no retry timer running');
@@ -521,37 +523,113 @@ void main() {
     expect(fixture.requests, hasLength(2));
   });
 
-  test('WebSocket fallback preserves the provider deadline and isolates HTTP fallback to its session', () async {
-    var failing = true;
-    final fixture = await _websocketFixture((attempt, transport) => transport == 'websocket' && failing ? [
-      {'type': 'response.failed', 'response': {'error': {
-        'code': 'server_error', 'message': 'Temporary stream failure.',
-        'headers': {'Retry-After': attempt == 6 ? '1' : '0'},
-      }}},
-    ] : [_completed]);
-    final events = <Json>[];
-    expect((await _respond(fixture.client, transport: 'websocket', onEvent: events.add)).text, 'Recovered');
-    expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 3, 4, 5]);
-    expect(events.where((event) => event['layer'] == 'fallback'), hasLength(1));
-    expect(fixture.requests.map((request) => request.transport), [
-      for (var i = 0; i < 6; i++) 'websocket', 'http',
-    ]);
-    expect(fixture.requests[6].elapsed - fixture.requests[5].elapsed, greaterThanOrEqualTo(const Duration(seconds: 1)));
-    expect(fixture.requests[5].body['type'], 'response.create');
-    expect(fixture.requests[5].body['client_metadata'], {
-      'ws_request_header_x_openai_internal_codex_responses_lite': 'true',
+  for (final compaction in [false, true]) {
+    test('${compaction ? 'compaction' : 'sampling'} WebSocket fallback preserves the provider deadline and isolates HTTP fallback to its session', () async {
+      final budget = compaction ? 2 : 5;
+      final input = <Json>[if (compaction) {'type': 'compaction_trigger'}];
+      var failing = true;
+      final fixture = await _websocketFixture((attempt, transport) => transport == 'websocket' && failing ? [
+        {'type': 'response.failed', 'response': {'error': {
+          'code': 'server_error', 'message': 'Temporary stream failure.',
+          'headers': {'Retry-After': attempt == budget + 1 ? '1' : '0'},
+        }}},
+      ] : [_completed]);
+      final events = <Json>[];
+      expect((await _respond(fixture.client, input: input, transport: 'websocket', onEvent: events.add)).text, 'Recovered');
+      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']),
+        [for (var retry = 1; retry <= budget; retry++) retry]);
+      expect(events.where((event) => event['layer'] == 'stream').map((event) => event['max_retries']), everyElement(budget));
+      expect(events.where((event) => event['layer'] == 'fallback'), hasLength(1));
+      expect(fixture.requests.map((request) => request.transport), [
+        for (var i = 0; i <= budget; i++) 'websocket', 'http',
+      ]);
+      final websocket = fixture.requests[budget], http = fixture.requests[budget + 1];
+      expect(http.elapsed - websocket.elapsed, greaterThanOrEqualTo(const Duration(seconds: 1)));
+      expect(websocket.body['type'], 'response.create');
+      expect(websocket.body['client_metadata'], {
+        'ws_request_header_x_openai_internal_codex_responses_lite': 'true',
+      });
+      expect(http.body.containsKey('type'), isFalse);
+      expect(http.body.containsKey('client_metadata'), isFalse);
+      expect(http.body['stream'], isTrue);
+      expect(http.body['input'], websocket.body['input']);
+      expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');
+      expect(fixture.requests, hasLength(budget + 3));
+      expect(fixture.requests.last.transport, 'http');
+      failing = false;
+      expect((await _respond(fixture.client, sessionId: 'sibling', transport: 'websocket')).text, 'Recovered');
+      expect(fixture.requests.last.transport, 'websocket');
     });
-    expect(fixture.requests[6].body.containsKey('type'), isFalse);
-    expect(fixture.requests[6].body.containsKey('client_metadata'), isFalse);
-    expect(fixture.requests[6].body['stream'], isTrue);
-    expect(fixture.requests[6].body['input'], fixture.requests[5].body['input']);
-    expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');
-    expect(fixture.requests, hasLength(8));
-    expect(fixture.requests.last.transport, 'http');
-    failing = false;
-    expect((await _respond(fixture.client, sessionId: 'sibling', transport: 'websocket')).text, 'Recovered');
-    expect(fixture.requests.last.transport, 'websocket');
+  }
+
+  test('compaction stops after two stream retries on each transport', () async {
+    final fixture = await _websocketFixture((_, _) => [
+      {'type': 'response.failed', 'response': {'error': {
+        'code': 'server_error', 'message': 'Compaction unavailable.', 'headers': {'Retry-After': '0'},
+      }}},
+    ]);
+    final events = <Json>[];
+    await expectLater(_respond(fixture.client, input: [{'type': 'compaction_trigger'}],
+      transport: 'websocket', onEvent: events.add), throwsA(isA<ModelFailure>()
+        .having((error) => error.message, 'terminal error', 'Compaction unavailable.')));
+    expect(fixture.requests.map((request) => request.transport), [
+      'websocket', 'websocket', 'websocket', 'http', 'http', 'http',
+    ]);
+    expect(events.where((event) => event['layer'] == 'stream').map((event) => event['attempt']), [1, 2, 1, 2]);
+    expect(events.where((event) => event['layer'] == 'stream').map((event) => event['max_retries']), everyElement(2));
+    expect(events.where((event) => event['layer'] == 'fallback'), hasLength(1));
   });
+
+  test('compaction reconnect replays the full history and discards an incomplete checkpoint', () async {
+    const user = <String, dynamic>{'type': 'message', 'role': 'user',
+      'content': [{'type': 'input_text', 'text': 'Keep the original evidence.'}]};
+    const assistant = <String, dynamic>{'type': 'message', 'id': 'seed-message', 'role': 'assistant',
+      'content': [{'type': 'output_text', 'text': 'Recorded.'}]};
+    const checkpoint = <String, dynamic>{'type': 'compaction', 'encrypted_content': 'complete-checkpoint'};
+    final fixture = await _websocketFixture((attempt, _) => switch (attempt) {
+      1 => [{'type': 'response.completed', 'response': {'id': 'seed-response', 'output': [assistant]}}],
+      2 => [{'type': 'response.output_item.done', 'item': {
+        'type': 'compaction', 'encrypted_content': 'incomplete-checkpoint',
+      }}],
+      _ => [
+        {'type': 'response.output_item.done', 'item': checkpoint},
+        {'type': 'response.completed', 'response': {'id': 'compacted', 'output': <Object?>[]}},
+      ],
+    });
+    final seed = await _respond(fixture.client, input: [user], transport: 'websocket');
+    final input = [user, ...seed.output, {'type': 'compaction_trigger'}];
+    final reply = await _respond(fixture.client, input: input, transport: 'websocket');
+    expect(fixture.requests, hasLength(3));
+    expect(fixture.requests[1].body['previous_response_id'], 'seed-response');
+    expect(fixture.requests[1].body['input'], [{'type': 'compaction_trigger'}]);
+    expect(fixture.requests[2].body.containsKey('previous_response_id'), isFalse);
+    expect(fixture.requests[2].body['input'], input);
+    expect(reply.output, [checkpoint]);
+  });
+
+  for (final layer in ['stream', 'fallback']) {
+    test('cancelling a compaction $layer wait stops reconnecting and leaves the session usable', () async {
+      var failing = true;
+      final fixture = await _websocketFixture((attempt, _) => failing ? [
+        {'type': 'response.failed', 'response': {'error': {
+          'code': 'server_error', 'message': 'Wait before retrying.',
+          'headers': {'Retry-After': layer == 'stream' || attempt == 3 ? '60' : '0'},
+        }}},
+      ] : [_completed]);
+      final cancellation = CancellationToken(), waiting = Completer<void>();
+      final pending = expectLater(_respond(fixture.client, input: [{'type': 'compaction_trigger'}],
+        transport: 'websocket', cancellation: cancellation, onEvent: (event) {
+          if (event['layer'] == layer && !waiting.isCompleted) waiting.complete();
+        }), throwsA(isA<CancelledException>()));
+      try { await waiting.future.timeout(const Duration(seconds: 5)); }
+      finally { cancellation.cancel(); }
+      await pending;
+      expect(fixture.requests, hasLength(layer == 'stream' ? 1 : 3));
+      failing = false;
+      expect((await _respond(fixture.client, transport: 'websocket')).text, 'Recovered');
+      expect(fixture.requests.last.transport, layer == 'stream' ? 'websocket' : 'http');
+    });
+  }
 
   for (final code in ['server_is_overloaded', 'policy_capacity_unavailable']) {
     test('WebSocket $code stops when advice is withdrawn without bypassing it through fallback', () async {
@@ -629,7 +707,7 @@ void main() {
         final result = _settle(time, _respond(_client(transport), input: [if (compaction) {'type': 'compaction_trigger'}],
           onEvent: events.add), within: const Duration(seconds: 15));
         expect(result.error, isA<ModelFailure>().having((error) => error.code, 'typed content filter', 'content_filter'));
-        expect(transport.bodies, hasLength(6));
+        expect(transport.bodies, hasLength(compaction ? 3 : 6));
         expect(events.where((event) => event['type'] == 'model.recovery'), hasLength(compaction ? 0 : 6));
         expect(transport.bodies.map((body) => (body['input'] as List).length), compaction ? everyElement(1) : [0, 1, 2, 3, 4, 5]);
         final count = transport.bodies.length; time.elapse(const Duration(hours: 1)); expect(transport.bodies, hasLength(count));
@@ -782,7 +860,10 @@ Future<({ResponsesClient client, List<({String transport, Json body, Duration el
       socket.listen((raw) {
         final events = receive('websocket', raw as String);
         for (final event in events) { socket.add(jsonEncode(event)); }
-        if (events.isEmpty) unawaited(socket.close());
+        if (!events.any((event) => {'response.completed', 'response.done', 'response.failed',
+            'response.incomplete', 'error'}.contains(event['type']))) {
+          unawaited(socket.close());
+        }
       });
     } else {
       final events = receive('http', await utf8.decoder.bind(request).join());

@@ -59,6 +59,22 @@ outside the repository to capture oracle results. Checked-in tests execute Dart.
 Upstream Apache-2.0 text is in `CODEX-LICENSE`; transliteration and stop-word
 notices are in `DEUNICODE-LICENSE` and `STOPWORDS-LICENSE`.
 
+Responses recovery was compared with the local Codex checkout at
+`65a5410f72dac1f4b40862c34ef0a8b71b12834a`:
+
+- `core/src/compact_remote_v2.rs`: foreground compaction caps stream retries at
+  two per transport, independently of the four HTTP request retries.
+- `core/src/responses_retry.rs`: sampling connection failures wait 5, 10, 20, 40,
+  then 60 seconds without consuming stream retries. Compaction remains bounded.
+  WebSocket exhaustion switches the session to HTTPS with a fresh stream budget;
+  provider retry deadlines and cancellation apply during fallback too.
+- `core/tests/suite/{compact_remote,retry_after,websocket_fallback}.rs`: the Dart
+  adaptation in `../../../test/openai_retry_test.dart` checks retry limits,
+  provider advice, fallback, cancellation and full-history reconnects. The existing
+  `../../../test/context/compaction_test.dart` also exercises a failed HTTP open
+  followed by an incomplete checkpoint, and verifies that only a successfully
+  completed checkpoint replaces durable history and survives restart.
+
 The code-mode-only description contract also follows
 `codex-rs/core/src/tools/spec_plan.rs` (`register_code_mode_executors`) and
 `codex-rs/code-mode-protocol/src/description.rs`

@@ -401,8 +401,9 @@ void main() {
     await tester.runAsync(() async { await tester.tap(find.byTooltip('Open image').first); await tester.pump();
       final preview = tester.widget<ImagePreview>(find.byType(ImagePreview));
       await precacheImage(preview.images[preview.initialIndex].provider, tester.element(find.byType(Scaffold).first)); });
-    await tester.pumpAndSettle(); expect(find.byTooltip('Zoom in'), findsOneWidget);
-    await tester.tap(find.byTooltip('Close image')); await tester.pumpAndSettle();
+    await tester.pump();
+    expect(tester.hasRunningAnimations, isFalse, reason: 'Opening an image must not animate');
+    await tester.tap(find.byTooltip('Close image preview')); await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
 

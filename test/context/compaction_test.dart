@@ -33,7 +33,7 @@ void main() {
     final provider = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final requests = <Json>[];
     final waiting = <HttpResponse>[];
-    var compactMode = 'success', sequence = 0, overflows = 0, compactFailures = 0;
+    var compactMode = 'success', sequence = 0, overflows = 0, compactFailures = 0, recoveryAttempts = 0;
     Completer<void>? compactStarted;
     provider.listen((request) async {
       final payload = await utf8.decoder.bind(request).join();
@@ -46,6 +46,14 @@ void main() {
       requests.add(body);
       final input = (body['input'] as List).map(jsonObject).toList();
       final compact = input.last['type'] == 'compaction_trigger';
+      // Adapted from Codex remote_compact_v2_retries_failures_with_stream_retry_budget:
+      // a failed open and a checkpoint without response.completed must not install history.
+      if (compact && compactMode == 'recover' && ++recoveryAttempts == 1) {
+        request.response.statusCode = 500;
+        request.response.write(jsonEncode({'error': {'code': 'server_error'}}));
+        await request.response.close();
+        return;
+      }
       request.response.bufferOutput = false;
       request.response.headers.contentType = ContentType(
         'text',
@@ -56,6 +64,12 @@ void main() {
         request.response.write('data: {"type":"response.reasoning_summary_text.delta","delta":"Internal compaction reasoning"}\n\n');
       } else {
         request.response.write('data: {"type":"response.output_text.delta","delta":"Visible reply"}\n\n');
+      }
+      if (compact && compactMode == 'recover' && recoveryAttempts == 2) {
+        request.response.write('data: ${jsonEncode({'type': 'response.output_item.done',
+          'item': {'type': 'compaction', 'encrypted_content': 'incomplete-checkpoint'}})}\n\n');
+        await request.response.close();
+        return;
       }
       if (compact && compactMode == 'wait') {
         waiting.add(request.response);
@@ -194,12 +208,19 @@ void main() {
     }
     expect((await cancelled)['status'], 'interrupted');
     expect((await rolloutLines(client, id)).where((line) => line['type'] == 'compacted'), isEmpty);
-    compactMode = 'success';
+    compactMode = 'recover';
     await File('${root.path}/repo/AGENTS.md')
         .writeAsString('Repository instruction: use cedar.');
     live.clear();
+    final recoveryStart = requests.length;
     final compacted = await turn(compact: true);
     expect(compacted['status'], 'completed', reason: compacted.toString());
+    expect(recoveryAttempts, 3);
+    final attempts = requests.skip(recoveryStart).toList();
+    expect(attempts, hasLength(3));
+    expect(attempts.map((body) => body['input']), everyElement(attempts.first['input']));
+    expect(live.where((event) => event['method'] == 'happen/turn/retrying')
+      .map((event) => event['params']['layer']), ['http', 'stream']);
     final checkpoint = (await rolloutLines(client, id)).singleWhere((line) => line['type'] == 'compacted');
     final lifecycle = live.where((event) => event['method'] == 'turn/completed' ||
       {'item/started', 'item/completed'}.contains(event['method']) && event['params']['item']['type'] == 'contextCompaction').toList();
@@ -207,6 +228,8 @@ void main() {
     final durable = jsonObject(await client.request('thread/items/list', {'threadId': id, 'turnId': compacted['id']}));
     expect(durable['data'][0]['item']['id'], lifecycle[1]['params']['item']['id']);
     expect(checkpoint['payload']['replacement_history'], isNotEmpty);
+    expect(jsonEncode(checkpoint), isNot(contains('incomplete-checkpoint')));
+    expect(jsonEncode(checkpoint), contains('opaque-checkpoint'));
     expect(live.any((event) => event['method'] == 'item/agentMessage/delta'), isFalse);
     expect(live.any((event) => event['method'] == 'item/reasoning/summaryTextDelta'), isFalse);
     final restored = (await contextItems(client, id)).where((item) =>

@@ -9,6 +9,7 @@ const _maxIndexBytes = 8 * 1024 * 1024;
 const _maxFiles = 100000;
 const _indexLifetime = Duration(seconds: 10);
 typedef _Index = ({List<String> paths, bool truncated, DateTime created});
+typedef _Match = ({String path, int score, bool directory});
 
 /// Bounded file and directory names. No watchers, contents, or client indexes.
 class FileSearch {
@@ -43,7 +44,7 @@ class FileSearch {
     }
 
     final needle = query.toLowerCase().replaceAll('\\', '/').replaceFirst(RegExp(r'^\./'), '');
-    final matches = <({String path, int score})>[];
+    final matches = <_Match>[];
     var count = 0;
     for (var i = 0; i < index.paths.length; i++) {
       // Yield to WebSocket replies and task streams, including on cached searches.
@@ -52,31 +53,31 @@ class FileSearch {
       final score = _score(path, needle);
       if (score == null) continue;
       count++;
-      var at = 0;
-      while (at < matches.length &&
-          (matches[at].score > score ||
-              (matches[at].score == score && matches[at].path.compareTo(path) < 0))) {
-        at++;
+      // Files and folders share one ranking; classify only entries that can fit.
+      if (matches.length == limit &&
+          _compare((path: path, score: score, directory: false), matches.last) >= 0) {
+        continue;
       }
-      if (at >= limit) continue;
       // Cached entries may have disappeared; Git can also return submodule roots.
       final type = await FileSystemEntity.type('$cwd/$path');
       if (type != FileSystemEntityType.file && type != FileSystemEntityType.directory) continue;
       cancellation.throwIfCancelled();
-      matches.insert(at, (path: type == FileSystemEntityType.directory && !path.endsWith('/') ? '$path/' : path, score: score));
-      if (matches.length > limit) matches.removeLast();
+      final directory = type == FileSystemEntityType.directory;
+      final match = (path: path, score: score, directory: directory);
+      _keep(matches, match, limit);
     }
     final paths = <String>[];
     var bytes = 0;
     var truncated = index.truncated || count > limit;
     for (final match in matches) {
       cancellation.throwIfCancelled();
-      bytes += utf8.encode(jsonEncode(match.path)).length;
+      final path = match.directory ? '${match.path}/' : match.path;
+      bytes += utf8.encode(jsonEncode(path)).length;
       if (bytes > 32 * 1024) {
         truncated = true;
         break;
       }
-      paths.add(match.path);
+      paths.add(path);
     }
     cancellation.throwIfCancelled();
     return {'paths': paths, 'truncated': truncated};
@@ -85,9 +86,24 @@ class FileSearch {
   void clear() => _indexes.clear();
 }
 
-// Like Harness's mention ranking, exact names/paths win over descendants.
+int _compare(_Match a, _Match b) {
+  final score = b.score.compareTo(a.score);
+  if (score != 0) return score;
+  final length = a.path.length.compareTo(b.path.length);
+  return length == 0 ? a.path.compareTo(b.path) : length;
+}
+
+void _keep(List<_Match> matches, _Match match, int limit) {
+  var at = 0;
+  while (at < matches.length && _compare(matches[at], match) < 0) { at++; }
+  if (at >= limit) return;
+  matches.insert(at, match);
+  if (matches.length > limit) matches.removeLast();
+}
+
+// Explicit paths stay scoped to the folder selected with Tab.
 int? _score(String path, String query) {
-  final lower = path.toLowerCase().replaceFirst(RegExp(r'/$'), '');
+  final lower = path.toLowerCase();
   final basename = lower.substring(lower.lastIndexOf('/') + 1);
   if (query.isEmpty) return -path.length;
   final name = query.replaceFirst(RegExp(r'/$'), '');
@@ -97,10 +113,10 @@ int? _score(String path, String query) {
     if (lower.contains('/$query')) return 20000 - path.length;
     return null;
   }
-  if (lower == name || basename == name) return 100000 - path.length;
-  if (basename.startsWith(query)) return 80000 - path.length;
+  if (lower == name || basename == name) return 100000 - basename.length;
+  if (basename.startsWith(query)) return 80000 - basename.length;
   if (lower.startsWith(query)) return 60000 - path.length;
-  if (basename.contains(query)) return 40000 - path.length;
+  if (basename.contains(query)) return 40000 - basename.length;
   if (lower.contains(query)) return 20000 - path.length;
   var position = 0, gaps = 0, previous = -1;
   for (final unit in query.codeUnits) {
@@ -126,7 +142,9 @@ Future<_Index> _scan(String cwd, CancellationToken cancellation) async {
     if (i % 1024 == 0) await cancellableDelay(Duration.zero, cancellation);
     final name = names[i];
     if (!_usablePath(name)) continue;
-    var path = name;
+    // Gitlinks and derived parent folders share one slash-free index key.
+    // Directory suffixes are added only after filesystem classification.
+    var path = name.endsWith('/') ? name.substring(0, name.length - 1) : name;
     // Deriving parents preserves Git's ignore rules without a second walk.
     while (path.isNotEmpty && !paths.contains(path)) {
       pathBytes += utf8.encode(path).length;
@@ -134,8 +152,8 @@ Future<_Index> _scan(String cwd, CancellationToken cancellation) async {
         return (paths: paths.toList(), truncated: true, created: DateTime.now());
       }
       paths.add(path);
-      final slash = path.lastIndexOf('/', path.length - (path.endsWith('/') ? 2 : 1));
-      path = slash < 0 ? '' : path.substring(0, slash + 1);
+      final slash = path.lastIndexOf('/');
+      path = slash < 0 ? '' : path.substring(0, slash);
     }
   }
   return (paths: paths.toList(), truncated: base.truncated || (nested?.truncated ?? false), created: DateTime.now());
@@ -214,21 +232,17 @@ Future<_Index> _walk(String cwd, CancellationToken cancellation) async {
         final name = entry.uri.pathSegments.where((part) => part.isNotEmpty).last;
         final path = '$relative$name';
         if (!_usablePath(path)) continue;
-        String indexed;
         if (entry is Directory) {
           if ({'.git', '.hg', '.svn', 'node_modules', '.dart_tool', 'build', '.cache'}.contains(name)) continue;
-          indexed = '$path/';
-          directories.add(indexed);
-        } else if (entry is File) {
-          indexed = path;
-        } else {
+          directories.add('$path/');
+        } else if (entry is! File) {
           continue;
         }
-        final length = utf8.encode(indexed).length;
+        final length = utf8.encode(path).length;
         if (bytes + length > _maxIndexBytes) {
           return (paths: paths, truncated: true, created: DateTime.now());
         }
-        paths.add(indexed);
+        paths.add(path);
         bytes += length;
       }
     } on FileSystemException {

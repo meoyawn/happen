@@ -172,8 +172,8 @@ class AttachmentRail extends StatelessWidget {
   Widget build(BuildContext context) {
     final tiles = [for (var index = 0; index < attachments.length; index++)
       SizedBox(key: ValueKey((index, attachments[index][r'$part'], attachments[index]['path'])),
-        width: attachments[index]['type'] == 'image' ? 58 : 160,
-        height: attachments[index]['type'] == 'image' ? 46 : null,
+        width: attachments[index]['type'] == 'image' ? 80 : 160,
+        height: attachments[index]['type'] == 'image' ? 80 : null,
         child: ConversationData(
         value: attachments[index], builder: (context, value) =>
         _AttachmentTile(attachment: jsonObject(value), directory: directory,
@@ -183,7 +183,9 @@ class AttachmentRail extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, spacing: 8, children: tiles)));
     }
-    return ConversationImageGroup(child: Wrap(alignment: WrapAlignment.end, spacing: 8, runSpacing: 8, children: tiles));
+    return ConversationImageGroup(child: Align(alignment: AlignmentDirectional.centerEnd,
+      child: SingleChildScrollView(scrollDirection: Axis.horizontal, reverse: true,
+        child: Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.end, spacing: 8, children: tiles))));
   }
 }
 
@@ -223,7 +225,7 @@ class _AttachmentTileState extends State<_AttachmentTile> {
         source: attachment['data'] is String ? attachmentDataUrl(attachment)
           : (attachment['path'] as String? ?? '').startsWith('/') ? Uri.file(attachment['path'] as String).toString()
           : attachment['path'] as String? ?? '',
-        label: name, directory: widget.directory, thumbnail: true)
+        label: name, directory: widget.directory, thumbnailSize: 80)
       : InkWell(onTap: _openFile, borderRadius: BorderRadius.circular(6),
         mouseCursor: WidgetStateMouseCursor.clickable,
         child: Container(width: 160, padding: const EdgeInsets.all(8),

@@ -18,6 +18,7 @@ import 'desktop_toast.dart';
 import 'file_icon.dart';
 import 'file_reference.dart';
 import 'folder_viewer.dart';
+import 'image_context_menu.dart';
 
 typedef _FilePreview = ({String kind, String? text, Uint8List? bytes, int? size, bool truncated});
 
@@ -267,7 +268,9 @@ class _FileViewerState extends State<FileViewer> {
         child: Center(child: Padding(padding: const EdgeInsets.all(24),
           child: preview.kind == 'svg'
             ? SvgPicture.memory(preview.bytes!, errorBuilder: failed)
-            : Image.memory(preview.bytes!, fit: BoxFit.contain, errorBuilder: failed)))));
+            : GestureDetector(onSecondaryTapUp: (event) => unawaited(showImageContextMenu(context,
+              MemoryImage(preview.bytes!), event.globalPosition, _lifetime)),
+              child: Image.memory(preview.bytes!, fit: BoxFit.contain, errorBuilder: failed))))));
     }
     if (_isMarkdown(widget.path) && !_source && !preview.truncated) {
       return SingleChildScrollView(padding: const EdgeInsets.all(24),

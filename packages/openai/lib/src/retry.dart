@@ -9,6 +9,8 @@ import 'package:telemetry/telemetry.dart';
 // Match Codex's independent HTTP and Responses stream budgets.
 const maxRequestRetries = 4;
 const maxStreamRetries = 5;
+// Codex compact_remote_v2.rs: long-running compactions get two retries per transport.
+const maxCompactionStreamRetries = 2;
 
 typedef RetryAdvice = ({Duration delay, Stopwatch elapsed});
 
@@ -75,6 +77,7 @@ Future<T> retryRequest<T>(Future<T> Function() send, CancellationToken cancellat
 }
 
 Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken cancellation, {
+  required int maxRetries,
   required bool unboundedConnections,
   bool Function()? fallbackTransport,
   Future<void> Function()? onContentFilter,
@@ -82,6 +85,7 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
 }) async {
   var retries = 0;
   var connectionRetries = 0;
+  var connectionRetrySeconds = 5;
   while (true) {
     cancellation.throwIfCancelled();
     try {
@@ -102,10 +106,11 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
       if (!retryable) rethrow;
       if (unboundedConnections && (error is SocketException || error is HandshakeException || error is HttpException)) {
         await _waitForRetry(error, ++connectionRetries, null, 'connection', cancellation, onEvent,
-          delay: const Duration(seconds: 5), message: 'Reconnecting… waiting for network');
+          delay: Duration(seconds: connectionRetrySeconds), message: 'Reconnecting… waiting for network');
+        connectionRetrySeconds = min(connectionRetrySeconds * 2, 60);
         continue;
       }
-      if (retries >= maxStreamRetries || error is TimeoutException || error is WebSocketException) {
+      if (retries >= maxRetries || error is TimeoutException || error is WebSocketException) {
         if (fallbackTransport?.call() == true) {
           // A stalled or rejected upgrade should try HTTPS immediately.
           // Switching transport cannot bypass the provider's original deadline.
@@ -114,9 +119,9 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
           retries = 0;
           continue;
         }
-        if (retries >= maxStreamRetries) rethrow;
+        if (retries >= maxRetries) rethrow;
       }
-      await _waitForRetry(error, ++retries, maxStreamRetries, 'stream', cancellation, onEvent);
+      await _waitForRetry(error, ++retries, maxRetries, 'stream', cancellation, onEvent);
     }
   }
 }

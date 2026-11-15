@@ -103,17 +103,17 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pumpAndSettle();
       expect(displayed().width, 120);
-      await tester.tap(find.byTooltip('Zoom in'));
-      await tester.pumpAndSettle();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      expect(find.byTooltip('Previous image'), findsNothing);
+      await tester.tap(find.byTooltip('Next image'));
       await tester.pumpAndSettle();
       expect(displayed().width, 80);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pumpAndSettle();
       expect(displayed().width, 80, reason: 'Right must stop at this message, without wrapping or crossing into the next');
+      expect(find.byTooltip('Next image'), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      expect(preview, findsNothing, reason: 'Changing images resets zoom to fit');
+      expect(preview, findsNothing, reason: 'Escape closes the preview after navigating');
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     });
@@ -154,7 +154,8 @@ void main() {
       await tester.tap(find.byWidgetPredicate((widget) => widget is Semantics &&
         widget.properties.label == 'Show generated image 2'));
       await tester.pump();
-      await precacheImage(FileImage(saved), tester.element(mainImage));
+      final image = tester.widget<Image>(find.descendant(of: mainImage, matching: find.byType(Image)));
+      await precacheImage(image.image, tester.element(mainImage));
     });
     await tester.pumpAndSettle();
     expect(tester.widget<ConversationImage>(mainImage).source, saved.path);
@@ -173,11 +174,12 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pumpAndSettle();
     expect(displayed().width, 120, reason: 'The viewer includes images beyond this inline gallery');
-    expect(find.text('3 / 3'), findsOneWidget);
+    expect(find.byTooltip('Next image'), findsNothing);
+    expect(find.byTooltip('Previous image'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
     await tester.pumpAndSettle();
-    expect(find.text('3 / 3'), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    expect(displayed().width, 120);
+    await tester.tap(find.byTooltip('Close image preview'));
     await tester.pumpAndSettle();
     expect(preview, findsNothing);
     expect(tester.takeException(), isNull);

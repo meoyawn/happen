@@ -8,6 +8,7 @@ import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/terminal.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +16,114 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  testWidgets('archive undo uses Cmd+Z outside editors and the toast Unarchive action', (tester) async {
+    late Directory root;
+    late DesktopSession session;
+    final client = _ArchiveClient();
+    final task = DesktopTask('thread', 'Archived conversation')..loaded = true;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-archive-undo-');
+      session = DesktopSession(client, await openDesktopDatabase(root.path));
+      final project = Project('checkout', 'project', root.path, [task]);
+      session.projects.add(project);
+      session.project = project;
+      session.providers = [{'id': 'openai', 'status': 'signed_in', 'models': [
+        {'id': 'example', 'reasoning_levels': <String>[]},
+      ]}];
+      session.chooseModel('example');
+      await Future.wait([session.pinnedSidebar.ready, session.promptHistoryShortcut.ready, session.machinePickerShortcut.ready]);
+      await callIsolate(session.database.port, 'project.add', {
+        'checkout_key': project.checkoutKey, 'identity': project.id, 'path': project.path,
+      });
+      await callIsolate(session.database.port, 'task.add', {
+        'id': task.id, 'checkout_key': project.checkoutKey, 'title': task.title,
+      });
+    });
+    final fieldFocus = FocusNode();
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      fieldFocus.dispose();
+      await tester.runAsync(() async { await session.close(); await root.delete(recursive: true); });
+    });
+    tester.view.physicalSize = const Size(1100, 850); tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), (_) async => null);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('happen/desktop'), null));
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: Column(children: [
+      TextField(focusNode: fieldFocus),
+      Expanded(child: DesktopView(session: session)),
+    ]))));
+    Future<void> pumpUi() async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump();
+    }
+    await pumpUi();
+
+    Future<void> undo({bool shift = false}) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+    }
+
+    Future<void> settleArchive() async {
+      await tester.pump();
+      for (var attempt = 0; task.archiving && attempt < 100; attempt++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      await pumpUi();
+      expect(task.archiving, isFalse);
+    }
+
+    for (final useToast in [false, true]) {
+      final reply = client.archiveReply = Completer<Json>();
+      await tester.tap(find.byKey(ValueKey('thread:${task.id}')), buttons: kSecondaryMouseButton);
+      await pumpUi();
+      await tester.tap(find.text('Archive session'));
+      await pumpUi();
+      expect(task.archiving, isTrue);
+      expect(find.text('Thread archived'), findsNothing, reason: 'A pending archive has no success toast');
+      reply.complete({});
+      await settleArchive();
+      expect(task.archived, isTrue);
+      expect(find.byKey(ValueKey('thread:${task.id}')), findsNothing);
+      expect(find.text('Thread archived'), findsOneWidget);
+      expect(find.text('Unarchive'), findsOneWidget);
+
+      final composer = tester.widget<ComposerEditor>(find.byType(ComposerEditor));
+      composer.focusNode.requestFocus();
+      await tester.pump();
+      await undo();
+      expect(task.archived, isTrue, reason: 'Composer undo must not unarchive threads');
+      fieldFocus.requestFocus();
+      await tester.pump();
+      await undo();
+      expect(task.archived, isTrue, reason: 'Text-field undo must not unarchive threads');
+      fieldFocus.unfocus();
+      await tester.pump();
+      await undo(shift: true);
+      expect(task.archived, isTrue, reason: 'Redo must not unarchive threads');
+
+      if (useToast) {
+        await tester.tap(find.text('Unarchive'));
+      } else {
+        await undo();
+      }
+      await settleArchive();
+      expect(task.archived, isFalse);
+      expect(find.byKey(ValueKey('thread:${task.id}')), findsOneWidget);
+      expect(find.text('Thread archived'), findsNothing);
+      final saved = await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
+      expect((jsonObject(saved)['tasks'] as List).single['archived'], 0);
+    }
+    expect(client.restored, [task.id, task.id]);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('goal command changes the draft composer and controls the acknowledged goal', (tester) async {
     late Directory root;
     late DesktopSession session;
@@ -579,6 +688,18 @@ class _Client implements AgentClient {
   @override Future<Json> mcpInventory({bool verbose = false, String? server, String? cwd, required CancellationToken cancellation}) async => {'servers': <Object?>[]};
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _ArchiveClient extends _Client {
+  Completer<Json>? archiveReply;
+  final restored = <String>[];
+  @override
+  Future<Object?> request(String method, [Json params = const {}]) async {
+    if (method == 'thread/archive') return archiveReply!.future;
+    if (method == 'thread/unarchive') { restored.add(params['threadId'] as String); return {}; }
+    if (method == 'thread/unsubscribe') return {'status': 'notLoaded'};
+    return super.request(method, params);
+  }
 }
 
 class _GoalClient extends _Client {

@@ -47,6 +47,8 @@ import 'project_details.dart';
 import 'add_project_dialog.dart';
 import 'add_project_state.dart';
 
+typedef _ArchivedThread = ({DesktopSession source, DesktopTask task});
+
 class DesktopView extends StatefulWidget {
   const DesktopView({super.key, required this.session, this.machines});
   final DesktopSession session;
@@ -78,6 +80,8 @@ class _DesktopViewState extends State<DesktopView> {
   final _navigationHistory = <String>[];
   int _navigationIndex = -1;
   String? _sidebarProjectKey;
+  _ArchivedThread? _archiveUndo;
+  VoidCallback? _dismissArchiveToast;
 
   @override
   void initState() {
@@ -217,7 +221,7 @@ class _DesktopViewState extends State<DesktopView> {
               if (session.connected && !task.archiving)
                 (title: task.archived ? 'Unarchive current session' : 'Archive current session',
                   keywords: 'archive restore task', icon: task.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
-                  shortcut: null, run: () => unawaited(_run(() => session.setArchived(task, !task.archived)))),
+                  shortcut: null, run: () => unawaited(_run(() => _setArchived(task, !task.archived)))),
             ],
           ],
           onOpen: (project, task) => unawaited(_run(() async {
@@ -306,6 +310,39 @@ class _DesktopViewState extends State<DesktopView> {
     }
   }
 
+  bool _canUnarchive(_ArchivedThread undo) => _sources.contains(undo.source) && undo.source.connected &&
+    undo.task.archived && !undo.task.archiving &&
+    undo.source.projects.any((project) => !project.removing && project.tasks.contains(undo.task));
+
+  Future<void> _unarchive(_ArchivedThread undo) async {
+    if (!mounted || !_canUnarchive(undo)) return;
+    await undo.source.setArchived(undo.task, false);
+    if (!mounted || undo.task.archived || _archiveUndo != undo) return;
+    _archiveUndo = null;
+    _dismissArchiveToast?.call();
+    _dismissArchiveToast = null;
+  }
+
+  Future<void> _setArchived(DesktopTask task, bool archived) async {
+    if (task.archiving || task.archived == archived) return;
+    final source = _taskSource(task);
+    await source.setArchived(task, archived);
+    if (!mounted || task.archived != archived) return;
+    if (!archived) {
+      if (_archiveUndo == (source: source, task: task)) {
+        _archiveUndo = null;
+        _dismissArchiveToast?.call();
+        _dismissArchiveToast = null;
+      }
+      return;
+    }
+    final undo = (source: source, task: task);
+    _archiveUndo = undo;
+    _dismissArchiveToast = showDesktopToast(context, 'Thread archived', description: task.title,
+      type: DesktopToastType.success, tag: 'archive', actionLabel: 'Unarchive',
+      onAction: () => unawaited(_run(() => _unarchive(undo))));
+  }
+
   Future<void> _addProject() => _run(() async {
     if (_picking || !mounted) return;
     setState(() => _picking = true);
@@ -381,6 +418,15 @@ class _DesktopViewState extends State<DesktopView> {
         event is! KeyDownEvent && event is! KeyRepeatEvent) { return KeyEventResult.ignored; }
     final keyboard = HardwareKeyboard.instance;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (!terminalHasFocus && focused?.findAncestorStateOfType<_ComposerState>() == null &&
+        focused?.findAncestorStateOfType<EditableTextState>() == null &&
+        SingleActivator(LogicalKeyboardKey.keyZ, meta: mac, control: !mac, includeRepeats: false).accepts(event, keyboard)) {
+      if (_archiveUndo case final undo? when _canUnarchive(undo)) {
+        unawaited(_run(() => _unarchive(undo)));
+        return KeyEventResult.handled;
+      }
+    }
     final history = session.promptHistoryShortcut.state.value;
     if (!terminalHasFocus && history?.accepts(event, keyboard) == true) {
       _openPromptHistory();
@@ -711,7 +757,7 @@ class _DesktopViewState extends State<DesktopView> {
             onAddProject: () => unawaited(_addProject()),
             onRefresh: () => unawaited(_run(widget.machines?.refreshCatalogs ?? session.refreshProjects)),
             onSelect: _openTask, onDraft: _activateDraft,
-            onArchive: (task, archived) => unawaited(_run(() => _taskSource(task).setArchived(task, archived))))
+            onArchive: (task, archived) => unawaited(_run(() => _setArchived(task, archived))))
         ,
       resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
       child: pane!,
@@ -794,7 +840,7 @@ class _DesktopViewState extends State<DesktopView> {
                     Padding(
                       padding: const EdgeInsets.all(20),
                       child: FilledButton.icon(
-                        onPressed: () => _run(() => session.setArchived(session.task!, false)),
+                        onPressed: () => _run(() => _setArchived(session.task!, false)),
                         icon: const Icon(Icons.unarchive_outlined),
                         label: const Text('Restore task to continue'),
                       ),
@@ -808,7 +854,7 @@ class _DesktopViewState extends State<DesktopView> {
                  machineIcon: (source) => widget.machines?.iconFor(source.machineAlias) ?? parseMachineIcon(null, remote: source.machineAlias != null),
                  onProjectSettings: (project) { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); },
                 onSelect: _openTask, onNew: (project) => unawaited(_run(() => _newChat(project))),
-                onArchive: (task, archived) => unawaited(_run(() => _taskSource(task).setArchived(task, archived))),
+                onArchive: (task, archived) => unawaited(_run(() => _setArchived(task, archived))),
                 onAddProject: () => unawaited(_addProject())),
             ])),
            ),

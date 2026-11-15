@@ -17,7 +17,9 @@ import 'appearance.dart';
 import 'browser.dart';
 import 'inline_reference.dart';
 import 'image_preview.dart';
-import 'inline_image.dart';
+import 'image_context_menu.dart';
+import 'conversation_image_source.dart';
+import 'generated_image_loading.dart';
 import 'conversation_data.dart';
 import 'conversation_annotations.dart';
 import 'response_annotation_reference.dart';
@@ -592,11 +594,12 @@ Uri? _contentUri(String source, String directory) {
 
 ImageProvider? conversationImageProvider(String source, String directory) {
   try {
-    if (source.startsWith('data:')) return InlineImage(source);
+    if (source.startsWith('data:')) return ConversationImageSource(source);
     final uri = _contentUri(source, directory);
     if (uri == null) return null;
-    if ((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) return NetworkImage(uri.toString());
-    if (uri.scheme == 'file') return FileImage(File(uri.toFilePath()));
+    if (((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) || uri.scheme == 'file') {
+      return ConversationImageSource(uri.toString());
+    }
   } on FormatException {
     // Invalid sources affect only their own image.
   } on ArgumentError {
@@ -642,16 +645,15 @@ class ConversationImageParts extends StatelessWidget {
 
 class ConversationImage extends StatefulWidget {
   const ConversationImage({super.key, required this.source, required this.label, required this.directory,
-    this.thumbnail = false, this.markdown = false, this.borderRadius, this.maxHeight,
-    this.onAspectRatio, this.previewImages = const [], this.previewID, this.onPreview, this.onPreviewChanged, this.provider});
+    this.thumbnailSize, this.markdown = false, this.generated = false, this.borderRadius, this.maxHeight,
+    this.onAspectRatio, this.previewImages = const [], this.previewID, this.onPreview, this.onOpen, this.provider});
   final String source, label, directory;
-  final bool thumbnail, markdown;
-  final double? borderRadius, maxHeight;
+  final bool markdown, generated;
+  final double? thumbnailSize, borderRadius, maxHeight;
   final ValueChanged<double>? onAspectRatio;
   final List<({String id, String source})> previewImages;
   final String? previewID;
-  final VoidCallback? onPreview;
-  final ValueChanged<String>? onPreviewChanged;
+  final VoidCallback? onPreview, onOpen;
   final ImageProvider? provider;
 
   @override
@@ -659,13 +661,13 @@ class ConversationImage extends StatefulWidget {
 }
 
 class _ConversationImageState extends State<ConversationImage> {
+  final _lifetime = CancellationToken();
   ImageProvider? _provider;
-  bool _previewing = false;
-  final _imageKey = GlobalKey();
+  bool _hovered = false;
   ImageStream? _ratioStream;
   ImageStreamListener? _ratioListener;
   double? _aspectRatio;
-  double get _radius => widget.borderRadius ?? (widget.thumbnail ? 6 : 4);
+  double get _radius => widget.borderRadius ?? 8;
 
   @override
   void initState() {
@@ -676,9 +678,11 @@ class _ConversationImageState extends State<ConversationImage> {
   @override
   void didUpdateWidget(ConversationImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.source != widget.source || oldWidget.directory != widget.directory || oldWidget.provider != widget.provider ||
-        oldWidget.onAspectRatio != widget.onAspectRatio) {
+    if (oldWidget.source != widget.source || oldWidget.directory != widget.directory || oldWidget.provider != widget.provider) {
+      _aspectRatio = null;
       _resolve();
+      _observeRatio();
+    } else if (oldWidget.onAspectRatio == null && widget.onAspectRatio != null) {
       _observeRatio();
     }
   }
@@ -693,44 +697,41 @@ class _ConversationImageState extends State<ConversationImage> {
     _ratioStream = null;
     _ratioListener = null;
     if (widget.onAspectRatio == null || _provider == null) return;
-    final source = widget.source;
+    final provider = _provider;
     _ratioListener = ImageStreamListener((info, _) {
       final ratio = info.image.width / info.image.height;
       info.dispose();
       if (_aspectRatio == ratio) return;
       _aspectRatio = ratio;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.source == source) widget.onAspectRatio?.call(ratio);
+        if (mounted && _provider == provider) widget.onAspectRatio?.call(ratio);
       });
     }, onError: (Object _, StackTrace? _) {});
     _ratioStream = _provider!.resolve(createLocalImageConfiguration(context))..addListener(_ratioListener!);
   }
 
-  Widget _placeholder({bool failed = false}) => Container(
-    width: widget.thumbnail ? 58 : null,
-    height: widget.thumbnail ? 46 : 96,
-    alignment: Alignment.center,
-    color: desktopMuted,
-    child: widget.thumbnail ? (failed ? const Icon(Icons.broken_image_outlined,
-      color: desktopTertiary, size: 20) : null) : Column(mainAxisSize: MainAxisSize.min, children: [
-      Text(failed ? 'Could not load image' : 'Loading image…',
-        style: const TextStyle(fontSize: 12, color: desktopSecondary)),
-    ]),
-  );
+  Widget _placeholder({bool failed = false}) {
+    if (widget.generated && !failed) return GeneratedImageLoading(thumbnail: widget.thumbnailSize != null);
+    return SizedBox(width: widget.thumbnailSize, height: widget.thumbnailSize ?? 96,
+      child: Center(child: Semantics(label: failed ? 'Could not load image' : 'Loading image',
+        child: widget.thumbnailSize != null || !failed
+          ? Icon(failed ? Icons.broken_image_outlined : Icons.image_outlined, color: desktopTertiary, size: 16)
+          : const Text('Could not load image', style: TextStyle(fontSize: 12, color: desktopSecondary)))));
+  }
 
   Widget _image() {
     final provider = _provider;
     if (provider == null) return _placeholder(failed: true);
     return LayoutBuilder(builder: (context, constraints) {
       final ratio = MediaQuery.devicePixelRatioOf(context);
-      final height = widget.thumbnail ? 46.0 : widget.maxHeight ?? MediaQuery.sizeOf(context).height * .6;
-      final width = widget.thumbnail ? 58.0 : constraints.maxWidth;
+      final height = widget.thumbnailSize ?? widget.maxHeight ?? MediaQuery.sizeOf(context).height * .6;
+      final width = widget.thumbnailSize ?? constraints.maxWidth;
       return ConstrainedBox(constraints: BoxConstraints(maxHeight: height), child: Image(
         image: ResizeImage(provider, width: width.isFinite ? (width * ratio).ceil() : null,
           height: (height * ratio).ceil(), policy: ResizeImagePolicy.fit),
-        fit: widget.thumbnail ? BoxFit.cover : BoxFit.contain,
-        width: widget.thumbnail ? 58 : null,
-        height: widget.thumbnail ? 46 : null,
+        fit: widget.thumbnailSize != null && !widget.generated ? BoxFit.cover : BoxFit.contain,
+        width: widget.thumbnailSize,
+        height: widget.thumbnailSize,
         gaplessPlayback: true,
         semanticLabel: widget.label,
         frameBuilder: (_, child, frame, synchronous) =>
@@ -740,15 +741,9 @@ class _ConversationImageState extends State<ConversationImage> {
     });
   }
 
-  PreviewImage? _previewImage() {
-    final provider = _provider, box = _imageKey.currentContext?.findRenderObject();
-    if (provider == null || box is! RenderBox || !box.attached || !box.hasSize) return null;
-    return (provider: provider, label: widget.label, origin: box.localToGlobal(Offset.zero) & box.size,
-      originRadius: _radius);
-  }
+  PreviewImage? _previewImage() => _provider == null ? null : (provider: _provider!, label: widget.label);
 
   void _preview() {
-    if (_previewing) return;
     final images = <(PreviewImage, _ConversationImageState)>[];
     void collect(Element element) {
       if (element is StatefulElement && element.state is _ConversationImageState) {
@@ -761,25 +756,18 @@ class _ConversationImageState extends State<ConversationImage> {
     }
     final group = context.getElementForInheritedWidgetOfExactType<_ConversationImageScope>();
     if (widget.previewImages.isNotEmpty) {
-      final origin = _previewImage();
-      if (origin == null) return;
       final previews = <PreviewImage>[];
       final ids = <String>[];
       for (final image in widget.previewImages) {
         final provider = conversationImageProvider(image.source, widget.directory);
         if (provider == null) continue;
         ids.add(image.id);
-        previews.add((provider: provider, label: widget.label, origin: origin.origin, originRadius: _radius));
+        previews.add((provider: provider, label: widget.label));
       }
       final initial = ids.indexOf(widget.previewID ?? '');
       if (initial < 0) return;
       widget.onPreview?.call();
-      showGeneralDialog<void>(context: context, barrierDismissible: true,
-        barrierLabel: 'Close image', barrierColor: Colors.transparent,
-        transitionDuration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 240),
-        pageBuilder: (context, _, _) => ImagePreview(images: previews, initialIndex: initial,
-          onChanged: (index) => widget.onPreviewChanged?.call(ids[index])),
-        transitionBuilder: (_, _, _, child) => child);
+      unawaited(showImagePreview(context, images: previews, initialIndex: initial));
       return;
     }
     if (group != null) {
@@ -791,43 +779,51 @@ class _ConversationImageState extends State<ConversationImage> {
     final initial = images.indexWhere((image) => identical(image.$2, this));
     if (initial < 0) return;
     widget.onPreview?.call();
-    var active = initial;
-    void hide(int index, bool hidden) {
-      final state = images[index].$2;
-      if (state.mounted) state.setState(() => state._previewing = hidden);
-    }
-    hide(active, true);
-    unawaited(showGeneralDialog<void>(context: context, barrierDismissible: true,
-      barrierLabel: 'Close image', barrierColor: Colors.transparent,
-      transitionDuration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 240),
-      pageBuilder: (context, _, _) => ImagePreview(images: images.map((image) => image.$1).toList(growable: false),
-        initialIndex: initial, onChanged: (index) { hide(active, false); active = index; hide(active, true); }),
-      transitionBuilder: (_, _, _, child) => child,
-    ).whenComplete(() => hide(active, false)));
+    unawaited(showImagePreview(context, images: images.map((image) => image.$1).toList(growable: false), initialIndex: initial));
   }
 
   @override
   void dispose() {
+    _lifetime.cancel();
     if (_ratioListener != null) _ratioStream?.removeListener(_ratioListener!);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final image = MouseRegion(cursor: _provider == null ? MouseCursor.defer
-      : widget.thumbnail ? SystemMouseCursors.click : SystemMouseCursors.zoomIn,
-      child: GestureDetector(key: _imageKey, onTap: _provider == null ? null : _preview,
+    final image = MouseRegion(cursor: _provider == null ? MouseCursor.defer : SystemMouseCursors.click,
+      onEnter: widget.generated ? (_) => setState(() => _hovered = true) : null,
+      onExit: widget.generated ? (_) => setState(() => _hovered = false) : null,
+      child: GestureDetector(onTap: _provider == null ? null : widget.onOpen ?? _preview,
+        onSecondaryTapUp: _provider == null ? null : (event) =>
+          unawaited(showImageContextMenu(context, _provider!, event.globalPosition, _lifetime)),
         child: Tooltip(message: 'Open image', child: Semantics(button: _provider != null, label: widget.label,
-          child: Opacity(opacity: _previewing ? 0 : 1, child: ClipRRect(
+          child: ClipRRect(
             borderRadius: BorderRadius.circular(_radius),
-            child: _image(),
-          ))))));
-    if (widget.thumbnail) {
-      return SizedBox(width: 58, height: 46,
-      child: DecoratedBox(position: DecorationPosition.foreground,
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: _previewing ? Colors.transparent : desktopBorder, width: .5)), child: image));
+            child: CustomPaint(painter: widget.generated && _hovered ? _TransparencyBackdrop() : null, child: _image()),
+          )))));
+    if (widget.thumbnailSize case final double side) {
+      return SizedBox.square(dimension: side, child: widget.generated ? image : DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(_radius),
+          border: Border.all(color: desktopBorderStrong)), child: Padding(padding: const EdgeInsets.all(1), child: image)));
     }
     return widget.markdown ? Padding(padding: const EdgeInsets.symmetric(vertical: 24), child: image) : image;
   }
+}
+
+class _TransparencyBackdrop extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = desktopSurface);
+    final paint = Paint()..color = desktopSidebar;
+    for (var y = 0; y * 18 < size.height; y++) {
+      for (var x = 0; x * 18 < size.width; x++) {
+        if ((x + y).isOdd) canvas.drawRect(Rect.fromLTWH(x * 18, y * 18, 18, 18), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TransparencyBackdrop oldDelegate) => false;
 }

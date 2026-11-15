@@ -45,7 +45,7 @@ void main() {
       expect(((await search('lmndrt'))['paths'] as List).first, 'lib/main.dart');
       expect((await search('my file'))['paths'], ['notes/my file.md']);
       expect(((await search('DESKTOP'))['paths'] as List).first, 'packages/desktop/');
-      expect(((await search('./packages/desktop/'))['paths'] as List).first, 'packages/desktop/');
+      expect(((await search('./packages/desktop/'))['paths'] as List).first, 'packages/desktop/lib/');
       expect(((await search('pkgsdsktp'))['paths'] as List).first, 'packages/desktop/');
       expect((await search('', limit: 1))['truncated'], true);
       expect((await search('', limit: 1))['paths'], hasLength(1));

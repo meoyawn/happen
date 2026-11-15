@@ -216,6 +216,7 @@ class ResponsesClient {
     }
     return traceAsync('openai.responses', () => retryResponseStream(
       () { delivered.clear(); return _respond(body, sessionId, activeTransport, cancellation, receive); }, cancellation,
+      maxRetries: sampling ? maxStreamRetries : maxCompactionStreamRetries,
       unboundedConnections: sampling,
       onContentFilter: !sampling ? null : () async {
         final item = <String, dynamic>{'id': 'msg_${newUuidV7()}', 'type': 'message', 'role': 'developer',

@@ -216,6 +216,20 @@ void applyThreadNotification(Map<String, Json> items, Json notification, {bool r
   if (method == 'item/started' || method == 'item/completed') {
     final value = jsonObject(params['item']), id = requiredString(value, 'id');
     if (method == 'item/started' && items[id]?['completedAtMs'] != null) return;
+    if (method == 'item/completed' && value['type'] == 'userMessage') {
+      // Steering interrupts sampling without completing its streamed items.
+      // Freeze that text before admitting input and the next model response.
+      for (final entry in items.entries.toList()) {
+        final previous = entry.value;
+        if (previous['turnId'] != params['turnId'] || previous['live'] != true ||
+            !{'agentMessage', 'reasoning'}.contains(previous['type'])) {
+          continue;
+        }
+        items[entry.key] = {...retainCompletedPayload ? previous : _itemLifecycle(previous),
+          'live': false, 'status': 'interrupted',
+          'completedAtMs': value['completedAtMs'] ?? params['happen']?['createdAt']};
+      }
+    }
     items[id] = {...method == 'item/completed' && !retainCompletedPayload ? _itemLifecycle(value) : value,
       'turnId': params['turnId'], 'live': method == 'item/started',
       'order': items[id]?['order'] ?? items.values.fold<int>(0, (next, item) =>

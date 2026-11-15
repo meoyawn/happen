@@ -15,7 +15,7 @@ import 'session.dart';
 /// Match Harness: prefer the saved original and keep binary output out of JSON.
 String? generatedImageSource(Json item) {
   final saved = item['savedPath'];
-  final raw = saved is String && saved.trim().isNotEmpty ? saved : item['result'];
+  final raw = saved is String && saved.trim().isNotEmpty ? saved : item['src'] ?? item['result'];
   if (raw is! String || raw.trim().isEmpty) return null;
   final source = raw.trim();
   if (source.startsWith('/@fs/')) return source.substring(4);
@@ -55,7 +55,7 @@ class _ConversationGeneratedImagesState extends State<ConversationGeneratedImage
     final pending = widget.items.where((entry) => entry.streaming && generatedImageSource(entry.image!) == null).length;
     final failed = widget.items.where((entry) => entry.image!['status'] == 'failed');
     final selected = images.where((image) => image.id == _selected).firstOrNull ?? images.firstOrNull;
-    final previews = [for (final entry in widget.conversationImages)
+    final previews = [for (final entry in widget.conversationImages.isEmpty ? widget.items : widget.conversationImages)
       if (generatedImageSource(entry.image!) case final String source) (id: entry.id, source: source)];
     return SelectionContainer.disabled(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       if (selected != null || pending > 0) LayoutBuilder(builder: (context, constraints) {
@@ -74,12 +74,8 @@ class _ConversationGeneratedImagesState extends State<ConversationGeneratedImage
         return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           SizedBox(width: width, height: height, child: ConversationImage(
             key: ValueKey(selected.id), source: selected.source, label: 'Generated image', directory: widget.directory,
-            borderRadius: 16, maxHeight: height, previewImages: previews, previewID: selected.id,
+            generated: true, borderRadius: 16, maxHeight: height, previewImages: previews, previewID: selected.id,
             onPreview: widget.onExpand,
-            onPreviewChanged: (id) {
-              final image = images.where((image) => image.id == id).firstOrNull;
-              if (mounted && image != null) setState(() => _selected = image.id);
-            },
             onAspectRatio: (ratio) {
               if (mounted && _ratios[selected.id] != ratio) setState(() => _ratios[selected.id] = ratio);
             })),
@@ -89,18 +85,17 @@ class _ConversationGeneratedImagesState extends State<ConversationGeneratedImage
               child: Padding(padding: const EdgeInsets.all(2), child: Column(mainAxisSize: MainAxisSize.min, children: [
                 for (final image in images) Padding(padding: const EdgeInsets.only(bottom: 8),
                   child: Semantics(label: 'Show generated image ${images.indexOf(image) + 1}', selected: image.id == selected.id,
-                    child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () {
-                      widget.onExpand();
-                      setState(() => _selected = image.id);
-                    }, child: DecoratedBox(position: DecorationPosition.foreground,
+                    child: DecoratedBox(position: DecorationPosition.foreground,
                       decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: image.id == selected.id ? desktopForeground : desktopBorder,
                           width: image.id == selected.id ? 2 : 1)),
-                      child: SizedBox.square(dimension: 56, child: ClipRRect(borderRadius: BorderRadius.circular(8),
-                        child: IgnorePointer(child: ConversationImage(source: image.source, label: 'Generated image thumbnail',
-                          directory: widget.directory, thumbnail: true)))))))),
+                      child: ConversationImage(key: ValueKey(image.id), source: image.source, label: 'Generated image thumbnail',
+                        directory: widget.directory, thumbnailSize: 56, generated: true, onOpen: () {
+                          widget.onExpand();
+                          setState(() => _selected = image.id);
+                        })))),
                 for (var i = 0; i < pending; i++) const Padding(padding: EdgeInsets.only(bottom: 8),
-                  child: SizedBox.square(dimension: 56, child: GeneratedImageLoading(animate: false, thumbnail: true))),
+                  child: SizedBox.square(dimension: 56, child: GeneratedImageLoading(thumbnail: true))),
               ])),
             )),
           ],
@@ -133,7 +128,7 @@ class ConversationInspectedImages extends StatelessWidget {
       builder: (context) => Padding(padding: const EdgeInsets.only(left: 30, top: 8, bottom: 4),
         child: ConversationImageGroup(child: SingleChildScrollView(scrollDirection: Axis.horizontal,
           child: Row(spacing: 8, children: [for (final image in images)
-            ConversationImage(source: image.path, label: 'Inspected image', directory: directory, thumbnail: true,
+            ConversationImage(source: image.path, label: 'Inspected image', directory: directory, thumbnailSize: 80,
               provider: client != null && image.tool.threadId != null
                 ? InspectedImage(client, image.tool.threadId!, image.tool.id) : null)])))));
   }

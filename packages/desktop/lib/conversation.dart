@@ -588,7 +588,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       } else if (entry.role == 'Happen' && _prompts.isNotEmpty) {
         final prompt = _prompts.last;
         _prompts[_prompts.length - 1] = (id: prompt.id, text: prompt.text, index: prompt.index,
-          response: entry.text, liveResponse: entry.streaming ? task.liveText : null);
+          response: entry.text, liveResponse: entry.streaming && identical(entry, latest) ? task.liveText : null);
       }
     }
     _promptForRow = List.filled(itemCount, null);
@@ -678,7 +678,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
             onPendingAction: widget.onPendingAction == null || entry.role != 'Queued' ||
                 task.pending[entry.id.substring('pending:'.length)]?['sending'] == true ? null
               : (action) => widget.onPendingAction!(task, entry.id.substring('pending:'.length), action),
-            liveText: entry.streaming ? task.liveText : null))),
+            liveText: entry.streaming && identical(entry, latest) ? task.liveText : null))),
         },
       );
     }
