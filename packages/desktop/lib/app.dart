@@ -893,6 +893,7 @@ class _DesktopViewState extends State<DesktopView> {
         ]))),
         if (session.task != null)
           ContextUsageIndicator(tokens: session.task!.contextTokens,
+            estimatedTokens: session.task!.contextEstimate,
             limit: session.task!.contextLimit ?? session.modelInfo?['context_limit'] as num?,
             onPressed: () {
               session.openSessionPanel(session.task!, contextPanel, toggle: true);

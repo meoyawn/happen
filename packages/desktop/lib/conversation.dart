@@ -156,7 +156,7 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
   if (_indicatingWork(task, latest) && (retrying || !activityOwnsStatus &&
       latest?.tool?.status != 'running' && latest?.compaction?.status != 'running' &&
       !(latest?.image != null && latest!.streaming) &&
-      !(latest?.role == 'Happen' && latest!.phase != 'commentary'))) {
+      !(latest?.role == 'Happen' && latest!.phase == 'final_answer'))) {
     rows.add((id: 'working', kind: 'working', entries: const [], label: 'Thinking'));
   }
   return rows;

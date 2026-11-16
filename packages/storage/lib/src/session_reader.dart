@@ -250,7 +250,7 @@ Json readStoredSession(TracedDatabase db, String method, Json params, {required 
       'agentNickname': null, 'agentRole': null, 'gitInfo': null,
       'turns': params['includeTurns'] == true ? turns.map(publicTurn).toList() : <Json>[]};
     return {'thread': thread, 'configuration': config, 'reasoning': thread['reasoningEffort'],
-      'pending': pending, 'archived': archived, 'tokens': state['tokens'],
+      'pending': pending, 'archived': archived, 'tokens': state['tokens'], 'contextEstimate': state['contextEstimate'],
       'through': state['sourceSeq'] ?? 0,
       if (params['includeRecentHistory'] == true) ...{
         'history': _pagedHistory(segments, id, 'thread/items/list',

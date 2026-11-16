@@ -128,6 +128,8 @@ void main() {
     final firstRequest = await nextRequest();
     final initial = await inspect();
     expect(initial['running'], true);
+    expect(initial['tokens'], isNull);
+    expect(initial['contextEstimate'], greaterThan(0));
     expect(initial['instructions'], isNotEmpty);
     expect(initial['tools'], isNotEmpty);
     expect(firstRequest.body.containsKey('instructions'), false);
@@ -151,6 +153,7 @@ void main() {
     ]);
     final secondRequest = await nextRequest();
     final afterTool = await inspect();
+    expect(afterTool['contextEstimate'], isNull);
     expect(wire(afterTool), secondRequest.body['input']);
     expect(jsonEncode(afterTool['input']), contains('opaque-native-state'));
     expect((afterTool['input'] as List).last['role'], 'tool');

@@ -181,7 +181,7 @@ void main() {
 
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Answering the follow-up'}, live: true);
     await render();
-    expect(thinking('Thinking'), findsNothing);
+    expect(thinking('Thinking'), findsOneWidget);
 
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Done', 'phase': 'final_answer'});
     await render();

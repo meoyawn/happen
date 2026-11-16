@@ -411,7 +411,7 @@ void main() {
           ),
           zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
             parent.createTimer(zone, duration >= const Duration(minutes: 1) ? duration ~/ 500
-                : duration >= const Duration(milliseconds: 100) && duration <= const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
+                : duration >= const Duration(milliseconds: 100) && duration < const Duration(seconds: 5) ? duration ~/ 100 : duration, callback)),
         );
       }
       expect((await run('active')).text, 'Long response finished');
@@ -420,15 +420,63 @@ void main() {
       progress.clear();
       await expectLater(run('silent').timeout(const Duration(seconds: 5)),
         throwsA(isA<CancelledException>()));
-      expect(retries, [1, 2, 3, 4]);
-      expect(progress, [for (var attempt = 0; attempt < 4; attempt++) ...[
+      expect(retries, [if (transport == 'websocket') 1, 1, 2, 3, 4]);
+      expect(progress, [for (var attempt = 0; attempt < (transport == 'websocket' ? 5 : 4); attempt++) ...[
         'model.connected', 'model.retrying',
       ]], reason: 'Accepted retries must report recovery even before the first text delta');
-      expect(requests, 5, reason: 'Cancellation during backoff must not send another request');
+      expect(requests, transport == 'websocket' ? 6 : 5,
+        reason: 'The first idle WebSocket switches to HTTPS; cancellation cannot send another request');
       expect((await run('active')).text, 'Long response finished');
-      expect(requests, 6, reason: 'Cancellation must not close the shared pool');
+      expect(requests, transport == 'websocket' ? 7 : 6, reason: 'Cancellation must not close the shared pool');
     });
   }
+
+  test('GPT replaces an unresponsive WebSocket peer before the model idle deadline', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final peers = <({WebSocket socket, StreamSubscription<dynamic> subscription})>[];
+    var requests = 0;
+    server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      late StreamSubscription<dynamic> subscription;
+      subscription = socket.listen((_) {
+        requests++;
+        socket.add(jsonEncode({'type': 'response.created'}));
+        if (requests == 1) {
+          // Stop reading transport frames, including pings, after accepting
+          // inference. An otherwise silent healthy peer still answers them.
+          subscription.pause();
+        } else {
+          socket.add(jsonEncode({'type': 'response.completed', 'response': {
+            'status': 'completed', 'output': [
+              {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Recovered'}]},
+            ],
+          }}));
+        }
+      });
+      peers.add((socket: socket, subscription: subscription));
+    });
+    final client = ResponsesClient(endpoint: Uri.parse('http://127.0.0.1:${server.port}/responses'),
+      credentials: ({bool refresh = false}) async => {});
+    final cancellation = CancellationToken();
+    final deadline = Timer(const Duration(seconds: 3), cancellation.cancel);
+    addTearDown(() async {
+      deadline.cancel(); cancellation.cancel(); client.close();
+      for (final peer in peers) {
+        if (peer.subscription.isPaused) peer.subscription.resume();
+        await peer.socket.close();
+      }
+      await server.close(force: true);
+    });
+    final retries = <Json>[];
+    final reply = await runZoned(() => client.respond(model: 'gpt-6.1-sol', instructions: '', input: [], tools: [],
+      sessionId: newId(), cancellation: cancellation, transport: 'websocket', onEvent: (event) {
+        if (event['type'] == 'model.retrying') retries.add(event);
+      }), zoneSpecification: ZoneSpecification(createTimer: (self, parent, zone, duration, callback) =>
+        parent.createTimer(zone, duration == const Duration(seconds: 10) ? const Duration(milliseconds: 50) : duration, callback)));
+    expect(reply.text, 'Recovered');
+    expect(requests, 2);
+    expect(retries, hasLength(1));
+  });
 
   test('GPT cancellation and provider incomplete responses do not retry or close the shared pool', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

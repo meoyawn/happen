@@ -54,7 +54,8 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
         switch (part['type']) {
           case 'text':
             item({'id': id, 'type': 'agentMessage', 'text': part['text'] ?? '',
-              'phase': (raw['content'] as List).any((p) => p['type'] == 'tool_call') ? 'commentary' : 'final_answer',
+              'phase': raw['native']?['gpt']?['phase'] ?? raw['native']?['gpt']?['rollout']?['phase'] ??
+                ((raw['content'] as List).any((p) => p['type'] == 'tool_call') ? 'commentary' : 'final_answer'),
               'startedAtMs': state['modelStarted'] ?? now, 'completedAtMs': now});
           case 'reasoning':
             item({'id': id, 'type': 'reasoning', 'summary': [part['text'] ?? ''], 'content': <String>[],
@@ -109,6 +110,7 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
       state['ordinal'] = 0;
       state['completedOrdinal'] = 0;
       state.remove('streamType');
+      emit('happen/thread/contextUsage', {'estimatedTokens': data['contextEstimate']});
     case 'text.delta':
     case 'reasoning.delta':
       final type = record['type'] == 'text.delta' ? 'agentMessage' : 'reasoning';

@@ -110,7 +110,8 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
         connectionRetrySeconds = min(connectionRetrySeconds * 2, 60);
         continue;
       }
-      if (retries >= maxRetries || error is TimeoutException || error is WebSocketException) {
+      if (retries >= maxRetries || error is TimeoutException || error is WebSocketException ||
+          error is ModelFailure && error.code == 'stream_idle_timeout') {
         if (fallbackTransport?.call() == true) {
           // A stalled or rejected upgrade should try HTTPS immediately.
           // Switching transport cannot bypass the provider's original deadline.

@@ -48,7 +48,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
   }
 
   void _changed() {
-    if (!_loading && _snapshot != null && widget.task.through > (_snapshot!['through'] as int)) unawaited(_load());
+    if (!_loading && _snapshot != null && widget.task.through > (_snapshot!['sourceThrough'] as int)) unawaited(_load());
   }
 
   Future<void> _load() async {
@@ -179,9 +179,13 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final request = inferenceRequest(snapshot);
     final inputField = request.containsKey('input') ? 'input' : 'messages';
     final input = (request[inputField] as List).map(jsonObject).toList();
+    final tools = request['tools'] as List? ?? [
+      for (final item in input) if (item['type'] == 'additional_tools') ...item['tools'] as List,
+    ];
     final settings = {...request}..remove(inputField)..remove('tools');
     final tokens = snapshot['tokens'] as Json?;
-    final total = tokens == null ? null : sessionTokenTotal(tokens);
+    final estimated = tokens == null && snapshot['contextEstimate'] != null;
+    final total = tokens == null ? snapshot['contextEstimate'] as int? : sessionTokenTotal(tokens);
     final cacheRead = tokens?['cache']?['read'] as num? ?? 0;
     final inputTotal = (tokens?['input'] as num? ?? 0) + cacheRead + (tokens?['cache']?['write'] as num? ?? 0);
     final cached = inputTotal > 0 ? cacheRead / inputTotal : null;
@@ -192,6 +196,8 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final provider = providers.firstOrNull;
     final modelInfo = (provider?['models'] as List? ?? []).where((item) => item['id'] == model?['id']).firstOrNull;
     final system = (snapshot['instructions'] as String? ?? '').trim();
+    final systemIndex = input.indexWhere((item) => item['type'] != 'additional_tools' &&
+      {'system', 'developer'}.contains(item['role']));
     final counts = <String, int>{};
     for (final item in input) {
       if (item['role'] case final String role) counts[role] = (counts[role] ?? 0) + 1;
@@ -208,8 +214,8 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       ('Context items', number(input.length)),
       ('Provider', provider?['name'] as String? ?? model?['providerID'] as String? ?? '—'),
       ('Model', modelInfo?['name'] as String? ?? model?['id'] as String? ?? '—'),
-      ('Context Limit', number(limit)), ('Total Tokens', number(total)),
-      ('Usage', used == null ? '—' : '${(used * 100).round()}%'),
+      ('Context Limit', number(limit)), (estimated ? 'Estimated Tokens' : 'Total Tokens', number(total)),
+      ('Usage', used == null ? '—' : '${estimated ? '~' : ''}${(used * 100).round()}%'),
       ('Uncached Input Tokens', number(tokens?['input'])), ('Output Tokens', number(tokens?['output'])),
       ('Reasoning Tokens', number(tokens?['reasoning'])),
       ('Cached Input (latest request)', cached == null ? '—' : '${(cached * 100).toStringAsFixed(1)}% of input tokens'),
@@ -246,7 +252,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
                 child: ConversationMarkdown(text: system, fontSize: 12, directory: widget.session.project?.path ?? ''))]),
           ],
           SizedBox(height: gap),
-          _raw('Tools', request['tools'] as List? ?? <Object?>[]),
+          _raw('Tools', tools),
           _raw('Model settings', settings),
         ]))),
       SliverPadding(padding: EdgeInsets.fromLTRB(inset, 0, inset, 8), sliver: SliverToBoxAdapter(
@@ -264,7 +270,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       if (_messagesExpanded) for (var index = 0; index < input.length; index++)
           SliverPadding(padding: EdgeInsets.symmetric(horizontal: inset), sliver: _message(input[index],
             id: input[index]['id'] as String? ?? '$inputField[$index]',
-            label: index == 0 && system.isNotEmpty && {'system', 'developer'}.contains(input[index]['role'])
+            label: index == systemIndex && system.isNotEmpty
               ? 'System Prompt' : null,
             first: index == 0, last: index == input.length - 1)),
       SliverToBoxAdapter(child: SizedBox(height: gap)),

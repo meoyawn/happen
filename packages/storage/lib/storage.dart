@@ -145,7 +145,7 @@ class TaskStore {
       }
       next['sourceSeq'] = (next['sourceSeq'] as int? ?? 0) + 1;
       if (!{'task.archived', 'task.unarchived', 'thread.name.updated'}.contains(type)) next['updated'] = now.millisecondsSinceEpoch;
-      if (type == 'context.compacted') { next['window'] = newId(); next.remove('tokens'); }
+      if (type == 'context.compacted') { next['window'] = newId(); next.remove('tokens'); next.remove('contextEstimate'); }
       final record = <String, dynamic>{'seq': next['sourceSeq'], 'id': newId(),
         'window_id': next['window'], 'type': type, 'created_at': now.toIso8601String(), 'data': data};
       final pending = jsonObject(next['pendingInputs'] ?? {});
@@ -154,7 +154,11 @@ class TaskStore {
       if (type == 'input.discarded') for (final id in data['ids'] as List) { pending.remove(id); }
       if (type == 'input.delivery' && pending[data['id']] is Map) pending[data['id']]['delivery'] = data['delivery'];
       next['pendingInputs'] = pending;
-      if (type == 'model.completed') next['tokens'] = sessionTokens(jsonObject(data['usage'] ?? {}));
+      if (type == 'model.started' && data['contextEstimate'] is int) next['contextEstimate'] = data['contextEstimate'];
+      if (type == 'model.completed') {
+        next['tokens'] = sessionTokens(jsonObject(data['usage'] ?? {}));
+        next.remove('contextEstimate');
+      }
       if (type == 'tool_runtime.started') {
         next['runtimeID'] = data['id']; next['runtimeHasHandles'] = false;
       }

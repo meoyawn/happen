@@ -85,8 +85,8 @@ void main() {
   }
 
   Future<String> export(WidgetTester tester) async {
-    final button = tester.widget<IconButton>(find.byWidgetPredicate(
-      (widget) => widget is IconButton && widget.tooltip == 'Download LLM context JSON'));
+    final button = tester.widget<TextButton>(find.ancestor(of: find.text('Export & copy path'),
+      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
     final contents = (await tester.runAsync(() async {
       button.onPressed!();
       final downloads = Directory('${root.path}/Downloads');
@@ -115,7 +115,7 @@ void main() {
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
     await showContext(tester);
     final download = tester.widget<TextButton>(find.ancestor(of: find.text('Export & copy path'),
-      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
+      matching: find.byWidgetPredicate((widget) => widget is TextButton)).last);
     await tester.runAsync(() async {
       download.onPressed!();
       await until(() => copiedPath != null);
@@ -179,7 +179,7 @@ void main() {
     await showContext(tester, indicator: true);
     expect(find.text('Tracing was not enabled for this session.'), findsOneWidget);
     final traceDownload = tester.widget<TextButton>(find.ancestor(of: find.text('Export & copy path'),
-      matching: find.byWidgetPredicate((widget) => widget is TextButton)).first);
+      matching: find.byWidgetPredicate((widget) => widget is TextButton)).last);
     expect(traceDownload.onPressed, isNull);
     for (final label in ['Refresh session trace counts', 'Attach End-to-end trace to new session']) {
       expect(tester.widget<IconButton>(find.byWidgetPredicate(
@@ -192,7 +192,8 @@ void main() {
       }
     });
     expect(find.text('Total Tokens'), findsOneWidget);
-    expect(find.text('120'), findsNWidgets(2));
+    expect(find.text('120'), findsOneWidget);
+    expect(find.text('12%'), findsNWidgets(2));
     await reveal(tester, find.text('System Prompt'));
     expect(find.text('You are the saved system prompt.', findRichText: true), findsNothing);
     expect(find.byTooltip('Copy system prompt'), findsOneWidget);
@@ -203,7 +204,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('You are the saved system prompt.', findRichText: true), findsNothing);
     for (final (title, marker) in [('Tools', '"type": "custom"'),
-        ('Model settings', '"parallel_tool_calls": true')]) {
+        ('Model settings', '"parallel_tool_calls": false')]) {
       final contents = find.textContaining(marker, findRichText: true);
       await reveal(tester, find.text(title));
       await tester.tap(find.text(title));
@@ -239,15 +240,18 @@ void main() {
     expect(find.textContaining('Raw request', findRichText: true), findsOneWidget);
     final contents = await export(tester);
     final exported = jsonDecode(contents) as Map;
-    expect(exported['model'], 'fixture');
+    expect(exported['model'], 'gpt-6.1-sol');
     expect(exported.containsKey('context'), false);
     expect(contents, contains('Raw request'));
     final input = exported['input'] as List;
-    expect(input.first['role'], 'developer');
-    expect(input.first['content'], [{'type': 'input_text', 'text': 'You are the saved system prompt.'}]);
-    expect(input.skip(1).map((item) => item['id']), ['msg_item_user', 'msg_item_answer']);
-    expect(input.last['content'], [{'type': 'output_text', 'text': 'Answer'}]);
-    expect(exported['reasoning'], {'effort': 'high', 'summary': 'auto'});
+    expect(input.first['type'], 'additional_tools');
+    expect(input.first['tools'], isNotEmpty);
+    final messages = input.where((item) => item['type'] == 'message').toList();
+    expect(messages.first['role'], 'developer');
+    expect(messages.first['content'], [{'type': 'input_text', 'text': 'You are the saved system prompt.'}]);
+    expect(messages.skip(1).map((item) => item['id']), ['msg_item_user', 'msg_item_answer']);
+    expect(messages.last['content'], [{'type': 'output_text', 'text': 'Answer'}]);
+    expect(exported['reasoning'], {'effort': 'high', 'summary': 'auto', 'context': 'all_turns'});
     for (final key in ['instructions', 'info', 'settings', 'snapshotID', 'cursor']) {
       expect(exported.containsKey(key), false);
     }
@@ -278,7 +282,7 @@ void main() {
     expect(first, lessThan(second));
     expect(second, lessThan(third));
     final exported = jsonDecode(await export(tester)) as Map;
-    expect((exported['input'] as List).skip(1).map((item) => item['id']),
+    expect((exported['input'] as List).where((item) => item['role'] != 'developer').map((item) => item['id']),
       ['msg_item_user', 'msg_item_answer', 'msg_item_later']);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -325,7 +329,7 @@ void main() {
       'instructions': 'Prompt from the request envelope'};
     client.store.append('task.created', config, metadata: {'config': config});
     await showContext(tester);
-    expect(find.text('Total Tokens'), findsOneWidget);
+    expect(find.text('Estimated Tokens'), findsOneWidget);
     expect(find.text('120'), findsNothing);
     await reveal(tester, find.text('System Prompt'));
     await tester.tap(find.text('System Prompt'));
@@ -390,7 +394,7 @@ class _Client implements AgentClient {
   }
 
   final String directory, id;
-  final Json config = {'provider': 'openai', 'tool_interface': 'openai', 'model': 'fixture', 'instructions': 'You are the saved system prompt.',
+  final Json config = {'provider': 'openai', 'tool_interface': 'openai', 'model': 'gpt-6.1-sol', 'instructions': 'You are the saved system prompt.',
     'provider_settings': {'context_limit': 1000, 'reasoning': 'high'}};
   final TaskStore store;
   late final AgentServer server;

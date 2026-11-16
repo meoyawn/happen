@@ -144,6 +144,10 @@ class _Agent {
     );
   }
 
+  int _estimateContextTokens() => estimateTokens(input) +
+    (input.any((item) => item.native['harness']?['context'] == 'model') ? 0 :
+      (config['instructions'] as String).length ~/ 3);
+
   Future<Json> context(CancellationToken cancellation) async {
     await _restore().asCancellable(cancellation);
     cancellation.throwIfCancelled();
@@ -162,6 +166,7 @@ class _Agent {
       'settings': current.settings, 'effectiveReasoning': current.effectiveReasoning,
       'input': current.input.map((item) => item.toJson()).toList(),
       'inputCount': current.input.length, 'counts': counts,
+      if (_contextState['tokens'] == null) 'contextEstimate': _estimateContextTokens(),
     };
   }
 
@@ -187,9 +192,6 @@ class _Agent {
     final previousSeq = _contextState['sourceThrough'] as int? ?? 0;
     _contextState['sourceThrough'] = (entry['seq'] as int).clamp(previousSeq, 0x7fffffffffffffff);
     _contextState['windowID'] = entry['window_id'];
-    for (final event in entry['session_events'] as List? ?? []) {
-      _contextState['through'] = event['durable']['seq'];
-    }
     return entry;
   }
 
@@ -599,6 +601,7 @@ class _Agent {
           // calls still wait for their durable admission.
           received = _append('model.started', {
             'assistantMessageID': assistantMessageID,
+            if (_contextState['tokens'] == null) 'contextEstimate': _estimateContextTokens(),
             if (!instructionsRecorded) 'instructions': request().instructions,
           }).then<void>(event).catchError(fail);
           if (!instructionsRecorded) await received;

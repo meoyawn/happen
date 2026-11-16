@@ -142,6 +142,8 @@ class _ResponsesSocket {
           }).asCancellable(token), category: 'websocket',
           attributes: {'server.address': uri.host, 'url.path': uri.path});
         token.throwIfCancelled();
+        // A lost transport must fail before the model's reasoning idle budget.
+        socket.pingInterval = const Duration(seconds: 10);
         connection = _SocketConnection(socket, credentials);
         _transition(_SocketStreaming(connection, operation));
       }

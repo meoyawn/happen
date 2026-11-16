@@ -122,6 +122,7 @@ class DesktopTask {
   num? contextLimit;
   Json? _contextTokens;
   Json? get contextTokens => _contextTokens;
+  int? contextEstimate;
   int lastActivity = 0;
   int? runStartedAt, lastSentAt;
   List<ChatEntry>? _conversation;
@@ -1120,6 +1121,7 @@ class DesktopSession extends ChangeNotifier {
     target.lastSentAt ??= taskLastSentAt(target);
     target.messages.clear();
     target._contextTokens = null;
+    target.contextEstimate = null;
     target._fileChanges.clear();
     final latestTurn = target.turns.values.lastOrNull;
     target.turns.clear();
@@ -1916,7 +1918,8 @@ class DesktopSession extends ChangeNotifier {
       target.archived = page['archived'] == true;
       if (target.archived) await terminals.removeTask(target.id);
       read.throwIfCancelled();
-      target.through = page['notificationThrough'] as int? ?? 0;
+      final notificationThrough = page['notificationThrough'] as int? ?? 0;
+      target.through = page['through'] as int? ?? 0;
       if (target.loaded) target.lastSentAt ??= taskLastSentAt(target);
       target.messages.clear();
       target._fileChanges.clear();
@@ -1943,12 +1946,13 @@ class DesktopSession extends ChangeNotifier {
           'params': {'turnId': item['turnId'], 'item': item}});
       }
       target._contextTokens = page['tokens'] as Json?;
+      target.contextEstimate = page['contextEstimate'] as int?;
       target.pending.removeWhere((id, item) => item['sending'] == true && target.messages.containsKey(id));
       final live = target.liveEvents.toList();
       target.liveEvents.clear();
       target.streamingText = '';
       for (final event in live) {
-        if ((event['params']?['happen']?['notificationSeq'] as int? ?? target.through + 1) > target.through) {
+        if ((event['params']?['happen']?['notificationSeq'] as int? ?? notificationThrough + 1) > notificationThrough) {
           _applyThreadEvent(target, event);
         }
       }
@@ -2607,6 +2611,8 @@ class DesktopSession extends ChangeNotifier {
 
   bool _applyThreadEvent(DesktopTask target, Json event) {
     final data = jsonObject(event['params'] ?? {});
+    final source = data['happen']?['sourceSeq'] as int?;
+    if (source != null && source > target.through) target.through = source;
     applyThreadNotification(target.messages, event);
     switch (event['method']) {
       case 'thread/goal/updated':
@@ -2632,6 +2638,7 @@ class DesktopSession extends ChangeNotifier {
         target.streamingText = ''; target.retryStatus = null;
         if (data['item']?['type'] == 'contextCompaction' && data['item']?['status'] == 'completed') {
           target._contextTokens = null;
+          target.contextEstimate = null;
         }
       case 'happen/turn/retrying':
         target.streamingText = '';
@@ -2678,6 +2685,9 @@ class DesktopSession extends ChangeNotifier {
         }
       case 'thread/tokenUsage/updated':
         target._contextTokens = sessionTokens(jsonObject(data['tokenUsage']));
+        target.contextEstimate = null;
+      case 'happen/thread/contextUsage':
+        target.contextEstimate = data['estimatedTokens'] as int?;
       case 'turn/completed':
         final id = data['turn']['id'] as String;
         target.turns[id] = {...?target.turns[id], ...jsonObject(data['turn'])};

@@ -254,6 +254,7 @@ void main() {
         'content': [{'type': 'text', 'text': 'Continue checking'}]},
     });
     for (final (message, label) in <(Json, String)>[
+      ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'live': true}, 'Thinking'),
       ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary'}, 'Thinking'),
       ({'type': 'reasoning', 'summary': ['Inspecting the panel'], 'live': true}, 'Inspecting the panel'),
       ({'type': 'agentMessage', 'text': 'Checking the desktop panel next', 'phase': 'commentary', 'live': true}, 'Thinking'),
