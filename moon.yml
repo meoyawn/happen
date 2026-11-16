@@ -266,7 +266,7 @@ tasks:
   release-ci-pub-get:
     description: Resolve Dart workspace packages for macOS CI releases
     command: flutter
-    args: [pub, get]
+    args: [pub, get, --enforce-lockfile]
     preset: utility
     inputs: []
     options:
