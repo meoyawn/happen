@@ -5,6 +5,5 @@ download_cache_max_size = "4GiB"
 moon = "aqua:moonrepo/moon"
 
 [tools]
-flutter = "3.47.9"
-github-cli = "2.103.3"
+flutter = "3.50.0"
 moon = "2.6.5"
