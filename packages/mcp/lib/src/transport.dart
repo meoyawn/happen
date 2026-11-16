@@ -16,6 +16,7 @@ part 'stdio.dart';
 part 'input.dart';
 
 const mcpProtocolVersion = '2026-07-28';
+const mcpEventsExtension = 'io.modelcontextprotocol/events';
 const mcpUserAgent = 'happen-mcp-client/0.1.0';
 // Codex's modern MCP wire bound, independent of Code Mode/model budgets.
 // Its legacy local codec and legacy HTTP retain their uncapped wire behavior.
@@ -86,7 +87,11 @@ class _McpAuthorization {
 
 /// One shared transport generation. Requests have independent cancellation.
 class McpConnection {
-  McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge, this.onRecover, this.clientCapabilities = const {}, this.requestMetadata});
+  McpConnection(this.config, this.http, this.onNotification, {this.authorization, this.onAuthChallenge, this.onRecover, Json clientCapabilities = const {}, this.requestMetadata})
+    : clientCapabilities = {
+        ...clientCapabilities,
+        'extensions': {...jsonObject(clientCapabilities['extensions'] ?? {}), mcpEventsExtension: <String, Object?>{}},
+      };
   final Json config;
   final HttpClient http;
   final void Function(Json) onNotification;
@@ -112,6 +117,7 @@ class McpConnection {
   String? _session;
   Json discovery = {};
   bool get modern => version == mcpProtocolVersion;
+  bool get supportsEvents => modern && discovery['capabilities']?['extensions']?[mcpEventsExtension] is Map;
   int? get processId => _process?.pid;
 
   Future<void> connect(CancellationToken cancellation) async {
@@ -130,6 +136,11 @@ class McpConnection {
 
   Future<void> _connect(CancellationToken cancellation, _McpAuthorization access) async {
     cancellation.throwIfCancelled();
+    final protocol = config['protocol'] ?? 'auto';
+    if (!{'legacy', 'auto', mcpProtocolVersion}.contains(protocol)) {
+      throw ArgumentError('Unsupported MCP protocol');
+    }
+    version = protocol == 'legacy' ? '2025-06-18' : mcpProtocolVersion;
     if (config['command'] != null) {
       final process = await _startStdio(config, cancellation);
       _process = process;
@@ -157,38 +168,31 @@ class McpConnection {
       }
     }
     for (var attempt = 0; ; attempt++) {
-    try {
       try {
-      discovery = await _request(
-        'server/discover',
-        {},
-        cancellation: cancellation,
-        access: access,
-      );
-      if (!(discovery['supportedVersions'] as List? ?? []).contains(
-        mcpProtocolVersion,
-      )) {
-        throw McpFailure(
-          'MCP server does not support the requested modern protocol',
-          code: -32022,
-          legacyFallback: _onlyLegacy(discovery['supportedVersions']),
-        );
+        if (protocol == 'legacy') {
+          await _legacy(cancellation, access);
+        } else {
+          try {
+            discovery = await _request('server/discover', {}, cancellation: cancellation, access: access);
+            if (!(discovery['supportedVersions'] as List? ?? []).contains(mcpProtocolVersion)) {
+              throw McpFailure('MCP server does not support the requested modern protocol', code: -32022,
+                legacyFallback: _onlyLegacy(discovery['supportedVersions']));
+            }
+          } on McpFailure catch (error) {
+            if (protocol != 'auto' || !error.legacyFallback || error.status == 401 || error.status == 403) rethrow;
+            await _legacy(cancellation, access);
+          }
+        }
+        _generation++;
+        return;
+      } catch (error) {
+        final modernRetry = error is McpFailure && error.code == -32022 &&
+          (error.data?['supported'] as List? ?? []).contains(mcpProtocolVersion);
+        if (_process != null || attempt >= _httpRetryDelays.length || !modernRetry && !_retryableHttpFailure(error)) rethrow;
+        await cancellableDelay(_httpRetryDelays[attempt], cancellation);
+        version = protocol == 'legacy' ? '2025-06-18' : mcpProtocolVersion;
+        _session = null;
       }
-    } on McpFailure catch (error) {
-      if (!error.legacyFallback || error.status == 401 || error.status == 403 || config['legacy_fallback'] == false) {
-        rethrow;
-      }
-      await _legacy(cancellation, access);
-      }
-      _generation++;
-      return;
-    } catch (error) {
-      final modernRetry = error is McpFailure && error.code == -32022 &&
-        (error.data?['supported'] as List? ?? []).contains(mcpProtocolVersion);
-      if (_process != null || attempt >= _httpRetryDelays.length || !modernRetry && !_retryableHttpFailure(error)) rethrow;
-      await cancellableDelay(_httpRetryDelays[attempt], cancellation);
-      version = mcpProtocolVersion; _session = null;
-    }
     }
   }
 
@@ -251,6 +255,9 @@ class McpConnection {
     bool allowReplay = true, bool readOnly = false, McpInputHandler? onInput, _InputClock? clock}) async {
     cancellation.throwIfCancelled();
     lifetime.throwIfCancelled();
+    if (method.startsWith('events/') && !supportsEvents) {
+      throw const McpFailure('MCP server does not advertise SEP-3415 Events', code: -32601);
+    }
     if (_pending.length >= 256) {
       throw const McpFailure('MCP pending request limit reached');
     }
@@ -384,8 +391,7 @@ class McpConnection {
           params['_meta']?[_subscriptionKey] ?? params['progressToken'];
       if (parent != null) {
         _pending[parent]?.notify?.call(message);
-      } else if (!modern ||
-          message['method'] == 'notifications/events/list_changed') {
+      } else if (!modern) {
         onNotification(message);
       }
       return;
@@ -393,13 +399,13 @@ class McpConnection {
     final pending = _pending.remove(message['id']);
     if (pending == null || pending.result.isCompleted) return;
     try {
-      pending.result.complete(_result(message, discovery: pending.method == 'server/discover'));
+      pending.result.complete(_result(message, method: pending.method));
     } catch (error, stack) {
       pending.result.completeError(error, stack);
     }
   }
 
-  Json _result(Json message, {int? status, bool discovery = false, bool legacyHttp = false}) {
+  Json _result(Json message, {int? status, String? method, bool legacyHttp = false}) {
     if (message['error'] is Map) {
       final error = jsonObject(message['error']);
       throw McpFailure(
@@ -407,13 +413,16 @@ class McpConnection {
         code: error['code'] as int?,
         status: status,
         data: error['data'] is Map ? jsonObject(error['data']) : null,
-        legacyFallback: discovery && (legacyHttp || _legacyError(error)),
+        legacyFallback: method == 'server/discover' && (legacyHttp || _legacyError(error)),
       );
     }
     if (status != null && (status < 200 || status >= 300)) {
       throw McpFailure('MCP HTTP request failed ($status)', status: status);
     }
     final result = jsonObject(message['result']);
+    if (method?.startsWith('events/') == true && result['resultType'] != 'complete') {
+      throw const McpFailure('SEP-3415 Events requires a complete result');
+    }
     if (result['resultType'] != null &&
         !['complete', 'input_required'].contains(result['resultType'])) {
       throw const McpFailure('Unsupported MCP result type');
@@ -521,7 +530,8 @@ class McpConnection {
         final method = body['method'] as String;
         final params = jsonObject(body['params']);
         outgoing.headers.set('Mcp-Method', method);
-        if (['tools/call', 'resources/read', 'prompts/get'].contains(method)) {
+        if (const {'tools/call', 'resources/read', 'prompts/get',
+          'events/poll', 'events/stream', 'events/subscribe', 'events/unsubscribe'}.contains(method)) {
           outgoing.headers.set('Mcp-Name', headerValue(params[method == 'resources/read' ? 'uri' : 'name']));
         }
         if (method == 'tools/call' && schema != null) {
@@ -600,7 +610,7 @@ class McpConnection {
         if (message['id'] != body['id'] && !legacyHttp) {
           throw McpFailure('MCP response ID does not match its request', status: response.statusCode, code: -32020);
         }
-        return _result(message, status: response.statusCode, discovery: body['method'] == 'server/discover', legacyHttp: legacyHttp);
+        return _result(message, status: response.statusCode, method: body['method'] as String, legacyHttp: legacyHttp);
       }
       if (response.statusCode != 200) {
         throw McpFailure(
@@ -618,7 +628,7 @@ class McpConnection {
         onCancel: () => unawaited(messages!.cancel()),
       )) {
         final message = messages.current;
-        if (message['id'] == body['id']) return _result(message, discovery: body['method'] == 'server/discover');
+        if (message['id'] == body['id']) return _result(message, method: body['method'] as String);
         if (message.containsKey('id')) {
           throw const McpFailure('Unexpected MCP server request or response');
         }

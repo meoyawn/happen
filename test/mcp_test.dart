@@ -60,7 +60,7 @@ void main() {
     await manager.configure({
       'http': {
         'url': 'http://127.0.0.1:${upstream.port}/mcp',
-        'legacy_fallback': false,
+        'protocol': '2026-07-28',
       },
     }, lifetime);
     for (final mode in ['json', 'sse']) {
@@ -93,7 +93,7 @@ void main() {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
         'env': {'MCP_REQUESTS_FILE': requestLog.path},
-        'legacy_fallback': false,
+        'protocol': '2026-07-28',
       },
     }, lifetime);
     final initialPid = manager.status().single['pid'];
@@ -185,6 +185,7 @@ void main() {
     final streams = <String, ({Json body, HttpResponse response})>{};
     final streamOpened = StreamController<String>.broadcast();
     final requests = <Json>[];
+    var heartbeatGrant = 30000;
     Json? webhookRegistration;
     var polls = 0;
     const forbidden = {'code': -32024, 'message': 'Forbidden', 'data': {'reason': 'Access revoked'}};
@@ -200,6 +201,7 @@ void main() {
           'jsonrpc': '2.0',
           'method': method,
           'params': {
+            if (method == 'notifications/events/active') 'heartbeatMs': heartbeatGrant,
             ...data,
             '_meta': {'io.modelcontextprotocol/subscriptionId': correlation ?? id},
           },
@@ -225,6 +227,11 @@ void main() {
       requests.add(body);
       expect(request.headers.value('mcp-protocol-version'), '2026-07-28');
       expect(request.headers.value('mcp-method'), body['method']);
+      expect(body['params']['_meta']['io.modelcontextprotocol/clientCapabilities']['extensions']
+        ['io.modelcontextprotocol/events'], <String, Object?>{});
+      if (body['method'] != 'server/discover' && body['method'] != 'events/list') {
+        expect(request.headers.value('mcp-name'), 'changed');
+      }
       expect(
         body['params']['_meta']['io.modelcontextprotocol/protocolVersion'],
         '2026-07-28',
@@ -236,10 +243,11 @@ void main() {
         case 'server/discover':
           result = {
             'supportedVersions': ['2026-07-28'],
-            'capabilities': {'events': <String, Object?>{}},
+            'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}},
           };
         case 'events/list':
           result = {
+            'resultType': 'complete',
             'events': [
               {
                 'name': 'changed',
@@ -251,6 +259,7 @@ void main() {
             ],
           };
         case 'events/stream':
+          expect(params['heartbeatMs'], 30000);
           request.response.bufferOutput = false;
           request.response.headers.contentType = ContentType(
             'text',
@@ -274,6 +283,7 @@ void main() {
             return;
           }
           result = {
+            'resultType': 'complete',
             'events': polls == 1 ? [occurrence('polled', 'poll-1')] : <Object?>[],
             'cursor': 'poll-$polls',
             'hasMore': polls == 1,
@@ -283,6 +293,7 @@ void main() {
         case 'events/subscribe':
           webhookRegistration = params;
           result = {
+            'resultType': 'complete',
             'id': 'webhook-peer-id',
             'cursor': 'webhook-0',
             'truncated': false,
@@ -292,7 +303,7 @@ void main() {
                 .toIso8601String(),
           };
         case 'events/unsubscribe':
-          result = {};
+          result = {'resultType': 'complete'};
         default:
           throw StateError('Unexpected MCP method ${body['method']}');
       }
@@ -307,7 +318,7 @@ void main() {
         'mcp_servers': {
           'remote': {
             'url': 'http://127.0.0.1:${upstream.port}/mcp',
-            'legacy_fallback': false,
+            'protocol': '2026-07-28',
           },
         },
       }),
@@ -502,7 +513,7 @@ void main() {
       bool rotating = false,
     }) async {
       final bytes = utf8.encode(jsonEncode(value));
-      final id = value['eventId'] as String? ?? newId();
+      final id = 'msg_${newId()}';
       final timestamp =
           '${stamp ?? DateTime.now().millisecondsSinceEpoch ~/ 1000}';
       final signature = base64.encode(
@@ -574,6 +585,15 @@ void main() {
     );
     expect(jsonEncode(received), isNot(contains('whsec_')));
     expect((await client.request('telemetry') as Map)['active_tasks'], 0);
+
+    heartbeatGrant = 25;
+    final quiet = await subscribe('push');
+    final quietStream = requests.lastWhere((request) => request['method'] == 'events/stream')['id'] as String;
+    await notify(quietStream, 'notifications/events/heartbeat', {'cursor': 'quiet-position'});
+    final heartbeatReopened = await streamOpened.stream.first.timeout(const Duration(seconds: 3));
+    expect(streams[heartbeatReopened]!.body['params']['cursor'], 'quiet-position',
+      reason: 'Three granted heartbeat intervals without a message must reconnect from the checked cursor.');
+    await client.request('mcp.events.unsubscribe', {'subscription_id': quiet['subscription_id']});
   });
 
   test('restoring a failed poll watch retains its saved ID and cursor without duplicating an active watch', () async {
@@ -595,9 +615,9 @@ void main() {
         }
       }
       final result = switch (body['method']) {
-        'server/discover' => {'supportedVersions':['2026-07-28'],'capabilities':{'events':<String,Object?>{}}},
-        'events/list' => {'events':[{'name':'changed','delivery':['poll'],'inputSchema':{'type':'object'},'payloadSchema':{'type':'object'}}]},
-        'events/poll' => {'events':<Object?>[],'cursor':'saved-cursor','nextPollMs':86400000,'hasMore':false,'truncated':false},
+        'server/discover' => {'supportedVersions':['2026-07-28'],'capabilities':{'extensions': {'io.modelcontextprotocol/events':<String,Object?>{}}}},
+        'events/list' => {'resultType': 'complete', 'events':[{'name':'changed','delivery':['poll'],'inputSchema':{'type':'object'},'payloadSchema':{'type':'object'}}]},
+        'events/poll' => {'resultType': 'complete', 'events':<Object?>[],'cursor':'saved-cursor','nextPollMs':86400000,'hasMore':false,'truncated':false},
         _ => throw StateError('Unexpected MCP method ${body['method']}'),
       };
       request.response.write(jsonEncode({'jsonrpc':'2.0','id':body['id'],'result':result}));
@@ -636,10 +656,10 @@ void main() {
     upstream.listen((request) async {
       final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
       final result = switch (body['method']) {
-        'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
-        'events/list' => {'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
-        'events/subscribe' => {'id': 'renewed-registration', 'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()},
-        'events/unsubscribe' => <String, Object?>{},
+        'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}},
+        'events/list' => {'resultType': 'complete', 'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+        'events/subscribe' => {'resultType': 'complete', 'id': 'renewed-registration', 'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()},
+        'events/unsubscribe' => {'resultType': 'complete'},
         _ => throw StateError('Unexpected MCP method ${body['method']}'),
       };
       request.response.headers.contentType = ContentType.json;
@@ -705,14 +725,15 @@ void main() {
           expect(notifications, isEmpty, reason: 'A signed occurrence cannot bypass grant validation');
         }
         final result = switch (body['method']) {
-          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
-          'events/list' => {'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
+          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}},
+          'events/list' => {'resultType': 'complete', 'events': [{'name': 'changed', 'delivery': ['webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
           'events/subscribe' => {
+            'resultType': 'complete',
             'id': 'stable-subscription',
             if (grant != 'missing') 'refreshBefore': grant == 'none' ? null
                 : DateTime.now().add(Duration(minutes: grant == 'expired' ? -5 : 5)).toUtc().toIso8601String(),
           },
-          'events/unsubscribe' => <String, Object?>{},
+          'events/unsubscribe' => {'resultType': 'complete'},
           _ => throw StateError('Unexpected MCP method ${body['method']}'),
         };
         request.response.headers.contentType = ContentType.json;

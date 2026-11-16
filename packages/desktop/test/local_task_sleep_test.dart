@@ -26,10 +26,10 @@ void main() {
         final body = jsonObject(jsonDecode(await utf8.decoder.bind(request).join()));
         if (request.uri.path == '/mcp') {
           final result = switch (body['method']) {
-            'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
-            'events/list' => {'events': [{'name': 'changed', 'delivery': ['poll'],
+            'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}},
+            'events/list' => {'resultType': 'complete', 'events': [{'name': 'changed', 'delivery': ['poll'],
               'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
-            'events/poll' => {'events': <Object?>[], 'cursor': 'quiet', 'hasMore': false, 'truncated': false, 'nextPollMs': 60000},
+            'events/poll' => {'resultType': 'complete', 'events': <Object?>[], 'cursor': 'quiet', 'hasMore': false, 'truncated': false, 'nextPollMs': 60000},
             _ => throw StateError('Unexpected MCP method ${body['method']}'),
           };
           request.response.headers.contentType = ContentType.json;
@@ -54,7 +54,7 @@ void main() {
     Future<({AgentServer server, AgentClient client})> open(String name, {bool embedded = false}) async {
       final directory = await Directory('${root.path}/$name').create();
       await File('${directory.path}/config.yaml').writeAsString(jsonEncode({'mcp_servers': {
-        'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+        'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'protocol': '2026-07-28'},
       }}));
       await File('${directory.path}/auth.json').writeAsString(jsonEncode({
         'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',

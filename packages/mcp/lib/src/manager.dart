@@ -48,13 +48,14 @@ class McpManager {
     'command': config['command'], 'args': config['args'] ?? <String>[],
     'cwd': Directory(config['cwd'] as String? ?? Directory.current.path).absolute.uri.normalizePath().toFilePath(),
     'env': mcpEnvironment(config, hostPath: hostPath),
+    'protocol': config['protocol'] ?? 'auto',
   };
 
   _Server _server(String name, Json config, String? executableRevision, String? scope) {
     final launch = _launch(config);
     final key = jsonEncode([_ordered(launch), executableRevision]);
     _Connection create() {
-      final connection = _Connection(config['command'] == null ? launch : {...launch, 'legacy_fallback': true}, http,
+      final connection = _Connection(launch, http,
         directory != null && config['url'] != null && config['oauth'] != false && !hasAuthorizationHeader(config)
           ? McpOAuth(directory!, name, config, http) : null, () => onAuthChanged?.call(name), clientCapabilities, requestMetadata);
       _connections.add(connection); connection.start(); return connection;
@@ -408,8 +409,8 @@ class McpManager {
     final values = <Json>[];
     final cursors = <String, String>{};
     for (final entry in _visible(scope).entries) {
-      if (entry.value.connection?.discovery['capabilities']?[method == 'events/list' ? 'events' : 'resources'] ==
-          null) {
+      if (method == 'events/list' ? entry.value.connection?.supportsEvents != true
+          : entry.value.connection?.discovery['capabilities']?['resources'] == null) {
         continue;
       }
       final result = await entry.value.request(method, {}, cancellation);
@@ -445,9 +446,8 @@ class McpManager {
     final target = _visible(scope)[server];
     if (target == null) throw ArgumentError('Unknown MCP server in this scope');
     final connection = await target.ready(cancellation);
-    if (!connection.modern ||
-        connection.discovery['capabilities']?['events'] == null) {
-      throw const McpFailure('MCP server does not advertise the Events draft');
+    if (!connection.supportsEvents) {
+      throw const McpFailure('MCP server does not advertise SEP-3415 Events');
     }
     final definitions = await target.list(
       'events/list',
@@ -627,14 +627,12 @@ class _Server {
   Completer<void> get initial => shared.initial;
   McpConnection? get connection => shared.connection;
   McpOAuth? get oauth => shared.oauth;
-  bool get _unsupported => config['legacy_fallback'] == false && shared.state == 'ready' && connection?.modern == false;
-  String get state => _unsupported ? 'failed' : shared.state;
-  String? get error => _unsupported ? 'MCP server does not support the required modern protocol' : shared.error;
+  String get state => shared.state;
+  String? get error => shared.error;
   bool get authenticationRequired => shared.authenticationRequired;
   Map<String, Json>? _source;
   Map<String, Json> _tools = {};
   Map<String, Json> get tools {
-    if (_unsupported) return const {};
     if (!identical(_source, shared.tools)) {
       _source = shared.tools;
       _tools = {for (final tool in shared.tools.values)
@@ -658,9 +656,7 @@ class _Server {
   ];
 
   Future<McpConnection> ready(CancellationToken cancellation) async {
-    final connection = await shared.ready(cancellation.merge(lifetime));
-    if (_unsupported) throw McpFailure(error!);
-    return connection;
+    return shared.ready(cancellation.merge(lifetime));
   }
   Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false,
     McpInputHandler? onInput, Duration? timeout = mcpToolTimeout, bool readOnly = false}) async {
@@ -940,7 +936,7 @@ class _Connection {
   }
 
   void _notification(Json notification) {
-    if (notification['method'] == 'notifications/events/list_changed') {
+    if (notification['method'] == 'notifications/events/list_changed' && connection?.supportsEvents == true) {
       invalidateEvents();
       unawaited(eventDefinitions(lifetime).catchError((Object _) {
         error = 'MCP event catalog refresh failed';
@@ -957,15 +953,20 @@ class _Connection {
   }
 
   Future<void> _listen(McpConnection current) async {
-    if (!current.modern ||
-        current.discovery['capabilities']?['tools']?['listChanged'] != true) {
-      return;
-    }
+    if (!current.modern) return;
+    final capabilities = current.discovery['capabilities'];
+    final requested = {
+      if (capabilities?['tools']?['listChanged'] == true) 'toolsListChanged': true,
+      if (current.supportsEvents && capabilities?['extensions']?[mcpEventsExtension]?['listChanged'] == true)
+        'eventsListChanged': true,
+    };
+    if (requested.isEmpty) return;
     var delay = 250;
     while (!lifetime.isCancelled && !current.lifetime.isCancelled) {
       final attempt = CancellationToken();
       final token = lifetime.merge(current.lifetime).merge(attempt);
       var acknowledged = false;
+      var accepted = <String, bool>{};
       final activation = Timer(
         const Duration(seconds: 15),
         () => attempt.cancel(
@@ -976,7 +977,7 @@ class _Connection {
         await current.request(
           'subscriptions/listen',
           {
-            'notifications': {'toolsListChanged': true},
+            'notifications': requested,
           },
           cancellation: token,
           timeout: null,
@@ -984,15 +985,19 @@ class _Connection {
             if (notification['method'] ==
                 'notifications/subscriptions/acknowledged') {
               activation.cancel();
-              acknowledged =
-                  notification['params']?['notifications']?['toolsListChanged'] ==
-                  true;
+              accepted = {for (final key in requested.keys)
+                if (notification['params']?['notifications']?[key] == true) key: true};
+              acknowledged = accepted.isNotEmpty;
               if (!acknowledged) {
                 attempt.cancel(
                   const McpFailure('MCP server declined catalog notifications'),
                 );
               }
-            } else if (acknowledged) {
+            } else if (acknowledged && switch (notification['method']) {
+              'notifications/events/list_changed' => accepted['eventsListChanged'] == true,
+              'notifications/tools/list_changed' => accepted['toolsListChanged'] == true,
+              _ => false,
+            }) {
               _notification(notification);
             }
           },
@@ -1012,7 +1017,11 @@ class _Connection {
           Duration(milliseconds: delay),
           lifetime.merge(current.lifetime),
         );
-        await _refresh();
+        if (accepted['toolsListChanged'] == true) await _refresh();
+        if (accepted['eventsListChanged'] == true) {
+          invalidateEvents();
+          await eventDefinitions(lifetime.merge(current.lifetime));
+        }
       } catch (_) {
         return;
       }

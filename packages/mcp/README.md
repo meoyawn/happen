@@ -1,8 +1,8 @@
-# MCP client and Events draft
+# MCP client and SEP-3415 Events
 
 This package connects configured MCP servers from Happen's shared network
-isolate. It implements the experimental
-[MCP Events proposal](https://github.com/modelcontextprotocol/experimental-ext-triggers-events),
+isolate. It implements
+[SEP-3415 Events](https://github.com/pja-ant/modelcontextprotocol/blob/4165cc2e580afa795842002f631edbbe17c63757/seps/3415-events-extension.md),
 separately from the core MCP protocol; no plugin system is involved.
 
 ## Core transports and configuration
@@ -16,9 +16,12 @@ ChatGPT connectors, enterprise-managed authorization or plugins.
   replace; explicit relative `cwd` values resolve beside their config file.
   Only MCP settings are reloaded from project files.
 - Stdio `command` paths and `cwd` accept `~/` for the user's home directory.
+- Both transports accept `protocol: auto` (default), `legacy`, or `"2026-07-28"`.
+  `auto` discovers modern support and falls back only on a recognized older-server
+  response. `legacy` initializes directly; a pinned revision never falls back.
 - Equivalent stdio launches share one process across names, threads and config
   scopes, including equivalent global/local declarations and legacy peers.
-  Identity includes command/arguments, effective cwd/environment and executable
+  Identity includes protocol selection, command/arguments, effective cwd/environment and executable
   generation, not the server's display name. Catalog namespaces and cancellation
   remain binding-local. Config retains ownership after a client disconnects.
 - `threadId` on MCP inventory/status/auth/events requests selects that saved
@@ -101,11 +104,18 @@ caller; agent inputs belong to subscribed clients of that thread. See
 [the input API](../../docs/api.md#mcp-requests-and-caller-input) for events,
 pending requests, replies, cancellation, and lifetimes.
 
-## Experimental Events
+## SEP-3415 Events
+
+Events requires MCP `2026-07-28`. Both peers declare
+`capabilities.extensions["io.modelcontextprotocol/events"]`; Happen includes its
+declaration in each request's client capabilities. Event results require
+`resultType: "complete"`. HTTP requests for a named event carry `Mcp-Name`.
 
 - Discover event definitions with `events/list`.
 - Poll with `events/poll`, or open `events/stream` and handle activation,
   correlated occurrences, heartbeats, gaps, termination, and reconnect cursors.
+  Push requests suggest a 30-second heartbeat. Each activation grants the
+  authoritative interval; three intervals without a message trigger reconnect.
 - Register and refresh signed webhook delivery with `events/subscribe`; stop it
   with `events/unsubscribe`. Verify Standard Webhooks signatures and timestamps
   before processing callback bodies.
@@ -128,7 +138,10 @@ cursor and expose the latest sanitized `error`; a successful poll clears it.
 Unsubscribe and shutdown cancel the backoff immediately. Reconnect notifications
 do not wake a thread or start a model turn.
 
-`notifications/events/list_changed` refreshes the event registry. A typed
+For servers declaring `listChanged`, Happen requests `eventsListChanged` on
+`subscriptions/listen` and receives correlated
+`notifications/events/list_changed` after the server acknowledges that filter.
+These notifications refresh the event registry. A typed
 `schema_changed` rejection or termination rediscovers the descriptor, validates
 the saved arguments and reconnects the subscription. Incompatible arguments or
 delivery modes leave desired thread state available for repair. Provider
@@ -151,6 +164,8 @@ Webhook TTLs are suggestions: the server may clamp them to its own floor or cap.
 Every grant must include `refreshBefore`; `null` is accepted only when the caller
 explicitly requested `ttl_ms: null`. Grants are validated before activation.
 No-expiry subscriptions still refresh occasionally for cursor and delivery health.
+Webhook message IDs are independent of upstream event IDs. Successful message
+receipts and subscription-scoped upstream event IDs deduplicate retries.
 Signed verification challenges work before activation; early occurrences receive
 `503` until the initial grant is known, so the server can retry them safely.
 
@@ -158,15 +173,15 @@ Servers may also expose tools such as `poll_events` and `wait_for_event`. These
 are discovered and called through ordinary `tools/list` and `tools/call`;
 Happen's background subscriptions use the draft's `events/*` methods.
 
-To verify against the real [Hookdeck bridge](https://github.com/hookdeck/mcp-events-bridge#github),
+To verify a SEP-3415 version of the [Hookdeck bridge](https://github.com/hookdeck/mcp-events-bridge#github),
 install dependencies in its checkout with `aube install --ignore-scripts`, then run
 `dart tool/verify_mcp_events_bridge.dart /path/to/mcp-events-bridge` from Happen.
 The Dart runner launches the upstream server with `aube exec tsx` and supplies a
 local Event Gateway fixture API and signed synthetic GitHub Actions webhooks.
 It checks discovery, filters, protocol polling, both poll tools, replay and
 cancellation without service credentials. An optional second argument saves its
-JSON report; the recorded [0.10.0 result](../../docs/evidence/mcp-events-bridge-live.json)
-identifies the upstream commit and the fixture boundary.
+JSON report. The recorded [0.10.0 result](../../docs/evidence/mcp-events-bridge-live.json)
+is historical evidence for the earlier design sketch, not SEP-3415 conformance.
 
 `packages/server` can bind a subscription to a saved thread and supply the
 `acceptThreadEvent` callback. That owner survives desktop disconnection and

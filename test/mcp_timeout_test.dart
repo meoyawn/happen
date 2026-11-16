@@ -130,7 +130,7 @@ void main() {
         peer.connect(time);
         peer.reply = (_) => Completer<_Reply>().future;
         final caller = CancellationToken();
-        final result = _Outcome(peer.connection.request('events/stream', {}, cancellation: caller, timeout: null));
+        final result = _Outcome(peer.connection.request('subscriptions/listen', {}, cancellation: caller, timeout: null));
         time.elapse(const Duration(minutes: 10));
         expect(result.done, false);
         caller.cancel(); time.flushMicrotasks();

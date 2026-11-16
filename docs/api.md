@@ -281,7 +281,11 @@ plus `inherit_env`. Quote numeric or boolean environment values, such as
 `env: {PORT: "3000"}`. Commands execute directly with their argument list. Shell
 expansion requires an explicit shell command, such as `command: sh` with
 `args: [-c, "exec my-server"]`. Both transports accept `enabled` and
-`legacy_fallback`. A server needs exactly one of `command` or `url`.
+`protocol` (`auto`, `legacy`, or `"2026-07-28"`). The default, `auto`, tries modern
+discovery and falls back only when the response identifies an older server.
+`legacy` opens with `initialize`; `"2026-07-28"` requires modern discovery.
+Events requires the modern revision and the `io.modelcontextprotocol/events`
+extension. A server needs exactly one of `command` or `url`.
 
 ### Project-local MCP configuration
 
@@ -986,7 +990,7 @@ Sampling and roots are not advertised.
 
 ## MCP Events
 
-The core protocol is `2026-07-28`; Events follows the pinned experimental draft
+The core protocol is `2026-07-28`; Events follows the pinned SEP-3415 revision
 listed in [decisions.md](decisions.md). Push, polling, and signed webhooks are
 implemented. Discovery and event delivery are distinct from model execution.
 
@@ -1030,7 +1034,7 @@ autocomplete popover as file search. They run locally, preserve surrounding
 draft text and file references, and do not submit a model turn or write history.
 
 Subscription creation waits for activation. `mcp.event` notifications carry
-`subscription_id`, `server`, and the draft `notification` method and parameters.
+`subscription_id`, `server`, and the extension's `notification` method and parameters.
 Clients receive activation, events, heartbeat, gap, and termination messages.
 Transport recovery preserves cursors and bounds retries; explicit termination
 ends the subscription. Without `threadId`, subscriptions belong to the connection

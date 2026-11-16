@@ -12,9 +12,9 @@ void main() {
     final root = await Directory.systemTemp.createTemp('mcp-command-failure-');
     final config = File('${root.path}/config.yaml');
     await config.writeAsString(jsonEncode({'mcp_servers': {
-      'healthy': {'command': Platform.resolvedExecutable, 'args': [fixture], 'legacy_fallback': false},
-      'missing': {'command': 'go', 'args': [fixture], 'env': {'PATH': root.path}, 'legacy_fallback': false},
-      'exits': {'command': Platform.resolvedExecutable, 'args': ['${root.path}/missing.dart'], 'legacy_fallback': false},
+      'healthy': {'command': Platform.resolvedExecutable, 'args': [fixture], 'protocol': '2026-07-28'},
+      'missing': {'command': 'go', 'args': [fixture], 'env': {'PATH': root.path}, 'protocol': '2026-07-28'},
+      'exits': {'command': Platform.resolvedExecutable, 'args': ['${root.path}/missing.dart'], 'protocol': '2026-07-28'},
     }}));
     final server = await AgentServer.startEmbedded(directory: '${root.path}/data', configPath: config.path);
     final client = await AgentClient.connect(server.uri);
@@ -86,10 +86,10 @@ void main() {
     });
     final config = File('${root.path}/config.yaml');
     await config.writeAsString(jsonEncode({'mcp_servers': {
-      'remote': {'url': 'http://127.0.0.1:${peer.port}/mcp?token=private-url-token', 'headers': {'Authorization': 'Bearer private-header-token'}, 'legacy_fallback': false},
-      'local': {'command': Platform.resolvedExecutable, 'args': [fixture], 'env': {'TEST_TOKEN': 'private-env-token'}, 'legacy_fallback': false},
+      'remote': {'url': 'http://127.0.0.1:${peer.port}/mcp?token=private-url-token', 'headers': {'Authorization': 'Bearer private-header-token'}, 'protocol': '2026-07-28'},
+      'local': {'command': Platform.resolvedExecutable, 'args': [fixture], 'env': {'TEST_TOKEN': 'private-env-token'}, 'protocol': '2026-07-28'},
       'disabled': {'command': '/not-an-executable', 'enabled': false},
-      'denied': {'url': 'http://127.0.0.1:${peer.port}/denied', 'legacy_fallback': false},
+      'denied': {'url': 'http://127.0.0.1:${peer.port}/denied', 'protocol': '2026-07-28'},
     }}));
     final server = await AgentServer.startEmbedded(directory: '${root.path}/data', configPath: config.path);
     final client = await AgentClient.connect(server.uri);
@@ -139,7 +139,7 @@ void main() {
     final root = await Directory.systemTemp.createTemp('mcp-inventory-cancel-');
     final config = File('${root.path}/config.yaml');
     await config.writeAsString(jsonEncode({'mcp_servers': {
-      'local': {'command': Platform.resolvedExecutable, 'args': [fixture], 'env': {'MCP_RESOURCES_WAIT': 'true'}, 'legacy_fallback': false},
+      'local': {'command': Platform.resolvedExecutable, 'args': [fixture], 'env': {'MCP_RESOURCES_WAIT': 'true'}, 'protocol': '2026-07-28'},
     }}));
     final server = await AgentServer.startEmbedded(directory: '${root.path}/data', configPath: config.path);
     final client = await AgentClient.connect(server.uri);

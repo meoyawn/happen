@@ -32,12 +32,14 @@ code_mode_tool_search: true
 mcp_servers:
   dart:
     command: dart
+    protocol: legacy
     args: [mcp-server, --disable, analysis]
     cwd: /tmp/a directory
     env: {PORT: "3000", FLAG: "false"}
     inherit_env: [SERVICE_API_KEY]
   remote:
     url: https://example.com/mcp
+    protocol: "2026-07-28"
     header_env: {Authorization: MCP_AUTHORIZATION}
     oauth:
       client_id: fixture-client
@@ -50,6 +52,8 @@ mcp_servers:
     expect(config['code_mode_tool_search'], isTrue);
     final local = config['mcp_servers']['dart'];
     expect(local['command'], 'dart');
+    expect(local['protocol'], 'legacy');
+    expect(config['mcp_servers']['remote']['protocol'], '2026-07-28');
     expect(local['args'], ['mcp-server', '--disable', 'analysis']);
     expect(local['cwd'], '/tmp/a directory');
     expect(local['env'], {'PORT': '3000', 'FLAG': 'false'});
@@ -92,6 +96,9 @@ mcp_servers:
       'inherit_env type':
           'mcp_servers: {dart: {command: dart, inherit_env: $secret}}',
       'boolean type': 'mcp_servers: {dart: {command: dart, enabled: "false"}}',
+      'protocol type': 'mcp_servers: {dart: {command: dart, protocol: false}}',
+      'unknown protocol': 'mcp_servers: {dart: {command: dart, protocol: $secret}}',
+      'removed fallback flag': 'mcp_servers: {dart: {command: dart, legacy_fallback: false}}',
       'server typo': 'mcp_servers: {dart: {command: dart, arg: [$secret]}}',
       'wrong transport field':
           'mcp_servers: {dart: {url: https://example.com, args: []}}',

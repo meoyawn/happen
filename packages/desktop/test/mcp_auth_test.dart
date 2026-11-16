@@ -42,7 +42,7 @@ void main() {
           final config = File('${root!.path}/$project/.happen/config.yaml');
           await config.parent.create();
           await config.writeAsString(jsonEncode({'mcp_servers': {
-            name: {'url': 'http://127.0.0.1:${upstream!.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+            name: {'url': 'http://127.0.0.1:${upstream!.port}/mcp', 'oauth': false, 'protocol': '2026-07-28'},
           }}));
         }
         server = await AgentServer.startLocal(directory: '${root!.path}/data',

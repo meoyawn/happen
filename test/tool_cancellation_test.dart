@@ -45,7 +45,7 @@ wait
       }));
       await File('${root.path}/config.yaml').writeAsString(jsonEncode({
         'mcp_servers': {'local': {'command': Platform.resolvedExecutable,
-          'args': [File('test/fixtures/mcp_stdio.dart').absolute.path], 'legacy_fallback': false}},
+          'args': [File('test/fixtures/mcp_stdio.dart').absolute.path], 'protocol': '2026-07-28'}},
       }));
       int? session;
       final modelRequests = <Json>[];

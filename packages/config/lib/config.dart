@@ -16,12 +16,6 @@ export 'src/watcher.dart' show ConfigWatcher;
 part 'src/files.dart';
 
 const _maxConfigBytes = 1024 * 1024;
-final _configValidator = JsonSchema.fromJson(globalConfigSchema)
-    .compile(options: SchemaOptions(assertFormats: true));
-final _localMcpValidator = JsonSchema.fromJson({
-  ...globalConfigSchema,
-  r'$ref': '#/definitions/project',
-}).compile(options: SchemaOptions(assertFormats: true));
 
 /// Parses one YAML document into immutable plain Dart data. Never includes
 /// source text or rejected values in errors: env/headers can contain credentials.
@@ -80,7 +74,8 @@ Map<String, dynamic> parseConfig(String source, {bool partialMcp = false}) {
                     line.trim().isEmpty || line.trimLeft().startsWith('#'),
               ));
   final value = empty ? const <String, dynamic>{} : plain(root);
-  final error = (partialMcp ? _localMcpValidator : _configValidator).validate(value);
+  final schema = partialMcp ? {...globalConfigSchema, r'$ref': '#/definitions/project'} : globalConfigSchema;
+  final error = JsonSchema.fromJson(schema).compile(options: SchemaOptions(assertFormats: true)).validate(value);
   if (error != null) {
     final location = error.instancePath.isEmpty ? '/' : error.instancePath;
     final reason = switch (error.keyword) {

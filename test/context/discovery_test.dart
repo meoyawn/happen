@@ -24,7 +24,7 @@ void main() {
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
         'env': {'MCP_EXTRA_TOOLS': '120', 'MCP_TOOL_DESCRIPTION': description,
           'MCP_INSTRUCTIONS': ?instructions},
-        'legacy_fallback': false,
+        'protocol': '2026-07-28',
       }},
     });
     Future<void> configure(String description, {String? instructions = guidance}) =>

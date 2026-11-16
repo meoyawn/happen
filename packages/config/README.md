@@ -38,6 +38,14 @@ MCP `command` paths and `cwd` accept `~/` (or `~`) for the user's home directory
 Relative `cwd` paths resolve beside their config file in project layers. Arguments
 and environment values remain literal strings.
 
+Both transports accept `protocol: auto` (the default), `protocol: legacy`, or
+`protocol: "2026-07-28"`. `auto` starts with `server/discover` and falls back to
+`initialize` only after a recognized older-server response. `legacy` skips
+discovery and opens with `initialize`. Pinning `"2026-07-28"` rejects older
+servers. SEP-3415 Events requires the modern revision plus the advertised
+`io.modelcontextprotocol/events` extension. Protocol selection is part of stdio
+process identity, so conflicting choices never share a handshake.
+
 Project icons are saved in the project's `.happen/config.yaml`, alongside its
 MCP configuration. Use the project schema (`#/definitions/project`) for this file.
 An icon can be an arbitrary local image path, including SVG and PNG:

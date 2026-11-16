@@ -27,7 +27,7 @@ void main() {
   Future<void> launch({int? delay}) async {
     unloadDelay = delay;
     await File('${root.path}/config.json').writeAsString(jsonEncode({
-      'mcp_servers': {'comments': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'oauth': false, 'legacy_fallback': false}},
+      'mcp_servers': {'comments': {'url': 'http://127.0.0.1:${upstream.port}/mcp', 'oauth': false, 'protocol': '2026-07-28'}},
     }));
     server = await AgentServer.start(directory: root.path, port: 0, skillsHome: root.path,
       configPath: '${root.path}/config.yaml', endpoint: 'http://127.0.0.1:${upstream.port}/responses',
@@ -67,17 +67,17 @@ void main() {
           request.response.bufferOutput = false;
           request.response.headers.contentType = ContentType('text', 'event-stream');
           request.response.write('data: ${jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/events/active',
-            'params': {'cursor': null, 'truncated': false, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
+            'params': {'cursor': null, 'truncated': false, 'heartbeatMs': 30000, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
           await request.response.flush(); return;
         }
         final result = switch (body['method']) {
-          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
-          'events/list' => {'events': [{'name': 'comment.created', 'description': 'Document comments', 'delivery': ['push', 'poll', 'webhook'],
+          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}},
+          'events/list' => {'resultType': 'complete', 'events': [{'name': 'comment.created', 'description': 'Document comments', 'delivery': ['push', 'poll', 'webhook'],
             'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
-          'events/poll' => {'events': [?polledEvent], 'cursor': null, 'truncated': false, 'hasMore': false, 'nextPollMs': 1000},
-          'events/subscribe' => {'id': 'comments-subscription', 'cursor': null, 'truncated': false,
+          'events/poll' => {'resultType': 'complete', 'events': [?polledEvent], 'cursor': null, 'truncated': false, 'hasMore': false, 'nextPollMs': 1000},
+          'events/subscribe' => {'resultType': 'complete', 'id': 'comments-subscription', 'cursor': null, 'truncated': false,
             'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()},
-          'events/unsubscribe' => <String, Object?>{},
+          'events/unsubscribe' => {'resultType': 'complete'},
           _ => throw StateError('Unexpected MCP method ${body['method']}'),
         };
         if (body['method'] == 'events/subscribe') registration = jsonObject(body['params']);

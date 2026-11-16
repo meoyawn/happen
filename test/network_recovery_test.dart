@@ -117,7 +117,7 @@ void main() {
       } on HttpException { /* Cancellation owns the old response. */ }
       on SocketException { /* Cancellation owns the old response. */ }
     });
-    await start({'effect': {'url': 'http://127.0.0.1:${mcp.port}/mcp', 'oauth': false, 'legacy_fallback': false}});
+    await start({'effect': {'url': 'http://127.0.0.1:${mcp.port}/mcp', 'oauth': false, 'protocol': '2026-07-28'}});
     final thread = await create();
     final interrupted = runTurn(client, thread, prompt: 'record once');
     await admitted.future.asCancellable(lifetime);

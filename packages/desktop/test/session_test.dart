@@ -30,7 +30,7 @@ void main() {
       await provider.close(force: true); await root.delete(recursive: true);
     });
     await File('${root.path}/config.yaml').writeAsString(jsonEncode({'mcp_servers': {
-      'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'legacy_fallback': false},
+      'events': {'url': 'http://127.0.0.1:${provider.port}/mcp', 'oauth': false, 'protocol': '2026-07-28'},
     }}));
     await File('${root.path}/auth.json').writeAsString(jsonEncode({
       'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
@@ -45,12 +45,12 @@ void main() {
           request.response.headers.contentType = ContentType('text', 'event-stream');
           request.response.bufferOutput = false;
           request.response.write('data: ${jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/events/active',
-            'params': {'cursor': null, 'truncated': false, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
+            'params': {'cursor': null, 'truncated': false, 'heartbeatMs': 30000, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
           await request.response.flush(); return;
         }
         final result = switch (body['method']) {
-          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}},
-          'events/list' => {'events': [{'name': 'ci.completed', 'delivery': ['push'],
+          'server/discover' => {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}},
+          'events/list' => {'resultType': 'complete', 'events': [{'name': 'ci.completed', 'delivery': ['push'],
             'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]},
           _ => throw StateError('Unexpected MCP method ${body['method']}'),
         };

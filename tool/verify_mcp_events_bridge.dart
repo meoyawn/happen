@@ -162,7 +162,7 @@ process.on('SIGTERM', async () => { await bridge.close(); process.exit(0); });
         final pending = await File('${desired.path}.pending').writeAsString(jsonEncode(saved), flush: true);
         await pending.rename(desired.path);
       });
-    await manager.configure({'bridge': {'url': 'http://127.0.0.1:$port/mcp', 'legacy_fallback': false,
+    await manager.configure({'bridge': {'url': 'http://127.0.0.1:$port/mcp', 'protocol': '2026-07-28',
       'headers': {'Authorization': 'Bearer $principal'}}}, token);
     check('modern_discovery', manager.status().single['protocol_version'] == mcpProtocolVersion && manager.status().single['state'] == 'ready');
     final catalog = await manager.catalog(token);

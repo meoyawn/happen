@@ -73,6 +73,7 @@ class McpEventSubscription {
   final lifetime = CancellationToken();
   final ready = Completer<void>();
   final _seen = <String>{};
+  final _webhookReceipts = <String, Json>{};
   final _delivering = <String, Future<void>>{};
   String? cursor, callback, upstreamId;
   List<int>? secret;
@@ -251,6 +252,7 @@ class McpEventSubscription {
       var queued = 0;
       Future<void> notifications = Future<void>.value();
       Timer? liveness;
+      var heartbeatInterval = const Duration(seconds: 30);
       final activation = Timer(
         const Duration(seconds: 15),
         () => attempt.cancel(
@@ -260,7 +262,7 @@ class McpEventSubscription {
       void heartbeat() {
         liveness?.cancel();
         liveness = Timer(
-          const Duration(seconds: 65),
+          heartbeatInterval * 3,
           () => attempt.cancel(
             TimeoutException('MCP event stream heartbeat expired'),
           ),
@@ -271,7 +273,7 @@ class McpEventSubscription {
         final peer = await connection(token);
         await peer.request(
           'events/stream',
-          _params,
+          {..._params, 'heartbeatMs': 30000},
           cancellation: token,
           timeout: null,
           onNotification: (notification) {
@@ -284,10 +286,15 @@ class McpEventSubscription {
                 final params = jsonObject(notification['params'] ?? {});
                 switch (method) {
                   case 'notifications/events/active':
+                    final granted = params['heartbeatMs'];
+                    if (granted is! int || granted <= 0) {
+                      throw const McpFailure('Invalid MCP event heartbeat grant');
+                    }
+                    heartbeatInterval = Duration(milliseconds: granted);
                     active = true;
                     activation.cancel();
                     heartbeat();
-                     await _active(params);
+                    await _active(params);
                   case 'notifications/events/event':
                     if (!active) {
                       throw const McpFailure(
@@ -309,6 +316,8 @@ class McpEventSubscription {
                     cursor = nextCursor;
                     _emit(method as String, params);
                   case 'notifications/events/error':
+                    if (!active) throw const McpFailure('MCP event error arrived before activation');
+                    heartbeat();
                     _emit(method as String, params);
                   case 'notifications/events/terminated':
                     final error = _failure(jsonObject(params['error']));
@@ -331,7 +340,7 @@ class McpEventSubscription {
         lifetime.throwIfCancelled();
         if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code)) {
+            [-32601, -32602, -32023, -32024, -32026].contains(error.code)) {
           if (error.code != -32024) rethrow;
           await _terminate({'error': {
             'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
@@ -396,7 +405,7 @@ class McpEventSubscription {
         lifetime.throwIfCancelled();
         if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code)) {
+            [-32601, -32602, -32023, -32024, -32026].contains(error.code)) {
           if (error.code != -32024) rethrow;
           await _terminate({'error': {
             'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
@@ -476,7 +485,7 @@ class McpEventSubscription {
         if (await _recoverSchema(error)) { failures = 0; continue; }
         if (error is FormatException) rethrow;
         if (error is McpFailure &&
-            [-32602, -32023, -32024, -32026].contains(error.code)) {
+            [-32601, -32602, -32023, -32024, -32026].contains(error.code)) {
           if (error.code != -32024) rethrow;
           await _terminate({'error': {
             'code': error.code, 'message': error.message, if (error.data != null) 'data': error.data,
@@ -503,7 +512,8 @@ class McpEventSubscription {
     }
     if (body.length > 256 * 1024) return {'status': 413};
     try {
-      final eventId = requiredString(headers, 'webhook-id');
+      final messageId = requiredString(headers, 'webhook-id');
+      if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(messageId)) return {'status': 400};
       final stamp = requiredString(headers, 'webhook-timestamp');
       final timestamp = int.parse(stamp);
       if ((DateTime.now().millisecondsSinceEpoch ~/ 1000 - timestamp).abs() >
@@ -515,7 +525,7 @@ class McpEventSubscription {
       final expected = Hmac(
         sha256,
         secret!,
-      ).convert([...utf8.encode('$eventId.$stamp.'), ...body]).bytes;
+      ).convert([...utf8.encode('$messageId.$stamp.'), ...body]).bytes;
       var valid = false;
       for (final signature in requiredString(
         headers,
@@ -532,14 +542,16 @@ class McpEventSubscription {
         valid |= diff == 0;
       }
       if (!valid) return {'status': 401};
+      final receipt = sha256.convert(utf8.encode(messageId)).toString();
+      if (_webhookReceipts[receipt] case final Json response) return response;
       final value = jsonObject(jsonDecode(utf8.decode(body)));
       if (value['type'] == 'verification') {
         upstreamId ??= remote;
         await checkpoint?.call(toSnapshot(), cancellation.merge(lifetime));
-        return {
+        return _acknowledgeWebhook(receipt, {
           'status': 200,
           'body': {'challenge': requiredString(value, 'challenge')},
-        };
+        });
       }
       // Verification precedes the grant. Fresh event delivery waits until its
       // authenticated response has pinned the identity and validated expiry.
@@ -558,12 +570,11 @@ class McpEventSubscription {
             await _terminate({'error': value['error']}, cancellation.merge(lifetime));
           }
         case null:
-          if (value['eventId'] != eventId) return {'status': 400};
           await _event(value, cancellation.merge(lifetime));
         default:
           return {'status': 400};
       }
-      return {'status': 200, 'body': <String, Object?>{}};
+      return _acknowledgeWebhook(receipt, {'status': 200, 'body': <String, Object?>{}});
     } on McpFailure catch (error) {
       return {'status': error.status ?? 400};
     } on CancelledException {
@@ -571,6 +582,12 @@ class McpEventSubscription {
     } catch (_) {
       return {'status': 400};
     }
+  }
+
+  Json _acknowledgeWebhook(String receipt, Json response) {
+    _webhookReceipts[receipt] = response;
+    if (_webhookReceipts.length > 2048) _webhookReceipts.remove(_webhookReceipts.keys.first);
+    return response;
   }
 
   Future<void> stop({bool preserveRemote = false}) => _stopping ??= _stop(preserveRemote);

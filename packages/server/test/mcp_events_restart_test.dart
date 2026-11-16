@@ -357,7 +357,7 @@ class _Events {
     final peer = _Events(await Directory.systemTemp.createTemp('mcp-restart-'), await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     await Directory('${peer.cwd}/.git').create(recursive: true);
     await Directory('${peer.cwd}/.happen').create();
-    await File('${peer.cwd}/.happen/config.yaml').writeAsString('mcp_servers:\n  comments:\n    url: ${peer.origin}/mcp\n    oauth: false\n    legacy_fallback: false\n');
+    await File('${peer.cwd}/.happen/config.yaml').writeAsString('mcp_servers:\n  comments:\n    url: ${peer.origin}/mcp\n    oauth: false\n    protocol: "2026-07-28"\n');
     await File('${peer.root.path}/auth.json').writeAsString(jsonEncode({'type': 'chatgpt', 'access_token': 'fixture', 'refresh_token': 'fixture', 'account_id': 'fixture',
       'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch}));
     return peer;
@@ -470,13 +470,13 @@ class _Events {
         request.response.bufferOutput = false; request.response.headers.contentType = ContentType('text', 'event-stream');
         stream = (response: request.response, id: body['id'] as String);
         request.response.write('data: ${jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/events/active',
-          'params': {'cursor': params['cursor'], 'truncated': false, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
+          'params': {'cursor': params['cursor'], 'truncated': false, 'heartbeatMs': 30000, '_meta': {'io.modelcontextprotocol/subscriptionId': body['id']}}})}\n\n');
         await request.response.flush(); return;
       }
       Json result;
       switch (body['method']) {
-        case 'server/discover': result = {'supportedVersions': ['2026-07-28'], 'capabilities': {'events': <String, Object?>{}}};
-        case 'events/list': result = {'events': [{'name': 'comment.created', 'delivery': ['push', 'poll', 'webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]};
+        case 'server/discover': result = {'supportedVersions': ['2026-07-28'], 'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}};
+        case 'events/list': result = {'resultType': 'complete', 'events': [{'name': 'comment.created', 'delivery': ['push', 'poll', 'webhook'], 'inputSchema': {'type': 'object'}, 'payloadSchema': {'type': 'object'}}]};
         case 'events/poll':
           if (pollFailures.isNotEmpty) {
             request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'error': pollFailures.removeAt(0)}));
@@ -490,10 +490,10 @@ class _Events {
           final after = params['cursor'] == 'seed' ? 0 : int.parse((params['cursor'] as String).split('-').last);
           final events = pollReplay == null ? occurrences.where((e) => int.parse((e['cursor'] as String).split('-').last) > after).toList() : [pollReplay!];
           pollReplay = null;
-          result = {'events': events, 'cursor': events.isEmpty ? params['cursor'] : events.last['cursor'], 'truncated': false, 'hasMore': false, 'nextPollMs': nextPollMs};
-        case 'events/subscribe': registration = params; result = {'id': remoteId, 'cursor': params['cursor'], 'truncated': false,
+          result = {'resultType': 'complete', 'events': events, 'cursor': events.isEmpty ? params['cursor'] : events.last['cursor'], 'truncated': false, 'hasMore': false, 'nextPollMs': nextPollMs};
+        case 'events/subscribe': registration = params; result = {'resultType': 'complete', 'id': remoteId, 'cursor': params['cursor'], 'truncated': false,
           'refreshBefore': DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String()};
-        case 'events/unsubscribe': result = {};
+        case 'events/unsubscribe': result = {'resultType': 'complete'};
         default: throw StateError('Unexpected MCP request ${body['method']}');
       }
       request.response.write(jsonEncode({'jsonrpc': '2.0', 'id': body['id'], 'result': result}));

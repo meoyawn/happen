@@ -173,7 +173,7 @@ void main() {
         'command': Platform.resolvedExecutable,
         'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
         'env': {'MCP_EXTRA_TOOLS': '120'},
-        'legacy_fallback': false,
+        'protocol': '2026-07-28',
       }},
     }));
     final beforeDiscovery = requests.length;

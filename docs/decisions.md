@@ -5281,3 +5281,27 @@ errors. Live MCP VM probes confirm negative integers are accepted when unbounded
 patterns reject invalid tool input, and invalid config reports its field path.
 Whole-repository analysis still reports warnings/lints in untouched files;
 scoped analysis is clean. No formatter was run.
+
+## 2026-11-16 — SEP-3415 Events and explicit MCP protocol selection
+
+Replace the Events design sketch with SEP-3415, pinned at
+`4165cc2e580afa795842002f631edbbe17c63757` in
+[the proposal source](https://github.com/pja-ant/modelcontextprotocol/blob/4165cc2e580afa795842002f631edbbe17c63757/seps/3415-events-extension.md).
+Both peers declare `io.modelcontextprotocol/events` under capability `extensions`.
+Events requires MCP `2026-07-28`, complete results, named HTTP routing headers,
+and acknowledged `eventsListChanged` filters on `subscriptions/listen`.
+Push reconnects after three granted heartbeat intervals without a message.
+Webhook delivery message identity is separate from upstream event identity.
+Retain poll, push, signed webhook delivery and durable thread-owned subscriptions.
+
+Replace `legacy_fallback` with `protocol: legacy | auto | "2026-07-28"` on both
+transports. Default to `auto` to retain Happen's modern-first negotiation.
+`legacy` initializes directly, while a pinned revision rejects fallback.
+Protocol selection participates in stdio process identity: aliases cannot share
+a transport whose handshake violates one owner's policy.
+
+The October 30 OpenCode comparison above describes its inspected revision.
+OpenCode shipped experimental SEP-3415 push delivery and a session watch tool
+in [v2.3.0 on November 13](https://github.com/anomalyco/opencode/releases/tag/v2.3.0).
+Its client and agent watch implementations informed this comparison, not a
+requirement to adopt its default legacy handshake or its in-memory watch lifetime.

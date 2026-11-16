@@ -90,7 +90,7 @@ void main() {
     args: ${jsonEncode([fixture])}
     env: {MCP_DISCOVERY_DELAY_MS: "$delay", MCP_INSTANCE: "$name"}
     enabled: $enabled
-    legacy_fallback: false
+    protocol: "2026-07-28"
 ''';
   Future<void> write(String contents, {bool replace = false}) async {
     await file.parent.create(recursive: true);
@@ -120,7 +120,7 @@ void main() {
     final config = {
       'command': Platform.resolvedExecutable,
       'args': [fixture],
-      'legacy_fallback': false,
+      'protocol': '2026-07-28',
     };
     await legacy.writeAsString(
       jsonEncode({
@@ -294,7 +294,7 @@ ${local('stable')}
     command: mcp
     cwd: ${jsonEncode(root.path)}
     env: {PATH: bin}
-    legacy_fallback: false
+    protocol: "2026-07-28"
 ''';
     await write(source);
     await start();
@@ -355,9 +355,10 @@ ${local('stable')}
           final result = switch (body['method']) {
             'server/discover' => {
               'supportedVersions': ['2026-07-28'],
-              'capabilities': {'events': <String, Object?>{}},
+              'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}},
             },
             'events/list' => {
+              'resultType': 'complete',
               'events': [
                 {
                   'name': request.uri.path,
@@ -381,7 +382,7 @@ ${local('local')}
   remote:
     url: http://127.0.0.1:${upstream.port}/$endpoint
     headers: {X-Config: fixture}
-    legacy_fallback: false
+    protocol: "2026-07-28"
 ''';
       await write(configuration('one'));
       await start();

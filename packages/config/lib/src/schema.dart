@@ -223,8 +223,15 @@ const globalConfigSchema = <String, Object?>{
         "enabled": {
           "type": "boolean"
         },
-        "legacy_fallback": {
-          "type": "boolean"
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "auto",
+            "2026-07-28"
+          ],
+          "default": "auto",
+          "description": "MCP protocol negotiation: auto discovers 2026-07-28 and falls back only for a recognized older server; legacy sends initialize directly; 2026-07-28 requires that revision."
         },
         "oauth": {
           "oneOf": [

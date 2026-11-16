@@ -52,7 +52,7 @@ void main() {
   for (final legacy in [false, true]) {
     test('shared global stdio keeps alias namespaces and one process: legacy=$legacy', () async {
       final spec = command(env: {if (legacy) 'MCP_LEGACY': 'true'});
-      await global({'first': spec, 'second': {for (final key in spec.keys.toList().reversed) key: spec[key], if (!legacy) 'legacy_fallback': false}});
+      await global({'first': spec, 'second': {for (final key in spec.keys.toList().reversed) key: spec[key], 'protocol': 'auto'}});
       await start();
       final tools = (await catalog())['tools'] as List;
       expect(tools.map((tool) => tool['name']), unorderedEquals(['mcp__first__probe', 'mcp__second__probe']));
@@ -64,6 +64,18 @@ void main() {
       await server!.close(); server = null; stopped(first['pid'] as int);
     });
   }
+
+  test('different protocol choices own separate stdio handshakes', () async {
+    final spec = command(env: {'MCP_LEGACY': 'true'});
+    await global({'automatic': spec, 'direct': {...spec, 'protocol': 'legacy'},
+      'required': {...spec, 'protocol': '2026-07-28'}});
+    await start();
+    expect((await catalog())['tools'], hasLength(2));
+    final automatic = await probe('automatic'), direct = await probe('direct');
+    expect(direct['pid'], isNot(automatic['pid']));
+    final rows = await status();
+    expect(rows.singleWhere((row) => row['name'] == 'required')['state'], 'failed');
+  });
 
   test('equivalent local configs and nested cwd consumers share one process without leaking catalogs', () async {
     final a = '${root.path}/a', b = '${root.path}/b';

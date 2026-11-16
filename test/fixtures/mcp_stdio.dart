@@ -20,6 +20,7 @@ void main(List<String> arguments) {
   final legacy = Platform.environment['MCP_LEGACY'] == 'true';
   final catalogs = Platform.environment['MCP_CONTRACT_CATALOGS'] == 'true';
   final streams = <String, Timer>{};
+  final catalogsChanged = <String>{};
   final pending = <String>{};
   var eventSchema = 1;
   void send(Map<String, dynamic> value) =>
@@ -46,6 +47,7 @@ void main(List<String> arguments) {
           if (request['method'] == 'notifications/cancelled') {
             final target = params['requestId'] as String;
             streams.remove(target)?.cancel();
+            catalogsChanged.remove(target);
             pending.remove(target);
             return;
           }
@@ -81,7 +83,8 @@ void main(List<String> arguments) {
                   'supportedVersions': ['2026-07-28'],
                   if (catalogs) '_meta': {'io.modelcontextprotocol/serverInfo': {'name': 'fixture', 'version': '1'}}
                   else 'serverInfo': {'name': 'fixture', 'version': '1'},
-                  'capabilities': {'tools': <String, Object?>{}, 'events': <String, Object?>{}, 'resources': <String, Object?>{},
+                  'capabilities': {'tools': <String, Object?>{},
+                    'extensions': {'io.modelcontextprotocol/events': {'listChanged': true}}, 'resources': <String, Object?>{},
                     if (catalogs) 'prompts': <String, Object?>{}},
                   if (Platform.environment['MCP_INSTRUCTIONS'] case final String instructions)
                     'instructions': instructions,
@@ -92,6 +95,11 @@ void main(List<String> arguments) {
                 'capabilities': {'tools': <String, Object?>{}, 'resources': <String, Object?>{}, if (catalogs) 'prompts': <String, Object?>{}},
                 'serverInfo': {'name': 'legacy-fixture', 'version': '1'}}});
             case 'notifications/initialized': return;
+            case 'subscriptions/listen':
+              catalogsChanged.add(id!);
+              notification(id, 'notifications/subscriptions/acknowledged', {
+                'notifications': {'eventsListChanged': params['notifications']['eventsListChanged'] == true},
+              });
             case 'tools/list':
               send({
                 'id': id,
@@ -181,7 +189,9 @@ void main(List<String> arguments) {
               }
               if (action == 'event_catalog_changed' || action == 'event_schema_changed') {
                 eventSchema++;
-                send({'method': 'notifications/events/list_changed', 'params': <String, Object?>{}});
+                for (final subscription in catalogsChanged) {
+                  notification(subscription, 'notifications/events/list_changed', {});
+                }
                 if (action == 'event_schema_changed') {
                   for (final entry in streams.entries.toList()) {
                     entry.value.cancel(); streams.remove(entry.key);
@@ -244,6 +254,7 @@ void main(List<String> arguments) {
               send({
                 'id': id,
                 'result': {
+                  'resultType': 'complete',
                   'events': [
                     {
                       'name': 'tick',
@@ -260,6 +271,7 @@ void main(List<String> arguments) {
               notification(id!, 'notifications/events/active', {
                 'cursor': params['cursor'],
                 'truncated': false,
+                'heartbeatMs': 30000,
               });
               streams[id] = Timer.periodic(const Duration(milliseconds: 40), (
                 _,

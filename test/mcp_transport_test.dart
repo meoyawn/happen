@@ -16,6 +16,49 @@ void main() {
   tearDown(() => wire.close());
   const modern = {'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': <String, Object?>{}}};
 
+  for (final protocol in ['legacy', 'auto', '2026-07-28']) {
+    for (final legacy in [false, true]) {
+      test('MCP protocol choices: $protocol against ${legacy ? 'legacy' : 'modern'} peer', () async {
+        wire.config['protocol'] = protocol;
+        if (legacy) wire.discovery = const _Reply(error: {'code': -32601, 'message': 'method not found'});
+        if (protocol == '2026-07-28' && legacy) {
+          await expectLater(wire.connection.connect(wire.token), throwsA(isA<McpFailure>()));
+        } else {
+          await wire.connection.connect(wire.token);
+          expect(wire.connection.modern, protocol != 'legacy' && !legacy);
+        }
+        expect(wire.requests.map((request) => request['method']), [
+          if (protocol != 'legacy') 'server/discover',
+          if (protocol == 'legacy' || legacy && protocol == 'auto') ...['initialize', 'notifications/initialized'],
+        ]);
+      });
+    }
+  }
+
+  test('SEP-3415 never sends event requests to a peer without the extension', () async {
+    wire.overrides['events/list'] = const _Reply(result: {'resultType': 'complete', 'events': <Object?>[]});
+    await wire.connection.connect(wire.token);
+    await expectLater(wire.connection.request('events/list', {}, cancellation: wire.token), throwsA(isA<McpFailure>()));
+    expect(wire.requests.map((request) => request['method']), ['server/discover']);
+  });
+
+  for (final resultType in [null, 'input_required', 'complete']) {
+    test('SEP-3415 event results require complete: $resultType', () async {
+      wire.discovery = const _Reply(result: {'supportedVersions': ['2026-07-28'],
+        'capabilities': {'extensions': {'io.modelcontextprotocol/events': <String, Object?>{}}}});
+      wire.overrides['events/list'] = _Reply(result: {'resultType': ?resultType, 'events': <Object?>[]});
+      await wire.connection.connect(wire.token);
+      final result = wire.connection.request('events/list', {}, cancellation: wire.token);
+      if (resultType == 'complete') {
+        expect((await result)['events'], isEmpty);
+      } else {
+        await expectLater(result, throwsA(isA<McpFailure>()));
+      }
+      expect(wire.requests.last['params']['_meta']['io.modelcontextprotocol/clientCapabilities']['extensions'],
+        {'io.modelcontextprotocol/events': <String, Object?>{}});
+    });
+  }
+
   for (final sse in [false, true]) {
     for (final identity in [false, true]) {
       test('Codex discovery self-contained metadata, SSE=$sse, namespaced identity=$identity', () async {

@@ -69,7 +69,7 @@ Future<void> main(List<String> args) async {
             'live_probe': {
               'command': Platform.resolvedExecutable,
               'args': [File('test/fixtures/mcp_stdio.dart').absolute.path],
-              'legacy_fallback': false,
+              'protocol': '2026-07-28',
             },
           },
         }), flush: true);
