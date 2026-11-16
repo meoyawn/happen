@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import 'response_annotation.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'appearance.dart';
 
 /// Inline references ported from harness/client.
@@ -160,17 +159,4 @@ class ResponseAnnotationContext extends InheritedWidget {
     context.dependOnInheritedWidgetOfExactType<ResponseAnnotationContext>()?.annotations ?? const [];
   @override
   bool updateShouldNotify(ResponseAnnotationContext oldWidget) => annotations != oldWidget.annotations;
-}
-
-class ResponseAnnotationBuilder extends MarkdownElementBuilder {
-  @override
-  Widget visitElementAfterWithContext(BuildContext context, md.Element element,
-      TextStyle? preferredStyle, TextStyle? parentStyle) {
-    final index = element.attributes['index'];
-    final annotation = resolveResponseAnnotation(index, ResponseAnnotationContext.of(context));
-    final style = parentStyle ?? preferredStyle ?? DefaultTextStyle.of(context).style;
-    if (annotation == null) return Text('Annotation ${index ?? ''}', style: style);
-    return ResponseAnnotationReference(number: int.parse(index!), annotation: annotation, style: style,
-      selectionRegistrar: SelectionContainer.maybeOf(context));
-  }
 }

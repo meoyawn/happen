@@ -217,8 +217,13 @@ Future<void> _sshMain(List<Object?> arguments) async {
         if (current is! _SshReady) throw CancelledException();
         final cancellation = token.merge(lifetime).merge(current.cancellation);
         try {
-          result = await current.client._request(params['method'] as String,
-            jsonObject(params['params']), cancellation: cancellation, timeout: Duration(milliseconds: params['timeout'] as int));
+          if (request['method'] == 'respond') {
+            await current.client.respondClientTool(requiredString(params, 'id'), jsonObject(params['result']),
+              cancellation: cancellation);
+          } else {
+            result = await current.client._request(params['method'] as String,
+              jsonObject(params['params']), cancellation: cancellation, timeout: Duration(milliseconds: params['timeout'] as int));
+          }
           cancellation.throwIfCancelled();
         } catch (error) {
           // A peer can stop answering requests while its socket stays open.

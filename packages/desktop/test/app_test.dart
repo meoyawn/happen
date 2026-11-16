@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:desktop/app.dart';
+import 'package:desktop/browser.dart';
+import 'package:desktop/panel_state.dart';
 import 'package:desktop/composer_editor.dart';
 import 'package:desktop/database.dart';
 import 'package:desktop/project_avatar.dart';
@@ -424,7 +426,10 @@ void main() {
       root = await Directory.systemTemp.createTemp('desktop-shortcuts-');
       addTearDown(() => root.delete(recursive: true));
       session = DesktopSession(_Client(), await openDesktopDatabase(root.path));
-      addTearDown(() => tester.runAsync(session.close));
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(session.close);
+      });
     });
     final task = DesktopTask('task', 'Shortcut focus')
       ..loaded = true..provider = 'openai'..model = 'example'
@@ -456,14 +461,23 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
 
-    await _shortcut(tester, LogicalKeyboardKey.keyB, alt: true);
     final panels = session.panelsFor(task);
+    await _shortcut(tester, LogicalKeyboardKey.keyT);
+    expect(panels.opened, isTrue, reason: 'New browser tabs open a hidden side panel');
+    expect(panels.tabs.single, predicate<String>(isBrowserPanel));
+    expect(find.byType(DesktopBrowser), findsOneWidget);
+    await _shortcut(tester, LogicalKeyboardKey.keyT);
+    expect(panels.tabs.where(isBrowserPanel), hasLength(2));
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(panels.tabs, hasLength(1));
+    await _shortcut(tester, LogicalKeyboardKey.keyW);
+    expect(panels.opened, isFalse);
+
+    await _shortcut(tester, LogicalKeyboardKey.keyB, alt: true);
     expect(panels.opened, isTrue);
     expect(panels.tabs, hasLength(1));
     await _shortcut(tester, LogicalKeyboardKey.keyT);
-    expect(panels.tabs, hasLength(2));
-    await _shortcut(tester, LogicalKeyboardKey.keyW);
-    expect(panels.tabs, hasLength(1));
+    expect(panels.tabs.single, predicate<String>(isBrowserPanel), reason: 'Opening a browser consumes the unused launcher');
     await _shortcut(tester, LogicalKeyboardKey.keyW);
     expect(panels.opened, isFalse);
     await _shortcut(tester, LogicalKeyboardKey.keyW);
@@ -488,6 +502,13 @@ void main() {
     await _shortcut(tester, LogicalKeyboardKey.keyW);
     expect(group.visible, isFalse);
     expect(session.task, same(task));
+    session.task = null;
+    session.notifyListeners();
+    await tester.pump();
+    await _shortcut(tester, LogicalKeyboardKey.keyT, settle: false);
+    expect(session.panelsFor(session.browserWorkspace).tabs.single, predicate<String>(isBrowserPanel));
+    expect(find.byType(DesktopBrowser), findsOneWidget, reason: 'Cmd+T also works before a thread is selected');
+    await _shortcut(tester, LogicalKeyboardKey.keyW, settle: false);
     expect(tester.takeException(), isNull);
     await tester.runAsync(() => callIsolate(session.database.port, 'load', {}));
     await tester.pump();
@@ -660,7 +681,7 @@ void main() {
   });
 }
 
-Future<void> _shortcut(WidgetTester tester, LogicalKeyboardKey key, {bool shift = false, bool alt = false}) async {
+Future<void> _shortcut(WidgetTester tester, LogicalKeyboardKey key, {bool shift = false, bool alt = false, bool settle = true}) async {
   final primary = defaultTargetPlatform == TargetPlatform.macOS
     ? LogicalKeyboardKey.metaLeft : LogicalKeyboardKey.controlLeft;
   await tester.sendKeyDownEvent(primary);
@@ -670,7 +691,8 @@ Future<void> _shortcut(WidgetTester tester, LogicalKeyboardKey key, {bool shift 
   if (alt) await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
   if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
   await tester.sendKeyUpEvent(primary);
-  await tester.pumpAndSettle();
+  if (settle) { await tester.pumpAndSettle(); }
+  else { await tester.pump(const Duration(milliseconds: 350)); await tester.pump(); }
 }
 
 // This test owns rendering of incoming events. Real WebSocket ownership is
@@ -681,6 +703,7 @@ class _Client implements AgentClient {
   @override bool get sharedFilesystem => true;
   @override Future<Object?> request(String method, [Json params = const {}]) async {
     if (method == 'thread/list') return {'data': <Object?>[], 'nextCursor': null};
+    if (method == 'tools.register') return {};
     throw StateError('Unexpected request: $method');
   }
   @override Future<Json> sessionRead(String method, Json params, {required CancellationToken cancellation}) async =>

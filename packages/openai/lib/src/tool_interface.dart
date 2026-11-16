@@ -303,6 +303,10 @@ class _OpenAITools extends ToolRuntime {
             ? 'audio content omitted because you do not support audio input' : jsonEncode(part)},
       ], if (result['isError'] == true) 'error': 'MCP tool failed'};
     }
+    if (name.startsWith('client__')) {
+      final result = jsonObject(value);
+      return {'content': clientToolContent(result), if (result['success'] != true) 'error': 'Client tool failed'};
+    }
     return {'output': value is String ? value : jsonEncode(value)};
   }
 }

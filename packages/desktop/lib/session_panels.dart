@@ -39,6 +39,7 @@ class SessionPanelWorkspace extends StatefulWidget {
 }
 
 class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
+  DesktopTask get _panelTask => widget.task ?? widget.session.browserWorkspace;
   final _lifetime = CancellationToken();
   final _focus = FocusScopeNode(debugLabel: 'Session side panel');
   double? _dragWidth;
@@ -61,12 +62,12 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   void dispose() { _lifetime.cancel(); _focus.dispose(); super.dispose(); }
 
   void _close(String tab) {
-    widget.session.closeSessionPanel(widget.task!, tab);
-    if (!widget.session.panelsFor(widget.task!).opened) widget.onReturnFocus();
+    widget.session.closeSessionPanel(_panelTask, tab);
+    if (!widget.session.panelsFor(_panelTask).opened) widget.onReturnFocus();
   }
 
   void _hide() {
-    widget.session.toggleSidePanel(widget.task!);
+    widget.session.toggleSidePanel(_panelTask);
     widget.onReturnFocus();
   }
 
@@ -123,22 +124,22 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     child: ConversationDiffScope(onOpen: _openDiff, child: ConversationFileScope(onOpen: _openFile,
     child: ListenableBuilder(listenable: Listenable.merge([widget.session, widget.session.panelSelection]),
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
-      final task = widget.task;
-      final state = task == null ? null : widget.session.panelsFor(task);
+      final task = _panelTask;
+      final state = widget.session.panelsFor(task);
       final directory = widget.session.projects.where((project) => project.tasks.contains(task)).firstOrNull?.path;
-      final opened = state?.opened == true;
+      final opened = state.opened;
       final wide = bounds.maxWidth >= 768;
       final available = bounds.maxWidth - 8;
-      final resized = _dragWidth != null || state?.sessionWidth != null;
+      final resized = _dragWidth != null || state.sessionWidth != null;
       final minimum = resized ? 400.0 : 450.0;
       final reserve = resized ? 320.0 : 480.0;
       final maximum = math.max(minimum, available - reserve);
-      final chatWidth = (_dragWidth ?? state?.sessionWidth ?? 600).clamp(400, maximum).toDouble();
+      final chatWidth = (_dragWidth ?? state.sessionWidth ?? 600).clamp(400, maximum).toDouble();
       final sideWidth = wide ? math.max(320.0, available - chatWidth) : bounds.maxWidth;
       return Stack(fit: StackFit.expand, children: [
         Positioned.fill(right: opened && wide ? sideWidth + 8 : 0,
           child: Offstage(offstage: opened && !wide, child: child!)),
-        if (state != null && state.tabs.isNotEmpty)
+        if (state.tabs.isNotEmpty)
           Positioned(top: 0, right: 0, bottom: 0, width: sideWidth,
             child: Offstage(offstage: !opened, child: ExcludeFocus(excluding: !opened,
               child: FocusScope(node: _focus,
@@ -147,38 +148,39 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                 Expanded(child: Stack(fit: StackFit.expand, children: [
                   if (state.tabs.contains(contextPanel))
                     Offstage(offstage: state.active != contextPanel,
-                      child: SessionContextWindow(key: ValueKey('context:${task!.id}'),
+                      child: SessionContextWindow(key: ValueKey('context:${task.id}'),
                         session: widget.session, task: task, onAttached: widget.onReturnFocus)),
                   if (state.tabs.contains(workspaceChangesPanel))
                     if (widget.session.projects.where((project) => project.tasks.contains(task)).firstOrNull case final owner?)
                       Offstage(offstage: state.active != workspaceChangesPanel,
                         child: ExcludeFocus(excluding: !opened || state.active != workspaceChangesPanel,
-                          child: WorkspaceChanges(key: ValueKey('checkout:${task!.id}'),
+                          child: WorkspaceChanges(key: ValueKey('checkout:${task.id}'),
                             controller: widget.session.gitForProject(owner), active: opened && state.active == workspaceChangesPanel))),
                   for (final tab in state.tabs.where(isFilePanel))
-                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                    Offstage(key: ValueKey((task.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: state.active != tab,
                       child: FileViewer(client: widget.session.client, path: filePanelPath(tab),
                         directory: directory,
                         active: opened && state.active == tab, line: state.fileReveals[tab]?.line,
                         revealRequest: state.fileReveals[tab]?.revision ?? 0))),
                   for (final tab in state.tabs.where(isDiffPanel))
-                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                    Offstage(key: ValueKey((task.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: !opened || state.active != tab,
                         child: DiffViewer(files: changesForSource(task, diffPanelSource(tab)),
                           active: opened && state.active == tab,
                           directory: directory ?? '', selectedPath: state.diffReveals[tab]?.path,
                           revealRevision: state.diffReveals[tab]?.revision ?? 0))),
                   for (final tab in state.tabs.where(isBrowserPanel))
-                    Offstage(key: ValueKey((task!.id, tab)), offstage: state.active != tab,
+                    Offstage(key: ValueKey((task.id, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: !opened || state.active != tab,
                         child: DesktopBrowser(initialUrl: state.browserPages[tab]?.url ?? '',
+                          page: widget.session.browserPageFor(task, tab),
                           active: opened && state.active == tab, directory: directory,
                           onNewTab: () => widget.session.openBrowserPanel(task),
-                          onPageChanged: (url, title) => widget.session.updateBrowserPanel(task, tab, url, title)))),
+                          ))),
                   for (final tab in state.tabs.where(isSideChatPanel))
                     if (widget.session.sideChats[sideChatID(tab)] case final side?)
-                      Offstage(key: ValueKey((task!.id, side.draftKey)), offstage: state.active != tab,
+                      Offstage(key: ValueKey((task.id, side.draftKey)), offstage: state.active != tab,
                         child: ExcludeFocus(excluding: !opened || state.active != tab,
                           child: TickerMode(enabled: opened && state.active == tab,
                             child: _SideChatPanel(session: widget.session, task: side,
@@ -193,7 +195,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
             max: math.max(400.0, available - 320),
             onResize: (width) => setState(() => _dragWidth = width),
             onResizeEnd: (width) {
-              widget.session.resizeSessionPanel(task!, width);
+              widget.session.resizeSessionPanel(task, width);
               setState(() => _dragWidth = null);
             },
             onCancel: () => setState(() => _dragWidth = null))),
@@ -219,12 +221,13 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                   : isSideChatPanel(tab) ? Icons.chat_bubble_outline_rounded : Icons.add_rounded,
                   size: 14, color: state.active == tab ? desktopForeground : desktopTertiary),
             active: state.active == tab,
-            onSelect: () => widget.session.selectSessionPanel(widget.task!, tab),
+            onSelect: () => widget.session.selectSessionPanel(_panelTask, tab),
             onClose: () => _close(tab),
             onMenu: (position) => _tabMenu(state, tab, position)))),
         ]));
       })),
-      _panelButton('Add tab', Icons.add_rounded, () => widget.session.newSessionPanelTab(widget.task!)),
+      _panelButton('Add tab', Icons.add_rounded, () => widget.task == null
+        ? widget.session.openBrowserPanel(_panelTask) : widget.session.newSessionPanelTab(_panelTask)),
       const SizedBox(width: 4),
       SizedBox.square(dimension: 28, child: IconButton(key: const ValueKey('hide-side-panel'),
         tooltip: 'Hide side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})', onPressed: _hide,
@@ -247,7 +250,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   }
 
   Widget _launchers(SessionPanelState state) => ListView(
-    key: ValueKey('panel-launchers:${widget.task!.id}'),
+    key: ValueKey('panel-launchers:${_panelTask.id}'),
     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28), children: [
       const Text('Open a panel', style: TextStyle(fontSize: 13, color: desktopSecondary)),
       const SizedBox(height: 16),
@@ -265,8 +268,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
         subtitle: const Text('Preview your app, read docs, or browse the web',
           style: TextStyle(fontSize: 12, color: desktopTertiary)),
         trailing: const Icon(Icons.chevron_right_rounded, size: 16, color: desktopTertiary),
-        onTap: () => widget.session.openBrowserPanel(widget.task!)),
-      ListTile(key: const ValueKey('open-side-chat'), contentPadding: EdgeInsets.zero,
+        onTap: () => widget.session.openBrowserPanel(_panelTask)),
+      if (widget.task != null) ListTile(key: const ValueKey('open-side-chat'), contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18, color: desktopSecondary),
         title: const Text('Side chat', style: TextStyle(fontSize: 13)),
         subtitle: const Text('Ask a question with context from this session',
@@ -278,7 +281,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
           on CancelledException { /* The pending side chat was closed. */ }
           catch (error) { widget.session.showError(error); }
         }())),
-      ListTile(key: const ValueKey('open-context-panel'), contentPadding: EdgeInsets.zero,
+      if (widget.task != null) ListTile(key: const ValueKey('open-context-panel'), contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.donut_large_rounded, size: 18, color: desktopSecondary),
         title: const Text('Context', style: TextStyle(fontSize: 13)),
         subtitle: const Text('Usage, system prompt, and raw messages', style: TextStyle(fontSize: 12, color: desktopTertiary)),
@@ -291,7 +294,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
           leading: const Icon(Icons.history_rounded, size: 16, color: desktopTertiary),
           title: Text(_panelTitle(tab, state), maxLines: 1, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 13)),
-          onTap: () => widget.session.openSessionPanel(widget.task!, tab)),
+          onTap: () => widget.session.openSessionPanel(_panelTask, tab)),
       ],
     ],
   );

@@ -1030,10 +1030,14 @@ class _Agent {
                         'name': name, 'arguments': arguments, 'call_id': id, 'turn_id': turnId,
                       }, timeout: null, cancellation: cancellation);
                     }
-                    await goal('toolFinished', {'name': name, 'outcome': output is Map && output['isError'] == true ? 'unsuccessful' : 'success'}, cancellation);
+                    final clientResult = name.startsWith('client__') && output is Map ? jsonObject(output) : null;
+                    await goal('toolFinished', {'name': name, 'outcome': output is Map &&
+                      (output['isError'] == true || clientResult?['success'] == false) ? 'unsuccessful' : 'success'}, cancellation);
                     if (nested) {
                       event(await _append('host_tool.completed', {
-                        'id': id, 'parent_call_id': call.id, 'name': name, 'output': output,
+                        'id': id, 'parent_call_id': call.id, 'name': name,
+                        'output': clientResult == null ? output : {'content': clientToolContent(clientResult)},
+                        if (clientResult?['success'] == false) 'is_error': true,
                       }));
                     }
                     return output;

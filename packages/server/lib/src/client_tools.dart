@@ -100,29 +100,38 @@ class ClientToolBridge {
       );
       return;
     }
-    final result = jsonObject(message['result']);
-    if (utf8.encode(jsonEncode(result)).length > maxToolOutputBytes) {
+    if (utf8.encode(jsonEncode(message['result'])).length > maxToolOutputBytes) {
       call.result.completeError(
         StateError('Client tool output exceeds 64 KiB'),
       );
       return;
     }
-    if (result['success'] is! bool ||
-        result['contentItems'] is! List ||
-        (result['contentItems'] as List).any(
-          (value) =>
-              value is! Map ||
-              value['type'] != 'inputText' ||
-              value['text'] is! String,
-        )) {
-      call.result.completeError(
-        const FormatException(
-          'Expected success and text contentItems from client tool',
-        ),
-      );
-      return;
+    // Match Codex's on_call_response: malformed responses become a visible
+    // unsuccessful tool result rather than losing the call or fetching media.
+    try {
+      final result = jsonObject(message['result']);
+      if (result['success'] is! bool || result['contentItems'] is! List) {
+        throw const FormatException('Client tool response was invalid');
+      }
+      for (final raw in result['contentItems'] as List) {
+        final item = jsonObject(raw);
+        switch (item) {
+          case {'type': 'inputText', 'text': String()}: break;
+          case {'type': 'inputImage', 'imageUrl': final String url}:
+            if (!url.toLowerCase().startsWith('data:image/')) {
+              throw const FormatException('Image URLs must use an inline data URL');
+            }
+          case {'type': 'inputAudio', 'audioUrl': final String url}:
+            if (!url.toLowerCase().startsWith('data:')) {
+              throw const FormatException('Audio URLs must use an inline data URL');
+            }
+          default: throw const FormatException('Client tool response was invalid');
+        }
+      }
+      call.result.complete(result);
+    } on FormatException catch (error) {
+      call.result.complete({'success': false, 'contentItems': [{'type': 'inputText', 'text': error.message}]});
     }
-    call.result.complete(result);
   }
 
   void detach(String owner) {

@@ -19,6 +19,30 @@ void main() {
   });
   tearDown(() async { cancellation.cancel(); await runtime.close(); });
 
+  test('Codex dynamic client content reaches Responses as typed blocks with failure status', () async {
+    const call = ToolCall(id: 'client-call', namespace: 'client', name: 'capture', input: '{}', format: 'json');
+    for (final success in [true, false]) {
+      final result = await runtime.execute(call, ToolExecution(
+        call: (_, _, {required cancellation}) async => {
+          'success': success, 'contentItems': [
+            {'type': 'inputText', 'text': 'caption'},
+            {'type': 'inputImage', 'imageUrl': 'data:image/png;base64,AQID'},
+            {'type': 'inputAudio', 'audioUrl': 'data:audio/wav;base64,AQID'},
+          ],
+        },
+        catalog: (_) async => [{'name': 'client__capture', 'namespace': 'client', 'tool_name': 'capture'}],
+        values: const {}, cancellation: cancellation,
+      ));
+      final item = interface.resultItem(call, result);
+      expect(gptInput([item]).single['output'], [
+        {'type': 'input_text', 'text': 'caption'},
+        {'type': 'input_image', 'image_url': 'data:image/png;base64,AQID', 'detail': 'high'},
+        {'type': 'input_audio', 'audio_url': 'data:audio/wav;base64,AQID'},
+      ]);
+      expect(item.content.single['is_error'], !success);
+    }
+  });
+
   Future<({Json wire, ConversationItem item})> invoke(Json response) async {
     const call = ToolCall(id: 'mcp-call', namespace: 'mcp__archive',
       name: 'probe', input: '{}', format: 'json');

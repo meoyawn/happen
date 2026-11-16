@@ -30,11 +30,14 @@ import 'git_actions_state.dart';
 import 'project_actions_state.dart';
 import 'project_icon_state.dart';
 import 'local_project_icons.dart';
+import 'browser_page.dart';
+import 'browser_ports.dart';
 
 part 'draft_routing.dart';
 part 'annotation_drafts.dart';
 part 'project_identity.dart';
 part 'session_goals.dart';
+part 'browser_tools.dart';
 
 enum TaskNotificationKind { input, completion, failure }
 typedef TaskNotification = ({DesktopTask task, TaskNotificationKind kind});
@@ -245,6 +248,7 @@ class DesktopSession extends ChangeNotifier {
 
   void _connectionLost() {
     connected = false;
+    _disconnectBrowserTools();
     _recovery?.cancel();
     for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values]) {
       target._historyRead?.cancel();
@@ -260,6 +264,9 @@ class DesktopSession extends ChangeNotifier {
       await _request('client.capabilities', {'questions': true}).asCancellable(cancellation);
       cancellation.throwIfCancelled();
       connected = true;
+      for (final id in _browserToolThreads.toList()) {
+        await _registerBrowserTools(id, cancellation);
+      }
       notifyListeners();
       await Future.wait([
         loadNavigationTasks(cancellation: cancellation),
@@ -365,6 +372,13 @@ class DesktopSession extends ChangeNotifier {
     }
   }
   final _lifetime = CancellationToken();
+  late final _browserPages = <(String, String), BrowserPage>{};
+  late final _browserRegistrations = <String, Future<void>>{};
+  late final _browserToolThreads = <String>{};
+  late final _browserCalls = <String, ({Object? task, CancellationToken cancellation})>{};
+  late final _browserLifetime = CancellationToken();
+  /// Presentation owner for browser tabs opened before selecting a thread.
+  late final browserWorkspace = DesktopTask('desktop:browser', 'Browser');
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
@@ -862,13 +876,19 @@ class DesktopSession extends ChangeNotifier {
     _savePanels(target);
   }
 
-  void openBrowserPanel(DesktopTask target, {String url = ''}) {
+  String openBrowserPanel(DesktopTask target, {String url = ''}) {
     final state = panelsFor(target);
     final existing = url.isEmpty ? null : state.tabs.where(isBrowserPanel).where((tab) =>
       state.browserPages[tab]?.url == url).firstOrNull;
     final tab = existing ?? 'browser:${newId()}';
     state.browserPages.putIfAbsent(tab, () => (url: url, title: ''));
     openSessionPanel(target, tab);
+    if (connected && !target.archived && target != browserWorkspace) {
+      unawaited(_registerBrowserTools(target.id, _lifetime).catchError((Object error) {
+        if (!_lifetime.isCancelled && !_browserLifetime.isCancelled) showError(error, title: 'Could not connect browser tools');
+      }));
+    }
+    return tab;
   }
 
   void updateBrowserPanel(DesktopTask target, String tab, String url, String title) {
@@ -892,6 +912,7 @@ class DesktopSession extends ChangeNotifier {
     final index = state.tabs.indexOf(tab);
     if (index < 0) return;
     state.tabs.removeAt(index);
+    if (isBrowserPanel(tab)) _browserPages.remove((target.id, tab))?.close();
     state.fileReveals.remove(tab);
     if (!tab.startsWith('new:') && !isSideChatPanel(tab)) { state.closed..remove(tab)..insert(0, tab); }
     if (state.active == tab) state.active = state.tabs.isEmpty ? null : state.tabs[index.clamp(0, state.tabs.length - 1)];
@@ -1475,12 +1496,18 @@ class DesktopSession extends ChangeNotifier {
       final created = jsonObject(await client.request('thread/start', {
         for (final entry in params.entries) if (!{'prompt', 'message_id', 'attachments'}.contains(entry.key)) entry.key: entry.value,
         'historyMode': 'paginated',
+        if (defaultTargetPlatform == TargetPlatform.macOS) 'dynamicTools': desktopBrowserTools,
       }).asCancellable(_lifetime));
       final id = created['thread']['id'] as String;
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        _browserRegistrations[id] = Future<void>.value();
+        _browserToolThreads.add(id);
+      }
       await _request('task.send', {...params, 'task_id': id});
       return {'sessionID': id, 'configuration': created['configuration']};
     }
     if (method == 'task.send') {
+      await _registerBrowserTools(params['task_id'] as String, _lifetime);
       return await client.request('turn/start', {'threadId': params['task_id'],
         'clientUserMessageId': params['message_id'], 'delivery': params['delivery'] ?? 'queue',
         'effort': params['reasoning'], 'input': [
@@ -1496,8 +1523,11 @@ class DesktopSession extends ChangeNotifier {
         {'threadId': params['task_id']}).asCancellable(_lifetime);
     }
     if (method == 'task.compact') return await client.request('thread/compact/start', {'threadId': params['task_id']}).asCancellable(_lifetime);
-    if (method == 'task.retry') return await client.request('turn/start', {'threadId': params['task_id'],
-      'input': <Json>[], 'expectedTurnId': params['failureID']}).asCancellable(_lifetime);
+    if (method == 'task.retry') {
+      await _registerBrowserTools(params['task_id'] as String, _lifetime);
+      return await client.request('turn/start', {'threadId': params['task_id'],
+        'input': <Json>[], 'expectedTurnId': params['failureID']}).asCancellable(_lifetime);
+    }
     if (method.startsWith('session.') && params['task_id'] != null) {
       params = {...params, 'sessionID': params['task_id']}..remove('task_id');
     }
@@ -2377,6 +2407,9 @@ class DesktopSession extends ChangeNotifier {
         : null;
       target._archiveWrite = transitionArchiveWrite(pending, ArchiveWriteCommitted(archived));
       if (archived) {
+        _closeBrowserPages(target.id);
+        _browserRegistrations.removeWhere((key, _) => key == target.id);
+        _browserToolThreads.remove(target.id);
         await _releaseArchivedThread(target);
       }
       await _saveArchived(target);
@@ -2461,6 +2494,14 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (event['method'] == 'tools.call') {
+      unawaited(_executeBrowserTool(event));
+      return;
+    }
+    if (event['method'] == 'tools.cancel') {
+      _browserCalls[event['params']?['call_id']]?.cancellation.cancel();
+      return;
+    }
     if (event['method'] == 'connection/closed') {
       _connectionLost();
       return;
@@ -2699,6 +2740,10 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> close() async {
+    _browserLifetime.cancel();
+    _disconnectBrowserTools();
+    for (final page in _browserPages.values) { page.close(); }
+    _browserPages.clear();
     _draftSave?.cancel();
     await _appearance?.close();
     await _pinnedSidebar?.close();

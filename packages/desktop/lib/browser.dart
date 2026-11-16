@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
 import 'appearance.dart';
 import 'desktop_toast.dart';
@@ -15,39 +14,10 @@ import 'file_reference.dart';
 import 'browser_annotation_script.dart';
 import 'conversation_annotations.dart';
 import 'response_annotation.dart';
+import 'browser_page.dart';
+import 'browser_ports.dart';
 
-/// Bare local addresses use HTTP; other bare hosts use HTTPS.
-/// Text without a host opens as a web search, like OpenCode's address bar.
-Uri browserAddress(String input) {
-  final value = input.trim();
-  if (value.isEmpty || value.toLowerCase() == 'about:blank') return Uri.parse('about:blank');
-  if (value.startsWith('/')) return File(value).absolute.uri;
-  if (RegExp(r'^[a-z][a-z\d+.-]*://', caseSensitive: false).hasMatch(value) ||
-      RegExp(r'^(about|data|javascript|mailto):', caseSensitive: false).hasMatch(value)) {
-    final uri = Uri.tryParse(value);
-    if (uri == null || !browserLocationAllowed(uri)) throw const FormatException('Enter a web address or a local file.');
-    return uri;
-  }
-  if (!value.contains(RegExp(r'\s'))) {
-    final uri = Uri.tryParse('https://$value');
-    if (uri != null && (uri.host.contains('.') || uri.host == 'localhost' ||
-        InternetAddress.tryParse(uri.host) != null || uri.hasPort)) {
-      final address = browserHostIsLocal(uri.host) ? uri.replace(scheme: 'http') : uri;
-      if (browserLocationAllowed(address)) return address;
-    }
-  }
-  return Uri.https('www.google.com', '/search', {'q': value});
-}
-
-bool browserHostIsLocal(String host) => host == 'localhost' || host.endsWith('.localhost') ||
-  InternetAddress.tryParse(host)?.isLoopback == true;
-
-bool browserLocationAllowed(Uri uri) => !uri.toString().contains('\x00') &&
-  uri.userInfo.isEmpty && (
-    {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty ||
-    uri.scheme == 'file' && (uri.host.isEmpty || uri.host == 'localhost') && uri.path.startsWith('/') ||
-    uri.toString() == 'about:blank'
-  );
+export 'browser_page.dart' show BrowserPage, browserAddress, browserHostIsLocal, browserLocationAllowed;
 
 class ConversationBrowserScope extends InheritedWidget {
   const ConversationBrowserScope({super.key, required this.onOpen, required super.child});
@@ -64,11 +34,14 @@ class ConversationBrowserScope extends InheritedWidget {
   bool updateShouldNotify(ConversationBrowserScope oldWidget) => onOpen != oldWidget.onOpen;
 }
 
-Future<void> _openSystemBrowser(Uri uri, CancellationToken cancellation) async {
+Future<void> _openSystemBrowser(Uri uri, CancellationToken cancellation) =>
+  runIsolateEffect(_openSystemBrowserEffect, {'uri': uri.toString()}, cancellation: cancellation);
+
+Future<void> _openSystemBrowserEffect(Json params, CancellationToken cancellation, void Function(Json) emit) async {
   cancellation.throwIfCancelled();
   final executable = Platform.isMacOS ? '/usr/bin/open'
     : Platform.isLinux ? 'xdg-open' : throw const FormatException('Unsupported platform');
-  final process = await Process.start(executable, [uri.toString()]);
+  final process = await Process.start(executable, [requiredString(params, 'uri')]);
   final hook = CancellationHook(cancellation, process.kill);
   try {
     final results = await Future.wait<Object?>([
@@ -111,13 +84,14 @@ Future<void> openDesktopLink(BuildContext context, String href, {
 /// to its WebView. File reloads replace this widget using a new key.
 class DesktopBrowser extends StatefulWidget {
   const DesktopBrowser({super.key, this.initialUrl = '', this.active = true,
-    this.toolbar = true, this.navigationEnabled = true, this.directory, this.onPageChanged, this.onNewTab});
+    this.toolbar = true, this.navigationEnabled = true, this.directory, this.page, this.onPageChanged, this.onNewTab});
   final String initialUrl;
   final bool active, toolbar;
   /// File previews dispatch links to their desktop destination instead of
   /// navigating this WebView after its initial file load.
   final bool navigationEnabled;
   final String? directory;
+  final BrowserPage? page;
   final void Function(String url, String title)? onPageChanged;
   final VoidCallback? onNewTab;
 
@@ -129,15 +103,18 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   final _lifetime = CancellationToken();
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'Browser address');
-  WebViewController? _controller;
-  Future<WebViewController>? _opening;
-  Uri? _location, _pendingFileLoad;
-  String _title = '';
+  late BrowserPage _page;
+  WebViewController? get _controller => _page.controller;
+  Uri? get _location => _page.location;
   String? _error;
-  bool _back = false, _forward = false, _loading = false;
-  int _progress = 0, _generation = 0, _navigation = 0;
+  bool get _back => _page.canGoBack;
+  bool get _forward => _page.canGoForward;
+  bool get _loading => _page.loading;
+  int get _progress => _page.progress;
+  int _generation = 0;
+  bool _wasLoading = false;
   late final _pageKey = GlobalKey();
-  late bool _commenting = false, _annotationBridge = false, _annotationReady = false;
+  late bool _commenting = false, _annotationReady = false;
   String? _annotationDocument;
   CancellationToken? _annotationOperation;
   ConversationAnnotationScope? _annotations;
@@ -151,6 +128,9 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       _annotations?.changes.removeListener(_reconcileAnnotations);
       _annotations = scope;
       _annotations?.changes.addListener(_reconcileAnnotations);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _annotationEffect(_installAnnotations);
+      });
     }
   }
 
@@ -163,7 +143,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   void _resetAnnotations() {
     _annotationOperation?.cancel();
     _annotationOperation = CancellationToken();
-    _annotationDocument = newId();
+    _annotationDocument = _page.annotationDocument;
     _annotationSelections.clear();
     _annotationReady = false;
   }
@@ -183,10 +163,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   Future<void> _installAnnotations() async {
     final controller = _controller;
     if (!mounted || controller == null || !widget.toolbar || !widget.navigationEnabled || _annotations?.enabled != true || _loading) return;
-    if (!_annotationBridge) {
-      await controller.addJavaScriptChannel('HappenAnnotation', onMessageReceived: _annotationMessage).asCancellable(_lifetime);
-      _annotationBridge = true;
-    }
+    await _page.installAnnotationChannel(cancellation: _lifetime);
     if (_annotationDocument == null) _resetAnnotations();
     final document = _annotationDocument;
     final cancellation = _annotationOperation!.merge(_lifetime);
@@ -248,13 +225,13 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   @override
   void initState() {
     super.initState();
+    _page = widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
+      toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory);
+    _page.addListener(_pageChanged);
+    _page.onExternalNavigation = _externalNavigation;
+    _page.onAnnotationMessage = _annotationMessage;
     _addressFocus.addListener(_addressFocusChanged);
-    if (widget.initialUrl.isNotEmpty) {
-      try {
-        _location = browserAddress(widget.initialUrl);
-        _address.text = _location.toString() == 'about:blank' ? '' : _location.toString();
-      } on FormatException catch (error) { _error = error.message; }
-    }
+    _setAddress();
     if (widget.active && _location != null) _start();
     if (widget.active && widget.toolbar && _location == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -266,7 +243,20 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   @override
   void didUpdateWidget(DesktopBrowser oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !oldWidget.active && _controller == null && _opening == null && _location != null) {
+    if (oldWidget.page != widget.page) {
+      _page.removeListener(_pageChanged);
+      _page.onExternalNavigation = null;
+      _page.onAnnotationMessage = null;
+      if (oldWidget.page == null) _page.close();
+      _page = widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
+        toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory);
+      _page.addListener(_pageChanged);
+      _page.onExternalNavigation = _externalNavigation;
+      _page.onAnnotationMessage = _annotationMessage;
+      _resetAnnotations();
+      _setAddress();
+    }
+    if (widget.active && _page.state is BrowserDormant && _location != null) {
       _start();
     }
     if (!widget.active && oldWidget.active && _commenting && _annotationReady) {
@@ -278,10 +268,28 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   void _start() {
     if (defaultTargetPlatform != TargetPlatform.macOS) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && widget.active && _controller == null && _opening == null && _location != null) {
-        _run(() => _navigate(_location!));
+      if (mounted && widget.active) {
+        _run(() => _page.start(cancellation: _lifetime));
       }
     });
+  }
+
+  void _externalNavigation(Uri uri) => unawaited(openDesktopLink(context, uri.toString(),
+    directory: widget.directory ?? '', cancellation: _lifetime));
+
+  void _pageChanged() {
+    if (!mounted) return;
+    if (_generation != _page.generation) {
+      _generation = _page.generation;
+      _resetAnnotations();
+    }
+    final finished = _wasLoading && !_loading;
+    _wasLoading = _loading;
+    _error = _page.error;
+    _setAddress();
+    widget.onPageChanged?.call(_location?.toString() ?? '', _page.title);
+    setState(() {});
+    if (finished && _page.error == null) _annotationEffect(_installAnnotations);
   }
 
   void _addressFocusChanged() {
@@ -306,134 +314,14 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         // Closing the tab cancels pending platform calls.
       } catch (error) {
         if (mounted && !_lifetime.isCancelled) {
-          if (_controller == null) _opening = null;
-          setState(() { _loading = false; _error = error is FormatException
+          setState(() { _error = error is FormatException
             ? error.message : 'This page could not be loaded. Check the address and try again.'; });
         }
       }
     }());
   }
 
-  Future<WebViewController> _open() async {
-    final controller = WebViewController();
-    await controller.setJavaScriptMode(widget.navigationEnabled
-      ? JavaScriptMode.unrestricted : JavaScriptMode.disabled).asCancellable(_lifetime);
-    if (controller.platform case final WebKitWebViewController webkit) {
-      await webkit.setAllowsBackForwardNavigationGestures(widget.toolbar && widget.navigationEnabled)
-        .asCancellable(_lifetime);
-    }
-    await controller.setNavigationDelegate(NavigationDelegate(
-      onNavigationRequest: _onNavigationRequest,
-      onPageStarted: (url) {
-        if (!mounted || _lifetime.isCancelled) return;
-        _resetAnnotations();
-        _generation++;
-        setState(() { _location = Uri.tryParse(url) ?? _location; _loading = true; _progress = 0; _error = null; });
-        _setAddress();
-      },
-      onUrlChange: (change) {
-        if (!mounted || _lifetime.isCancelled || change.url == null) return;
-        setState(() => _location = Uri.tryParse(change.url!) ?? _location);
-        _setAddress();
-        _run(_updatePage);
-      },
-      onProgress: (progress) {
-        if (mounted && !_lifetime.isCancelled) setState(() => _progress = progress);
-      },
-      onPageFinished: (_) {
-        if (!mounted || _lifetime.isCancelled) return;
-        setState(() { _loading = false; _progress = 100; });
-        _run(_updatePage);
-        _annotationEffect(_installAnnotations);
-      },
-      onWebResourceError: (error) {
-        if (!mounted || _lifetime.isCancelled || error.isForMainFrame == false ||
-            error.errorCode == -999) return; // WebKit reports superseded loads as cancelled.
-        setState(() { _loading = false; _error = error.description; });
-      },
-    )).asCancellable(_lifetime);
-    _lifetime.throwIfCancelled();
-    setState(() => _controller = controller);
-    return controller;
-  }
-
-  NavigationDecision _onNavigationRequest(NavigationRequest request) {
-    if (!mounted || _lifetime.isCancelled) return NavigationDecision.prevent;
-    final uri = Uri.tryParse(request.url);
-    if (request.isMainFrame && uri != null && uri == _pendingFileLoad) {
-      _pendingFileLoad = null;
-      return NavigationDecision.navigate;
-    }
-    // Subframes stay within their document. WebKit retargets new windows to the
-    // main frame, where their destination follows the same rules as any link.
-    if (widget.navigationEnabled && !request.isMainFrame) {
-      return uri != null && browserLocationAllowed(uri)
-        ? NavigationDecision.navigate : NavigationDecision.prevent;
-    }
-    if (widget.navigationEnabled && uri != null && browserLocationAllowed(uri) &&
-        (uri.toString() == 'about:blank' ||
-          widget.toolbar && {'http', 'https'}.contains(uri.scheme) && browserHostIsLocal(uri.host))) {
-      return NavigationDecision.navigate;
-    }
-    if (!widget.navigationEnabled && (uri == null ||
-        !{'file', 'http', 'https', 'mailto'}.contains(uri.scheme))) {
-      return NavigationDecision.prevent;
-    }
-    unawaited(openDesktopLink(context, request.url,
-      directory: widget.directory ?? '', cancellation: _lifetime));
-    return NavigationDecision.prevent;
-  }
-
-  Future<void> _navigate(Uri uri) async {
-    if (!browserLocationAllowed(uri)) throw const FormatException('Enter a web address or a local file.');
-    if (widget.toolbar && uri.toString() != 'about:blank' &&
-        !(uri.scheme != 'file' && browserHostIsLocal(uri.host))) {
-      await openDesktopLink(context, uri.toString(),
-        directory: widget.directory ?? '', cancellation: _lifetime);
-      if (_controller == null && mounted) setState(() { _location = null; _setAddress(); });
-      return;
-    }
-    final navigation = ++_navigation;
-    setState(() { _location = uri; _title = ''; _error = null; _loading = true; _progress = 0; });
-    _setAddress();
-    widget.onPageChanged?.call(uri.toString(), '');
-    final controller = _controller ?? await (_opening ??= _open());
-    _lifetime.throwIfCancelled();
-    if (navigation != _navigation) return;
-    if (uri.scheme == 'file') {
-      final path = uri.replace(host: '', fragment: '', query: '').toFilePath();
-      _pendingFileLoad = File(path).absolute.uri;
-      final directory = widget.directory;
-      final root = Directory(directory ?? File(path).parent.path).absolute.uri.normalizePath();
-      final readAccess = File(path).absolute.uri.normalizePath().path.startsWith(root.path)
-        ? root.toFilePath() : File(path).parent.path;
-      if (controller.platform case final WebKitWebViewController webkit) {
-        await webkit.loadFileWithParams(WebKitLoadFileParams(
-          absoluteFilePath: path, readAccessPath: readAccess)).asCancellable(_lifetime);
-      } else {
-        await controller.loadFile(path).asCancellable(_lifetime);
-      }
-    } else {
-      await controller.loadRequest(uri).asCancellable(_lifetime);
-    }
-  }
-
-  Future<void> _updatePage() async {
-    final controller = _controller;
-    if (controller == null) return;
-    final generation = ++_generation;
-    final values = await Future.wait<Object?>([
-      controller.currentUrl(), controller.getTitle(), controller.canGoBack(), controller.canGoForward(),
-    ]).asCancellable(_lifetime);
-    if (!mounted || generation != _generation) return;
-    setState(() {
-      if (values[0] case final String url when url.isNotEmpty) _location = Uri.tryParse(url) ?? _location;
-      _title = values[1] as String? ?? '';
-      _back = values[2] as bool; _forward = values[3] as bool;
-    });
-    _setAddress();
-    widget.onPageChanged?.call(_location?.toString() ?? '', _title);
-  }
+  Future<void> _navigate(Uri uri) => _page.navigate(uri, cancellation: _lifetime);
 
   void _submit(String value) {
     try {
@@ -446,18 +334,10 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   }
 
   Future<void> _reload() async {
-    if (_controller == null || _error != null) {
-      if (_location != null) await _navigate(_location!);
-      return;
-    }
-    setState(() { _error = null; _loading = true; _progress = 0; });
-    await _controller!.reload().asCancellable(_lifetime);
+    if (_location != null) await _navigate(_location!);
   }
 
-  Future<void> _stop() async {
-    await _controller?.runJavaScript('window.stop();').asCancellable(_lifetime);
-    if (mounted) setState(() => _loading = false);
-  }
+  Future<void> _stop() => _page.stop();
 
   Future<void> _external() async {
     if (_location == null) return;
@@ -468,9 +348,15 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   void dispose() {
     _annotations?.changes.removeListener(_reconcileAnnotations);
     _annotationOperation?.cancel();
+    if (_commenting && _annotationReady && _controller != null) {
+      unawaited(_controller!.runJavaScript('__happenBrowserAnnotations.setMode(false);')
+        .asCancellable(_lifetime).catchError((Object _) {}));
+    }
     _lifetime.cancel();
-    final controller = _controller;
-    if (controller != null) unawaited(controller.runJavaScript('window.stop();').catchError((Object _) {}));
+    _page.removeListener(_pageChanged);
+    _page.onExternalNavigation = null;
+    _page.onAnnotationMessage = null;
+    if (widget.page == null) _page.close();
     _addressFocus.dispose();
     _address.dispose();
     super.dispose();
@@ -496,7 +382,8 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     if (defaultTargetPlatform != TargetPlatform.macOS) {
       return _message(Icons.language_rounded, 'Browser is available on macOS.', 'Open this page in your system browser.');
     }
-    final blank = _location == null || _location.toString() == 'about:blank';
+    final blank = _page.blank;
+    final error = _error ?? _page.error;
     final mac = defaultTargetPlatform == TargetPlatform.macOS;
     return CallbackShortcuts(bindings: {
       if (widget.toolbar && widget.navigationEnabled) ...{
@@ -547,9 +434,9 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
           style: TextStyle(fontSize: 11, color: desktopSecondary))),
       if (_loading) LinearProgressIndicator(minHeight: 2,
         value: _progress > 0 ? _progress / 100 : null, color: desktopSecondary, backgroundColor: desktopMuted),
-      Expanded(child: _error != null
-        ? _message(Icons.error_outline_rounded, 'This page could not be loaded.', _error!, retry: _location != null)
-        : blank ? _message(Icons.language_rounded, 'Open a page', 'Preview your app, read docs, or browse the web.')
+      Expanded(child: error != null
+        ? _message(Icons.error_outline_rounded, 'This page could not be loaded.', error, retry: _location != null)
+        : blank ? BrowserPorts(active: widget.active && widget.toolbar, onOpen: (uri) => _run(() => _navigate(uri)))
         : _controller == null ? const Center(child: SizedBox.square(dimension: 20,
             child: CircularProgressIndicator(strokeWidth: 2)))
         : SizedBox(key: _pageKey, child: WebViewWidget(key: const ValueKey('browser-webview'), controller: _controller!))),

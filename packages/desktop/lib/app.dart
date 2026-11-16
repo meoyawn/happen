@@ -461,13 +461,15 @@ class _DesktopViewState extends State<DesktopView> {
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
-    final panels = task == null ? null : session.panelLayouts[task.id];
+    final panelTask = task ?? session.browserWorkspace;
+    final panels = session.panelLayouts[panelTask.id];
     final terminalFocused = !includeUnavailable && terminalHasFocus;
     return {
       shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
       shortcut(LogicalKeyboardKey.keyJ, shift: true): _toggleBrowserPanel,
+      shortcut(LogicalKeyboardKey.keyT): () => session.openBrowserPanel(panelTask),
       shortcut(LogicalKeyboardKey.comma): () => unawaited(_settings()),
       shortcut(LogicalKeyboardKey.bracketLeft, shift: true): () => _selectAdjacentTask(-1),
       shortcut(LogicalKeyboardKey.bracketRight, shift: true): () => _selectAdjacentTask(1),
@@ -494,22 +496,20 @@ class _DesktopViewState extends State<DesktopView> {
         if (includeUnavailable || !_homeOpen && task == null && session.currentDraft.submission == null && !_picking && !session.submitting)
           shortcut(LogicalKeyboardKey.keyP): _projectMenu.open,
         shortcut(LogicalKeyboardKey.keyW): () {
-          if (task != null && panels?.opened == true && panels?.active != null) {
-            session.closeSessionPanel(task, panels!.active!);
+          if (panels?.opened == true && panels?.active != null) {
+            session.closeSessionPanel(panelTask, panels!.active!);
             if (!panels.opened) _focusComposer();
           }
         },
         if (includeUnavailable || task != null) ...{
-          if (includeUnavailable || panels?.opened == true)
-            shortcut(LogicalKeyboardKey.keyT): () { if (task != null) session.newSessionPanelTab(task); },
           shortcut(LogicalKeyboardKey.keyP, shift: true): () {
             if (task != null) unawaited(_run(() => session.pinTask(task, !session.pinnedTaskIds.contains(task.id))));
           },
         },
       },
-      if (includeUnavailable || task != null && panels?.closed.isNotEmpty == true)
+      if (includeUnavailable || panels?.closed.isNotEmpty == true)
         shortcut(LogicalKeyboardKey.keyT, shift: true): () {
-          if (task != null && panels?.closed.isNotEmpty == true) session.openSessionPanel(task, panels!.closed.first);
+          if (panels?.closed.isNotEmpty == true) session.openSessionPanel(panelTask, panels!.closed.first);
         },
     };
   }
@@ -701,8 +701,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleBrowserPanel() {
-    final task = _homeOpen ? null : session.task;
-    if (task == null) return;
+    final task = (_homeOpen ? null : session.task) ?? session.browserWorkspace;
     final tab = session.panelsFor(task).tabs.where(isBrowserPanel).firstOrNull;
     if (tab == null) { session.openBrowserPanel(task); }
     else { session.openSessionPanel(task, tab, toggle: true); }
@@ -710,10 +709,9 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleSidePanel() {
-    if (session.task case final task?) {
-      session.toggleSidePanel(task);
-      if (!session.panelsFor(task).opened) _composer.currentState?._focus.requestFocus();
-    }
+    final task = (_homeOpen ? null : session.task) ?? session.browserWorkspace;
+    session.toggleSidePanel(task);
+    if (!session.panelsFor(task).opened) _composer.currentState?._focus.requestFocus();
   }
 
   @override
@@ -1616,22 +1614,6 @@ class _ComposerState extends State<_Composer> {
                             GoalModeButton(onClear: _submitting ? null : _exitGoal),
                             const SizedBox(width: 6),
                           ],
-                          if (_dictating) ...[
-                            DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
-                            const SizedBox(width: 8),
-                          ],
-                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
-                            DictationButton(
-                              phase: _voicePhase,
-                              amplitude: _voice.amplitude,
-                              enabled: available && (!_voice.active || _ownsVoice),
-                              onStart: () => unawaited(_startVoice(answer: answer)),
-                              onStop: () => unawaited(_finishVoice(DictationAction.insert)),
-                              onCancel: () => unawaited(_cancelVoice()),
-                              onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
                           Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                             if (answer == null)
                               Flexible(child: ComposerModelPicker(session: session, enabled: controlsEnabled, target: widget.target,
@@ -1648,6 +1630,22 @@ class _ComposerState extends State<_Composer> {
                                 padding: const EdgeInsets.symmetric(horizontal: 10)),
                               child: const Text('Previous', style: TextStyle(fontSize: 12))),
                             const SizedBox(width: 6),
+                          ],
+                          if (_dictating) ...[
+                            DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
+                            const SizedBox(width: 8),
+                          ],
+                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
+                            DictationButton(
+                              phase: _voicePhase,
+                              amplitude: _voice.amplitude,
+                              enabled: available && (!_voice.active || _ownsVoice),
+                              onStart: () => unawaited(_startVoice(answer: answer)),
+                              onStop: () => unawaited(_finishVoice(DictationAction.insert)),
+                              onCancel: () => unawaited(_cancelVoice()),
+                              onRetry: () => unawaited(_finishVoice(DictationAction.insert, retry: true)),
+                            ),
+                            const SizedBox(width: 8),
                           ],
                           if (answer != null)
                             FilledButton(onPressed: available && (_dictating

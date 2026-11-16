@@ -24,6 +24,7 @@ import 'conversation_data.dart';
 import 'conversation_annotations.dart';
 import 'response_annotation_reference.dart';
 import 'desktop_toast.dart';
+import 'selectable_markdown.dart';
 
 class ConversationMarkdown extends StatelessWidget {
   const ConversationMarkdown({super.key, required this.text, required this.directory, this.fitContent = false,
@@ -188,9 +189,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
         h1Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h2Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h3Padding: const EdgeInsets.only(top: 20, bottom: 8),
-        code: TextStyle(fontFamily: desktopMonoFamily, fontSize: fontSize * .875,
-          // Keep the fill translucent: span backgrounds paint over selection.
-          backgroundColor: desktopMuted),
+        code: TextStyle(fontFamily: desktopMonoFamily, fontSize: fontSize * .875),
         strong: const TextStyle(fontWeight: FontWeight.w600),
         blockSpacing: 10.4,
         listBullet: body,
@@ -220,8 +219,9 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
       _disposeLinks();
       final nodes = md.Document(extensionSet: md.ExtensionSet.gitHubFlavored,
         inlineSyntaxes: _inlineSyntaxes, encodeHtml: false).parseLines(const LineSplitter().convert(text));
-      // Use the package's parser and rich-text builder, retaining the href for
-      // glyph hit testing without turning selectable link labels into widgets.
+      _selectableParagraphs(nodes);
+      // Retain the package's block layouts; each inline flow has one native
+      // paragraph for selection, copy offsets and code background painting.
       final children = MarkdownBuilder(
         delegate: this,
         selectable: false,
@@ -232,8 +232,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
         fitContent: fitContent,
         softLineBreak: fitContent,
         styleSheet: _styleSheet,
-        builders: {'pre': _CodeBuilder(), 'skill-reference': _SkillLinkBuilder(directory, _lifetime),
-          'codex-annotation': ResponseAnnotationBuilder()},
+        builders: {'pre': _CodeBuilder(), 'selectable-paragraph': _SelectableParagraphBuilder(this)},
         imageBuilder: (uri, title, alt) => ConversationImage(
           key: ValueKey(uri.toString()), source: uri.toString(),
           label: alt?.isNotEmpty == true ? alt! : title ?? 'Image', directory: directory, markdown: true,
@@ -251,6 +250,131 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
     return ConversationImageGroup(child: MouseRegion(onHover: _hoverLink, onExit: (_) => _hideLinkTooltip(),
       child: ConversationAnnotationSelection.contains(context) ? _content : SelectionArea(child: _content)));
   }
+
+  Widget _paragraph(BuildContext context, _SelectableParagraphNode node, TextStyle? parentStyle) =>
+    ParagraphSelection(child: Builder(builder: (context) {
+      final defaults = DefaultTextStyle.of(context);
+      final requested = switch (node.blockTag) {
+        'th' => _styleSheet.tableHead!,
+        'td' => _styleSheet.tableBody!,
+        _ => parentStyle ?? _styleSheet.p!,
+      };
+      var style = requested.inherit ? defaults.style.merge(requested) : requested;
+      if (MediaQuery.boldTextOf(context)) style = style.merge(const TextStyle(fontWeight: FontWeight.bold));
+      final selection = DefaultSelectionStyle.of(context);
+      final registrar = SelectionContainer.maybeOf(context);
+      return MouseRegion(cursor: registrar == null ? MouseCursor.defer : selection.mouseCursor ?? SystemMouseCursors.text,
+        child: LaidOutSelectableRichText(
+          text: TextSpan(style: style, children: _inline(context, node.nodes, style)),
+          textAlign: node.textAlign ?? defaults.textAlign ?? TextAlign.start,
+          softWrap: defaults.softWrap, overflow: defaults.overflow, maxLines: defaults.maxLines,
+          textScaler: _styleSheet.textScaler ?? MediaQuery.textScalerOf(context),
+          textWidthBasis: TextWidthBasis.longestLine,
+          strutStyle: StrutStyle(fontFamily: style.fontFamily, fontSize: style.fontSize,
+            height: style.height, leading: 0),
+          textHeightBehavior: defaults.textHeightBehavior ?? DefaultTextHeightBehavior.maybeOf(context),
+          selectionRegistrar: registrar,
+          selectionColor: selection.selectionColor ?? DefaultSelectionStyle.defaultColor,
+        ));
+    }));
+
+  List<InlineSpan> _inline(BuildContext context, List<md.Node> nodes, TextStyle style,
+      [GestureRecognizer? recognizer]) => [
+    for (final node in nodes) _inlineNode(context, node, style, recognizer),
+  ];
+
+  InlineSpan _inlineNode(BuildContext context, md.Node node, TextStyle style, GestureRecognizer? recognizer) {
+    if (node is! md.Element) {
+      final text = widget.markdown.fitContent ? node.textContent : node.textContent.replaceAll(RegExp(r' ?\n *'), ' ');
+      return TextSpan(text: text, recognizer: recognizer);
+    }
+    final children = node.children ?? const <md.Node>[];
+    switch (node.tag) {
+      case 'code':
+        return InlineCodeTextSpan(text: node.textContent, style: style.merge(_styleSheet.code),
+          backgroundColor: desktopMuted, recognizer: recognizer);
+      case 'br': return const TextSpan(text: '\n');
+      case 'input': return const TextSpan();
+      case 'a':
+      case 'skill-reference':
+        final href = node.attributes['href'];
+        if (href == null) return TextSpan(children: _inline(context, children, style, recognizer));
+        final link = createLink(node.textContent, href, node.attributes['title'] ?? '') as TapGestureRecognizer;
+        final linkStyle = style.merge(_styleSheet.a).copyWith(
+          fontWeight: node.tag == 'skill-reference' ? FontWeight.w500 : style.fontWeight);
+        return TextSpan(style: linkStyle, recognizer: link, mouseCursor: SystemMouseCursors.click, children: [
+          if (node.tag == 'skill-reference') WidgetSpan(alignment: PlaceholderAlignment.middle,
+            child: SelectionContainer.disabled(child: Tooltip(message: href,
+              child: MouseRegion(cursor: SystemMouseCursors.click,
+                child: GestureDetector(onTap: link.onTap, onSecondaryTapUp: link.onSecondaryTapUp,
+                  child: const Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())))))),
+          ..._inline(context, children, linkStyle, link),
+        ]);
+      case 'codex-annotation':
+        final index = node.attributes['index'];
+        final annotation = resolveResponseAnnotation(index, ResponseAnnotationContext.of(context));
+        if (annotation == null) return TextSpan(text: 'Annotation ${index ?? ''}');
+        return WidgetSpan(alignment: PlaceholderAlignment.baseline, baseline: TextBaseline.alphabetic,
+          child: SelectionContainer.disabled(child: ResponseAnnotationReference(number: int.parse(index!),
+            annotation: annotation, style: style, selectionRegistrar: SelectionContainer.maybeOf(context))));
+      case 'img':
+        final image = ConversationImage(
+          key: ValueKey(node.attributes['src']), source: node.attributes['src'] ?? '',
+          label: node.attributes['alt']?.isNotEmpty == true ? node.attributes['alt']! : node.attributes['title'] ?? 'Image',
+          directory: widget.markdown.directory, markdown: true,
+        );
+        return WidgetSpan(alignment: PlaceholderAlignment.bottom,
+          child: SelectionContainer.disabled(child: recognizer is TapGestureRecognizer
+            ? GestureDetector(onTap: recognizer.onTap, child: image) : image));
+      default:
+        final nestedStyle = style.merge(_styleSheet.styles[node.tag]);
+        return TextSpan(style: nestedStyle, children: _inline(context, children, nestedStyle, recognizer));
+    }
+  }
+}
+
+/// Replace inline groups without changing list, table or fenced-code ownership.
+void _selectableParagraphs(List<md.Node> nodes) {
+  const paragraphs = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'th', 'td'};
+  const blocks = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre', 'table', 'thead', 'tbody', 'tr', 'hr'};
+  for (final node in nodes) {
+    if (node is! md.Element || node.tag == 'pre' || node.children == null) continue;
+    if (!paragraphs.contains(node.tag)) { _selectableParagraphs(node.children!); continue; }
+    final children = <md.Node>[], inline = <md.Node>[];
+    void flush() {
+      if (inline.isEmpty) return;
+      children.add(_SelectableParagraphNode(List.of(inline), node.tag, switch (node.attributes['align']) {
+        'left' => TextAlign.left, 'center' => TextAlign.center, 'right' => TextAlign.right, _ => null,
+      }));
+      inline.clear();
+    }
+    for (final child in node.children!) {
+      if (child is md.Element && (blocks.contains(child.tag) || child.attributes['type'] == 'checkbox')) {
+        flush();
+        _selectableParagraphs([child]);
+        children.add(child);
+      } else { inline.add(child); }
+    }
+    flush();
+    node.children!..clear()..addAll(children);
+  }
+}
+
+class _SelectableParagraphNode extends md.Element {
+  _SelectableParagraphNode(this.nodes, this.blockTag, this.textAlign) : super('selectable-paragraph', []);
+  final List<md.Node> nodes;
+  final String blockTag;
+  final TextAlign? textAlign;
+}
+
+class _SelectableParagraphBuilder extends MarkdownElementBuilder {
+  _SelectableParagraphBuilder(this.owner);
+  final _ConversationMarkdownBodyState owner;
+
+  @override
+  Widget visitElementAfterWithContext(BuildContext context, md.Element element,
+      TextStyle? preferredStyle, TextStyle? parentStyle) =>
+    owner._paragraph(context, element as _SelectableParagraphNode, parentStyle);
 }
 
 Future<void> _showLinkMenu(BuildContext context, String href, Offset position) async {
@@ -325,33 +449,6 @@ class _SkillLinkSyntax extends md.LinkSyntax {
     if (!_localSkillUri(uri)) return node;
     if (!node.textContent.trim().startsWith(r'$') && uri!.path.split('/').last.toLowerCase() != 'skill.md') return node;
     return md.Element('skill-reference', node.children)..attributes.addAll(node.attributes);
-  }
-}
-
-class _SkillLinkBuilder extends MarkdownElementBuilder {
-  _SkillLinkBuilder(this.directory, this.cancellation);
-  final String directory;
-  final CancellationToken cancellation;
-
-  @override
-  Widget visitElementAfterWithContext(BuildContext context, md.Element element,
-      TextStyle? preferredStyle, TextStyle? parentStyle) {
-    final href = element.attributes['href']!;
-    final link = Tooltip(message: href, child: MouseRegion(cursor: SystemMouseCursors.click,
-      child: GestureDetector(onTap: () => unawaited(openDesktopLink(context, href,
-        directory: directory, cancellation: cancellation)),
-        onSecondaryTapUp: (details) => unawaited(_showLinkMenu(context, href, details.globalPosition)),
-        child: Text.rich(TextSpan(children: [
-          const WidgetSpan(alignment: PlaceholderAlignment.middle,
-            child: Padding(padding: EdgeInsets.only(right: 3), child: SkillIcon())),
-          TextSpan(text: element.textContent),
-        ]), style: (parentStyle ?? const TextStyle()).copyWith(color: DesktopAccent.of(context).reference,
-          fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
-      ),
-    ));
-    // MarkdownBuilder merges adjacent Text spans into one paragraph. Keep the
-    // interactive link atomic, but let the sentence wrap as a single text run.
-    return Text.rich(TextSpan(children: [WidgetSpan(alignment: PlaceholderAlignment.middle, child: link)]));
   }
 }
 

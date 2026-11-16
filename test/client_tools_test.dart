@@ -78,8 +78,7 @@ void main() {
               ? <Json>[
                   {
                     'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec',
-                    'input': 'text(await tools.tool_search({query:"browser_title",limit:1})); '
-                      'text(await tools.client__browser_title({tab:3}));',
+                    'input': 'text(await tools.client__browser_title({tab:3}));',
                     'call_id': 'call_${++call}',
                   },
                 ]
@@ -199,7 +198,7 @@ void main() {
         );
         expect(declarations, isEmpty, reason: 'Code-mode calls do not load client schemas');
 
-        // A discovered client tool keeps the same ownership and disconnect rules.
+        // Client calls keep the same ownership across turns.
         final direct = owner.incoming.stream.firstWhere(
           (v) => v['method'] == 'tools.call',
         );
@@ -212,7 +211,7 @@ void main() {
             (v) => v['type'] == 'additional_tools' && (v['tools'] as List).any((tool) => tool['name'] == 'client'),
           ),
           isFalse,
-          reason: 'Nested discovery must not load native client schemas',
+          reason: 'Code-mode calls must not load native client schemas',
         );
         await owner.close();
         final terminal = await disconnected;

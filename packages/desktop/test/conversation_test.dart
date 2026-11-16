@@ -179,7 +179,7 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Center(child: SizedBox(width: 1050,
       child: ConversationMarkdown(text: prompt, directory: '/project', fitContent: true))))));
 
-    final paragraphs = tester.renderObjectList<RenderParagraph>(find.byType(RichText)).toList();
+    final paragraphs = tester.renderObjectList<RenderParagraph>(find.byWidgetPredicate((widget) => widget is RichText)).toList();
     final start = paragraphs.firstWhere((paragraph) => paragraph.text.toPlainText().contains('bottlenecks'));
     final end = paragraphs.firstWhere((paragraph) => paragraph.text.toPlainText().contains('career-mcp'));
     final endText = end.text.toPlainText();

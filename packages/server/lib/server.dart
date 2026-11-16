@@ -2130,6 +2130,23 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  /// Answer a server-initiated tool request on the connection that owns it.
+  /// Worker transports must send a response envelope, not a new RPC request.
+  Future<void> respondClientTool(String id, Json result, {required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
+    _lifetime.throwIfCancelled();
+    if (isClosed) throw StateError('Connection is closed');
+    if (_worker case final worker?) {
+      await callIsolate(worker.port, 'respond', {'id': id, 'result': result},
+        cancellation: cancellation.merge(_lifetime));
+    } else if (_localServer case final server?) {
+      server._clientTools.complete(_localClient!.id, {'id': id, 'result': result});
+    } else {
+      if (socket!.readyState != WebSocket.open) throw StateError('Connection is closed');
+      socket!.add(jsonEncode({'id': id, 'result': result}));
+    }
+  }
+
   Future<void> checkConnection({required CancellationToken cancellation}) async {
     cancellation.throwIfCancelled();
     if (_worker case final worker? when !isClosed) {

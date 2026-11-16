@@ -11,6 +11,7 @@ export 'src/attachments.dart';
 export 'src/session.dart';
 export 'src/thread.dart';
 export 'src/repository.dart';
+export 'src/client_tools.dart';
 
 typedef Json = Map<String, dynamic>;
 

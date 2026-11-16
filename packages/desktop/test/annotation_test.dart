@@ -60,6 +60,67 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
   }
 
+  testWidgets('triple click selects a paragraph while a scrolled-away message is kept alive', (tester) async {
+    final task = DesktopTask('selection-scroll', 'Selection')..loaded = true;
+    addTearDown(task.liveText.dispose);
+    for (var index = 0; index < 40; index++) {
+      task.messages['question-$index'] = {'id': 'question-$index', 'type': 'userMessage', 'order': index * 2,
+        'content': [{'type': 'text', 'text': 'Question $index'}]};
+      task.messages['answer-$index'] = {'id': 'answer-$index', 'type': 'agentMessage', 'order': index * 2 + 1,
+        'phase': 'final_answer', 'text': 'Paragraph $index has **formatted text** and `inline code` to select.'};
+    }
+    ResponseAnnotation? selected;
+    final changes = ChangeNotifier();
+    addTearDown(changes.dispose);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ConversationAnnotationScope(
+      onAdd: (annotation, _) => selected = annotation, onEdit: (_) {},
+      readAnnotations: () => const [], changes: changes, enabled: true,
+      child: ConversationTranscript(task: task, directory: '', onRetry: () {})))));
+    await tester.pumpAndSettle();
+    final viewport = tester.getRect(find.byType(ConversationTranscript));
+    await tester.sendEventToBinding(PointerScrollEvent(position: viewport.center, scrollDelta: const Offset(0, -2400)));
+    await tester.pumpAndSettle();
+    final paragraphs = find.byWidgetPredicate((widget) => widget is RichText && widget.text.toPlainText().startsWith('Paragraph '));
+    final first = tester.renderObjectList<RenderParagraph>(paragraphs)
+      .firstWhere((paragraph) => viewport.deflate(30).contains(paragraph.localToGlobal(const Offset(20, 10))));
+    final firstText = first.text.toPlainText();
+    Offset point(RenderParagraph paragraph) => paragraph.localToGlobal(paragraph.getBoxesForSelection(
+      const TextSelection(baseOffset: 0, extentOffset: 9)).first.toRect().center);
+    for (var click = 0; click < 3; click++) {
+      await tester.tapAt(point(first), kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 75));
+    }
+    expect(find.text('Add to chat'), findsOneWidget);
+    // Active message controls can keep their row mounted outside the cache.
+    final retention = KeepAliveHandle();
+    addTearDown(retention.dispose);
+    KeepAliveNotification(retention).dispatch(tester.element(find.byWidgetPredicate((widget) =>
+      widget is RichText && widget.text.toPlainText() == firstText)));
+    await tester.pump();
+    await tester.sendEventToBinding(PointerScrollEvent(position: tester.getCenter(find.byType(CustomScrollView)),
+      scrollDelta: const Offset(0, 2400)));
+    await tester.pumpAndSettle();
+    expect(first.localToGlobal(Offset.zero).isFinite, isTrue,
+      reason: 'Retained text stays registered for selection and must have valid screen coordinates');
+    final next = tester.renderObjectList<RenderParagraph>(paragraphs)
+      .lastWhere((paragraph) => viewport.deflate(30).contains(paragraph.localToGlobal(const Offset(20, 10))));
+    final text = next.text.toPlainText();
+    expect(text, isNot(firstText));
+    for (var click = 0; click < 3; click++) {
+      await tester.tapAt(point(next), kind: PointerDeviceKind.mouse);
+      await tester.pump(const Duration(milliseconds: 75));
+    }
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('Add to chat'));
+    await tester.pumpAndSettle();
+    expect(selected?.text, text);
+    expect(selected?.messageId, startsWith('answer-'));
+    expect(selected?.startOffset, 0);
+    expect(selected?.endOffset, text.length);
+    await tester.pumpWidget(const SizedBox.shrink());
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('sent browser and response comments stay readable and resolve inline references', (tester) async {
     const response = ResponseAnnotation(id: 'draft-response', text: 'Original response', annotation: 'Explain the choice',
       messageId: 'assistant', startOffset: 0, endOffset: 17);
@@ -76,7 +137,7 @@ void main() {
     });
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: ConversationTranscript(task: task, directory: '', onRetry: () {}))));
     await tester.pumpAndSettle();
-    expect(find.text('Update both'), findsOneWidget);
+    expect(find.text('Update both', findRichText: true), findsOneWidget);
     expect(find.text('Original response'), findsOneWidget);
     expect(find.text('Use a clearer label'), findsOneWidget);
     expect(find.text('Annotation 1'), findsOneWidget);

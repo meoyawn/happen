@@ -709,6 +709,9 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                   sliver: SuperSliverList.builder(
                     listController: _list,
                     delayPopulatingCacheArea: true,
+                    // Selection scans retained rows too; their paint transforms
+                    // must stay valid after they leave the viewport.
+                    layoutKeptAliveChildren: true,
                     itemCount: itemCount,
                     findChildIndexCallback: (key) => key == const ValueKey('transcript-history') && historyOffset == 1
                       ? count : key is ValueKey<String> ? indices[key.value] : null,
