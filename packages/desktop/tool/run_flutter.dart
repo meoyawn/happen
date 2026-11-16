@@ -179,7 +179,7 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
   try {
     final local = launchLock('${runDirectory.path}/launch.lock');
     try {
-      apps = appPids(); supervisors = flutterPids();
+      apps = appPids('debug'); supervisors = flutterPids('debug');
       if (apps.length > 1 || supervisors.length > 1) {
         stdout.writeln(jsonEncode({'error': 'Multiple existing instances; stop extras before continuing',
           'mode': 'debug', 'app_pids': apps, 'flutter_pids': supervisors}));

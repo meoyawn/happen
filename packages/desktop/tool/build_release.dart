@@ -62,7 +62,7 @@ Future<void> main(List<String> arguments) async {
     final framework = (config['packages'] as List).map(jsonObject).singleWhere((package) => package['name'] == 'flutter');
     final resolvedFramework = Directory.fromUri(configFile.uri.resolve(framework['rootUri'] as String));
     if (await resolvedFramework.resolveSymbolicLinks() != await Directory('${sdk.path}/packages/flutter').resolveSymbolicLinks()) {
-      throw StateError('Release dependencies resolved Flutter outside the Homebrew SDK');
+      throw StateError('Release dependencies resolved Flutter outside the mise SDK');
     }
     await _run(flutter, ['build', 'macos', '--release', '--no-pub', ...arguments], desktop,
       cancellation, environment: environment);
@@ -81,8 +81,7 @@ Future<void> main(List<String> arguments) async {
       await Directory('${staged.path}/Happen.app').rename(destination.path);
       await File('${output.path}/toolchain.json').writeAsString('${const JsonEncoder.withIndent('  ').convert({
         'upstream': version['repositoryUrl'], 'channel': 'stable', 'framework_revision': revision,
-        'distribution': Platform.environment['GITHUB_ACTIONS'] == 'true' ? 'mise' :
-          Platform.environment.containsKey('HAPPEN_RELEASE_FLUTTER_EXECUTABLE') ? 'provided' : 'homebrew',
+        'distribution': 'mise',
         'flutter': version['frameworkVersion'], 'dart': version['dartSdkVersion'],
         'engine_revision': version['engineRevision'], 'sdk': sdk.path,
       })}\n');
@@ -100,13 +99,8 @@ Future<void> main(List<String> arguments) async {
 bool get _requireDeveloperId => Platform.environment['HAPPEN_REQUIRE_DEVELOPER_ID'] == '1';
 
 Future<Directory> _releaseFlutter(Directory root, CancellationToken cancellation) async {
-  final configured = Platform.environment['HAPPEN_RELEASE_FLUTTER_EXECUTABLE'] ??
-    (Platform.environment['GITHUB_ACTIONS'] == 'true'
-      ? (await _run('mise', ['which', 'flutter'], root.path, cancellation, capture: true)).trim()
-      : null);
-  final executable = configured == null
-    ? File('${(await _run('brew', ['--prefix'], root.path, cancellation, capture: true)).trim()}/bin/flutter')
-    : File(configured);
+  final executable = File((await _run('mise', ['which', 'flutter'], root.path,
+    cancellation, capture: true)).trim());
   if (!await executable.exists()) throw StateError('Release Flutter SDK not found: ${executable.path}');
   final sdk = File(await executable.resolveSymbolicLinks()).parent.parent;
   await _requireClean(sdk, cancellation);
