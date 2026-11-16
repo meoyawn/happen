@@ -43,6 +43,11 @@ runtime code is a modified Dart/JavaScript implementation. Codex is Copyright
 2025 OpenAI, Apache-2.0; see [CODEX-LICENSE](../openai/tools/CODEX-LICENSE) and
 [CODEX-NOTICE](../openai/tools/CODEX-NOTICE).
 
+Command-session capacity is owned by OpenAI's host tools. Its
+[reclamation policy and upstream tests](../openai/COMMAND_SESSIONS_UPSTREAM.md)
+allow awaited command sequences to continue at capacity. Other uncaught host
+rejections still fail the JavaScript cell, matching the callback contract.
+
 ## Applicability and evidence
 
 “Adapted” means implemented for QuickJS with the listed coverage. It does not

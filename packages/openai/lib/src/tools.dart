@@ -19,6 +19,7 @@ class HostTools {
   final _commands = <int, _Command>{};
   final _completions = <Future<void>>{};
   final _random = Random.secure();
+  int _commandUse = 0;
   late final CommandRunner _runner;
 
   Future<Object?> call(String name, Object? raw, {required CancellationToken cancellation, String? cwd,
@@ -89,9 +90,6 @@ class HostTools {
           await command.done;
         }
       case 'exec_command':
-        if (_commands.length >= 32) {
-          throw StateError('Too many running command sessions');
-        }
         if (input['sandbox_permissions'] != null &&
             input['sandbox_permissions'] != 'use_default') {
           throw UnsupportedError('Permission escalation is not implemented');
@@ -120,15 +118,15 @@ class HostTools {
         }
         var id = 1000 + _random.nextInt(99000);
         while (_commands.containsKey(id)) { id = 1000 + _random.nextInt(99000); }
+        _pruneCommands();
+        command.lastUsed = ++_commandUse;
         _commands[id] = command;
         item['process_id'] = '$id';
         await onItem?.call('started', item);
-        if (onItem != null) {
-          final completion = command.completion = _completeCommand(command, item, onItem);
-          _completions.add(completion);
-          unawaited(completion.then<void>((_) => _completions.remove(completion),
-            onError: (Object _, StackTrace _) { _completions.remove(completion); }));
-        }
+        final completion = command.completion = _completeCommand(command, item, onItem);
+        _completions.add(completion);
+        unawaited(completion.then<void>((_) => _completions.remove(completion),
+          onError: (Object _, StackTrace _) { _completions.remove(completion); }));
         return _poll(
           id,
           input,
@@ -139,15 +137,11 @@ class HostTools {
         );
       case 'write_stdin':
         final id = input['session_id'] as int;
-        final command = _commands[id];
-        if (command == null) throw StateError('Unknown command session: $id');
         final chars = input['chars'] as String? ?? '';
-        if (chars.isNotEmpty) {
-          await command.process.write(chars, cancellation: cancellation);
-        }
         return _poll(
           id,
           input,
+          chars: chars,
           defaultWait: chars.isEmpty ? 5000 : 250,
           maxWait: chars.isEmpty ? 300000 : 30000,
           minWait: 1,
@@ -165,16 +159,20 @@ class HostTools {
     required int maxWait,
     required int minWait,
     required CancellationToken cancellation,
+    String chars = '',
   }) async {
-    final command = _commands[id]!;
+    final command = _commands[id];
+    if (command == null) throw StateError('Unknown command session: $id');
     if (command.polling) {
       throw StateError('A poll is already pending for this command');
     }
+    command.lastUsed = ++_commandUse;
     command.polling = true;
     final watch = Stopwatch()..start();
     final waiting = CancellationToken();
     final link = CancellationHook(cancellation.merge(this.cancellation), waiting.cancel);
     try {
+      if (chars.isNotEmpty) await command.process.write(chars, cancellation: waiting);
       final wait = Duration(
         milliseconds: (input['yield_time_ms'] as num? ?? defaultWait)
             .toInt()
@@ -201,6 +199,32 @@ class HostTools {
     }
   }
 
+  // Codex unified_exec/process_manager.rs: a soft cap, with the eight most
+  // recently used sessions protected. Reclaim exited output before live work.
+  void _pruneCommands() {
+    if (_commands.length < 64) return;
+    final recent = _commands.entries.toList()
+      ..sort((a, b) => b.value.lastUsed.compareTo(a.value.lastUsed));
+    final candidates = recent.skip(8).toList().reversed.toList();
+    var finalizingExited = false;
+    for (final entry in [
+      ...candidates.where((entry) => entry.value.process.exitCode != null),
+      ...candidates.where((entry) => entry.value.process.exitCode == null),
+    ]) {
+      final command = entry.value, exited = command.process.exitCode != null;
+      // Publishing a terminal event may temporarily exceed the cap. Never kill
+      // live work just because an exited session is still acknowledging it.
+      if (finalizingExited && !exited) return;
+      if (command.polling || exited && !command.completed) {
+        finalizingExited |= exited;
+        continue;
+      }
+      _commands.remove(entry.key);
+      command.process.kill();
+      return;
+    }
+  }
+
   Future<void> close() async {
     await _runner.close();
     await Future.wait(_completions.toList());
@@ -209,17 +233,20 @@ class HostTools {
 
   // Codex unified_exec/async_watcher.rs: finish the original command exactly
   // once, independently of yield/poll boundaries and inference-isolate lifetime.
-  Future<void> _completeCommand(_Command command, Json item, ToolItemEvent emit) async {
+  Future<void> _completeCommand(_Command command, Json item, ToolItemEvent? emit) async {
     final watch = Stopwatch()..start();
-    await command.process.done;
-    final cleanup = TimeoutCancellationToken(const Duration(seconds: 10));
     try {
-      final output = await command.process.capture(maxBytes: maxToolOutputBytes, cancellation: cleanup);
-      final milliseconds = watch.elapsedMilliseconds;
-      await emit('completed', {...item, 'status': command.process.exitCode == 0 ? 'completed' : 'failed',
-        'aggregated_output': output.text, 'exit_code': command.process.exitCode,
-        'duration': {'secs': milliseconds ~/ 1000, 'nanos': milliseconds % 1000 * 1000000}});
-    } finally { cleanup.cancel(); }
+      await command.process.done;
+      if (emit == null) return;
+      final cleanup = TimeoutCancellationToken(const Duration(seconds: 10));
+      try {
+        final output = await command.process.capture(maxBytes: maxToolOutputBytes, cancellation: cleanup);
+        final milliseconds = watch.elapsedMilliseconds;
+        await emit('completed', {...item, 'status': command.process.exitCode == 0 ? 'completed' : 'failed',
+          'aggregated_output': output.text, 'exit_code': command.process.exitCode,
+          'duration': {'secs': milliseconds ~/ 1000, 'nanos': milliseconds % 1000 * 1000000}});
+      } finally { cleanup.cancel(); }
+    } finally { command.completed = true; }
   }
 }
 
@@ -228,4 +255,6 @@ class _Command {
   final RunningCommand process;
   Future<void> completion = Future<void>.value();
   bool polling = false;
+  int lastUsed = 0;
+  bool completed = false;
 }
