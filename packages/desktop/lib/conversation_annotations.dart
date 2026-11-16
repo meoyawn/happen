@@ -206,7 +206,6 @@ class _ConversationAnnotationSelectionState extends State<ConversationAnnotation
   bool _dragging = false;
   int _generation = 0;
   SelectionContainerDelegate? _selectionContent;
-  Timer? _settling;
 
   void _bindSelectionContent(BuildContext targetContext) {
     SelectionContainerDelegate? content;
@@ -237,15 +236,10 @@ class _ConversationAnnotationSelectionState extends State<ConversationAnnotation
   void _hide() { _toolbar?.remove(); _toolbar?.dispose(); _toolbar = null; }
   void _schedule() {
     final generation = ++_generation;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || generation != _generation || _dragging) return;
-      // Nested selection delegates finish their post-frame updates in
-      // microtasks. Read their ranges after that work has settled.
-      _settling?.cancel();
-      _settling = Timer(Duration.zero, () {
-        _settling = null;
-        if (mounted && generation == _generation && !_dragging) _show();
-      });
+    // Let the gesture's nested selection updates finish, then insert the
+    // overlay before the next frame instead of waiting for an unrelated frame.
+    scheduleMicrotask(() {
+      if (mounted && generation == _generation && !_dragging) _show();
     });
   }
 
@@ -269,12 +263,13 @@ class _ConversationAnnotationSelectionState extends State<ConversationAnnotation
     _hide();
     if (_selected.trim().isEmpty || _area.currentState == null) return;
     final region = _area.currentState!.selectableRegion;
-    final anchor = region.contextMenuAnchors.primaryAnchor;
+    final anchors = region.contextMenuAnchors;
+    final anchor = anchors.primaryAnchor;
     final selected = _selected;
     final annotation = _selectionAnnotation();
     void clear() { _hide(); region.hideToolbar(); region.clearSelection(); }
     _toolbar = OverlayEntry(builder: (context) => Positioned.fill(child: CustomSingleChildLayout(
-      delegate: _AnnotationToolbarLayout(anchor),
+      delegate: _AnnotationToolbarLayout(anchors),
       child: TapRegion(onTapOutside: (_) => _hide(), child: DecoratedBox(
         decoration: BoxDecoration(color: desktopSurface, borderRadius: BorderRadius.circular(999),
           border: Border.all(color: desktopBorder),
@@ -320,7 +315,6 @@ class _ConversationAnnotationSelectionState extends State<ConversationAnnotation
 
   @override
   void dispose() {
-    _settling?.cancel();
     _selectionContent?.removeListener(_refreshSelectionContent);
     _selectionContent = null;
     _generation++; _hide(); super.dispose();
@@ -328,16 +322,20 @@ class _ConversationAnnotationSelectionState extends State<ConversationAnnotation
 }
 
 class _AnnotationToolbarLayout extends SingleChildLayoutDelegate {
-  const _AnnotationToolbarLayout(this.anchor);
-  final Offset anchor;
+  const _AnnotationToolbarLayout(this.anchors);
+  final TextSelectionToolbarAnchors anchors;
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) => constraints.loosen().copyWith(maxWidth: math.max(0, constraints.maxWidth - 16));
   @override
-  Offset getPositionForChild(Size size, Size childSize) => Offset(
-    (anchor.dx - childSize.width / 2).clamp(8, math.max(8, size.width - childSize.width - 8)).toDouble(),
-    anchor.dy - childSize.height - 8 >= 8 ? anchor.dy - childSize.height - 8 : anchor.dy + 8);
+  Offset getPositionForChild(Size size, Size childSize) {
+    final anchor = anchors.primaryAnchor;
+    return Offset(
+      (anchor.dx - childSize.width / 2).clamp(8, math.max(8, size.width - childSize.width - 8)).toDouble(),
+      anchor.dy - childSize.height - 8 >= 8 ? anchor.dy - childSize.height - 8 : (anchors.secondaryAnchor ?? anchor).dy + 8);
+  }
   @override
-  bool shouldRelayout(_AnnotationToolbarLayout oldDelegate) => oldDelegate.anchor != anchor;
+  bool shouldRelayout(_AnnotationToolbarLayout oldDelegate) =>
+    oldDelegate.anchors.primaryAnchor != anchors.primaryAnchor || oldDelegate.anchors.secondaryAnchor != anchors.secondaryAnchor;
 }
 
 class _AnnotationTextAction extends StatelessWidget {

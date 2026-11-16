@@ -10,37 +10,55 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('selecting a formatted response adds its rendered text and source range', (tester) async {
-    ResponseAnnotation? selected;
-    await tester.pumpWidget(MaterialApp(home: Scaffold(body: Align(alignment: Alignment.topLeft,
-      child: SizedBox(width: 500, child: ConversationAnnotationSelection(onAdd: (annotation, _) => selected = annotation,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ConversationAnnotationTarget(messageId: 'response', child: ConversationMarkdown(
-            text: 'Explain **this** `choice`.', directory: '')),
-          const ConversationAnnotationTarget(messageId: 'another-response', child: Text('A separate response.')),
-        ])))))));
-    await tester.pumpAndSettle();
-    final paragraph = tester.renderObject<RenderParagraph>(find.byWidgetPredicate((widget) =>
-      widget is RichText && widget.text.toPlainText() == 'Explain this choice.'));
-    final box = paragraph.getBoxesForSelection(const TextSelection(baseOffset: 8, extentOffset: 12)).first.toRect();
-    for (var click = 0; click < 3; click++) {
-      await tester.tapAt(paragraph.localToGlobal(box.center), kind: PointerDeviceKind.mouse);
-      await tester.pump(const Duration(milliseconds: 75));
-    }
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add to chat'));
-    await tester.pumpAndSettle();
-    expect(selected?.text, 'Explain this choice.');
-    expect(selected?.messageId, 'response');
-    expect(selected?.startOffset, 0);
-    expect(selected?.endOffset, 20);
+  for (final (gesture, text, start, end) in [
+    ('drag', 'Explain this choice.', 0, 20),
+    ('double click', 'this', 8, 12),
+    ('triple click', 'Explain this choice.', 0, 20),
+  ]) {
+    testWidgets('$gesture shows response actions on the next frame with the rendered text and source range', (tester) async {
+      ResponseAnnotation? selected;
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: Align(alignment: Alignment.topLeft,
+        child: SizedBox(width: 500, child: ConversationAnnotationSelection(onAdd: (annotation, _) => selected = annotation,
+          child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ConversationAnnotationTarget(messageId: 'response', child: ConversationMarkdown(
+              text: 'Explain **this** `choice`.', directory: '')),
+            const ConversationAnnotationTarget(messageId: 'another-response', child: Text('A separate response.')),
+          ]))))))));
+      await tester.pumpAndSettle();
+      final paragraph = tester.renderObject<RenderParagraph>(find.byWidgetPredicate((widget) =>
+        widget is RichText && widget.text.toPlainText() == 'Explain this choice.'));
+      final box = paragraph.getBoxesForSelection(const TextSelection(baseOffset: 8, extentOffset: 12)).first.toRect();
+      if (gesture == 'drag') {
+        final boxes = paragraph.getBoxesForSelection(const TextSelection(baseOffset: 0, extentOffset: 20));
+        final pointer = await tester.startGesture(paragraph.localToGlobal(boxes.first.toRect().centerLeft), kind: PointerDeviceKind.mouse);
+        await pointer.moveTo(paragraph.localToGlobal(boxes.last.toRect().centerRight));
+        await tester.pump();
+        expect(find.text('Copy'), findsNothing, reason: 'Actions wait until the selection gesture finishes');
+        await pointer.up();
+      } else {
+        final clicks = gesture == 'double click' ? 2 : 3;
+        for (var click = 0; click < clicks; click++) {
+          await tester.tapAt(paragraph.localToGlobal(box.center), kind: PointerDeviceKind.mouse);
+          if (click < clicks - 1) await tester.pump(const Duration(milliseconds: 75));
+        }
+      }
+      await tester.pump();
+      expect(find.text('Add to chat'), findsOneWidget, reason: 'A finished selection must render actions on the next frame');
+      expect(find.text('Copy'), findsOneWidget);
+      await tester.tap(find.text('Add to chat'));
+      await tester.pumpAndSettle();
+      expect(selected?.text, text);
+      expect(selected?.messageId, 'response');
+      expect(selected?.startOffset, start);
+      expect(selected?.endOffset, end);
 
-    final region = tester.state<SelectableRegionState>(find.byType(SelectableRegion));
-    region.selectAll(SelectionChangedCause.keyboard);
-    await tester.pumpAndSettle();
-    expect(find.text('Add to chat'), findsNothing, reason: 'A selection spanning responses has no single source');
-    await tester.pumpWidget(const SizedBox.shrink());
-  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+      final region = tester.state<SelectableRegionState>(find.byType(SelectableRegion));
+      region.selectAll(SelectionChangedCause.keyboard);
+      await tester.pumpAndSettle();
+      expect(find.text('Add to chat'), findsNothing, reason: 'A selection spanning responses has no single source');
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+  }
 
   testWidgets('sent browser and response comments stay readable and resolve inline references', (tester) async {
     const response = ResponseAnnotation(id: 'draft-response', text: 'Original response', annotation: 'Explain the choice',
