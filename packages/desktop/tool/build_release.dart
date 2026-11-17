@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:protocol/protocol.dart';
 
+import 'flutter_sdk.dart';
 import 'release_credentials.dart';
 import 'release_signature.dart';
 
@@ -23,7 +24,8 @@ Future<void> main(List<String> arguments) async {
     locked = true;
     cancelLock.dispose();
     cancellation.throwIfCancelled();
-    final sdk = await _releaseFlutter(root, cancellation);
+    final sdk = await miseFlutterSdk(root, cancellation);
+    await _requireClean(sdk, cancellation);
     final flutter = '${sdk.path}/bin/flutter';
     final credentials = releaseCredentials();
     final identity = await _signingIdentity(root, cancellation, credentials.identity);
@@ -51,8 +53,8 @@ Future<void> main(List<String> arguments) async {
     stdout.writeln('Release signing: ${identity.$2}.');
 
     // Flutter rewrites package_config.json and Xcode's generated SDK paths.
-    // Build a working-source snapshot so release cannot redirect a live reload
-    // to the unpatched SDK (or share its native asset build products).
+    // Keep release package resolution and native build products separate from
+    // the running development app.
     work = await cache.createTemp('source-');
     await _copySources(root, work, cancellation);
     final desktop = '${work.path}/packages/desktop';
@@ -98,15 +100,6 @@ Future<void> main(List<String> arguments) async {
 
 bool get _requireDeveloperId => Platform.environment['HAPPEN_REQUIRE_DEVELOPER_ID'] == '1';
 
-Future<Directory> _releaseFlutter(Directory root, CancellationToken cancellation) async {
-  final executable = File((await _run('mise', ['which', 'flutter'], root.path,
-    cancellation, capture: true)).trim());
-  if (!await executable.exists()) throw StateError('Release Flutter SDK not found: ${executable.path}');
-  final sdk = File(await executable.resolveSymbolicLinks()).parent.parent;
-  await _requireClean(sdk, cancellation);
-  return sdk;
-}
-
 Future<(String, String)> _signingIdentity(Directory root, CancellationToken cancellation, String? requested) async {
   final available = await _run('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning'],
     root.path, cancellation, capture: true);
@@ -141,7 +134,6 @@ Future<void> _copySources(Directory source, Directory destination, CancellationT
     source.path, cancellation, capture: true);
   for (final path in paths.split('\u0000').where((path) => path.isNotEmpty).toSet()) {
     cancellation.throwIfCancelled();
-    if (path == 'third_party/flutter') continue; // Development SDK, never a release input.
     final from = '${source.path}/$path', to = '${destination.path}/$path';
     switch (await FileSystemEntity.type(from, followLinks: false)) {
       case FileSystemEntityType.file:

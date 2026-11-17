@@ -6,6 +6,8 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:protocol/protocol.dart';
 
+import 'flutter_sdk.dart';
+
 final desktopRoot = File.fromUri(Platform.script).absolute.parent.parent;
 final runDirectory = Directory('${desktopRoot.parent.parent.path}/.local/run');
 final _appInfo = _appConfiguration(desktopRoot.path);
@@ -186,15 +188,6 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         exitCode = 2;
         return;
       }
-      final sdk = Directory('${desktopRoot.parent.parent.path}/third_party/flutter');
-      final flutter = File('${sdk.path}/bin/flutter');
-      final environment = Map<String, String>.of(Platform.environment)..addAll({
-        'FLUTTER_ROOT': sdk.path, 'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}',
-      });
-      if (!status) {
-        if (!flutter.existsSync()) throw StateError('Initialize third_party/flutter before running dev');
-        await _resolveDevelopmentPackages(sdk, environment, cancellation);
-      }
       if (status || apps.isNotEmpty || supervisors.isNotEmpty) {
         final value = <String, dynamic>{'mode': 'debug', 'reused': !status && (apps.isNotEmpty || supervisors.isNotEmpty),
           'app_pids': apps, 'flutter_pids': supervisors};
@@ -206,6 +199,11 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         stdout.writeln(jsonEncode(value));
         if (status) return;
       } else {
+        final sdk = await miseFlutterSdk(desktopRoot.parent.parent, cancellation);
+        final environment = Map<String, String>.of(Platform.environment)..addAll({
+          'FLUTTER_ROOT': sdk.path, 'PATH': '${sdk.path}/bin:${Platform.environment['PATH'] ?? ''}',
+        });
+        await _resolveDevelopmentPackages(sdk, environment, cancellation);
         final value = {'pid': pid, 'mode': 'debug', 'cwd': desktopRoot.path};
         final pending = File('${runDirectory.path}/supervisor.json.tmp');
         pending.writeAsStringSync(jsonEncode(value));
@@ -218,7 +216,7 @@ Future<void> _launch(bool status, CancellationToken cancellation) async {
         await stdout.flush();
         cancellation.throwIfCancelled();
         Directory.current = desktopRoot;
-        exec(flutter.absolute.path, ['run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'], environment);
+        exec('${sdk.path}/bin/flutter', ['run', '-d', 'macos', '--debug', '--hot', '--no-pub', '--print-dtd'], environment);
       }
     } finally { closeLaunchLock(local); }
   } finally { closeLaunchLock(shared); }

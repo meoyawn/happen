@@ -299,7 +299,6 @@ tasks:
       - packages/code_mode/**/*
       - packages/tool_runtime/**/*
       - packages/telemetry/**/*
-      - third_party/quickjs/**/*
     outputs:
       - build/cli/happen
       - build/cli/build-report.json
@@ -338,15 +337,11 @@ tasks:
       outputStyle: stream
 
   dev:
-    description: Run one Flutter desktop using the vendored development SDK
+    description: Run one Flutter desktop using the mise SDK
     command: dart --disable-dart-dev packages/desktop/tool/run_flutter.dart
-    env:
-      PATH: '$workspaceRoot/third_party/flutter/bin:$PATH'
-      FLUTTER_ROOT: '$workspaceRoot/third_party/flutter'
     preset: server
     inputs: []
     options:
-      envOverride: true
       interactive: true
       cache: false
       shell: false

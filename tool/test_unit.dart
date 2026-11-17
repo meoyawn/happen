@@ -13,12 +13,10 @@ Future<void> main(List<String> arguments) async {
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
   final hook = CancellationHook(cancellation, () => child?.kill(ProcessSignal.sigterm));
   try {
-    final vendoredFlutter = '${Directory.current.path}/third_party/flutter/bin/flutter';
-    final flutter = await File(vendoredFlutter).exists() ? vendoredFlutter : 'flutter';
     for (final (executable, arguments) in [
       if (!flutterOnly) (Platform.resolvedExecutable, ['test', '--exclude-tags', 'e2e',
         if (arguments.isEmpty) ...['test', 'packages/storage/test', 'packages/server/test', 'packages/agent/test'] else ...arguments]),
-      if (arguments.isEmpty || flutterOnly) (flutter,
+      if (arguments.isEmpty || flutterOnly) ('flutter',
         ['test', '--exclude-tags', 'e2e', ...focused]),
     ]) {
       cancellation.throwIfCancelled();

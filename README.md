@@ -60,18 +60,19 @@ I believe this is the way.
 
 ## Run the desktop app
 
-From the repository root, with Moon and Flutter's desktop build prerequisites
-installed:
+From the repository root, with mise activated and Flutter's desktop build
+prerequisites installed:
 
 ```sh
+mise install flutter moon
 git submodule update --init --recursive
-third_party/flutter/bin/flutter pub get
+moon run pub-get
 moon run dev -- --status
 moon run dev
 ```
 
-The launcher reuses an existing Happen instance. Development uses the vendored
-Flutter SDK and supports hot reload.
+The launcher reuses an existing Happen instance and supports hot reload.
+Development and releases use the stable Flutter SDK pinned in [mise.toml](mise.toml).
 
 For a macOS release build:
 

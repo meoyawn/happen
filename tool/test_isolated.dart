@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:protocol/protocol.dart';
 
 // Each check gets the actual dirty source snapshot but its own package graph,
-// analyzer-plugin/hook output and test cache. Shared vendored source/SDK trees
+// analyzer-plugin/hook output and test cache. Shared native source trees
 // are read-only inputs; no check mutex or shared .dart_tool directory is needed.
 Future<void> main(List<String> arguments) async {
   if (arguments.isEmpty) throw ArgumentError('Provide the Dart command to run in isolation');
@@ -48,7 +48,7 @@ Future<void> main(List<String> arguments) async {
       if (type == FileSystemEntityType.notFound) continue; // A tracked deletion in the dirty checkout.
       await Directory(to).parent.create(recursive: true);
       if (type == FileSystemEntityType.directory) {
-        // Gitlinks: shared SDK and vendored native source inputs.
+        // Gitlinks point to shared native source inputs.
         await Link(to).create(from);
       } else if (type == FileSystemEntityType.link) {
         await Link(to).create(await Link(from).target());

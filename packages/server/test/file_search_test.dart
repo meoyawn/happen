@@ -58,7 +58,8 @@ void main() {
     await write('feature/src/ChatViewModel.kt');
     await write('b/target.txt');
     await write('a/target.txt');
-    const desktopDart = 'third_party/flutter/packages/flutter_tools/lib/src/build_system/targets/desktop.dart';
+    const targets = 'tools/flutter_sdk/packages/flutter_tools/lib/src/build_system/targets';
+    const desktopDart = '$targets/desktop.dart';
     await write(desktopDart);
     await write('desktop_menu.dart');
     await write('packages/desktop/lib/app.dart');
@@ -83,7 +84,7 @@ void main() {
       ('desktop', 2, ['packages/desktop/', desktopDart]),
       ('src', 1, ['src/']),
       ('viewmodel/', 1, ['viewmodel/build.gradle.kts']),
-      ('target', 3, ['third_party/flutter/packages/flutter_tools/lib/src/build_system/targets/', 'a/target.txt', 'b/target.txt']),
+      ('target', 3, ['$targets/', 'a/target.txt', 'b/target.txt']),
     ]) {
       expect(await paths(query, limit), expected, reason: query);
     }

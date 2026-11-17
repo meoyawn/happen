@@ -277,8 +277,8 @@ extension _GitRequests on AgentServer {
           ? merge.output.trim() : 'refs/heads/$branch';
         final head = requiredString(current, 'head');
         advance(_GitPushing(receipt, remote: remote, destination: destination, head: head));
-        await runGit(root, ['push', '--porcelain', if (current['upstream'] == null) '--set-upstream', '--', remote, 'refs/heads/$branch:$destination'],
-          cancellation, write: true, onOutput: (output) => progress(output: output));
+        await gitPush(root, cancellation, branch: branch, remote: remote, destination: destination,
+          setUpstream: current['upstream'] == null, onOutput: (output) => progress(output: output));
       }
       final receipt = _gitReceipt(state);
       advance(_GitWriteCompleted(receipt));
@@ -294,8 +294,9 @@ extension _GitRequests on AgentServer {
         throw CancelledException();
       }
       final receipt = _gitReceipt(state);
-      state = _gitWriteTransition(state, _GitWriteFailed(error.toString(), receipt));
-      return {'status': 'failed', 'action': action, 'message': error.toString(),
+      final message = error is StateError ? error.message : error.toString();
+      state = _gitWriteTransition(state, _GitWriteFailed(message, receipt));
+      return {'status': 'failed', 'action': action, 'message': message,
         if (receipt != null) 'commit': {'sha': receipt.sha, 'subject': receipt.subject}};
     } finally {
       cancelHook.dispose(); cancellation.cancel();

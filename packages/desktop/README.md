@@ -415,11 +415,12 @@ runs inside Happen, so quitting the application stops its work.
 
 ## Development
 
-From the repository root:
+From the repository root, with mise activated:
 
 ```sh
+mise install flutter moon
 git submodule update --init --recursive
-third_party/flutter/bin/flutter pub get
+moon run pub-get
 moon run dev -- --status
 moon run dev
 ```
@@ -440,23 +441,12 @@ Checkout locks and supervisor metadata stay in the ignored `.local/run/`;
 the shared launch lock stays in the system temporary directory. They are never
 added to the app bundle.
 
-### Vendored development SDK
+### Flutter SDK
 
-`moonx dev` (`moon run dev`) uses the `third_party/flutter` submodule from
-[meoyawn/flutter](https://github.com/meoyawn/flutter), branch `happen/stable`.
-The launcher selects that SDK explicitly, sets `FLUTTER_ROOT` and `PATH`, and
-resolves packages again when the workspace points at another Flutter SDK.
-It contains the fix for [Flutter #195780](https://github.com/flutter/flutter/issues/195780)
-([upstream PR #195781](https://github.com/flutter/flutter/pull/195781))
-on stable Flutter 3.47.9 / Dart 3.13.7: the mouse update guard is cleared in
-`finally` after a hit-test or hover exception. The fix and its five regression
-cases live in the fork. SDK source is never patched by a launch script.
-
-Update the fork by incorporating upstream stable and rerunning its mouse tracker
-tests, then update the submodule commit. Use the vendored `bin/flutter` for direct
-development commands. Reusing a running supervisor repairs the workspace's
-package resolution; hot reload then applies the vendored framework. Replacing
-the supervisor's toolchain requires exiting and launching development again.
+Development, tests, and releases use the stable Flutter SDK and bundled Dart
+installed by mise. On a new launch, `moonx dev` resolves workspace dependencies
+when the package configuration points to a different Flutter SDK. SDK upgrades
+take effect on the next launch. See [mise.toml](../../mise.toml).
 
 Debug builds use the release icon with Flutter's red `DEBUG` ribbon and bundle
 ID `com.adelnz.happen.debug`.
@@ -478,8 +468,7 @@ moon run release-reinstall
 `release` uses the Flutter SDK selected by `mise.toml` and its bundled Dart SDK.
 CI installs Flutter and Moon from `mise.toml` and `mise.lock` using
 `jdx/mise-action`. Local builds and CI require a clean stable SDK and record
-the installed versions without fetching or upgrading Flutter. The
-development fork is excluded from the release source snapshot.
+the installed versions.
 
 The build selects a Developer ID Application certificate from Keychain (or an
 Apple Development certificate for local builds), signs with hardened runtime,

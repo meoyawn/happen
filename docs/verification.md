@@ -19,8 +19,9 @@ For the 100-task concurrency fixture on macOS, raise the test shell's open-file
 limit with `ulimit -n 4096` before running the suite; the default 256 can prevent
 its SQLite connections and provider streams from all opening.
 
-Use `git submodule update --init --recursive` and `dart pub get` first in a fresh
-checkout. See [api.md](api.md) for configuration and the public API.
+In a fresh checkout with mise activated, run `mise install flutter moon`,
+`git submodule update --init --recursive`, and `moon run pub-get`.
+See [api.md](api.md) for configuration and the public API.
 
 - Static analysis, whitespace checks, and focused behavior tests. Exercise actual transport,
   storage, tool, and WebSocket boundaries; avoid tests that repeat implementation.

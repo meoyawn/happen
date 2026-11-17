@@ -78,7 +78,7 @@ Future<GitOutput> _runGit(String cwd, List<String> arguments, CancellationToken 
     cancellation.throwIfCancelled();
     if (deadline.isCancelled) throw StateError('Git ${arguments.first} timed out');
     if (!accepted.contains(code)) {
-      throw StateError(result.error.trim().isEmpty ? 'Git ${arguments.first} failed (exit $code)' : clippedText(result.error.trim(), 12000));
+      throw StateError(_gitFailureMessage(arguments.first, result));
     }
     return result;
   } finally {
@@ -86,6 +86,11 @@ Future<GitOutput> _runGit(String cwd, List<String> arguments, CancellationToken 
     process?.kill();
     deadline.cancel();
   }
+}
+
+String _gitFailureMessage(String command, GitOutput result) {
+  final error = result.error.trim();
+  return error.isEmpty ? 'Git $command failed (exit ${result.code})' : clippedText(error, 12000);
 }
 
 const _gitSupervisor = r'''
@@ -97,6 +102,39 @@ wait "$child" 2>/dev/null
 result=$?
 exit "$result"
 ''';
+
+Future<void> gitPush(String root, CancellationToken cancellation, {
+  required String branch, required String remote, required String destination,
+  required bool setUpstream, required void Function(String) onOutput,
+}) async {
+  final refspec = 'refs/heads/$branch:$destination';
+  final result = await runGit(root, ['push', '--porcelain', if (setUpstream) '--set-upstream', '--', remote, refspec],
+    cancellation, write: true, accepted: {0, 1}, onOutput: onOutput);
+  if (result.code == 0) return;
+  final rejection = '!\t$refspec\t[rejected]';
+  final diverged = const LineSplitter().convert(result.output).any((line) =>
+    line == '$rejection (fetch first)' || line == '$rejection (non-fast-forward)');
+  if (!diverged) throw StateError(_gitFailureMessage('push', result));
+
+  final target = '$remote/${destination.substring('refs/heads/'.length)}';
+  var fetched = false;
+  try {
+    final config = await runGit(root, ['for-each-ref', '--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)',
+      'refs/heads/$branch'], cancellation);
+    if (config.output.trimRight().split('\u0000') case [final upstreamRemote, final upstreamBranch, final upstream]
+        when upstreamRemote == remote && upstreamBranch == destination && upstream.startsWith('refs/remotes/')) {
+      onOutput('Fetching $target…');
+      await runGit(root, ['fetch', '--no-tags', '--no-prune', '--no-prune-tags', '--no-recurse-submodules',
+        '--no-write-fetch-head', '--no-auto-maintenance', '--refmap=', '--', remote, '$destination:$upstream'],
+        cancellation, write: true, timeout: const Duration(seconds: 15));
+      fetched = true;
+    }
+  } on StateError {
+    // Keep the push rejection if the tracking ref cannot be refreshed.
+  }
+  final guidance = fetched ? 'Merge or rebase its changes into $branch' : 'Fetch it and integrate its changes into $branch';
+  throw StateError('$target contains commits missing from $branch. $guidance before pushing again.');
+}
 
 // Draft checkouts are updated from the repository's mainline, including worktrees
 // without an upstream. Read cached refs for the toolbar; query the remote on Pull.

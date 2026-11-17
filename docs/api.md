@@ -1,10 +1,12 @@
 # Running Happen
 
-Initialize the pinned QuickJS submodule, then resolve the Dart workspace:
+With mise activated, install the toolchain, initialize the pinned QuickJS
+submodule, and resolve the Dart workspace.
 
 ```sh
+mise install flutter moon
 git submodule update --init --recursive
-dart pub get
+moon run pub-get
 dart run packages/cli/bin/happen.dart login --from-codex
 dart run packages/cli/bin/happen.dart exec --cwd /path/to/repo "Complete this task"
 ```

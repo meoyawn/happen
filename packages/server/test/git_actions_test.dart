@@ -332,6 +332,46 @@ void main() {
     expect(requests, isEmpty);
   });
 
+  test('a diverged push refreshes the destination and preserves local changes for recovery', () async {
+    final remote = '${root.path}/remote.git', writer = '${root.path}/writer';
+    const destination = 'release/main', upstream = 'refs/remotes/origin/$destination';
+    await git(['init', '--bare', '--initial-branch=$destination', remote]);
+    await git(['remote', 'add', 'origin', remote]);
+    await git(['push', '--set-upstream', 'origin', 'HEAD:refs/heads/$destination']);
+    await git(['fetch', 'origin']);
+    final fetchHead = File('${repo.path}/.git/FETCH_HEAD');
+    final beforeFetchHead = await fetchHead.readAsString();
+    await git(['clone', remote, writer]);
+    await git(['config', 'user.name', 'Fixture'], cwd: writer);
+    await git(['config', 'user.email', 'fixture@example.invalid'], cwd: writer);
+    await File('$writer/remote.txt').writeAsString('Published separately\n');
+    await git(['add', 'remote.txt'], cwd: writer);
+    await git(['commit', '-m', 'Advance the remote'], cwd: writer);
+    await git(['push'], cwd: writer);
+    final remoteHead = await git(['rev-parse', 'HEAD'], cwd: writer);
+    expect((await status())['behind'], 0, reason: 'The local tracking ref is stale');
+    await File('${repo.path}/tracked.txt').writeAsString('Ready to publish\n');
+    final pending = File('${repo.path}/pending.txt');
+    await pending.writeAsString('Still in progress\n');
+
+    final result = await run('commit_push', message: 'Save local work', files: ['tracked.txt']);
+    expect(result['status'], 'failed');
+    expect(result['message'], allOf(contains('origin/$destination'), contains('before pushing again')));
+    final localHead = await git(['rev-parse', 'HEAD']);
+    expect(result['commit']['sha'], localHead);
+    expect(await git(['rev-parse', 'refs/heads/$destination'], cwd: remote), remoteHead);
+    expect(await git(['rev-parse', upstream]), remoteHead);
+    final refreshed = await status();
+    expect((refreshed['ahead'], refreshed['behind']), (1, 1));
+    expect(await fetchHead.readAsString(), beforeFetchHead);
+    expect(await pending.readAsString(), 'Still in progress\n');
+
+    await git(['merge', '--no-edit', upstream]);
+    final merged = await git(['rev-parse', 'HEAD']);
+    expect((await run('push'))['status'], 'completed');
+    expect(await git(['rev-parse', 'refs/heads/$destination'], cwd: remote), merged);
+  });
+
   test('real commit hooks run and failures leave the branch unchanged', () async {
     final head = await git(['rev-parse', 'HEAD']);
     final hook = File('${repo.path}/.git/hooks/pre-commit');
