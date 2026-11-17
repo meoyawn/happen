@@ -135,23 +135,33 @@ class _ResponsesSocket {
       if (connection == null) {
         final connecting = _state;
         final uri = client.endpoint.replace(scheme: client.endpoint.scheme == 'https' ? 'wss' : 'ws');
-        final socket = await traceAsync('openai.websocket.connect', () => WebSocket.connect(uri.toString(),
-          headers: headers, customClient: client._http).then((socket) {
-            if (token.isCancelled || !identical(_state, connecting)) unawaited(socket.close().catchError((Object _) {}));
-            return socket;
-          }).asCancellable(token), category: 'websocket',
-          attributes: {'server.address': uri.host, 'url.path': uri.path});
+        final socket = await traceAsync('openai.websocket.connect', () async {
+          final deadline = TimeoutCancellationToken(_websocketConnectTimeout,
+            timeoutException: TimeoutException('GPT WebSocket upgrade timed out', _websocketConnectTimeout));
+          try {
+            return await WebSocket.connect(uri.toString(), headers: headers, customClient: client._http).then((socket) {
+                if (token.isCancelled || deadline.isCancelled || !identical(_state, connecting)) {
+                  unawaited(socket.close().catchError((Object _) {}));
+                }
+                return socket;
+              }).asCancellable(token.merge(deadline));
+          } finally { deadline.cancel(); }
+        }, category: 'websocket', attributes: {'server.address': uri.host, 'url.path': uri.path});
         token.throwIfCancelled();
-        // A lost transport must fail before the model's reasoning idle budget.
-        socket.pingInterval = const Duration(seconds: 10);
         connection = _SocketConnection(socket, credentials);
         _transition(_SocketStreaming(connection, operation));
       }
       final encoded = jsonEncode(_continuedRequest(body, continuation));
       await client._dump(() => encoded, token);
       token.throwIfCancelled();
-      traceSync('openai.websocket.send', () => connection!.socket.add(encoded), category: 'websocket',
+      // Await native socket backpressure before receiving, as Codex does in
+      // send_websocket_request. A queued ping cannot reach the peer mid-frame.
+      connection.socket.pingInterval = null;
+      await traceAsync('openai.websocket.send', () => connection!.socket.addStream(Stream.value(encoded))
+        .timeout(_streamIdleTimeout).asCancellable(token), category: 'websocket',
         attributes: {'bytes': utf8.encode(encoded).length});
+      token.throwIfCancelled();
+      connection.socket.pingInterval = const Duration(seconds: 10);
       final reply = await client._consume(connection.events, token, onEvent,
         cancelIterator: false, idleTimeout: _streamIdleTimeout);
       token.throwIfCancelled();

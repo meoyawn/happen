@@ -75,6 +75,29 @@ Responses recovery was compared with the local Codex checkout at
   followed by an incomplete checkpoint, and verifies that only a successfully
   completed checkpoint replaces durable history and survives restart.
 
+Image-upload transport behavior was checked against local Codex
+`49d657aad0e878fb7ab156b91126828c21a0005f`:
+
+- `core/src/client.rs::connect_websocket` and
+  `model-provider-info/src/lib.rs`: the 15-second connect deadline covers only
+  the upgrade. It does not include sending a turn or receiving `response.created`.
+- `codex-api/src/endpoint/responses_websocket.rs::send_websocket_request` and
+  `run_websocket_response_stream`: await sending with backpressure, then receive
+  under the five-minute stream idle budget. Happen uses Dart's native WebSocket
+  framing and pauses native heartbeat pings until sending has finished.
+- `core/tests/suite/image_rollout.rs::uploaded_images_preserve_user_message_display_history`:
+  preserve image order and payloads. The loopback regression in
+  `../../../test/openai_upload_test.dart` sends five synthetic inline images
+  totaling 14.5 MB, delays admission beyond the old five-second deadline, and
+  asserts one complete request with unchanged input over each transport.
+
+Happen intentionally caps connection-recovery backoff at two seconds and treats
+connect timeouts like other connection failures. Sampling keeps its stream
+retry budget while waiting for the network; compaction remains bounded. Native
+HTTP upload/header waits are bounded by five minutes and caller cancellation.
+Raw WebSocket transport failures try HTTPS immediately. Provider retry advice
+and retry limits remain independent of these transport policies.
+
 The code-mode-only description contract also follows
 `codex-rs/core/src/tools/spec_plan.rs` (`register_code_mode_executors`) and
 `codex-rs/code-mode-protocol/src/description.rs`

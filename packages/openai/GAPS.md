@@ -52,18 +52,27 @@ exhausted file handles and left test processes requiring cleanup.
 
 Responses and standalone search now use Codex's four request retries with
 200 ms exponential backoff and jitter. Sampling retains five stream retries;
-connection establishment failures during sampling wait 5, 10, 20, 40, then
-60 seconds until recovery or cancellation, without consuming that stream budget.
+connection establishment failures and timeouts during sampling use jittered
+200 ms exponential backoff capped at two seconds until recovery or cancellation,
+without consuming that stream budget.
 Compaction allows two stream retries per transport; search remains bounded.
 HTTP and streamed errors retain server
 `Retry-After` deadlines, and quota/context/invalid-request failures remain terminal.
 `../../test/openai_retry_test.dart` covers these policies with controlled transport
 failures; `../../test/server_test.dart` verifies reconnect status and that recovery
-does not repeat executed tools. Exhausted WebSocket retries switch the session
+does not repeat executed tools. WebSocket transport failures switch immediately;
+exhausted provider stream retries also switch the session
 to HTTP with a fresh stream budget while preserving the provider's retry deadline.
 Compaction recovery also verifies full-history replay after reconnect, cancellation
 during retry and fallback waits, and discarding incomplete checkpoints before the
 durable history replacement. See `tools/UPSTREAM.md` for the recovery source revision.
+
+Only the WebSocket upgrade has a 15-second connect deadline. Uploads and response
+reads have separate five-minute budgets, with response activity resetting the
+stream idle limit. Native WebSocket heartbeat pings start after sending finishes.
+`../../test/openai_upload_test.dart` sends five synthetic inline images (14.5 MB)
+over both loopback transports with delayed admission. The captured real-inference
+failure and successful replays are in `../../docs/evidence/openai-image-upload.json`.
 
 The captured cases caught mutable stemmer reuse, float32 scoring drift, incorrect
 MCP/dynamic metadata corpora, the extra exact-name boost and camel-case expansion,

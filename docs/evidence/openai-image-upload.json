@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-17",
+  "platform": "macos_arm64",
+  "dart": "3.13.7",
+  "model": "gpt-6.1-sol",
+  "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+  "diagnosis": {
+    "failed_threads": 3,
+    "recorded_error": "TimeoutException after 0:00:05.000000: GPT response connection timed out",
+    "image_counts": [5, 1, 2],
+    "native_input_bytes": [14503062, 1356852, 2433040],
+    "cause": "A five-second connection timer also covered uploading inline images and waiting for response.created."
+  },
+  "probe": {
+    "input": "Stored five-photo meter thread context, plus a developer instruction to reply only OK without executing tools.",
+    "reasoning": "low",
+    "returned_tools_executed": 0,
+    "original_thread_modified": false,
+    "photos_saved_as_fixtures": false
+  },
+  "before": {
+    "websocket_handshake_ms": 1195,
+    "websocket_retry_ms": 5160,
+    "http_retry_ms": 5166,
+    "probe_cancelled_at_first_retry": true,
+    "native_http_control": {
+      "headers_ms": 47306,
+      "completed_ms": 49897,
+      "http_status": 200
+    }
+  },
+  "after": {
+    "websocket": {
+      "handshake_ms": 1054,
+      "send_duration_ms": 21101,
+      "response_created_ms": 27190,
+      "completed_ms": 30374,
+      "retries": 0,
+      "text": "OK"
+    },
+    "http": {
+      "headers_ms": 38015,
+      "completed_ms": 41022,
+      "http_status": 200,
+      "retries": 0,
+      "text": "OK"
+    }
+  },
+  "regression": {
+    "file": "test/openai_upload_test.dart",
+    "transports": ["http", "websocket"],
+    "synthetic_image_count": 5,
+    "synthetic_image_payload_bytes": 14500000,
+    "admission_delay_seconds": 47,
+    "clock_acceleration": 100,
+    "before": "Both fail when the old five-second timer triggers recovery.",
+    "after": "Both complete once with unchanged image order and payloads."
+  },
+  "validation": {
+    "recovery_checks_passed": 114,
+    "transport_checks_passed": 107,
+    "package_analyzer_exit_code": 0,
+    "workspace_analyzer_existing_warnings": 6,
+    "desktop_hot_reload": "succeeded",
+    "network_isolate_budgets_ms": [15000, 300000]
+  },
+  "limits": [
+    "Single live replay per transport on the available connection; these timings are observations, not a throughput benchmark.",
+    "The diagnostic added a developer instruction and used low reasoning effort; the user's actual task was not executed."
+  ]
+}

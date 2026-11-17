@@ -85,7 +85,6 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
 }) async {
   var retries = 0;
   var connectionRetries = 0;
-  var connectionRetrySeconds = 5;
   while (true) {
     cancellation.throwIfCancelled();
     try {
@@ -104,10 +103,17 @@ Future<T> retryResponseStream<T>(Future<T> Function() send, CancellationToken ca
         _ => false,
       };
       if (!retryable) rethrow;
-      if (unboundedConnections && (error is SocketException || error is HandshakeException || error is HttpException)) {
+      if (transportFailure(error) && fallbackTransport?.call() == true) {
+        await _waitForRetry(error, 1, 1, 'fallback', cancellation, onEvent,
+          delay: Duration.zero, message: 'Switching to HTTPS');
+        retries = 0;
+        continue;
+      }
+      if (unboundedConnections && transportFailure(error)) {
+        final delay = retryBackoff(min(connectionRetries, 4));
         await _waitForRetry(error, ++connectionRetries, null, 'connection', cancellation, onEvent,
-          delay: Duration(seconds: connectionRetrySeconds), message: 'Reconnecting… waiting for network');
-        connectionRetrySeconds = min(connectionRetrySeconds * 2, 60);
+          delay: delay > const Duration(seconds: 2) ? const Duration(seconds: 2) : delay,
+          message: 'Reconnecting… waiting for network');
         continue;
       }
       if (retries >= maxRetries || error is TimeoutException || error is WebSocketException ||

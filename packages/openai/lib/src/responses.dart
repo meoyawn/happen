@@ -19,7 +19,8 @@ part 'response_socket.dart';
 
 // codex/model-provider-info: DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000.
 const _streamIdleTimeout = Duration(minutes: 5);
-const _responseConnectTimeout = Duration(seconds: 5);
+// Codex model-provider-info: only the WebSocket upgrade has a connect deadline.
+const _websocketConnectTimeout = Duration(seconds: 15);
 
 typedef Credentials = Future<Json> Function({bool refresh});
 
@@ -46,7 +47,7 @@ class ResponsesClient {
           endpoint ??
           // Match Codex's endpoint for ChatGPT subscription OAuth.
           Uri.parse('https://chatgpt.com/backend-api/codex/responses'),
-      _http = http ?? HttpClient(),
+      _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 30)),
       _ownsHttp = http == null;
   final Credentials credentials;
   final Uri endpoint;
@@ -266,41 +267,21 @@ class ResponsesClient {
         'x-client-request-id': newId(),
       };
       Future<void> Function()? closeBody;
-      CancellationToken? connection;
-      Timer? connectionTimer;
-      CancellationToken connect() {
-        connectionTimer?.cancel();
-        connection?.cancel();
-        final deadline = connection = CancellationToken();
-        connectionTimer = Timer(_responseConnectTimeout, () => deadline.cancel(
-          TimeoutException('GPT response connection timed out', _responseConnectTimeout)));
-        return cancellation.merge(deadline);
-      }
-      void receive(Json event) {
-        if (event['type'] == 'model.connected') connectionTimer?.cancel();
-        onEvent?.call(event);
-      }
       try {
         if (transport == 'websocket') {
-          return await _websocket(body, sessionId, headers, connect(), receive);
+          return await _websocket(body, sessionId, headers, cancellation, onEvent);
         }
-        var token = cancellation;
-        final response = await retryRequest(() async {
-          token = connect();
-          try {
-            return await _post(endpoint, body,
-              {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, token);
-          } catch (_) {
-            connectionTimer?.cancel();
-            rethrow;
-          }
-        }, cancellation, onEvent: onEvent);
-        final incoming = ownStream(response, token);
+        // Headers cannot arrive until all inline images have been uploaded.
+        // Give that phase the stream budget, independently of connection setup.
+        final response = await retryRequest(() => _post(endpoint, body,
+          {...headers, HttpHeaders.acceptHeader: 'text/event-stream'}, cancellation,
+          headersTimeout: _streamIdleTimeout), cancellation, onEvent: onEvent);
+        final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
         return await _consume(
           StreamIterator(decodeSse(incoming.stream.timeout(_streamIdleTimeout))),
-          token,
-          receive,
+          cancellation,
+          onEvent,
         );
       } on ResponseFailure catch (error) {
         if (error.status == 401 && attempt == 0) continue;
@@ -309,8 +290,6 @@ class ResponsesClient {
         cancellation.throwIfCancelled();
         rethrow;
       } finally {
-        connectionTimer?.cancel();
-        connection?.cancel();
         await closeBody?.call();
       }
     }
