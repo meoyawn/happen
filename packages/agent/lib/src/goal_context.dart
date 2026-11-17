@@ -2,6 +2,7 @@
 import 'dart:convert';
 
 import 'package:ai/ai.dart';
+import 'package:code_mode/code_mode.dart' show truncateTokenText;
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 
@@ -25,6 +26,17 @@ Json userGoalInstruction({String? objective, String? status, bool clear = false}
     '${serialized == null ? '' : 'User set the goal: ${omitted ? '[objective omitted; exceeds the evidence limit].' : serialized}\n'}'
     '${status == null ? '' : 'User set goal status: ${jsonEncode(switch (status) {'usage_limited' => 'usageLimited', 'budget_limited' => 'budgetLimited', _ => status})}.\n'}',
     'user_goal', omitted ? 'user.goal.omitted' : 'user.goal');
+}
+
+Json goalObjectiveContext(String objective) {
+  final id = newUuidV7();
+  return gptItemFromRollout({
+    'type': 'function_call_output',
+    'id': 'fco_$id',
+    'namespace': 'agent',
+    'name': 'goal_objective',
+    'output': truncateTokenText(objective, maxTokens: 1000),
+  }, id: id, calls: {}).toJson();
 }
 
 Json goalSteering(Json goal, String kind) {

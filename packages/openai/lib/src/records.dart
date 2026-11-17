@@ -11,7 +11,11 @@ import 'response_ids.dart';
 ConversationItem gptItemFromRollout(Json wire, {required String id, required Map<String, ToolCall> calls}) {
   final type = wire['type'];
   final ConversationItem item;
-  if (type == 'function_call_output' || type == 'custom_tool_call_output' || type == 'tool_search_output') {
+  if (type == 'function_call_output' && wire['call_id'] == null && wire['namespace'] == 'agent' &&
+      wire['name'] is String && wire['output'] is String) {
+    // Additional context is sent as a named tool output without a matching call.
+    item = ConversationItem(id: id, role: 'tool');
+  } else if (type == 'function_call_output' || type == 'custom_tool_call_output' || type == 'tool_search_output') {
     final callId = requiredString(wire, 'call_id'), call = calls[callId];
     item = ConversationItem(id: id, role: 'tool', content: [{
       'type': 'tool_result', 'call_id': callId, 'name': call?.name ?? 'tool',

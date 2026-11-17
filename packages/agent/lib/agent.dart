@@ -266,6 +266,7 @@ class _Agent {
     var goalsEnabled = false;
     var uncachedTokensUsed = 0;
     Json? incompleteUsage;
+    Json? pendingGoalContext;
     final turnId = settings['turnId'] as String? ?? (interface.id == 'openai' ? newUuidV7() : newId());
     void event(Json value) =>
         emit({'task_id': taskId, 'turn_id': turnId, ...value});
@@ -990,7 +991,11 @@ class _Agent {
                     } else if (service == 'image.generate') {
                       output = await nativeTool('image.generate', {'arguments': arguments}, id, cancellation);
                     } else if (service?.startsWith('goal.') == true) {
-                      output = await goal(service!.substring(5), jsonObject(arguments), cancellation);
+                      final result = await goal(service!.substring(5), jsonObject(arguments), cancellation);
+                      if (result['goal']?['objective'] case final String objective when service == 'goal.create_goal') {
+                        pendingGoalContext = goalObjectiveContext(objective);
+                      }
+                      output = result;
                     } else if (service?.startsWith('history.') == true) {
                       output = await callIsolate(
                         writer,
@@ -1102,13 +1107,13 @@ class _Agent {
             await goal('toolFinished', {'name': call.name, 'outcome': executionFailed ? 'executionFailed' : result['error'] == null ? 'success' : 'unsuccessful'});
             telemetry.add('code_cells');
             final item = interface.resultItem(call, result, images: images);
-            event(
-              await _append(
-                'tool.completed',
-                {'item': item.toJson()},
-                metadata: {if (changedValues != null) 'values': changedValues},
-              ),
-            );
+            final goalContext = pendingGoalContext;
+            final entries = await _appendBatch([
+              {'type': 'tool.completed', 'data': {'item': item.toJson()}},
+              if (goalContext != null) {'type': 'context.injected', 'data': {'item': goalContext}},
+            ], {'values': ?changedValues});
+            if (identical(goalContext, pendingGoalContext)) pendingGoalContext = null;
+            for (final entry in entries) { event(entry); }
           }
         } on CancelledException {
           cancellation.throwIfCancelled();
