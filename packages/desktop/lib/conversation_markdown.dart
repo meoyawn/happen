@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:mermaid_core/mermaid_core.dart' as mermaid;
 import 'package:mermaid_flutter/mermaid_flutter.dart';
 import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, CancellationToken;
 
@@ -501,6 +502,16 @@ String _mermaidRenderSource(String source) {
   return rendered.toString();
 }
 
+mermaid.MermaidTheme _mermaidTheme(ThemeData theme) =>
+  MaterialMermaidTheme.fromTheme(theme).copyWith(
+    // Nested subgraph fills compound, making each level visible on the canvas.
+    clusterBkg: const mermaid.Color(0x28687991),
+    clusterBorder: const mermaid.Color(0xff697b8c),
+    nodeBorder: const mermaid.Color(0xff607a92),
+    lineColor: const mermaid.Color(0xff405163),
+    arrowheadColor: const mermaid.Color(0xff405163),
+  );
+
 class ConversationCode extends StatefulWidget {
   const ConversationCode({super.key, required this.source, this.language = '', this.output});
   final String source, language;
@@ -529,7 +540,7 @@ class _ConversationCodeState extends State<ConversationCode> {
         ])),
         const Divider(height: 1, color: desktopBorder),
         Expanded(child: MermaidView(source: _mermaidRenderSource(source),
-          theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
+          theme: _mermaidTheme(Theme.of(context)),
           semanticNodes: true, allowFullscreen: false, keepLastGoodSceneOnError: false,
           backgroundColor: desktopSurface)),
       ]),
@@ -567,7 +578,7 @@ class _ConversationCodeState extends State<ConversationCode> {
   Widget _diagramView(BuildContext context) => LayoutBuilder(builder: (context, constraints) =>
     Padding(padding: const EdgeInsets.all(14), child: FittedBox(fit: BoxFit.scaleDown,
       child: MermaidDiagram(source: _mermaidRenderSource(widget.source),
-        theme: MaterialMermaidTheme.fromTheme(Theme.of(context)),
+        theme: _mermaidTheme(Theme.of(context)),
         semanticNodes: true, keepLastGoodSceneOnError: false,
         errorBuilder: (context, error) => SizedBox(
           width: math.max(0, constraints.maxWidth - 28),
