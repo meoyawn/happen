@@ -15,7 +15,7 @@ Saved JSON stays with the Dart owner. Each cell captures its admitted store view
 Unused keys consume no cell heap, and completion transfers only new writes.
 
 Execution and observation policy also follows Codex `38cdc4d65` from the local
-`/Users/meoyawn/Developer/github/codex` checkout: `src/service.rs`,
+`../codex` checkout: `src/service.rs`,
 `src/cell_actor/mod.rs` and `src/runtime/mod.rs`. Each interpreter runs in a Dart
 isolate inside this process. Observation deadlines yield output without stopping
 JavaScript, including CPU-bound code. There is no implicit CPU or cell timeout;

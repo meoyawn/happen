@@ -1,6 +1,6 @@
 # OpenCode compatibility gaps
 
-Target: the current HEAD of `/Users/meoyawn/Developer/github/opencode`.
+Target: the current HEAD of `../opencode`.
 OpenCode is a moving target; recorded revisions identify evidence, not a version
 to pin. Recheck the relevant current source when assessing a gap.
 

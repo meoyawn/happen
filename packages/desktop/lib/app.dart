@@ -1018,6 +1018,7 @@ class _ComposerState extends State<_Composer> {
   late final _effortMenu = GlobalKey<PopupMenuButtonState<String>>();
   var _attachmentLifetime = CancellationToken();
   bool _receivingAttachments = false, _draggingAttachments = false;
+  void Function()? _stopBrowserPaste;
   List<ComposerAttachment> get _attachments => _submitting ? const []
     : widget.session.attachmentDrafts[_draftKey] ?? const [];
   late Object _voiceOwner = Object();
@@ -1135,6 +1136,11 @@ class _ComposerState extends State<_Composer> {
   void initState() {
     super.initState();
     _text.addListener(_saveDraft);
+    _stopBrowserPaste = listenBrowserPaste(
+      accepts: () => mounted && widget.active && _focus.hasFocus && !_receivingAttachments && !_submitting && !_dictating,
+      cancellation: () => _attachmentLifetime,
+      receive: (files) => unawaited(_receiveBrowserPaste(files)),
+    );
     if (widget.active) _focus.requestFocus();
   }
 
@@ -1254,6 +1260,34 @@ class _ComposerState extends State<_Composer> {
     });
     _saveDrafts();
     _focus.requestFocus();
+  }
+
+  Future<void> _receiveBrowserPaste(Future<BrowserClipboard> pending) async {
+    final before = _text.value, lifetime = _attachmentLifetime;
+    setState(() => _receivingAttachments = true);
+    try {
+      final snapshot = await pending;
+      final attachments = [for (final file in snapshot.files)
+        ComposerAttachment(name: file.name, path: file.path, image: file.image)];
+      if (mounted && !lifetime.isCancelled) {
+        if (attachments.isNotEmpty) {
+          _addAttachments(attachments);
+        } else if (_text.text == before.text && snapshot.text != null) {
+          final current = _text.value;
+          final range = current.selection.isValid ? current.selection : TextSelection.collapsed(offset: current.text.length);
+          final editor = _focus.context;
+          if (editor != null && editor.mounted) Actions.invoke(editor, ReplaceTextIntent(current, snapshot.text!, range, SelectionChangedCause.keyboard));
+        }
+      } else {
+        for (final attachment in attachments) { await attachment.discard(); }
+      }
+    } on CancelledException {
+      // Navigation cancels the import before it can reach another draft.
+    } catch (error) {
+      if (mounted && !lifetime.isCancelled) _showError(error);
+    } finally {
+      if (mounted && identical(_attachmentLifetime, lifetime)) setState(() => _receivingAttachments = false);
+    }
   }
 
   Future<void> _paste(SelectionChangedCause cause, {TextEditingController? controller, FocusNode? focus}) async {
@@ -1436,6 +1470,7 @@ class _ComposerState extends State<_Composer> {
   @override
   void dispose() {
     _disposing = true;
+    _stopBrowserPaste?.call();
     _attachmentLifetime.cancel();
     _boundVoice?.removeListener(_voiceChanged);
     _voiceText?.dispose(cancel: true);

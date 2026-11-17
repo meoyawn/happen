@@ -124,7 +124,11 @@ class MachinesController extends ChangeNotifier {
   List<RemoteMachine> get hosts => _hosts;
   final _icons = <String, MachineIcon>{};
   Future<void>? _iconsRead;
-  MachineIcon iconFor(String? alias) => _icons[alias ?? 'local'] ?? parseMachineIcon(null, remote: alias != null);
+  MachineIcon iconFor(String? alias) {
+    final isLocal = alias == null || alias == local.machineAlias;
+    return _icons[isLocal ? 'local' : alias] ?? parseMachineIcon(null,
+      remote: !isLocal || !local.client.sharedFilesystem);
+  }
   final _projectMachines = <String, String>{};
   String? lastMachineForProject(String id) => _projectMachines[id];
   String? _selected;

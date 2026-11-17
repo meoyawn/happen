@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:config/config.dart';
@@ -65,6 +66,32 @@ Future<void> _until(WidgetTester tester, bool Function() condition) async {
 }
 
 void main() {
+  testWidgets('remote icon is retained beneath a local override and appears without a local checkout', (tester) async {
+    final fixture = (await tester.runAsync(_open))!;
+    addTearDown(() => tester.runAsync(() => _close(fixture)));
+    await tester.pumpWidget(MaterialApp(home: ProjectAvatar(project: fixture.peer, size: 32)));
+    await _until(tester, () => fixture.peer.icon is ProjectFileIcon);
+    const remoteSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>';
+    (fixture.remote.client as _Client).appearance = {
+      'icon': 'remote.svg', 'icon_svg': true, 'icon_revision': 'remote-icon',
+      'icon_data': base64Encode(utf8.encode(remoteSvg)),
+    };
+    await tester.runAsync(() => fixture.remote.ensureProject(fixture.peer.path, cancellation: fixture.token));
+    await tester.pumpAndSettle();
+    expect((fixture.peer.icon as ProjectFileIcon).path, 'brand.svg', reason: 'The local checkout remains authoritative');
+    fixture.local.projects.remove(fixture.project);
+    fixture.local.resolveProjectIcons([fixture.local, fixture.remote]);
+    await tester.pumpAndSettle();
+    expect((fixture.peer.icon as ProjectFileIcon).path, 'remote.svg');
+    expect(utf8.decode(fixture.peer.iconState.value.bytes!), remoteSvg);
+    expect(find.byType(SvgPicture), findsOneWidget);
+    fixture.local.projects.add(fixture.project);
+    fixture.local.resolveProjectIcons([fixture.local, fixture.remote]);
+    await tester.pumpAndSettle();
+    expect((fixture.peer.icon as ProjectFileIcon).path, 'brand.svg');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   test('icon watching survives eleven minutes idle and stops on caller cancellation', () async {
     final root = await Directory.systemTemp.createTemp('icon-watch-lifetime-');
     await Directory('${root.path}/.happen').create();
@@ -187,6 +214,12 @@ class _Client implements AgentClient {
   _Client(this.sharedFilesystem);
   @override final bool sharedFilesystem;
   @override final events = StreamController<Json>.broadcast();
+  Json? appearance;
+  @override Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async {
+    if (appearance == null) throw StateError('Icons must not use the server');
+    return {'available': true, 'path': path, 'identity': 'https://github.com/example/work',
+      'repository': 'https://github.com/example/work', 'subdirectory': '', ...appearance!};
+  }
   @override Future<void> close() => events.close();
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Icons must not use the server');
 }

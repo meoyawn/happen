@@ -567,7 +567,8 @@ class AgentServer {
     }
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
     if (method == 'workspace.inspect') {
-      return inspectWorkspace(requiredString(params, 'path'), client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime));
+      return inspectWorkspace(requiredString(params, 'path'), client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime),
+        includeIcon: params['includeIcon'] == true);
     }
     if (method == 'workspace.browse') {
       return browseProjectFolders(requiredString(params, 'query'),
@@ -2155,7 +2156,8 @@ class AgentClient {
   }
 
   Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
-    jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
+    jsonObject(await _request('workspace.inspect', {'path': path,
+      if (!sharedFilesystem) 'includeIcon': true}, cancellation: cancellation));
 
   Future<Json> browseProjectFolders(String query, {required CancellationToken cancellation}) async =>
     jsonObject(await _request('workspace.browse', {'query': query}, cancellation: cancellation,

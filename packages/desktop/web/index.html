@@ -8,9 +8,21 @@
   <meta name="theme-color" content="#181818">
   <meta name="referrer" content="no-referrer">
   <title>Happen</title>
-  <style>html,body{margin:0;height:100%;background:#181818;color:#eee}</style>
+  <!-- happen-server-preconnect -->
+  <link rel="preload" href="main.dart.js" as="script" fetchpriority="high">
+  <link rel="preload" href="assets/FontManifest.json" as="fetch" crossorigin>
+  <link rel="preload" href="assets/assets/fonts/Inter.ttf" as="fetch" crossorigin>
+  <link rel="preload" href="assets/fonts/MaterialIcons-Regular.otf" as="fetch" crossorigin>
+  <style>
+    html,body{margin:0;height:100%;background:#fff;color:#1a1c1f}
+    #happen-startup{position:fixed;inset:0;display:grid;place-content:center;gap:16px;justify-items:center;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    #happen-startup span{width:18px;height:18px;border:2px solid #e6e6e6;border-top-color:#339cff;border-radius:50%;animation:opening 1s linear infinite}
+    @keyframes opening{to{transform:rotate(360deg)}}
+    @media(prefers-reduced-motion:reduce){#happen-startup span{animation:none}}
+  </style>
 </head>
 <body>
+  <div id="happen-startup" role="status" aria-label="Opening workspace"><span aria-hidden="true"></span>Happen</div>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

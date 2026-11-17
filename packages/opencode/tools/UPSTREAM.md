@@ -1,7 +1,7 @@
 # OpenCode tool and instruction contracts
 
 Reference repository: [anomalyco/opencode](https://github.com/anomalyco/opencode),
-using the current HEAD of `/Users/meoyawn/Developer/github/opencode`.
+using the current HEAD of `../opencode`.
 OpenCode is a moving target, not a version-pinned compatibility contract. Record
 the revision and source hashes used for each comparison as evidence; do not
 check out an older revision to make a comparison pass.

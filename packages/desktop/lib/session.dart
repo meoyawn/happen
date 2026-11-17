@@ -1547,10 +1547,10 @@ class DesktopSession extends ChangeNotifier {
 
   /// Restore presentation state entirely from the local cache, including the
   /// selected thread. Network discovery must never gate this snapshot.
-  Future<void> restore() => _restoring ??= _restore();
+  Future<void> restore({Json? snapshot}) => _restoring ??= _restore(snapshot);
 
-  Future<void> _restore() async {
-    final saved = jsonObject(
+  Future<void> _restore(Json? snapshot) async {
+    final saved = snapshot ?? jsonObject(
       await _databaseCall('load', {}, cancellation: _lifetime),
     );
     final settings = jsonObject(saved['settings'] ?? {});
@@ -1722,6 +1722,7 @@ class DesktopSession extends ChangeNotifier {
       if (discovered) return null;
       throw StateError('Project is being removed');
     }
+    if (!localProjectIcons && inspected.containsKey('icon_revision') && _readProjectIcon(opened, inspected)) opened._iconChanged();
     watchProjectIcons();
     if (discovered) return opened;
     if (!opened.available || opened.workspace != inspected) {
@@ -1739,6 +1740,10 @@ class DesktopSession extends ChangeNotifier {
     token.throwIfCancelled();
     target.available = remote['available'] == true;
     if (target.available) target.workspace = remote;
+    if (!localProjectIcons && remote.containsKey('icon_revision') && _readProjectIcon(target, remote)) {
+      target._iconChanged();
+      sidebarChanges.notifyListeners();
+    }
     final identity = remote['available'] == true ? (identity: remote['identity'] as String, branch: remote['branch'] as String?) : null;
     if (identity == null) return;
     if (target.branch != identity.branch) {

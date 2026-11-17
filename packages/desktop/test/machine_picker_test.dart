@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:desktop/database.dart';
 import 'package:desktop/machines.dart';
+import 'package:desktop/machine_icons.dart';
 import 'package:desktop/new_session.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/thread_machine_picker.dart';
@@ -13,6 +14,31 @@ import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
 void main() {
+  test('default environment icon also resolves through its tunnel alias after relaunch', () async {
+    final root = await Directory.systemTemp.createTemp('default-machine-icon-');
+    final database = await openDesktopDatabase(root.path);
+    final session = DesktopSession(_Client(), database, machineAlias: 'tunnel-default');
+    var machines = MachinesController(session, root.path);
+    final cancellation = CancellationToken();
+    try {
+      await machines.refresh();
+      await machines.chooseIcon(null, MachineIcon.ubuntu, cancellation: cancellation);
+      expect(machines.iconFor(null), MachineIcon.ubuntu);
+      expect(machines.iconFor(session.machineAlias), MachineIcon.ubuntu);
+      await machines.close();
+      machines = MachinesController(session, root.path);
+      await machines.refresh();
+      expect(machines.iconFor(session.machineAlias), MachineIcon.ubuntu);
+      expect(machines.iconFor('another-server'), MachineIcon.server);
+    } finally {
+      cancellation.cancel();
+      await machines.close();
+      await session.close();
+      await database.close();
+      await root.delete(recursive: true);
+    }
+  });
+
   testWidgets('new-session project choices remember different machines after relaunch', (tester) async {
     late Directory root;
     late DesktopSession local, remote;

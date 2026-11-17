@@ -7,6 +7,73 @@ import 'package:web/web.dart' as web;
 import 'database_web.dart';
 
 typedef BrowserFile = ({String name, String path, bool image});
+typedef BrowserClipboard = ({String? text, List<BrowserFile> files});
+
+Future<List<BrowserFile>> _receiveFiles(List<web.File> files, CancellationToken cancellation) async {
+  final result = <BrowserFile>[];
+  try {
+    for (final file in files) {
+      cancellation.throwIfCancelled();
+      if (file.size > 100 * 1024 * 1024) throw StateError('Choose files smaller than 100 MB');
+      final bytes = (await file.arrayBuffer().toDart.asCancellable(cancellation)).toDart.asUint8List();
+      final path = await storeBrowserFile(bytes, file.name, cancellation);
+      result.add((name: file.name, path: path, image: file.type.startsWith('image/') && file.type != 'image/svg+xml'));
+    }
+    cancellation.throwIfCancelled();
+    return result;
+  } catch (_) {
+    for (final file in result) { await deleteBrowserFile(file.path); }
+    rethrow;
+  }
+}
+
+/// Capture file handles synchronously while the browser's paste data store is
+/// available. Reading this event needs no clipboard permission prompt.
+void Function() listenBrowserPaste({required bool Function() accepts,
+  required CancellationToken Function() cancellation,
+  required void Function(Future<BrowserClipboard>) receive}) {
+  final listener = ((web.ClipboardEvent event) {
+    if (!accepts()) return;
+    final data = event.clipboardData;
+    if (data == null) return;
+    final files = [for (var i = 0; i < data.files.length; i++) data.files.item(i)!];
+    final text = data.types.toDart.any((type) => type.toDart == 'text/plain') ? data.getData('text/plain') : null;
+    if (files.isEmpty && text == null) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    receive(_receiveFiles(files, cancellation()).then((files) => (text: text, files: files)));
+  }).toJS;
+  web.document.addEventListener('paste', listener, true.toJS);
+  return () => web.document.removeEventListener('paste', listener, true.toJS);
+}
+
+/// Flutter's explicit Paste action does not always generate a DOM paste event.
+/// Read image and text formats together while its user gesture is still active.
+Future<BrowserClipboard> readBrowserClipboard(CancellationToken cancellation) async {
+  cancellation.throwIfCancelled();
+  final List<web.ClipboardItem> items;
+  try {
+    items = (await web.window.navigator.clipboard.read().toDart.asCancellable(cancellation)).toDart;
+  } catch (_) {
+    cancellation.throwIfCancelled();
+    throw StateError('Allow clipboard access in your browser settings, or use your keyboard to paste.');
+  }
+  final files = <web.File>[];
+  String? text;
+  for (final item in items) {
+    final types = item.types.toDart.map((type) => type.toDart).toList();
+    final image = types.where((type) => type.startsWith('image/') && type != 'image/svg+xml').firstOrNull;
+    if (image != null) {
+      final blob = await item.getType(image).toDart.asCancellable(cancellation);
+      final extension = switch (image) { 'image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif', _ => 'img' };
+      files.add(web.File([blob].toJS, 'Pasted image.$extension', web.FilePropertyBag(type: image)));
+    } else if (types.contains('text/plain')) {
+      final blob = await item.getType('text/plain').toDart.asCancellable(cancellation);
+      text = (await blob.text().toDart.asCancellable(cancellation)).toDart;
+    }
+  }
+  return (text: text, files: await _receiveFiles(files, cancellation));
+}
 
 Future<Object?> _files(String method, Json params, CancellationToken cancellation) async {
   final owner = await openDesktopDatabase('', cancellation: cancellation);
@@ -71,16 +138,8 @@ Future<List<BrowserFile>> pickBrowserFiles(CancellationToken cancellation) async
   try {
     input.click();
     await chosen.future;
-    final result = <BrowserFile>[];
     final files = input.files;
-    for (var i = 0; i < (files?.length ?? 0); i++) {
-      final file = files!.item(i)!;
-      if (file.size > 100 * 1024 * 1024) throw StateError('Choose files smaller than 100 MB');
-      final bytes = (await file.arrayBuffer().toDart.asCancellable(cancellation)).toDart.asUint8List();
-      final path = await storeBrowserFile(bytes, file.name, cancellation);
-      result.add((name: file.name, path: path, image: file.type.startsWith('image/') && file.type != 'image/svg+xml'));
-    }
-    return result;
+    return await _receiveFiles([for (var i = 0; i < (files?.length ?? 0); i++) files!.item(i)!], cancellation);
   } finally { await changes.cancel(); await cancelled.cancel(); input.remove(); }
 }
 
