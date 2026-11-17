@@ -7,7 +7,8 @@ build/
 coverage/
 .moon/cache/
 .local/
-.mise/
+/.mise/*
+!/.mise/locks/
 .cloudflared/
 cloudflared*.json
 tunnel-token
