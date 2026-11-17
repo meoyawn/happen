@@ -7,9 +7,10 @@ import 'image_generation.dart';
 import 'goals.dart';
 import 'web_search.dart';
 
-ToolDefinition codeDefinition({required bool deferredTools, bool webSearch = true, bool imageGeneration = false, bool goals = true, bool codeModeOnly = true}) => ToolDefinition(
+ToolDefinition codeDefinition({required bool deferredTools, bool webSearch = true, bool literatureSearch = false,
+  bool imageGeneration = false, bool goals = true, bool codeModeOnly = true}) => ToolDefinition(
   name: 'exec', namespace: 'functions', format: 'text',
-  description: _codeDescription(deferredTools, webSearch, imageGeneration, goals, codeModeOnly), grammar: _codeGrammar,
+  description: _codeDescription(deferredTools, webSearch, literatureSearch, imageGeneration, goals, codeModeOnly), grammar: _codeGrammar,
 );
 
 ToolDefinition directDefinition(Json tool) => ToolDefinition.fromJson({
@@ -113,7 +114,7 @@ eof_line: "*** End of File" LF
 
 // Codex code-mode-protocol/description.rs renders eager nested declarations
 // into exec itself; tool_search only indexes the deferred external catalog.
-String _codeDescription(bool deferredTools, bool webSearch, bool imageGeneration, bool goals, bool codeModeOnly) {
+String _codeDescription(bool deferredTools, bool webSearch, bool literatureSearch, bool imageGeneration, bool goals, bool codeModeOnly) {
   final guidance = r'''Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`.
 
@@ -129,7 +130,7 @@ MCP tools return the full CallToolResult envelope. Check `isError` before using 
     if (deferredTools) toolSearchCatalog,
     if (imageGeneration) imageGenerationCatalog,
     if (goals) ...goalCatalog,
-    if (webSearch) webSearchHost,
+    if (webSearch) webSearchHostFor(literatureSearch: literatureSearch),
   ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList()
     ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
   return [

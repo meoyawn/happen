@@ -27,7 +27,7 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
   Json? tool(String id, String name, Object? input, {String? parent}) {
     if (const {'exec_command', 'functions.exec_command', 'apply_patch', 'functions.apply_patch',
         'view_image', 'functions.view_image', 'clock.sleep', 'clock__sleep', 'image_gen.imagegen', 'image_gen__imagegen',
-        'web.run', 'web__run'}.contains(name)) {
+        'web.run', 'web__run', 'send_message_to_user_async', 'functions.send_message_to_user_async'}.contains(name)) {
       (state['nativeCalls'] ??= <String, dynamic>{})[id] = true;
       return null;
     }

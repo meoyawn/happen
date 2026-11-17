@@ -14,7 +14,7 @@ Future<void> main(List<String> arguments) async {
   final home = await Directory('${workspace.path}/home').create();
   final environment = <String, String>{
     for (final name in ['PATH', 'PATHEXT', 'SHELL', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'COMSPEC', 'TMPDIR', 'TMP', 'TEMP',
-      'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TZ', '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'DEVELOPER_DIR', 'CODEX_SOURCE_DIR',
+      'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TZ', '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'DEVELOPER_DIR',
       'DART_MCP_SERVER_EXECUTABLE'])
       if (Platform.environment[name] case final String value) name: value,
     'HOME': home.path, 'USERPROFILE': home.path,

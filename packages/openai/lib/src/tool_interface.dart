@@ -20,8 +20,10 @@ import 'model_context.dart';
 class OpenAIToolInterface extends ToolInterface {
   const OpenAIToolInterface({this.webSearch = true, this.imageGeneration = false,
     this.sleepTool = true, this.goals = true, this.codeModeOnly = true,
-    this.codeModeToolSearch = false, this.requestUserInput = true, this.defaultModeRequestUserInput = false});
+    this.codeModeToolSearch = false, this.requestUserInput = true, this.defaultModeRequestUserInput = false,
+    this.sendMessageToUserAsync = false, this.literatureSearch = false});
   final bool webSearch, imageGeneration, sleepTool, goals, codeModeOnly, codeModeToolSearch, requestUserInput, defaultModeRequestUserInput;
+  final bool sendMessageToUserAsync, literatureSearch;
   @override
   String get id => 'openai';
   @override
@@ -43,13 +45,14 @@ class OpenAIToolInterface extends ToolInterface {
     prepareToolSearch(deferred);
     return [
     specs.codeDefinition(deferredTools: codeModeToolSearch && deferred.isNotEmpty, webSearch: webSearch,
-      imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
+      literatureSearch: literatureSearch, imageGeneration: imageGeneration, goals: goals, codeModeOnly: codeModeOnly), specs.waitDefinition,
     if (!codeModeOnly) ...[
       for (final name in ['exec_command', 'write_stdin']) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == name)),
       if (deferred.isNotEmpty) ...mcpResourceCatalog.map(specs.directDefinition),
       ...mcpEventCatalog.map(specs.directDefinition),
     ],
     if (requestUserInput) ...[requestUserInputForMode(defaultMode: defaultModeRequestUserInput), requestUserInputAsyncDefinition],
+    if (sendMessageToUserAsync) sendMessageToUserAsyncDefinition,
     if (!codeModeOnly) specs.directDefinition(specs.hostCatalog.singleWhere((tool) => tool['name'] == 'curr_time')),
     if (sleepTool) specs.sleepDefinition,
     if (!codeModeOnly) ...[
@@ -58,7 +61,7 @@ class OpenAIToolInterface extends ToolInterface {
       if (goals) ...goalCatalog.map(specs.directDefinition),
     ],
     if (deferred.isNotEmpty && !codeModeOnly) specs.directSearchDefinition,
-    if (webSearch && !codeModeOnly) webSearchDefinition,
+    if (webSearch && !codeModeOnly) webSearchDefinitionFor(literatureSearch: literatureSearch),
     ];
   }
   @override
@@ -75,6 +78,7 @@ class OpenAIToolInterface extends ToolInterface {
   Map<String, String> get services => {
     if (requestUserInput) 'request_user_input': 'question.ask',
     if (requestUserInput) 'request_user_input_async': 'question.ask_async',
+    if (sendMessageToUserAsync) 'send_message_to_user_async': 'message.send_async',
     if (webSearch) 'web__run': 'web.search',
     if (imageGeneration) 'image_gen__imagegen': 'image.generate',
     if (goals) for (final tool in goalCatalog) tool['name'] as String: 'goal.${tool['name']}',
@@ -87,7 +91,7 @@ class OpenAIToolInterface extends ToolInterface {
     ...specs.hostCatalog, ...historyCatalog, ...mcpResourceCatalog, ...mcpEventCatalog,
     if (imageGeneration) imageGenerationCatalog,
     if (goals) ...goalCatalog,
-    if (webSearch) webSearchHost,
+    if (webSearch) webSearchHostFor(literatureSearch: literatureSearch),
   ].map((tool) => describeTool(tool, namespaceInstructions: false)).toList();
   @override
   List<Json> hostCatalogFor(List<Json> deferred) => [
@@ -96,10 +100,10 @@ class OpenAIToolInterface extends ToolInterface {
   ];
   @override
   ToolRuntime createRuntime(String cwd, CancellationToken cancellation) =>
-    _OpenAITools(cwd, cancellation, webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput);
+    _OpenAITools(cwd, cancellation, webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput, sendMessageToUserAsync);
   @override
   String formatResult(ToolCall call, Json result) {
-    if ({'request_user_input', 'request_user_input_async'}.contains(call.name)) {
+    if ({'request_user_input', 'request_user_input_async', 'send_message_to_user_async'}.contains(call.name)) {
       return jsonEncode([{'type': 'input_text', 'text': result['error'] ?? jsonEncode(result)}]);
     }
     if (call.format == 'search') { return jsonEncode(result['tools'] ?? []); }
@@ -153,13 +157,14 @@ class OpenAIToolInterface extends ToolInterface {
 }
 
 class _OpenAITools extends ToolRuntime {
-  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly, this.requestUserInput, this.defaultModeRequestUserInput)
+  _OpenAITools(String cwd, CancellationToken cancellation, this.webSearch, this.sleepTool, this.codeModeOnly, this.requestUserInput,
+    this.defaultModeRequestUserInput, this.sendMessageToUserAsync)
     : host = HostTools(cwd, cancellation), cells = CodeSession(cancellation);
   final HostTools host;
   final CodeSession cells;
   @override
   bool get hasRunningCells => cells.hasRunningCells;
-  final bool webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput;
+  final bool webSearch, sleepTool, codeModeOnly, requestUserInput, defaultModeRequestUserInput, sendMessageToUserAsync;
   @override
   Future<Object?> call(String name, Object? arguments, {required CancellationToken cancellation, String? cwd,
     String? callId, ToolItemEvent? onItem, ToolPatchEvent? onPatch}) =>
@@ -169,6 +174,14 @@ class _OpenAITools extends ToolRuntime {
   @override
   Future<Json> execute(ToolCall call, ToolExecution context) async {
     context.cancellation.throwIfCancelled();
+    if (sendMessageToUserAsync && call.name == 'send_message_to_user_async' &&
+        (call.namespace == null || call.namespace == 'functions')) {
+      final args = jsonObject(jsonDecode(call.input));
+      validateToolInput(args, sendMessageToUserAsyncDefinition.parameters, call.name);
+      final message = (args['message'] as String).trim();
+      if (message.isEmpty) return {'error': 'message must not be empty'};
+      return jsonObject(await context.call(call.name, {'message': message}, cancellation: context.cancellation));
+    }
     if (requestUserInput && call.name == 'request_user_input_async' &&
         (call.namespace == null || call.namespace == 'functions')) {
       final questions = requestUserInputAsyncQuestions(jsonDecode(call.input));
@@ -194,7 +207,7 @@ class _OpenAITools extends ToolRuntime {
       return jsonObject(await context.call('clock__sleep', jsonObject(jsonDecode(call.input)), cancellation: context.cancellation));
     }
     if (webSearch && call.namespace == 'web' && call.name == 'run') {
-      return {'output': await context.call('web__run', webSearchCommands(jsonDecode(call.input)), cancellation: context.cancellation)};
+      return {'output': await context.call('web__run', jsonObject(jsonDecode(call.input)), cancellation: context.cancellation)};
     }
     if (call.name == 'wait' && (call.namespace == null || call.namespace == 'functions')) {
       return cells.wait(jsonObject(jsonDecode(call.input)), cancellation: context.cancellation);

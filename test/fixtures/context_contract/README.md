@@ -8,10 +8,10 @@ This is a source-level integration contract, not a model-quality eval or a CLI
 startup test. Happen runs its production agent and provider in-process through
 `AgentServer.startLocal`. The installed Codex executable is the independent
 reference. Neither a compiled Happen CLI nor a CLI build dependency is needed.
-The scenarios and tool-search modes are a named, parameterized Dart test matrix; the Moon
-command takes no scenario/model overrides. `test-unit` excludes the `e2e` tag
+The Dart test matrix varies the scenario and tool-search mode. `test-unit` excludes the `e2e` tag
 and also runs from source. The separate `build-cli` task remains cached for release
 builds and is not a dependency of this comparison.
+Use `moon run test-e2e -- --plain-name <scenario>` to focus the replay.
 
 The fixed target launches the Dart tests through `tool/test_e2e.dart` with an
 empty temporary home and a minimal environment. This also isolates Happen's real
@@ -30,33 +30,33 @@ workspace's package configuration with temporary cache paths.
 
 ## Isolation and real execution
 
-The executable matrix uses only GPT-6.1 Sol with its catalog reasoning default.
+Every inference request uses GPT-6.2 Sol (`gpt-6.2-sol`) at `max` reasoning.
+The local Responses peer rejects a different model or effort. The Happen
+threads are named before their first turn to keep inference focused on the
+replayed conversation.
 It runs ordinary cases with `code_mode_tool_search` explicitly off and on in both
 harnesses. Cases that invoke ranked search require the enabled variant. Deferred
 tools remain callable through the `ALL_TOOLS` metadata catalog in both modes;
 its discovery replay checks the actual presence of ranked search in the catalog.
-Happen also requires the model's `supports_search_tool` capability. The unchanged
-`packages/openai/catalog/models.json` selects no reasoning
-summary, low verbosity, Code Mode only, and Responses Lite. The evidence includes
-the catalog's original bytes and SHA-256. Both harnesses explicitly select Sol
-and leave reasoning at its catalog default.
+Happen also requires the model's `supports_search_tool` capability. The pinned
+[`gpt-6.2-sol.json`](gpt-6.2-sol.json) contains the model entry discovered by
+Codex CLI 0.169.0 on 2026-11-17. It sets the capabilities and defaults for reasoning
+summary, verbosity, Code Mode, and Responses Lite. Codex loads it as a catalog
+override and Happen discovers it through the local `/models` endpoint. The report
+records the catalog's SHA-256, and both harnesses explicitly select `max` for
+the replay.
 The first replay selects tool search through Happen's global config file. The
 second reloads the opposite global value and selects the intended value through
 explicit thread settings, checking their precedence against the same Codex
 request. Test names, evidence directories, and report results identify the flag.
-The bundled and embedded catalogs are checked against the independent local
-Codex checkout for all supported models. The reference receives Codex's source
-catalog, not Happen's copy. Set `CODEX_SOURCE_DIR` when that checkout is not at
-`../github/codex`. Its revision and catalog hash are retained in the report.
-A separate discovery contract omits the catalog override and makes both real
-model managers fetch authenticated metadata. It compares the CLI's typed catalog,
-Happen's complete model snapshot, consumed defaults, and base instruction bytes
-for Sol. The CLI fills optional defaults, drops unknown server fields,
-and chooses unified_exec for Code Mode; these representation differences are
-kept outside the full context comparison. Cache expiry, offline reuse, account
-isolation, and frozen thread metadata are covered by `test/model_catalog_test.dart`.
+A discovery case has both model managers fetch the same local catalog with a
+fixture-specific `max` default, a narrower context window, and a marker in the
+base instructions. It checks those defaults and instruction bytes against the
+CLI's typed catalog and Happen's complete model snapshot. Cache expiry, offline
+reuse, account isolation, and frozen thread metadata are covered by
+`test/model_catalog_test.dart`.
 Happen's YAML selects ranked discovery and supplies any fixture MCP servers.
-Model, question-mode and compaction selections use the public thread API;
+Model, reasoning, question-mode and compaction selections use the public thread API;
 ordinary cases retain the remaining provider defaults.
 Each pair uses separate empty data/credential homes, real instruction and skill
 files, and explicitly isolated tool settings. Requests carry tool declarations
@@ -64,9 +64,10 @@ and base instructions in a durable history prefix, omit top-level `tools` and
 `instructions`, set `parallel_tool_calls: false`, and use
 `reasoning.context: "all_turns"`, matching Codex's Responses Lite client.
 Codex's bundled skills, plugins, apps, collaboration and permission prompts are
-disabled explicitly. Content classifications and source attribution remain
-enabled and are compared strictly; generated turn/time metadata is normalized
-with the other scoped IDs. Shell snapshots, MCP credential storage, optional
+disabled explicitly. The fixture retains the explicit `view_image` detail control
+by disabling Codex's unified image budget. The comparison includes content
+classifications and source attribution and normalizes generated turn IDs and
+timestamps. Shell snapshots, MCP credential storage, optional
 startup grace, server optionality and tool approval use Codex's defaults.
 No user config or ChatGPT account is used. Shell
 selection is not overridden: the runtime follows Codex's account-database shell
@@ -74,21 +75,18 @@ selection and platform defaults, not the launching terminal's `SHELL` value.
 Commands also keep the default login mode, exercising snapshot capture and
 restoration in the isolated home.
 Shell replays explicitly select a PTY and disable its newline conversion with
-`stty -onlcr`. The installed Codex 0.166.0 reference can leave exited pipe
-children unreaped and wait indefinitely for their exit notification. PTY
-execution avoids that reference defect while retaining real commands, exact
-output bytes and exit-status assertions. Happen's default pipe execution is
+`stty -onlcr` to get a terminal receipt with exact output bytes and exit status.
+Happen's default pipe execution is
 covered by the tool-runtime and shell-snapshot suites.
 Standalone OpenAI web search is enabled in both configurations
 (`web_search = "live"`). Codex uses its built-in OpenAI provider with a local
 base URL and a synthetic API key. The HTTP-only peer rejects WebSocket upgrades
 with 426, exercising Codex's production HTTP fallback. The catalog's Code Mode
 only layout exposes search as `tools.web__run` inside `functions.exec`. App usage
-instructions remain disabled by the unchanged model catalog.
+instructions are disabled in the pinned catalog.
 The reference keeps the default `sleep_tool` gate, goal tools, and model-driven
-mode; the matrix model advertises clock support. `deferred_tool_world_state` is
-explicitly enabled because the installed Codex 0.166 reference predates the local
-checkout's enabled default.
+mode. The model advertises clock support. Both harnesses include deferred
+namespace context.
 
 Global skill discovery is explicitly redirected to the same temporary
 `home-*/.agents/skills` directory in a randomly named fixture home. Codex receives
@@ -319,7 +317,7 @@ the singular filename and nested guidance must stay out of the initial context.
 The multi-user compaction case uses four actual consecutive turns,
 then requires every user message to remain in its original order before the
 checkpoint in the following request, as in the user-supplied context export.
-The single-user compaction case keeps each model's catalog context limit. Usage
+The single-user compaction case keeps Sol's catalog context limit. Usage
 first approaches its 90% threshold without crossing it, then reaches it; the
 contract catches premature and late compaction. Thread creation also checks
 the selected model, effort, raw context, and 95% usable context. The multi-user
@@ -353,11 +351,11 @@ implemented. Unawaited work is cancelled when the module completes. The generic
 OpenCode evaluator retains its separate async-function/return contract.
 
 The runtime includes real PTY execution, ordered image/generated-image/audio
-output, and the Images API generation/editing service. The matrix model does
-not accept audio input, so the recorded-audio case requires Codex's unsupported
-audio notice in the original content position, without treating base64 as prose.
-The media fixtures inspect
-actual request content, never play audio or generate a paid image. Keep any
+output, and the Images API generation/editing service. The pinned Codex catalog
+advertises audio input. The recorded-audio case checks two copies of the original
+WAV and their position in the tool output. The copies exceed the compaction
+budget if counted as base64 prose. The media fixtures inspect captured requests
+through the local peer. Keep any
 remaining failures visible: do not add dummy declarations or omit `tools` from
 equality to make the gate green.
 

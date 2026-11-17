@@ -18,9 +18,32 @@ const webSearchHost = <String, dynamic>{
   'description': webSearchInstructions, 'parameters': webSearchParameters,
 };
 
-Json webSearchCommands(Object? value) {
+final _searchProperties = jsonObject(webSearchParameters['properties']);
+final _literatureParameters = <String, dynamic>{
+  ...webSearchParameters,
+  'properties': {
+    ..._searchProperties,
+    'literature_search_query': {
+      ...jsonObject(_searchProperties['search_query']),
+      'description': 'Search for scientific papers. Open relevant papers and cite the primary sources you use.',
+    },
+  },
+};
+
+final _literatureDefinition = ToolDefinition.fromJson({
+  ...webSearchDefinition.toJson(), 'parameters': _literatureParameters,
+});
+final _literatureHost = {...webSearchHost, 'parameters': _literatureParameters};
+
+ToolDefinition webSearchDefinitionFor({required bool literatureSearch}) =>
+  literatureSearch ? _literatureDefinition : webSearchDefinition;
+
+Json webSearchHostFor({required bool literatureSearch}) =>
+  literatureSearch ? _literatureHost : webSearchHost;
+
+Json webSearchCommands(Object? value, {bool literatureSearch = false}) {
   final commands = jsonObject(value);
-  validateToolInput(commands, webSearchParameters, 'web.run');
+  validateToolInput(commands, literatureSearch ? _literatureParameters : webSearchParameters, 'web.run');
   return commands;
 }
 

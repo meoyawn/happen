@@ -43,6 +43,8 @@ class GptModel {
       (contextWindow ?? this.contextWindow) * (data['effective_context_window_percent'] as int? ?? 95) ~/ 100;
   bool get reasoningUpdates =>
       data['supports_reasoning_effort_updates'] == true;
+  bool supportsExperimentalTool(String name) =>
+      (data['experimental_supported_tools'] as List?)?.contains(name) == true;
   String get verbosity => data['default_verbosity'] as String? ?? 'low';
   String get instructions => requiredString(
     jsonObject(data['model_messages']),

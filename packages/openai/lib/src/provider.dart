@@ -44,9 +44,9 @@ class OpenAIProvider implements ModelProvider {
     String? callId,
     ToolItemEvent? onItem,
   }) async {
-    _validate(request);
+    final info = _validate(request);
     cancellation.throwIfCancelled();
-    final parsed = webSearchCommands(commands);
+    final parsed = webSearchCommands(commands, literatureSearch: info.supportsExperimentalTool('literature_search_query'));
     final action = webSearchAction(parsed);
     final item = <String, dynamic>{'type': 'Extension', 'kind': 'web.search',
       'id': callId ?? newUuidV7(), 'query': '', 'action': null, 'results': null};
@@ -142,7 +142,7 @@ class OpenAIProvider implements ModelProvider {
     };
   }
 
-  void _validate(ModelRequest request) {
+  GptModel _validate(ModelRequest request) {
     if (!efforts.contains(request.effectiveReasoning)) {
       throw ArgumentError('Unsupported GPT reasoning effort');
     }
@@ -165,6 +165,7 @@ class OpenAIProvider implements ModelProvider {
         }
       }
     }
+    return info;
   }
 
   Future<ResponsesReply> _respond(
@@ -176,10 +177,10 @@ class OpenAIProvider implements ModelProvider {
     int? maxOutputTokens,
     Json? outputSchema,
   }) {
-    _validate(request);
+    final info = _validate(request);
     return client.respond(
       model: request.model,
-      modelInfo: request.modelInfo ?? modelInfo(request.model).data,
+      modelInfo: info.data,
       maxOutputTokens: maxOutputTokens,
       outputSchema: outputSchema,
       instructions: request.instructions,

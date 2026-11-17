@@ -10,11 +10,8 @@ import '../test/fixtures/context_contract/environment.dart';
 // in-process Happen shell/MCP children must not read the caller's startup files,
 // package credentials, configuration, or global skills.
 Future<void> main(List<String> arguments) async {
-  if (arguments.isNotEmpty) throw ArgumentError('The E2E matrix is fixed; run moon run test-e2e without overrides');
   final home = await Directory.systemTemp.createTemp('happen-context-contract-');
   final output = '${Platform.environment['HAPPEN_TEST_REPORT_ROOT'] ?? Directory.current.path}/.local/context-contract/${DateTime.now().microsecondsSinceEpoch}';
-  final repository = Platform.environment['HAPPEN_TEST_REPORT_ROOT'] ?? Directory.current.path;
-  final codexSource = Directory(Platform.environment['CODEX_SOURCE_DIR'] ?? '$repository/../github/codex').absolute.path;
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
@@ -29,12 +26,12 @@ Future<void> main(List<String> arguments) async {
     process = await Process.start(Platform.resolvedExecutable, [
       '--disable-dart-dev', '--packages=${packages.toFilePath()}',
       testLibrary.resolve('../bin/test.dart').toFilePath(), 'test/contracts/codex_context_test.dart',
+      ...arguments,
     ],
       mode: ProcessStartMode.inheritStdio, includeParentEnvironment: false,
       environment: {...isolatedEnvironment(home.path, '${home.path}/.codex'), 'CONTEXT_CONTRACT_HOME': home.path,
         if (Platform.environment['DART_MCP_SERVER_EXECUTABLE'] case final String executable)
           'DART_MCP_SERVER_EXECUTABLE': executable,
-        'CONTEXT_CONTRACT_CODEX_SOURCE': codexSource,
         'CONTEXT_CONTRACT_OUTPUT': output});
     hook = CancellationHook(cancellation, () => process?.kill(ProcessSignal.sigterm));
     exitCode = await process.exitCode.asCancellable(cancellation);

@@ -1,6 +1,8 @@
 import 'fermented_beetroot.dart';
 import 'tldw.dart';
 
+const _asyncStatus = 'The fixture check is in progress.';
+
 const _terminalShell = '''async function terminalShell(input) {
   let result = await tools.exec_command({...input,cmd:"stty -onlcr; " + input.cmd,tty:true});
   const output = [result.output];
@@ -104,9 +106,11 @@ const contextCases = <Map<String, dynamic>>[
     ],
     'result': 'PARALLEL_TOOL_RECEIPT',
   },
-  {'id': 'interactive-user-input', 'prompt': 'Reply READY.', 'request_user_input': true,
+  {'id': 'interactive-user-input', 'prompt': 'Reply READY.', 'request_user_input': true, 'async_message': _asyncStatus,
     'files': <String, Object?>{}, 'contains': <Object?>[], 'absent': <Object?>[],
     'responses': [
+      [{'type': 'function_call', 'name': 'send_message_to_user_async', 'call_id': 'async_status',
+        'arguments': '{"message":"  $_asyncStatus  "}'}],
       [{'type': 'function_call', 'name': 'request_user_input_async', 'call_id': 'async_question',
         'arguments': '{"questions":[{"title":"Which approach should we use?","options":["Safe","Fast"]},{"title":"Any constraints?"}]}'}],
       [_ready],
@@ -137,7 +141,8 @@ const contextCases = <Map<String, dynamic>>[
     // Replay the search/open/search/open progression from the supplied Codex
     // rollout. The endpoint advances only after the corresponding real calls.
     'searches': [
-      {'commands': {'search_query': [{'q': 'youtube to podcast tools'}, {'q': 'youtube RSS podcast converter'}], 'response_length': 'short'},
+      {'commands': {'search_query': [{'q': 'youtube to podcast tools'}, {'q': 'youtube RSS podcast converter'}],
+        'literature_search_query': [{'q': 'podcasting and online video distribution'}], 'response_length': 'short'},
         'output': 'YOUTUBE_PODCAST_SEARCH_RECEIPT\nListenbox converts YouTube videos into podcast feeds.\nSource: https://listenbox.app/'},
       {'commands': {'open': [{'ref_id': 'turn0search0'}, {'ref_id': 'turn0search1'}], 'response_length': 'short'},
         'output': 'YOUTUBE_PODCAST_OPEN_RECEIPT\nSelf-hosted alternatives include Podsync.'},
@@ -150,7 +155,8 @@ const contextCases = <Map<String, dynamic>>[
     ],
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_search',
-        'input': 'text(await tools.web__run({search_query:[{q:"youtube to podcast tools"},{q:"youtube RSS podcast converter"}],response_length:"short"}));'}],
+        'input': 'text(await tools.web__run({search_query:[{q:"youtube to podcast tools"},{q:"youtube RSS podcast converter"}],'
+          'literature_search_query:[{q:"podcasting and online video distribution"}],response_length:"short"}));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_open',
         'input': 'text(await tools.web__run({open:[{ref_id:"turn0search0"},{ref_id:"turn0search1"}],response_length:"short"}));'}],
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'youtube_podcast_targeted',
@@ -512,7 +518,8 @@ if [ -n "${BASH_VERSION-}" ]; then shopt -s expand_aliases; fi
     'responses': [
       [{'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'audio_result',
         'input': 'const clip = await tools.exec_command({cmd:"base64 < recording.wav",max_output_tokens:20000}); '
-          r'text("audio-before"); audio("data:audio/wav;base64," + clip.output.replace(/\s/g,"")); text("audio-after");'}],
+          r'const wav = "data:audio/wav;base64," + clip.output.replace(/\s/g,""); '
+          'text("audio-before"); audio(wav); audio(wav); text("audio-after");'}],
       [_ready],
     ],
     'result': 'audio-after',

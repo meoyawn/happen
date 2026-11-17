@@ -328,7 +328,6 @@ tasks:
       - test/contracts/**/*
       - test/fixtures/context_contract/**/*
       - tool/test_e2e.dart
-      - packages/openai/catalog/models.json
     options:
       cache: false
       shell: false

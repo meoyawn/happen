@@ -975,6 +975,12 @@ class _Agent {
                         cancel();
                         cancellation.throwIfCancelled();
                       }
+                    } else if (service == 'message.send_async' && !nested) {
+                      final item = {'turnId': turnId, 'item': {'id': id, 'type': 'agentMessage',
+                        'text': requiredString(jsonObject(arguments), 'message'), 'phase': 'final_answer', 'delivery': 'async'}};
+                      event(await _append('native.item.started', item));
+                      await callIsolate(writer, 'native.item.queue', item);
+                      output = {'accepted': true};
                     } else if (service == 'skills.read') {
                       output = await callIsolate(network, 'skills.read', {
                         ...jsonObject(arguments), 'task_id': taskId, 'cwd': cwd, 'provider': config['provider'],
