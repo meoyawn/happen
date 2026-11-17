@@ -1,4 +1,4 @@
-The backend runs as one detached, PID-managed daemon per Linux user and data directory, shared by all client connections. SSH forwards its private Unix socket; the VPS needs no public application port. Optional web access uses persistent user services for an authenticated loopback gateway and Cloudflare Tunnel.
+The backend runs as one daemon per Linux user and data directory, shared by all client connections. SSH forwards its private Unix socket; the VPS needs no public application port. When web access is configured, the same Dart process owns the authenticated loopback gateway and supervises a `cloudflared` child process. Release and development launch the same `_serve` entry point; only the Dart runtime changes.
 
 Agent commands use Codex V2 shell snapshots. Unchanged startup files reuse the initialized shell state; editing, creating or removing a standard login/rc file, `BASH_ENV` or `ENV` refreshes it before the next command in that workspace. In-flight captures are discarded if their startup inputs change. Files sourced indirectly by a profile are not watched; start a fresh shell explicitly after changing those files.
 
@@ -34,7 +34,7 @@ The artifact is one self-contained AOT executable, `happen-server`, with QuickJS
 
 Deployment requires compatible Unison versions locally and on the VPS (for example, `brew install unison` and `sudo apt install unison`). Each invocation owns a private SSH master and control socket, independently of desktop connections. Initial connection failures back off before retrying; authentication failures identify the missing key configuration. Commands and Unison reuse only that deployment connection, which closes when deployment ends. Set `identityFile` in the private target file or load the server key into your SSH agent.
 
-Unison mirrors only `happen-server` from the local build to a separate staging directory, using the current executable as its delta-transfer basis. Local artifacts remain authoritative and interrupted uploads can resume there. The tool verifies SHA-256, checks the embedded-library bootstrap, switches `~/.local/share/happen/current`, and restarts the daemon. It waits for readiness before acknowledging success and restores the previous release if the new daemon fails to start. Restart interrupts active turns; saved threads remain on disk.
+Unison mirrors only `happen-server` from the local build to a separate staging directory, using the current executable as its delta-transfer basis. Local artifacts remain authoritative and interrupted uploads can resume there. The tool verifies SHA-256, checks the embedded-library bootstrap, and switches `~/.local/share/happen/current`. In release mode it restarts the daemon and waits for readiness, restoring the previous release if startup fails. In development mode it installs the AOT release without restarting the live VM. A release restart interrupts active turns; saved threads remain on disk.
 
 To build independently, or redeploy an existing artifact:
 
@@ -143,13 +143,13 @@ output, client database or config schema. Cloudflare CLI credentials stay in
 the CLI's private home configuration directory.
 
 The server AOT executable embeds the pinned, checksum-verified `cloudflared`
-binary alongside its native libraries. `happen-server cloudflared --version`
-checks the bundled connector. Install switches the current release and enables
-`happen-web.service` and `happen-tunnel.service` as user services with automatic
-restart and lingering across logout/reboot. The gateway starts the existing
-PID backend idempotently and the tunnel reads its token from the private file.
-This installation refreshes the gateway and connector while keeping active
-backend turns running; the new backend binary is used on its next start.
+binary alongside its native libraries. The builder checks the extracted
+connector. Install switches the current release and enables one
+`happen-server.service` user service with automatic restart and lingering
+across logout and reboot. The `_serve` entry point starts the backend, web
+gateway and connector, and reads the connector token from the private file.
+When development mode is selected, install updates the release for the next
+mode switch and leaves the running VM untouched.
 
 Server configuration in `~/.config/happen/config.yaml` contains credential
 paths only:
@@ -188,24 +188,23 @@ path without introducing a different query layer.
 ```sh
 moonx dev-server
 moonx dev-server -- status
+moonx dev-server -- verify
 moonx dev-server -- release
 ```
 
-The development task prepares native hooks, then a separate systemd handoff
-waits for active turns to finish, stops the release gateway and waits for the existing daemon's verified PID to
-exit before starting the Dart VM backend. Development and release share the
-same serving lock and Unix socket. The private data directory records the
-selected runtime; SSH `daemon start` requests use the development service while
-that mode is selected. A failed switch restores the release service.
-The handoff verifies owner authentication, WSS and backend initialization over
-the public tunnel before recording success. `moonx dev-server -- web` hot reloads
-the gateway while retaining the current backend; this is useful during an active
-turn. `moonx dev-server -- verify` runs the public connection check independently.
+The development task builds native hooks, copies their libraries and the
+checksum-verified connector into a private runtime, then queues a systemd
+handoff until active turns finish. The handoff stops the old supervisor, starts
+the same `_serve` entry point in the Dart VM, and verifies owner authentication,
+WSS and backend initialization through the public tunnel. A failed switch
+restores the AOT service. Both modes share the serving lock and Unix socket;
+SSH `daemon start` uses the selected service.
 
-`happen-server-dev.service` owns the only backend, while
-`happen-web-dev.service` owns the loopback gateway. Both support Dart VM hot
-reload; the connector keeps its existing edge connections. VM service metadata
-is written outside the checkout in `~/.cache/happen/server-vm.json` and
-`~/.cache/happen/web-vm.json`. Debug ports bind to loopback and are never routed
-through the public tunnel. `release` stops development before returning to the
-installed AOT bundle.
+`happen-server-dev.service` owns the backend, web gateway and `cloudflared`
+child in one hot reloadable Dart VM process. Its native libraries and package
+map have stable paths outside the checkout, so a later `dart run` cannot make
+FFI bindings point into a deleted temporary directory. Hot reload retains the
+backend and gateway state and keeps the connector running. VM service metadata
+is in `~/.cache/happen/server-vm.json`; the debug port binds to loopback and is
+never routed through the public tunnel. `release` switches to the installed
+AOT service. `verify` checks the public connection independently.

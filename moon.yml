@@ -61,16 +61,6 @@ tasks:
       shell: false
       outputStyle: stream
 
-  serve-web:
-    description: Serve the authenticated web gateway to the private server
-    command: dart --disable-dart-dev packages/server/bin/happen_web.dart
-    preset: server
-    inputs: []
-    options:
-      cache: false
-      shell: false
-      outputStyle: stream
-
   dart:
     description: Run Dart workspace tools
     command: dart --disable-dart-dev

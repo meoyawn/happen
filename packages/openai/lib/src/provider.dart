@@ -17,6 +17,7 @@ class OpenAIProvider implements ModelProvider {
   final ResponsesClient client;
   final GptCatalog? catalog;
   GptModel modelInfo(String id) => catalog?.model(id) ?? GptModel(id);
+  List<GptModel> get models => catalog?.models ?? catalogGptModels(bundledGptModels.values);
   String get defaultModel => catalog?.defaultModel ?? defaultGptModel;
   @override
   String get id => 'openai';
@@ -63,7 +64,6 @@ class OpenAIProvider implements ModelProvider {
   }
 
   // Ultra requires delegation this runtime lacks.
-  static const models = supportedGptModels;
   static const efforts = {'low', 'medium', 'high', 'xhigh', 'max'};
 
   @override
@@ -143,13 +143,10 @@ class OpenAIProvider implements ModelProvider {
   }
 
   void _validate(ModelRequest request) {
-    if (!models.contains(request.model)) {
-      throw ArgumentError('Unsupported GPT model');
-    }
     if (!efforts.contains(request.effectiveReasoning)) {
       throw ArgumentError('Unsupported GPT reasoning effort');
     }
-    final info = GptModel(request.model, metadata: request.modelInfo);
+    final info = request.modelInfo == null ? modelInfo(request.model) : GptModel(request.model, metadata: request.modelInfo);
     resolveSettings(request.settings, model: request.model, modelInfo: info.data);
     if (!info.reasoningUpdates &&
         request.effectiveReasoning != request.settings['reasoning']) {
@@ -182,7 +179,7 @@ class OpenAIProvider implements ModelProvider {
     _validate(request);
     return client.respond(
       model: request.model,
-      modelInfo: request.modelInfo,
+      modelInfo: request.modelInfo ?? modelInfo(request.model).data,
       maxOutputTokens: maxOutputTokens,
       outputSchema: outputSchema,
       instructions: request.instructions,

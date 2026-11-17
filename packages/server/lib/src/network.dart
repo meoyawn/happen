@@ -80,12 +80,14 @@ Future<void> _networkMain(List<Object?> args) async {
     if (host == 'localhost' || (InternetAddress.tryParse(host)?.isLoopback ?? false)) return {};
     throw StateError('Responses API credential environment variable is missing');
   }
+  late final GptCatalog gptCatalog;
   final gptClient = ResponsesClient(
     http: http,
     credentials: gptCredentials,
     endpoint: endpoint == null ? null : Uri.parse(endpoint as String),
+    onModelsEtag: (etag, cancellation) => gptCatalog.refreshIfNewEtag(etag, cancellation),
   );
-  final gptCatalog = GptCatalog(gptClient, directory: directory, lifetime: lifetime);
+  gptCatalog = GptCatalog(gptClient, directory: directory, lifetime: lifetime);
   final gpt = OpenAIProvider(gptClient, catalog: gptCatalog);
   final searchEndpoint = startup['opencode_search_endpoint'] as String?;
   final deepseek = OpenCodeProvider.native(
@@ -630,15 +632,15 @@ Future<void> _networkMain(List<Object?> args) async {
                 'status': await auth.status(),
                 'default_model': gpt.defaultModel,
                 'models': [
-                  for (final model in supportedGptModels)
+                  for (final model in gpt.models)
                     {
-                      'id': model,
-                      'name': gpt.modelInfo(model).data['display_name'] ?? model,
-                      'reasoning_levels': gpt.modelInfo(model).reasoningLevels,
-                      'default_reasoning': gpt.modelInfo(model).defaultReasoning,
-                      'reasoning_updates': gpt.modelInfo(model).reasoningUpdates,
-                      'input_modalities': gpt.modelInfo(model).data['input_modalities'],
-                      'context_limit': gpt.modelInfo(model).usableContextWindow(),
+                      'id': model.id,
+                      'name': model.data['display_name'] ?? model.id,
+                      'reasoning_levels': model.reasoningLevels,
+                      'default_reasoning': model.defaultReasoning,
+                      'reasoning_updates': model.reasoningUpdates,
+                      'input_modalities': model.data['input_modalities'],
+                      'context_limit': model.usableContextWindow(),
                     },
                 ],
               },

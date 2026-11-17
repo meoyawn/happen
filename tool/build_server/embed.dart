@@ -98,7 +98,7 @@ List<int> _readPayload(int offset, int length) {
       await _run(output.path, ['--version'], cancellation,
         environment: {'HAPPEN_NATIVE_CACHE': cache.path, 'HAPPEN_BOOTSTRAP_REPORT': '1'});
     }
-    await _run(output.path, ['cloudflared', '--version'], cancellation, environment: {'HAPPEN_NATIVE_CACHE': cache.path});
+    await _run('${cache.path}/$nativeId/cloudflared', ['--version'], cancellation);
     await File('${output.path}.native.json').writeAsString('${jsonEncode({
       'nativeId': nativeId, 'nativeAssets': assets, 'snapshotOffset': aligned,
     })}\n');

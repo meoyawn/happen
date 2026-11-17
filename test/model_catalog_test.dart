@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -13,7 +12,7 @@ import 'support/thread_names.dart';
 // Codex models-manager: remote metadata wins, an authenticated catalog cache is
 // reusable offline, and saved threads retain their own resolved model contract.
 void main() {
-  test('all supported GPT models use discovered metadata and retain their thread snapshots', () async {
+  test('new upstream GPT models are selectable and retain their thread snapshots', () async {
     final root = await Directory.systemTemp.createTemp('model-catalog-');
     final remote = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final endpoint = 'http://127.0.0.1:${remote.port}/backend-api/codex/responses';
@@ -21,6 +20,8 @@ void main() {
     var account = 'fixture-account';
     final requests = <Json>[];
     final bundled = (jsonDecode(await File('packages/openai/catalog/models.json').readAsString()) as Map)['models'] as List;
+    const discovered = ['gpt-6.1-sol', 'gpt-6.2-sol'];
+    final template = bundled.singleWhere((model) => model['slug'] == 'gpt-6.1-sol') as Map;
     remote.listen((request) async {
       if (request.method == 'GET') {
         catalogReads++;
@@ -32,12 +33,11 @@ void main() {
         if (offline) { request.response.statusCode = 503; }
         else {
           request.response.headers.set('etag', 'catalog-$revision');
-          request.response.write(jsonEncode({'models': [for (final raw in bundled)
-            if (supportedGptModels.contains(raw['slug'])) {
-              ...raw as Map, 'default_reasoning_level': 'high', 'context_window': 333000,
+          request.response.write(jsonEncode({'models': [for (final model in discovered) {
+              ...template, 'slug': model, 'default_reasoning_level': 'high', 'context_window': 333000,
               'supports_reasoning_effort_updates': revision == 'A',
-              'model_messages': {...raw['model_messages'] as Map,
-                'instructions_template': 'CATALOG_$revision:${raw['slug']}\n${raw['model_messages']['instructions_template']}'},
+              'model_messages': {...template['model_messages'] as Map,
+                'instructions_template': 'CATALOG_$revision:$model\n${template['model_messages']['instructions_template']}'},
             },
           ]}));
         }
@@ -65,10 +65,10 @@ void main() {
     addTearDown(() async { await client.close(); await server.close(); await remote.close(force: true); await root.delete(recursive: true); });
     final models = jsonObject(await client.request('providers.list'))['providers'][0]['models'] as List;
     expect(catalogReads, 1, reason: 'The provider discovers the current catalog instead of forcing bundled metadata');
-    expect(models.map((model) => model['id']).toSet(), supportedGptModels);
+    expect(models.map((model) => model['id']).toList(), discovered);
     expect(models.map((model) => model['reasoning_updates']), everyElement(isTrue));
     final threads = <String, String>{};
-    for (final model in supportedGptModels) {
+    for (final model in discovered) {
       final page = jsonObject(await client.request('thread/start', {'cwd': root.path, 'model': model}));
       final id = page['thread']['id'] as String;
       threads[model] = id;
@@ -100,18 +100,18 @@ void main() {
       expect(requests.last['reasoning']['effort'], 'high', reason: 'The original request baseline stays frozen');
       expect(jsonEncode(requests.last['input']), contains('configuration_update'));
     }
-    final fresh = await createThread(client, {'cwd': root.path, 'model': 'gpt-6-luna'});
+    final fresh = await createThread(client, {'cwd': root.path, 'model': 'gpt-6.2-sol'});
     expect((await runTurn(client, fresh, prompt: 'New'))['status'], 'completed');
-    expect(jsonEncode(requests.last['input']), contains('CATALOG_B:gpt-6-luna'));
+    expect(jsonEncode(requests.last['input']), contains('CATALOG_B:gpt-6.2-sol'));
     await client.close(); await server.close();
-    // An expired cache remains useful offline, but belongs to its account.
+    // Like Codex, a restart cannot load an expired disk snapshot offline.
     final expired = jsonObject(jsonDecode(await cache.readAsString()))..['fetched_at'] = '2000-01-01T00:00:00Z';
     await cache.writeAsString(jsonEncode(expired));
     offline = true;
     server = await launch(); client = await AgentClient.connect(server.uri);
     final offlineThread = await createThread(client, {'cwd': root.path, 'model': 'gpt-6-luna'});
     expect((await runTurn(client, offlineThread, prompt: 'Offline'))['status'], 'completed');
-    expect(jsonEncode(requests.last['input']), contains('CATALOG_B:gpt-6-luna'));
+    expect(jsonEncode(requests.last['input']), isNot(contains('CATALOG_')));
     await client.close(); await server.close();
     account = 'different-account';
     final credentials = jsonObject(jsonDecode(await File('${root.path}/auth.json').readAsString()))..['account_id'] = account;

@@ -149,6 +149,11 @@ Future<void> main(List<String> arguments) async {
       await remote(['ln', '-sfn', '$current/happen-server', '$bin.pending']);
       await remote(['mv', '-Tf', '$bin.pending', bin]);
       if (arguments.contains('--from-codex')) await remote([bin, 'login-from-codex']);
+      final status = jsonObject(jsonDecode(await remote([bin, 'daemon', 'status'])));
+      if (status['runtime'] == 'dev') {
+        stdout.writeln('Release installed. The selected Dart VM supervisor keeps running until release mode is chosen.');
+        return;
+      }
       try {
         final restarted = jsonObject(jsonDecode(await remote([bin, 'daemon', 'restart'])));
         if (restarted['status'] != 'restarted') throw StateError('The daemon did not acknowledge restart');

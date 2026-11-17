@@ -105,7 +105,10 @@ Future<void> main(List<String> arguments) async {
       await artifact.copy('$executable.pending');
       await run('chmod', ['755', '$executable.pending']);
       await File('$executable.pending').rename(executable);
-      await run(executable, ['cloudflared', '--version']);
+      await run(executable, ['--version']);
+      final nativeCache = Platform.environment['HAPPEN_NATIVE_CACHE'] ??
+        '${Platform.environment['XDG_CACHE_HOME'] ?? '$home/.cache'}/dev.happen/cli/native';
+      await run('$nativeCache/${requiredString(report, 'nativeId')}/cloudflared', ['--version']);
       final current = '$home/.local/share/happen/current';
       await Link('$current.pending').create(release.path);
       await Link('$current.pending').rename(current);
@@ -126,15 +129,11 @@ Future<void> main(List<String> arguments) async {
       if (values?['tunnel'] == null) updated = _configValue(updated, 'tunnel', {'token_file': '${secrets.path}/tunnel-token'});
       if (updated != source) { await config.writeAsString(updated, flush: true); await run('chmod', ['600', config.path]); }
       final runtime = File('$home/.local/share/agent-server/runtime.json');
-      if (await runtime.exists() && jsonObject(jsonDecode(await runtime.readAsString()))['mode'] == 'dev') {
-        stdout.writeln('Installed the verified release bundle. The selected development backend and gateway remain active.');
-        return;
-      }
       final units = Directory('$home/.config/systemd/user');
       await units.create(recursive: true);
       String quote(String value) => '"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"';
-      await File('${units.path}/happen-web.service').writeAsString('''[Unit]
-Description=Happen authenticated web gateway
+      await File('${units.path}/happen-server.service').writeAsString('''[Unit]
+Description=Happen AOT server, web and tunnel supervisor
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -142,43 +141,35 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=${home.replaceAll(' ', r'\x20').replaceAll('%', '%%')}
-ExecStartPre=${quote('$home/.local/bin/happen-server')} daemon start
-ExecStart=${quote(bin)} web
-Restart=always
-RestartSec=3
+ExecStart=${quote(bin)} _serve --data-dir ${quote('$home/.local/share/agent-server')}
+Restart=on-failure
+RestartSec=2
 SuccessExitStatus=130 143
-TimeoutStopSec=30
+TimeoutStopSec=35
 UMask=0077
-NoNewPrivileges=true
-
-[Install]
-WantedBy=default.target
-''', flush: true);
-      await File('${units.path}/happen-tunnel.service').writeAsString('''[Unit]
-Description=Happen persistent Cloudflare Tunnel
-After=network-online.target happen-web.service
-Wants=network-online.target happen-web.service
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=${quote(bin)} cloudflared tunnel --no-autoupdate run --token-file ${quote('${secrets.path}/tunnel-token')}
-Restart=always
-RestartSec=3
-TimeoutStopSec=30
-UMask=0077
-NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
 ''', flush: true);
       await run('loginctl', ['enable-linger', Platform.environment['USER']!]);
       await run('systemctl', ['--user', 'daemon-reload']);
-      await run('systemctl', ['--user', 'enable', '--now', 'happen-web.service', 'happen-tunnel.service']);
-      // Keep the connector's live edge connections during gateway updates.
-      // A connector binary upgrade can explicitly request its own restart.
-      await run('systemctl', ['--user', 'restart', 'happen-web.service']);
-      if (arguments.contains('--restart-connector')) await run('systemctl', ['--user', 'restart', 'happen-tunnel.service']);
+      if (await runtime.exists() && jsonObject(jsonDecode(await runtime.readAsString()))['mode'] == 'dev') {
+        stdout.writeln('Installed the release supervisor. The selected Dart VM supervisor remains active.');
+        return;
+      }
+      for (final name in ['happen-web.service', 'happen-tunnel.service', 'happen-web-dev.service']) {
+        if (await File('${units.path}/$name').exists()) {
+          await run('systemctl', ['--user', 'disable', '--now', name]);
+        }
+      }
+      await run(bin, ['daemon', 'stop']);
+      await runtime.parent.create(recursive: true);
+      final pending = File('${runtime.path}.pending');
+      await pending.writeAsString(jsonEncode({'mode': 'release'}), flush: true);
+      await run('chmod', ['600', pending.path]);
+      await pending.rename(runtime.path);
+      await run('systemctl', ['--user', 'enable', '--now', 'happen-server.service']);
+      await run(bin, ['daemon', 'start']);
       final readyBy = DateTime.now().add(const Duration(seconds: 40));
       var ready = false;
       while (!ready && DateTime.now().isBefore(readyBy)) {
@@ -197,10 +188,15 @@ WantedBy=default.target
         if (!ready) await cancellableDelay(const Duration(seconds: 1), cancellation);
       }
       if (!ready) throw StateError('Services started, but the public tunnel has not passed its authentication/CORS readiness check');
-      stdout.writeln('Enabled Happen web and tunnel services across logout and reboot: https://$hostname');
+      for (final name in ['happen-web.service', 'happen-tunnel.service', 'happen-web-dev.service']) {
+        final obsolete = File('${units.path}/$name');
+        if (await obsolete.exists()) await obsolete.delete();
+      }
+      await run('systemctl', ['--user', 'daemon-reload']);
+      stdout.writeln('Enabled one Happen supervisor across logout and reboot: https://$hostname');
     } else if (command == 'status') {
-      stdout.writeln(await run('systemctl', ['--user', 'is-active', 'happen-web.service', 'happen-tunnel.service']));
-      stdout.writeln(await run('systemctl', ['--user', 'is-enabled', 'happen-web.service', 'happen-tunnel.service']));
+      stdout.writeln(await run('systemctl', ['--user', 'show', 'happen-server.service', 'happen-server-dev.service',
+        '-p', 'Id', '-p', 'ActiveState', '-p', 'MainPID']));
     } else { throw ArgumentError('Expected provision, install, or status'); }
   } finally { cancellation.cancel(); for (final signal in signals) { await signal.cancel(); } }
 }

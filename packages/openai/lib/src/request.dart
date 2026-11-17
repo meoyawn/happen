@@ -23,7 +23,8 @@ Json responsesRequest({
   if (!{'http', 'websocket'}.contains(transport)) {
     throw ArgumentError('GPT transport must be http or websocket');
   }
-  final info = supportedGptModels.contains(model) ? GptModel(model, metadata: modelInfo).data : null;
+  final metadata = modelInfo ?? bundledGptModels[model];
+  final info = metadata == null ? null : GptModel(model, metadata: metadata).data;
   final modalities = info?['input_modalities'] as List?;
   Json media(Json part) {
     final kind = switch (part['type']) { 'input_image' => 'image', 'input_audio' => 'audio', _ => null };

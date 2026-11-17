@@ -8,7 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:openai/openai.dart' show GptModel, gptCatalogRevision, supportedGptModels;
+import 'package:openai/openai.dart' show GptModel, gptCatalogRevision, bundledGptModels;
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 import 'package:test/test.dart';
@@ -1257,7 +1257,7 @@ void main() {
       env, '$output/source-revision.log', cancellation)).trim();
     report['bundledRevision'] = gptCatalogRevision;
     expect(catalogBytes, upstreamBytes, reason: 'Codex must use its own source catalog, independently of Happen');
-    report['embeddedCatalogEqual'] = supportedGptModels.every((model) =>
+    report['embeddedCatalogEqual'] = bundledGptModels.keys.every((model) =>
       equals(modelDefaults.singleWhere((entry) => entry['slug'] == model)).matches(GptModel(model).data, {}));
     expect(report['embeddedCatalogEqual'], isTrue,
       reason: 'The embedded runtime catalog must match models.json, including fields not exercised by the request matrix.');

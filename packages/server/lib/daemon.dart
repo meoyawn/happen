@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:config/web.dart';
 import 'package:protocol/protocol.dart';
 import 'server.dart';
+import 'web_gateway.dart';
 
 // Like Codex's PID backend: one daemon per data directory, independent of SSH
 // sessions. Linux boot ID + /proc start ticks distinguish PID reuse and reboot.
@@ -67,15 +69,15 @@ Future<void> _stop(String directory, Json? record, CancellationToken cancellatio
   throw StateError('Daemon did not stop within 30 seconds; deployment has not started another daemon');
 }
 
-Future<void> _devService(String action, CancellationToken cancellation) async {
-  final child = await Process.start('systemctl', ['--user', action, 'happen-server-dev.service']);
+Future<void> _managedService(String action, String unit, CancellationToken cancellation) async {
+  final child = await Process.start('systemctl', ['--user', action, unit]);
   final hook = CancellationHook(cancellation, () => child.kill());
   final output = child.stdout.drain<void>(), errors = child.stderr.transform(utf8.decoder).join();
   try {
     final code = await child.exitCode.asCancellable(cancellation);
     await output;
     final message = await errors;
-    if (code != 0) throw StateError('Development daemon $action failed: $message');
+    if (code != 0) throw StateError('Managed daemon $action failed: $message');
   } finally { hook.dispose(); child.kill(); }
 }
 
@@ -99,13 +101,19 @@ Future<Json> daemonCommand(String action, String directory, {
     }
     var record = await _running(directory);
     final runtime = File('$directory/runtime.json');
-    final dev = await runtime.exists() && jsonObject(jsonDecode(await runtime.readAsString()))['mode'] == 'dev';
+    final mode = await runtime.exists() ? jsonObject(jsonDecode(await runtime.readAsString()))['mode'] : null;
+    final unit = switch (mode) {
+      'dev' => 'happen-server-dev.service',
+      'release' => 'happen-server.service',
+      null => null,
+      _ => throw StateError('Unknown server runtime mode: $mode'),
+    };
     if (action == 'status') {
       return {'backend': 'pid', 'status': record == null ? 'stopped'
         : await _ready(socket, cancellation) ? 'running' : 'unhealthy', ...?record};
     }
     if (action == 'stop' || action == 'restart') {
-      if (dev) await _devService('stop', cancellation);
+      if (unit != null) await _managedService('stop', unit, cancellation);
       await _stop(directory, record, cancellation);
       record = null;
       if (action == 'stop') return {'backend': 'pid', 'status': 'stopped'};
@@ -114,17 +122,17 @@ Future<Json> daemonCommand(String action, String directory, {
       if (!await _ready(socket, cancellation)) throw StateError('Daemon exists but is not ready; use daemon restart');
       return {'backend': 'pid', 'status': 'alreadyRunning', ...record};
     }
-    if (dev) {
-      await _devService('start', cancellation);
+    if (unit != null) {
+      await _managedService('start', unit, cancellation);
       for (var attempt = 0; attempt < 300; attempt++) {
         cancellation.throwIfCancelled();
         record = await _running(directory);
         if (record != null && await _ready(socket, cancellation)) {
-          return {'backend': 'pid', 'status': 'started', 'runtime': 'dev', ...record};
+          return {'backend': 'pid', 'status': 'started', ...record};
         }
         await cancellableDelay(const Duration(milliseconds: 100), cancellation);
       }
-      throw StateError('Development daemon did not become ready; see journalctl --user -u happen-server-dev');
+      throw StateError('Managed daemon did not become ready; see journalctl --user -u $unit');
     }
     final executable = Platform.resolvedExecutable;
     final command = [executable,
@@ -153,7 +161,46 @@ Future<Json> daemonCommand(String action, String directory, {
   }
 }
 
-Future<void> serveDaemon(String directory, {String? configPath, required CancellationToken cancellation}) async {
+Future<Process> _startConnector(String executable, String tokenFile) async {
+  if (!await File(executable).exists()) throw FileSystemException('Cloudflare connector is missing', executable);
+  if (!await File(tokenFile).exists()) throw FileSystemException('Cloudflare connector token is missing', tokenFile);
+  return Process.start(executable, ['tunnel', '--no-autoupdate', 'run', '--token-file', tokenFile],
+    mode: ProcessStartMode.inheritStdio);
+}
+
+Future<void> _superviseConnector(Process first, String executable, String tokenFile,
+    CancellationToken cancellation) async {
+  Process? child = first;
+  while (!cancellation.isCancelled) {
+    if (child == null) {
+      try { child = await _startConnector(executable, tokenFile); }
+      catch (error) { stderr.writeln('Cloudflare connector start failed: $error'); }
+      if (cancellation.isCancelled) {
+        child?.kill(ProcessSignal.sigterm);
+        await child?.exitCode;
+        return;
+      }
+      if (child == null) {
+        try { await cancellableDelay(const Duration(seconds: 3), cancellation); }
+        on CancelledException { return; }
+        continue;
+      }
+    }
+    final current = child;
+    final hook = CancellationHook(cancellation, () => current.kill(ProcessSignal.sigterm));
+    try {
+      final code = await current.exitCode;
+      if (cancellation.isCancelled) return;
+      stderr.writeln('Cloudflare connector exited ($code); retrying in 3 seconds.');
+    } finally { hook.dispose(); }
+    child = null;
+    try { await cancellableDelay(const Duration(seconds: 3), cancellation); }
+    on CancelledException { return; }
+  }
+}
+
+Future<void> serveDaemon(String directory, {String? configPath, String? cloudflaredPath,
+    required CancellationToken cancellation}) async {
   final identity = await _identity(pid);
   if (identity == null) throw StateError('Cannot identify the daemon process');
   final recordFile = File('$directory/daemon.json');
@@ -161,12 +208,25 @@ Future<void> serveDaemon(String directory, {String? configPath, required Cancell
   final serving = await File('$directory/serving.lock').open(mode: FileMode.append);
   await serving.lock(FileLock.exclusive);
   AgentServer? server;
+  WebGateway? gateway;
+  final connectorLifetime = CancellationToken();
+  Future<void>? connector;
   try {
     final active = await _running(directory);
     if (active != null && active['pid'] != pid) throw StateError('Another Happen daemon still owns this data directory');
     final socket = '$directory/server.sock';
     if (await FileSystemEntity.type(socket, followLinks: false) != FileSystemEntityType.notFound) await File(socket).delete();
     server = await AgentServer.start(directory: directory, socketPath: '$directory/server.sock', configPath: configPath);
+    final web = await loadWebConfiguration(path: configPath, cancellation: cancellation);
+    if (web.publicUrl case final publicUrl?) {
+      if (cloudflaredPath == null) throw StateError('Configure the Cloudflare connector executable for the server daemon');
+      gateway = await WebGateway.start(socketPath: socket, publicUrl: publicUrl,
+        ownerKeyFile: web.ownerKeyFile, allowedOrigins: web.allowedOrigins, port: web.port);
+      final child = await _startConnector(cloudflaredPath, web.tunnelTokenFile);
+      connector = _superviseConnector(child, cloudflaredPath, web.tunnelTokenFile, connectorLifetime);
+      stdout.writeln('Happen web listening on 127.0.0.1:${gateway.http.port} for $publicUrl');
+    }
+    cancellation.throwIfCancelled();
     final record = {'pid': pid, 'identity': identity, 'socketPath': '$directory/server.sock',
       'runtime': const bool.fromEnvironment('dart.vm.product') ? 'release' : 'dev',
       'version': '0.1.0', 'executable': Platform.resolvedExecutable, 'cwd': Platform.environment['HOME'] ?? '/',
@@ -179,6 +239,9 @@ Future<void> serveDaemon(String directory, {String? configPath, required Cancell
     final hook = CancellationHook(cancellation, () { if (!stopped.isCompleted) stopped.complete(); });
     try { await stopped.future; } finally { hook.dispose(); }
   } finally {
+    connectorLifetime.cancel();
+    await connector;
+    await gateway?.close();
     await server?.close();
     if (await recordFile.exists()) {
       final current = jsonObject(jsonDecode(await recordFile.readAsString()));

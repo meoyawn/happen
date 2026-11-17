@@ -42,7 +42,7 @@ class ResponsesReply {
 
 /// Transport only. The network owner supplies a shared Dart HTTP client.
 class ResponsesClient {
-  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http})
+  ResponsesClient({required this.credentials, Uri? endpoint, HttpClient? http, this.onModelsEtag})
     : endpoint =
           endpoint ??
           // Match Codex's endpoint for ChatGPT subscription OAuth.
@@ -50,6 +50,7 @@ class ResponsesClient {
       _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 30)),
       _ownsHttp = http == null;
   final Credentials credentials;
+  final Future<void> Function(String etag, CancellationToken cancellation)? onModelsEtag;
   final Uri endpoint;
   final HttpClient _http;
   final bool _ownsHttp;
@@ -60,17 +61,15 @@ class ResponsesClient {
   // Custom endpoints may only support SSE. Official endpoints support both.
   String get defaultTransport => {'chatgpt.com', 'api.openai.com'}.contains(endpoint.host) ? 'websocket' : 'http';
 
-  Future<({Json? body, String? etag})> models(Json auth, {String? etag, required CancellationToken cancellation}) async {
+  Future<({Json body, String? etag})> models(Json auth, {required CancellationToken cancellation}) async {
     final response = await httpRequest(_http, 'GET', endpoint.resolve('models').replace(
-      queryParameters: {'client_version': gptCatalogClientVersion}), cancellation: cancellation, headers: {
+      queryParameters: {...endpoint.queryParameters, 'client_version': gptCatalogClientVersion}), cancellation: cancellation, headers: {
         if (auth['access_token'] case final String token when token.isNotEmpty) 'authorization': 'Bearer $token',
         if (auth['account_id'] case final String account when account.isNotEmpty) 'chatgpt-account-id': account,
-        'if-none-match': ?etag,
         'originator': 'agent', 'accept': 'application/json',
       });
     final incoming = ownStream(response, cancellation);
     try {
-      if (response.statusCode == 304) return (body: null, etag: response.headers['etag'] ?? etag);
       if (response.statusCode != 200) throw const ModelFailure('model_catalog_http', 'Unable to refresh the model catalog');
       final bytes = BytesBuilder(copy: false);
       await for (final chunk in incoming.stream) {
@@ -278,6 +277,9 @@ class ResponsesClient {
           headersTimeout: _streamIdleTimeout), cancellation, onEvent: onEvent);
         final incoming = ownStream(response, cancellation);
         closeBody = incoming.close;
+        if (response.headers['x-models-etag'] case final String etag) {
+          await onModelsEtag?.call(etag, cancellation);
+        }
         return await _consume(
           StreamIterator(decodeSse(incoming.stream.timeout(_streamIdleTimeout))),
           cancellation,
@@ -436,6 +438,15 @@ class ResponsesClient {
         final event = iterator.current;
         traceInstant('openai.event', category: 'model', attributes: {'event.type': event['type']});
         switch (event['type']) {
+          case 'codex.response.metadata':
+            final headers = event['headers'];
+            if (headers is Map) {
+              for (final entry in headers.entries) {
+                if (entry.key.toString().toLowerCase() == 'x-models-etag' && entry.value is String) {
+                  await onModelsEtag?.call(entry.value as String, cancellation);
+                }
+              }
+            }
           case 'response.created':
             onEvent?.call({'type': 'model.connected'});
           case 'response.output_item.added':

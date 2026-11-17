@@ -6,22 +6,11 @@ import 'package:args/args.dart';
 import 'package:openai/openai.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/daemon.dart';
-import 'happen_web.dart' as web;
 
 /// Set by the verified, single-file release bootstrap before dispatch.
 String? bundledCloudflaredPath;
 
 Future<void> main(List<String> arguments) async {
-  if (arguments.firstOrNull == 'web') { await web.main(arguments.skip(1).toList()); return; }
-  if (arguments.firstOrNull == 'cloudflared') {
-    final executable = bundledCloudflaredPath;
-    if (executable == null) throw StateError('Build the server release to use its bundled cloudflared');
-    final child = await Process.start(executable, arguments.skip(1).toList(), mode: ProcessStartMode.inheritStdio);
-    final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((signal) => signal.watch().listen((_) => child.kill(signal))).toList();
-    try { final code = await child.exitCode; exitCode = code < 0 ? 128 - code : code; }
-    finally { child.kill(); for (final signal in signals) { await signal.cancel(); } }
-    return;
-  }
   final cancellation = CancellationToken();
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm]
     .map((signal) => signal.watch().listen((_) => cancellation.cancel())).toList();
@@ -35,8 +24,6 @@ Future<void> main(List<String> arguments) async {
     if (args['version'] == true) { stdout.writeln('happen-server 0.1.0'); return; }
     if (args['help'] == true || args.rest.isEmpty) {
       stdout.writeln('happen-server daemon <start|status|stop|restart>\n'
-        'happen-server web [--config PATH]\n'
-        'happen-server cloudflared <arguments>\n'
         'happen-server login-from-codex\n\n${parser.usage}');
       return;
     }
@@ -45,7 +32,9 @@ Future<void> main(List<String> arguments) async {
       stdout.writeln(jsonEncode(await daemonCommand(args.rest[1], directory,
         configPath: args['config'] as String?, cancellation: cancellation)));
     } else if (args.rest.length == 1 && args.rest.first == '_serve') {
-      await serveDaemon(directory, configPath: args['config'] as String?, cancellation: cancellation);
+      await serveDaemon(directory, configPath: args['config'] as String?,
+        cloudflaredPath: bundledCloudflaredPath ?? Platform.environment['HAPPEN_CLOUDFLARED_PATH'],
+        cancellation: cancellation);
     } else if (args.rest.length == 1 && args.rest.first == 'login-from-codex') {
       final auth = AuthManager(directory);
       try { await auth.useCodex(); stdout.writeln('Using the existing remote Codex login.'); }

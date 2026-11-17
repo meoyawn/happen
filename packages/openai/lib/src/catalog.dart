@@ -4,40 +4,28 @@ import 'package:protocol/protocol.dart';
 
 import 'catalog_data.dart';
 
-const gptCatalogRevision = 'efdacaf46ff54660a239189a6d62434c5db33d2c';
-const gptCatalogClientVersion = '0.166.0';
-const supportedGptModels = {
-  'gpt-6.1-sol',
-  'gpt-6-astra',
-  'gpt-6.1-terra',
-  'gpt-6-sol',
-  'gpt-6-luna',
-};
-
-final _catalog = {
+const gptCatalogRevision = '0122b120cd7d8375676ea2e72e113c2f892343b0';
+const gptCatalogClientVersion = '0.169.0';
+final bundledGptModels = Map<String, Json>.unmodifiable({
   for (final value
       in (jsonObject(jsonDecode(modelCatalogJson))['models'] as List))
     (value as Map)['slug'] as String: jsonObject(value),
-};
+});
 
-String get defaultGptModel => catalogDefaultGptModel(_catalog.values);
+String get defaultGptModel => catalogDefaultGptModel(bundledGptModels.values);
 
-String catalogDefaultGptModel(Iterable<Json> models) {
-  final available = models.where((model) =>
-    supportedGptModels.contains(model['slug']) && model['visibility'] == 'list' &&
-    model['supported_in_api'] == true).toList()
-    ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int));
-  return available.first['slug'] as String;
-}
+List<GptModel> catalogGptModels(Iterable<Json> models) =>
+  (models.where((model) => model['visibility'] == 'list').toList()
+    ..sort((a, b) => (a['priority'] as int).compareTo(b['priority'] as int)))
+    .map((data) => GptModel(data['slug'] as String, metadata: data)).toList();
+
+String catalogDefaultGptModel(Iterable<Json> models) => catalogGptModels(models).first.id;
 
 class GptModel {
   GptModel(String model, {Json? metadata})
     : data =
-          metadata ?? _catalog[model] ??
+          metadata ?? bundledGptModels[model] ??
           (throw ArgumentError('Unknown GPT model: $model')) {
-    if (!supportedGptModels.contains(model)) {
-      throw ArgumentError('GPT model is not supported by this harness: $model');
-    }
     if (data['slug'] != model) throw const FormatException('Model metadata does not match its model');
   }
   final Json data;
