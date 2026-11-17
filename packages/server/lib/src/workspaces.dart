@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:config/config.dart';
 import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'git.dart';
 
-Future<Json> inspectWorkspace(String path, CancellationToken cancellation) =>
-  runIsolateEffect(_inspect, {'path': path}, cancellation: cancellation);
+Future<Json> inspectWorkspace(String path, CancellationToken cancellation, {bool includeIcon = false}) =>
+  runIsolateEffect(_inspect, {'path': path, 'includeIcon': includeIcon}, cancellation: cancellation);
 
 Future<Json> _inspect(Json params, CancellationToken cancellation, void Function(Json) emit) async {
   final path = requiredString(params, 'path');
@@ -17,7 +18,15 @@ Future<Json> _inspect(Json params, CancellationToken cancellation, void Function
   if (!await folder.exists()) return {'available': false};
   final canonical = await folder.resolveSymbolicLinks();
   cancellation.throwIfCancelled();
-  return _checkout(canonical, cancellation);
+  final workspace = await _checkout(canonical, cancellation);
+  if (params['includeIcon'] != true) return workspace;
+  try {
+    final appearance = await projectIconAppearance(canonical,
+      await loadProjectIcon(canonical, cancellation: cancellation), cancellation);
+    return {...workspace, ...appearance,
+      if (appearance['icon_data'] case final List<int> bytes) 'icon_data': base64Encode(bytes)};
+  } on CancelledException { rethrow; }
+  catch (error) { return {...workspace, ...projectIconReadError(error)}; }
 }
 
 Future<Json> _checkout(String path, CancellationToken cancellation) async {

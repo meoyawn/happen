@@ -1860,7 +1860,7 @@ subscription and leaves the shared HTTP pool usable. Provider credentials and
 stream contents are excluded from these errors.
 
 Pinned sources inspected with `git show REVISION:PATH` in
-`/Users/meoyawn/Developer/github/codex`, revision
+`../codex`, revision
 `a795f961be68383738e56ac396742b3e8451696a`:
 
 - `codex-rs/core/src/tasks/mod.rs` and `tasks/regular.rs`: task-owned cancellation,
@@ -1963,7 +1963,7 @@ Additional sources inspected at Codex revision
   stream retries. `codex-rs/protocol/src/error.rs` distinguishes retryable streams
   and connections from terminal incomplete responses.
 - `codex-rs/async-utils/src/backoff.rs` defines the retry delays and jitter.
-  Reproduce with `git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+  Reproduce with `git show REVISION:PATH` in `../codex`.
 
 Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8, without a formatter:
 
@@ -2045,7 +2045,7 @@ Moon launch target. Reinstallation uses the guarded launcher's release path,
 shares its launch lock and rechecks the full executable path before SIGTERM;
 it never signals the debug app by a name-only match.
 
-Reference: `/Users/meoyawn/Developer/spotify` at
+Reference: `../spotify` at
 `24975638f3ccf55111c60ef38831fb8d2bb9368f`, `tools/run_flutter.py`,
 `tools/release_macos.py`, `moon.yml`, and `README.md`. Reproduce source inspection
 with `git show REVISION:PATH` in that checkout. Happen adapts its bundle identity,
@@ -2128,7 +2128,7 @@ Use the live branch from Harness at the same pinned revision
 `6b595ec8a160d7d0c0b5dae0a7352793944fe1d5`,
 `client/lib/services/dictation_service.dart` and
 `client/lib/ui/composer_dictation_session.dart`. Reproduce inspection using
-`git show REVISION:PATH` in `/Users/meoyawn/Developer/harness`. The service uses
+`git show REVISION:PATH` in `../harness`. The service uses
 `/backend-api/dictation/stream?dictation_surface=composer` with the
 `chatgpt-dictation` and `codex-desktop` subprotocols, PCM16 session configuration,
 `audio.append`, segment/final revisions, and explicit session close. Happen
@@ -2316,7 +2316,7 @@ Sources inspected:
   `codex-rs/app-server-transport/src/transport/websocket.rs` (64 MiB messages),
   and `codex-rs/core/src/context_manager/history.rs` (image token estimates).
   Reproduce with `git show REVISION:PATH` in
-  `/Users/meoyawn/Developer/github/codex`.
+  `../codex`.
 - OpenCode `fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`,
   `packages/ai/src/protocols/open-responses.ts`, `openai-chat.ts`, and
   `packages/core/src/session/runner/to-llm-message.ts`; DeepSeek harness
@@ -2456,7 +2456,7 @@ port or crash/power-loss behavior.
 ## 2026-10-31 — Inline file chips in the desktop composer
 
 User requirement: autocomplete must consume the `@` query and insert file chips
-following `/Users/meoyawn/Developer/harness/client`. This supersedes the earlier
+following `../harness/client`. This supersedes the earlier
 ordinary `@path` insertion decision. Keep the existing server search and wire
 protocol. Enter, Tab and pointer selection insert an atomic inline reference,
 showing the basename with a file/folder icon and retaining the original relative
@@ -2615,7 +2615,7 @@ establish cross-platform capacity or all of Codex's model-specific output policy
 
 ## 2026-10-31 — Shared composer popover and MCP inventory
 
-User requirement: follow `/Users/meoyawn/Developer/harness/client` for `/mcp`,
+User requirement: follow `../harness/client` for `/mcp`,
 also implement `/mcp verbose`, and use the existing file-search popover for all
 composer autocomplete. `ComposerAutocomplete` in `file_autocomplete.dart` now
 owns one overlay, anchor, scroll controller, selection index, and keyboard path
@@ -2757,7 +2757,7 @@ Deferred tool search and Responses Lite are not implemented by these changes.
 
 Pinned source evidence: Codex
 `67f0994b532b8740f14b5b738af7b7b2a915b1d6`, inspected with
-`git show REVISION:PATH` in /Users/meoyawn/Developer/github/codex:
+`git show REVISION:PATH` in ../codex:
 
 - codex-rs/core/src/agents_md.rs: ancestor selection, filename precedence,
   worktree markers, empty files, lossy UTF-8 and shared project byte budget.
@@ -3043,7 +3043,7 @@ Pinned evidence: Codex `2681f8cba2831ef72bca2c0672b2e49d5f690745`,
 `codex-rs/codex-api/src/search.rs`, `ext/web-search/src/{schema,tool}.rs`,
 `tools/src/responses_api.rs`, and
 `core/tests/suite/snapshots/all__suite__scenarios__web_search__literature_search_web_run_schema.snap`.
-Reproduce with `git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+Reproduce with `git show REVISION:PATH` in `../codex`.
 Removing only `literature_search_query` from the snapshot and hashing sorted,
 compact JSON yields SHA-256
 `de3be87e7abfe9b67ba757f27804d4206b51c2a8de9e9799fa7db9ef4abe3539`.
@@ -3100,7 +3100,7 @@ Pinned source evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
 checks; `session_runtime/mod.rs` carries explicit values between cells and
 commits writes at completion. `code-mode-protocol/src/description.rs` advertises
 serializable values without these extra limits. Reproduce source reads with
-`git show REVISION:PATH` in `/Users/meoyawn/Developer/github/codex`.
+`git show REVISION:PATH` in `../codex`.
 
 Verification on macOS arm64, Dart 3.13.7:
 
@@ -3143,7 +3143,7 @@ under `test/context/`. The user also asked whether refreshing tools is necessary
 when code mode can discover them later.
 
 After comparing OpenCode-style discovery, the user reaffirmed following the local
-Codex checkout. `git -C /Users/meoyawn/Developer/github/codex rev-parse HEAD`
+Codex checkout. `git -C ../codex rev-parse HEAD`
 still reports the pinned revision below. Its search spec accepts `query` and
 `limit`; its handler returns declarations for code-mode calls and native tool
 definitions for direct calls. Happen already implements this separation. Keep
@@ -3205,7 +3205,7 @@ eager declarations still count as loaded. This supersedes the earlier policy of
 eagerly appending and restoring the entire external catalog.
 
 Pinned source evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`,
-inspected in `/Users/meoyawn/Developer/github/codex` with `git show REVISION:PATH`:
+inspected in `../codex` with `git show REVISION:PATH`:
 
 - `codex-rs/core/src/tools/handlers/tool_search.rs` and `tool_search_spec.rs`:
   local BM25, query/limit arguments, code-mode versus direct search behavior.
@@ -3328,7 +3328,7 @@ Ignore stream events after cancellation. Desktop clears abandoned partial text
 and reconnecting state when the steered input is committed.
 
 Pinned evidence: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6`, inspected
-in `/Users/meoyawn/Developer/github/codex`:
+in `../codex`:
 
 - `codex-rs/features/src/lib.rs`: `instant_interrupt` is enabled by default.
 - `codex-rs/core/src/session/mod.rs` and `step_context.rs`: each sampling step
@@ -3410,7 +3410,7 @@ Catalog scope remains five implemented GPT models and OpenCode's exact
 `fa96f42f6cd8bf21f11fd5b38d78e2dd34d5563e`'s
 `packages/core/src/plugin/provider/opencode.ts` and
 `packages/core/src/models-dev/snapshot.txt` with `git show REVISION:PATH` in
-`/Users/meoyawn/Developer/github/opencode`. The latter confirms the free model's
+`../opencode`. The latter confirms the free model's
 200,000-token context, 32,000-token output and fixed effort. Concatenating the
 implemented catalogs does not enable additional upstream model routes or change
 authentication/inference contracts.
@@ -4112,7 +4112,7 @@ live paid-provider inference were not exercised for this feature.
 ## 2026-10-31 — OpenAI eager nested tools remain visible in saved tasks
 
 The task titled "add these mcps:" was opened in
-`/Users/meoyawn/.config/happen` and retained that directory in both its initial
+`~/.config/happen` and retained that directory in both its initial
 configuration and current cwd. Its saved `functions.exec` description described
 JavaScript execution but omitted the implemented shell and patch tools and the
 `ALL_TOOLS` discovery instructions. Native and nested tool search receive the
@@ -4121,7 +4121,7 @@ unrelated MCP tools or no matches. An MCP filesystem server's independent root
 restriction then became the apparent blocker.
 
 Follow the pinned Codex checkout at
-`/Users/meoyawn/Developer/github/codex`, revision
+`../codex`, revision
 `67f0994b532b8740f14b5b738af7b7b2a915b1d6`:
 
 - `codex-rs/core/src/tools/spec_plan.rs`,
@@ -4148,8 +4148,8 @@ This uses the existing provider-update path and requires no task-data repair.
 
 Verification on macOS arm64, Dart 3.13.7, Flutter 3.47.8:
 
-    git -C /Users/meoyawn/Developer/github/codex rev-parse HEAD
-    git -C /Users/meoyawn/Developer/github/codex show 67f0994b532b8740f14b5b738af7b7b2a915b1d6:codex-rs/code-mode-protocol/src/description.rs
+    git -C ../codex rev-parse HEAD
+    git -C ../codex show 67f0994b532b8740f14b5b738af7b7b2a915b1d6:codex-rs/code-mode-protocol/src/description.rs
     ulimit -n 4096
     dart test test/context test/tool_interfaces_test.dart test/provider_search_test.dart test/gpt_test.dart test/server_tools_test.dart --concurrency=1 --reporter expanded
     dart test --concurrency=1 --reporter expanded
@@ -4614,7 +4614,7 @@ While the existing Flutter runner holds
 native-hook build locks, the equivalent pinned test entry point ran with the
 workspace package config and existing native-assets mapping:
 
-    dart --packages=.dart_tool/package_config.json /Users/meoyawn/.pub-cache/hosted/pub.dev/test-1.31.1/bin/test.dart --concurrency=1 --reporter expanded
+    dart --packages=.dart_tool/package_config.json ~/.pub-cache/hosted/pub.dev/test-1.31.1/bin/test.dart --concurrency=1 --reporter expanded
 
 Five real TLS transport tests exercise twelve overlapping requests across both
 providers on one connection, repeated dictation uploads, stream cancellation
@@ -5151,7 +5151,7 @@ Other operating systems and crash/power-loss durability were not measured.
 ## 2026-11-02 — OpenCode is a moving reference
 
 User requirement: do not pin OpenCode to a version in this workspace. Compare
-against the current HEAD of `/Users/meoyawn/Developer/github/opencode`. Existing
+against the current HEAD of `../opencode`. Existing
 revision IDs and source hashes in capture fixtures, catalog metadata, and older
 decision entries identify historical evidence only. They are not a compatibility
 target, and upstream must not be rolled back to make a check pass. Keep strict

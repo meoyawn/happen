@@ -1,7 +1,7 @@
 # OpenAI compatibility gaps
 
 Target: Codex `67f0994b532b8740f14b5b738af7b7b2a915b1d6` in
-`/Users/meoyawn/Developer/github/codex`.
+`../codex`.
 
 Embedded runtime behavior has its own
 [applicability ledger](../code_mode/UPSTREAM.md) at the revision referenced by

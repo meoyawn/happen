@@ -1,7 +1,7 @@
 # Apply-patch port
 
 Modified Dart port of OpenAI Codex, Copyright 2025 OpenAI, Apache-2.0.
-Source: `/Users/meoyawn/Developer/github/codex`, revision
+Source: `../codex`, revision
 `0598a96e9361485fd4cd02f9c287aca627ad6ee1`.
 See [license](../openai/tools/CODEX-LICENSE) and
 [notice](../openai/tools/CODEX-NOTICE).

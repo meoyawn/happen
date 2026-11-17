@@ -28,7 +28,7 @@ const desktopBrowserTools = [
 
 extension DesktopBrowserSession on DesktopSession {
   Future<void> _registerBrowserTools(String id, CancellationToken cancellation) async {
-    if (defaultTargetPlatform != TargetPlatform.macOS) return;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.macOS) return;
     cancellation.throwIfCancelled();
     _browserLifetime.throwIfCancelled();
     final registration = _browserRegistrations.putIfAbsent(id, () => client.request('tools.register', {

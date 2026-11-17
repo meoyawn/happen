@@ -2,7 +2,7 @@
 
 Modified Dart port of OpenAI Codex, Copyright 2025 OpenAI, Apache-2.0.
 Source revision: `ee344ca9458351a6ea102795fa73110ad3ede5dc` in
-`/Users/meoyawn/Developer/github/codex`. Paths below are relative to `codex-rs/`.
+`../codex`. Paths below are relative to `codex-rs/`.
 See [license](tools/CODEX-LICENSE) and [notice](tools/CODEX-NOTICE).
 
 `lib/src/tools.dart::HostTools` adapts the policy in

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -702,7 +703,9 @@ Uri? _contentUri(String source, String directory) {
 
 ImageProvider? conversationImageProvider(String source, String directory) {
   try {
-    if (source.startsWith('data:')) return ConversationImageSource(source);
+    if (source.startsWith('data:') || kIsWeb && (source.startsWith('browser-file:') || source.startsWith('blob:'))) {
+      return ConversationImageSource(source);
+    }
     final uri = _contentUri(source, directory);
     if (uri == null) return null;
     if (((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) || uri.scheme == 'file') {

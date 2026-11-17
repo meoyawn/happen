@@ -51,10 +51,15 @@ const composerClipboardChannel = MethodChannel('happen/clipboard');
 
 Future<ComposerClipboardSnapshot> readComposerClipboard(String directory, CancellationToken cancellation) async {
   cancellation.throwIfCancelled();
+  if (kIsWeb) {
+    final clipboard = await readBrowserClipboard(cancellation);
+    return ComposerClipboardSnapshot(clipboard.text, [for (final file in clipboard.files)
+      ComposerAttachment(name: _name(file.name), path: file.path, image: file.image)]);
+  }
   // Start both snapshot reads immediately, before a transient pasteboard owner
   // (for example dictation) has time to restore its previous content.
   final fallback = Clipboard.getData(Clipboard.kTextPlain);
-  if (kIsWeb || !Platform.isMacOS) return ComposerClipboardSnapshot((await fallback)?.text, []);
+  if (!Platform.isMacOS) return ComposerClipboardSnapshot((await fallback)?.text, []);
   final id = newId(), destination = '$directory/${newId()}';
   final hook = CancellationHook(cancellation, () {
     unawaited(composerClipboardChannel.invokeMethod<void>('cancel', {'id': id}).catchError((Object _) {}));
@@ -151,7 +156,10 @@ class ComposerPasteAction extends Action<PasteTextIntent> {
   final bool enabled;
   final Future<void> Function(SelectionChangedCause) paste;
   @override bool isEnabled(PasteTextIntent intent) => enabled;
-  @override void invoke(PasteTextIntent intent) { if (enabled) unawaited(paste(intent.cause)); }
+  @override bool consumesKey(PasteTextIntent intent) => !kIsWeb;
+  @override void invoke(PasteTextIntent intent) {
+    if (enabled && (!kIsWeb || intent.cause != SelectionChangedCause.keyboard)) unawaited(paste(intent.cause));
+  }
 }
 
 Widget composerContextMenu(EditableTextState state, Future<void> Function(SelectionChangedCause) paste,

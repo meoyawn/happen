@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:config/config.dart';
@@ -8,7 +9,11 @@ const emptyProjectIcon = (icon: null, bytes: null, svg: false, revision: null, e
 
 ProjectIconSnapshot readProjectIconSnapshot(Json value) => (
   icon: parseProjectIcon(value['icon']),
-  bytes: (value['icon_data'] as Uint8List?)?.asUnmodifiableView(),
+  bytes: switch (value['icon_data']) {
+    Uint8List bytes => bytes.asUnmodifiableView(),
+    String encoded => base64Decode(encoded).asUnmodifiableView(),
+    _ => null,
+  },
   svg: value['icon_svg'] == true,
   revision: value['icon_revision'] as String?,
   error: value['icon_error'] as String?,

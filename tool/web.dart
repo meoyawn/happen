@@ -63,7 +63,11 @@ Future<void> main(List<String> arguments) async {
         await entry.value.rename(destination.path);
       }
       final index = File('${root.path}/index.html');
-      final html = (await index.readAsString()).replaceAll('<base href="/">', '<base href="/releases/$hash/">');
+      var html = (await index.readAsString()).replaceAll('<base href="/">', '<base href="/releases/$hash/">');
+      if (serverUrl != null) {
+        final origin = Uri.parse(serverUrl).origin;
+        html = html.replaceFirst('<!-- happen-server-preconnect -->', '<link rel="preconnect" href="$origin" crossorigin>');
+      }
       if (!html.contains('/releases/$hash/')) throw StateError('Flutter did not declare its asset base');
       await index.writeAsString(html, flush: true);
     }

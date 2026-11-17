@@ -215,7 +215,7 @@ class AgentClient {
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
   Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
-    jsonObject(await _request('workspace.inspect', {'path': path}, cancellation: cancellation));
+    jsonObject(await _request('workspace.inspect', {'path': path, 'includeIcon': true}, cancellation: cancellation));
 
   Future<Json> browseProjectFolders(String query, {required CancellationToken cancellation}) async =>
     jsonObject(await _request('workspace.browse', {'query': query}, cancellation: cancellation,

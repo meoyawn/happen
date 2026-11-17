@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
+import 'package:web/web.dart' as web;
 import 'app.dart';
 import 'appearance.dart';
 import 'connection.dart';
@@ -10,16 +11,21 @@ import 'connection_web.dart' show gatewayUri, serverSocketUri, signInServer, res
 import 'database.dart';
 import 'machines.dart';
 import 'session.dart';
+import 'web_login.dart';
 
 void main() {
+  web.window.performance.mark('happen-start');
+  web.document.documentElement!.setAttribute('data-happen-state', 'opening');
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const HappenWeb());
+  WidgetsBinding.instance.addPostFrameCallback((_) => web.document.getElementById('happen-startup')?.remove());
 }
 
 sealed class _AppState { const _AppState(); }
 final class _Opening extends _AppState { const _Opening(); }
 final class _SignedOut extends _AppState { const _SignedOut([this.error]); final String? error; }
 final class _SigningIn extends _AppState { const _SigningIn(); }
+final class _Unavailable extends _AppState { const _Unavailable(this.error); final String error; }
 final class _Ready extends _AppState {
   const _Ready(this.session, this.machines, this.database);
   final DesktopSession session;
@@ -29,7 +35,8 @@ final class _Ready extends _AppState {
 final class _Disposed extends _AppState { const _Disposed(); }
 
 _AppState _transition(_AppState current, _AppState next) => switch ((current, next)) {
-  (_Opening() || _SigningIn(), _Ready() || _SignedOut()) => next,
+  (_Opening() || _SigningIn(), _Ready() || _SignedOut() || _Unavailable()) => next,
+  (_Unavailable(), _Opening()) => next,
   (_SignedOut(), _SigningIn()) => next,
   (_Ready(), _SignedOut()) => next,
   (_, _Disposed()) when current is! _Disposed => next,
@@ -45,15 +52,23 @@ class HappenWeb extends StatefulWidget {
 class _HappenWebState extends State<HappenWeb> {
   _AppState _state = const _Opening();
   final _lifetime = CancellationToken();
-  final _key = TextEditingController();
-  final _server = TextEditingController(text: gatewayUri.origin);
+  String _server = gatewayUri.origin;
   final _navigator = GlobalKey<NavigatorState>();
   CancellationToken? _opening;
   StreamSubscription<Json>? _authorization;
 
   @override
   void initState() { super.initState(); unawaited(_open()); }
-  void _set(_AppState next) { if (mounted) setState(() => _state = _transition(_state, next)); }
+  void _set(_AppState next) {
+    if (!mounted) return;
+    setState(() => _state = _transition(_state, next));
+    final phase = switch (next) { _Ready() => 'ready', _SignedOut() => 'signed-out',
+      _Unavailable() => 'unavailable', _SigningIn() => 'signing-in', _ => 'opening' };
+    web.document.documentElement!.setAttribute('data-happen-state', phase);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(_state, next)) web.window.performance.mark('happen-$phase');
+    });
+  }
 
   Future<void> _open({String? key}) async {
     _opening?.cancel();
@@ -63,26 +78,38 @@ class _HappenWebState extends State<HappenWeb> {
     AgentClient? client;
     DesktopSession? session;
     MachinesController? machines;
+    // Auth and the shared SQLite worker can start together. A remembered
+    // alternate server cancels this speculative check of the default server.
+    final preflightCancellation = CancellationToken();
+    final preflight = key == null ? restoreServerSignIn(gatewayUri, token.merge(preflightCancellation))
+      .then<Object?>((_) => null, onError: (Object error) => error) : null;
     try {
       database = await openDesktopDatabase('', cancellation: token);
-      if (key == null) {
-        final saved = jsonObject(await desktopDatabaseRequest(database, 'load', {}, cancellation: token));
-        _server.text = saved['settings']?['default_server'] as String? ?? _server.text;
-      }
-      final server = Uri.tryParse(_server.text.trim());
+      final saved = jsonObject(await desktopDatabaseRequest(database, 'load', {}, cancellation: token));
+      if (key == null) _server = saved['settings']?['default_server'] as String? ?? _server;
+      final server = Uri.tryParse(_server.trim());
       if (server == null || server.scheme != 'https' || server.host.isEmpty || server.userInfo.isNotEmpty ||
           server.hasFragment || server.hasQuery || server.path.isNotEmpty && server.path != '/') {
         throw const FormatException('Enter an HTTPS server tunnel URL');
       }
-      if (key != null && key.isNotEmpty) { await signInServer(server, key, token); }
-      else { await restoreServerSignIn(server, token); }
-      _key.clear();
-      client = await AgentClient.connect(serverSocketUri(server), cancellation: token);
-      await desktopDatabaseRequest(database, 'settings.set', {'key': 'default_server', 'value': server.origin}, cancellation: token);
       final alias = 'tunnel-${sha256.convert(utf8.encode(server.origin)).toString().substring(0, 24)}';
+      final snapshot = jsonObject(await desktopDatabaseRequest(database, 'load', {'machine': alias}, cancellation: token));
+      if (key != null) { await signInServer(server, key, token); }
+      else if (server.origin == gatewayUri.origin) {
+        final error = await preflight!;
+        if (error != null) Error.throwWithStackTrace(error, StackTrace.current);
+      } else {
+        preflightCancellation.cancel();
+        await restoreServerSignIn(server, token);
+      }
+      _server = server.origin;
+      client = await AgentClient.connect(serverSocketUri(server), cancellation: token);
+      if (saved['settings']?['default_server'] != server.origin) {
+        await desktopDatabaseRequest(database, 'settings.set', {'key': 'default_server', 'value': server.origin}, cancellation: token);
+      }
       session = DesktopSession(client, database, attachmentDirectory: 'browser-attachments',
         machineAlias: alias, machineName: server.host);
-      await session.restore();
+      await session.restore(snapshot: snapshot);
       machines = MachinesController(session, 'browser');
       token.throwIfCancelled();
       if (!mounted || !identical(_opening, operation)) throw CancelledException();
@@ -96,9 +123,14 @@ class _HappenWebState extends State<HappenWeb> {
     } on CancelledException { /* A newer sign-in or app disposal owns startup. */ }
     catch (error) {
       if (mounted && identical(_opening, operation)) {
-        _set(_SignedOut(error is RemoteFailure && error.code == 'unauthorized' && key == null ? null : '$error'));
+        if (key == null && !(error is RemoteFailure && error.code == 'unauthorized')) {
+          _set(_Unavailable('$error'));
+        } else {
+          _set(_SignedOut(key == null ? null : '$error'));
+        }
       }
     } finally {
+      preflightCancellation.cancel();
       if (machines != null) await machines.close();
       if (session != null) { await session.close(); } else { await client?.close(); }
       await database?.close();
@@ -119,7 +151,7 @@ class _HappenWebState extends State<HappenWeb> {
 
   @override
   void dispose() {
-    _lifetime.cancel(); _opening?.cancel(); _key.dispose(); _server.dispose(); unawaited(_authorization?.cancel());
+    _lifetime.cancel(); _opening?.cancel(); unawaited(_authorization?.cancel());
     final state = _state;
     _state = _transition(state, const _Disposed());
     if (state is _Ready) {
@@ -140,37 +172,24 @@ class _HappenWebState extends State<HappenWeb> {
           DesktopView(session: state.machines.active, machines: state.machines, onSignOut: () => unawaited(_signOut())),
           if (MediaQuery.sizeOf(context).width >= 768) Positioned(right: 8, bottom: 8, child: IconButton(tooltip: 'Sign out of Happen',
             icon: const Icon(Icons.logout, size: 16), onPressed: () => unawaited(_signOut()))),
-        ]) : Scaffold(body: SafeArea(child: Center(child: SingleChildScrollView(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 380),
-          child: Padding(padding: const EdgeInsets.all(28), child: AutofillGroup(child: Column(
-            mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              const Text('Happen', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 12), const Text('Connect to your server with its owner key.'),
-              const SizedBox(height: 24),
-              TextField(key: const ValueKey('server-url'), controller: _server, enabled: state is _SignedOut,
-                style: const TextStyle(fontSize: 16),
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(labelText: 'Server tunnel URL', border: OutlineInputBorder())),
-              const SizedBox(height: 16),
-              TextField(key: const ValueKey('owner-key'), controller: _key, obscureText: true,
-                style: const TextStyle(fontSize: 16),
-                enabled: state is _SignedOut, autofocus: true, autofillHints: const [AutofillHints.password],
-                decoration: const InputDecoration(labelText: 'Owner key', border: OutlineInputBorder()),
-                onSubmitted: (_) => _submit()),
-              const SizedBox(height: 16),
-              if (state is _SignedOut && state.error != null) ...[
-                Text(state.error!, style: const TextStyle(color: desktopError)), const SizedBox(height: 16),
-              ],
-              FilledButton(key: const ValueKey('owner-sign-in'), onPressed: state is _SignedOut ? _submit : null,
-                child: Text(state is _Opening || state is _SigningIn ? 'Connecting…' : 'Sign in')),
-            ],
-          )))))))),
+        ]) : Scaffold(body: SafeArea(child: state is _Opening
+          ? Center(child: Semantics(label: 'Opening workspace', child: const SizedBox.square(dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2))))
+          : state is _Unavailable ? Center(child: Padding(padding: const EdgeInsets.all(28),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('Reconnecting to your workspace', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 12), Text(state.error), const SizedBox(height: 20),
+                FilledButton(onPressed: () { _set(const _Opening()); unawaited(_open()); }, child: const Text('Retry')),
+              ])))
+          : WebLogin(server: _server, busy: state is _SigningIn,
+              error: state is _SignedOut ? state.error : null, submit: _submit))),
       ),
     );
   }
 
-  void _submit() {
+  void _submit(String server, String key) {
     if (_state is! _SignedOut) return;
-    final key = _key.text;
+    _server = server;
     _set(const _SigningIn());
     unawaited(_open(key: key));
   }

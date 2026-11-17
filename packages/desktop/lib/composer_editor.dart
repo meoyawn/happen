@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -446,7 +447,13 @@ class _ComposerEditorState extends State<ComposerEditor> {
                 _deleteWord(intent.forward);
                 return null;
               }),
-              CodeShortcutPasteIntent: _ComposerAction<CodeShortcutPasteIntent>(_code, enabled: widget.enabled, onInvoke: (_) { unawaited(widget.paste(SelectionChangedCause.keyboard)); return null; }),
+              // Browser paste events carry images without clipboard permission.
+              // Leave this shortcut unconsumed so the native event reaches us.
+              CodeShortcutPasteIntent: _ComposerAction<CodeShortcutPasteIntent>(_code, enabled: widget.enabled,
+                consumeKey: !kIsWeb, onInvoke: (_) {
+                  if (!kIsWeb) unawaited(widget.paste(SelectionChangedCause.keyboard));
+                  return null;
+                }),
               CodeShortcutCopyIntent: _ComposerAction<CodeShortcutCopyIntent>(_code, onInvoke: (_) { unawaited(widget.copy()); return null; }),
               CodeShortcutCutIntent: _ComposerAction<CodeShortcutCutIntent>(_code, enabled: widget.enabled, onInvoke: (_) { unawaited(widget.copy(cut: true)); return null; }),
               ReplaceTextIntent: CallbackAction<ReplaceTextIntent>(onInvoke: (intent) {
@@ -523,12 +530,13 @@ class _ComposerEditorState extends State<ComposerEditor> {
 
 // Keep native IME candidate navigation outside the composer's shortcuts.
 class _ComposerAction<T extends Intent> extends CallbackAction<T> {
-  _ComposerAction(this.controller, {this.enabled = true, required super.onInvoke});
+  _ComposerAction(this.controller, {this.enabled = true, this.consumeKey = true, required super.onInvoke});
   final CodeLineEditingController controller;
   final bool enabled;
+  final bool consumeKey;
 
   @override
-  bool consumesKey(T intent) => !controller.isComposing;
+  bool consumesKey(T intent) => consumeKey && !controller.isComposing;
 
   @override
   Object? invoke(T intent) => enabled && !controller.isComposing ? super.invoke(intent) : null;
