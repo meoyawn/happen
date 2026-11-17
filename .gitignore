@@ -7,6 +7,13 @@ build/
 coverage/
 .moon/cache/
 .local/
+.mise/
+.cloudflared/
+cloudflared*.json
+tunnel-token
+owner-key
+packages/desktop/web/database_worker.dart.js*
+packages/desktop/web/sqlite3.wasm
 
 # Local credentials and environment overrides.
 .env

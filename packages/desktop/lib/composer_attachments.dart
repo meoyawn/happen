@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -12,6 +13,7 @@ import 'file_icon.dart';
 import 'file_reference.dart';
 import 'appearance.dart';
 import 'desktop_toast.dart';
+import 'browser_files.dart';
 
 class ComposerAttachment {
   ComposerAttachment({required this.name, required this.path, required this.image, this.ownedDirectory}) : id = newId();
@@ -21,6 +23,7 @@ class ComposerAttachment {
   Json toJson() => {'type': image ? 'image' : 'file', 'name': name, 'path': path};
 
   Future<void> discard() async {
+    if (kIsWeb) { if (path.startsWith('browser-file:')) await deleteBrowserFile(path); return; }
     if (ownedDirectory case final directory?) {
       try { await Directory(directory).delete(recursive: true); } on FileSystemException { /* Already released. */ }
     }
@@ -51,7 +54,7 @@ Future<ComposerClipboardSnapshot> readComposerClipboard(String directory, Cancel
   // Start both snapshot reads immediately, before a transient pasteboard owner
   // (for example dictation) has time to restore its previous content.
   final fallback = Clipboard.getData(Clipboard.kTextPlain);
-  if (!Platform.isMacOS) return ComposerClipboardSnapshot((await fallback)?.text, []);
+  if (kIsWeb || !Platform.isMacOS) return ComposerClipboardSnapshot((await fallback)?.text, []);
   final id = newId(), destination = '$directory/${newId()}';
   final hook = CancellationHook(cancellation, () {
     unawaited(composerClipboardChannel.invokeMethod<void>('cancel', {'id': id}).catchError((Object _) {}));
@@ -97,6 +100,12 @@ Future<List<ComposerAttachment>> receiveComposerDrop(DropDetails details, String
         result.add(ComposerAttachment(name: _name(item.name), path: item.localPath!, image: false));
       } else if (item is DropFileItem) {
         final name = _name(item.name);
+        if (kIsWeb) {
+          final bytes = await item.file.readAsBytes().asCancellable(cancellation);
+          final path = await storeBrowserFile(bytes, name, cancellation);
+          result.add(ComposerAttachment(name: name, path: path, image: _isImage(name, item.mimeType)));
+          continue;
+        }
         var path = item.localPath;
         String? owned;
         final bookmark = item.appleBookmark;

@@ -3,7 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 /// The recorded image belongs to its server/thread/item, not a mutable path on
 /// this computer. Both thumbnail and viewer resolve that recorded source.
@@ -26,7 +26,7 @@ class InspectedImage extends ImageProvider<InspectedImage> {
     final response = await client.sessionRead('thread/image/read', {'threadId': threadId, 'itemId': itemId},
       cancellation: cancellation);
     final source = requiredString(response, 'source');
-    final bytes = await CancellableIsolate.run(() {
+    final bytes = await computeCancellable(() {
       if (source.length > maxClientFrameBytes) throw const FormatException('Image is too large');
       final data = UriData.parse(source);
       if (!data.mimeType.startsWith('image/')) throw const FormatException('Expected an image');

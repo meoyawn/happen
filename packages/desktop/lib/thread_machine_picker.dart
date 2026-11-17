@@ -306,7 +306,7 @@ class _ThreadMachinePickerState extends State<ThreadMachinePicker> {
     final busy = _cloning || state is ThreadMachineSelecting || widget.session.submitting || widget.session.pullingCheckout;
     final sessions = owner?.sessions ?? const <MachineSession>[];
     final machines = <({String? alias, String name, DesktopSession? session})>[
-      if (owner == null) machine else (alias: null, name: 'local', session: owner.local),
+      if (owner == null) machine else (alias: null, name: machineLabel(owner.local), session: owner.local),
       for (final host in owner?.hosts ?? const <RemoteMachine>[])
         (alias: host.alias, name: host.name, session: sessions.where((machine) => machine.alias == host.alias).firstOrNull?.session),
     ];

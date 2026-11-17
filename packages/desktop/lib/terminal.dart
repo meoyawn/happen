@@ -1,10 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 import 'package:xterm2/xterm.dart';
 
 import 'appearance.dart';
@@ -165,8 +165,8 @@ class TerminalShell extends ChangeNotifier {
   final String directory;
   final String? command;
   final terminal = Terminal(maxLines: 1000,
-    platform: Platform.isMacOS ? TerminalTargetPlatform.macos
-      : Platform.isWindows ? TerminalTargetPlatform.windows : TerminalTargetPlatform.linux);
+    platform: defaultTargetPlatform == TargetPlatform.macOS ? TerminalTargetPlatform.macos
+      : defaultTargetPlatform == TargetPlatform.windows ? TerminalTargetPlatform.windows : TerminalTargetPlatform.linux);
   final renderer = TerminalController();
   final scroll = ScrollController();
   final _lifetime = CancellationToken();

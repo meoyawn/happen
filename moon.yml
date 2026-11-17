@@ -7,6 +7,8 @@ fileGroups:
     - pubspec.yaml
     - pubspec.lock
     - tool/build_server.dart
+    - tool/download_asset.dart
+    - mise.toml
     - tool/build_server/common.dart
     - tool/build_server/embed.dart
     - tool/build_server/Dockerfile
@@ -27,6 +29,100 @@ fileGroups:
     - packages/code_mode/native/quickjs/*.{c,h}
     - packages/code_mode/native/quickjs/LICENSE
 tasks:
+  dev-server:
+    description: Switch the one managed backend and web gateway to Dart VM development mode
+    command: dart --disable-dart-dev tool/dev_server.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  deploy-web:
+    description: Build and deploy the static Flutter SPA to Cloudflare Pages
+    command: dart --disable-dart-dev tool/deploy_web.dart
+    deps:
+      - '~:build-web'
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  deploy-tunnel:
+    description: Provision and supervise the personal Cloudflare tunnel with secrets outside the checkout
+    command: dart --disable-dart-dev tool/tunnel.dart
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  serve-web:
+    description: Serve the authenticated web gateway to the private server
+    command: dart --disable-dart-dev packages/server/bin/happen_web.dart
+    preset: server
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  dart:
+    description: Run Dart workspace tools
+    command: dart --disable-dart-dev
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  cf:
+    description: Manage Cloudflare resources with the pinned cf CLI
+    command: cf
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      outputStyle: stream
+
+  pub-get:
+    description: Resolve the Dart and Flutter workspace dependencies
+    command: flutter pub get
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  build-web:
+    description: Build the browser client with SQLite WASM and no embedded server
+    command: dart --disable-dart-dev tool/web.dart build
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      shell: false
+      outputStyle: stream
+
+  dev-web:
+    description: Run the browser client in a separate headless Chrome instance
+    command: dart --disable-dart-dev tool/web.dart dev
+    preset: server
+    inputs: []
+    options:
+      cache: false
+      interactive: true
+      shell: false
+      outputStyle: stream
+
   build-server-native-sqlite:
     description: Build the Linux x64 SQLite library with its package hook
     command: dart

@@ -1,3 +1,4 @@
+import 'database.dart';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -113,7 +114,7 @@ class ShortcutController extends ChangeNotifier {
     ready = _operation = _restore();
   }
 
-  final IsolateOwner database;
+  final DesktopDatabase database;
   final DesktopShortcut command;
   final _lifetime = CancellationToken();
   late final Future<void> ready;
@@ -128,7 +129,7 @@ class ShortcutController extends ChangeNotifier {
 
   Future<void> _restore() async {
     try {
-      final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: _lifetime));
+      final saved = jsonObject(await desktopDatabaseRequest(database, 'load', {}, cancellation: _lifetime));
       _lifetime.throwIfCancelled();
       final value = saved['settings']?[_settingKey(command)] as String?;
       _set(ShortcutReady(value == null ? _defaultShortcut(command) : _decode(value)));
@@ -158,7 +159,7 @@ class ShortcutController extends ChangeNotifier {
     final previous = _state.value;
     _set(ShortcutSaving(previous, shortcut));
     try {
-      await callIsolate(database.port, 'settings.set', {
+      await desktopDatabaseRequest(database, 'settings.set', {
         'key': _settingKey(command), 'value': _encode(shortcut),
       }, cancellation: _lifetime);
       _lifetime.throwIfCancelled();

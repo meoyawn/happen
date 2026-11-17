@@ -1,6 +1,6 @@
 # Happen
 
-Our own AI coding agent harness, built in Dart with a Flutter desktop app.
+Our own AI coding agent harness, built in Dart with a Flutter desktop and web client.
 
 ![Happen desktop app showing project conversations, inline code changes, and machine and Git controls](packages/desktop/screenshots/conversation.png)
 
@@ -37,6 +37,10 @@ I believe this is the way.
   the [desktop app](packages/desktop/). Dart isolates handle work within the
   same process. The UI connects over private Unix-domain WebSockets on
   macOS/Linux and authenticated loopback on Windows.
+- **One client, several servers.** Desktop connects to remote servers through
+  SSH. The static [web client](packages/desktop/) connects directly to each
+  server's authenticated Cloudflare Tunnel over HTTPS and WebSockets. Browser
+  settings and drafts use SQLite WASM in a shared worker.
 - **100% interruption, down to tool calls.** Stop propagates cancellation
   through model streaming, JavaScript cells, and nested tool calls. A native
   QuickJS interrupt reaches running JavaScript even while its Dart isolate
@@ -80,6 +84,29 @@ The app is written to
 `packages/desktop/build/macos/Build/Products/Release/Happen.app`.
 See the [desktop guide](packages/desktop/README.md) for controls, configuration,
 toolchain details, and installation.
+
+## Run and publish the web client
+
+```sh
+moonx dev-web
+moonx deploy-web
+```
+
+`dev-web` uses a separate headless browser. `deploy-web` builds the Flutter web
+client and publishes static files to the Cloudflare Pages hostname configured
+in `~/.secrets/happen/deployment.json`. The same private file supplies the default
+server tunnel URL for web builds and development; `HAPPEN_SERVER_URL` can override
+it. Without a configured default, enter the server URL at sign-in.
+
+Sign in with that server's owner key, then use **Settings → Environments** to
+add other tunnel URLs. Remote metadata, drafts and preferences are committed
+to browser SQLite; owner keys and session tokens are not written to SQLite.
+Each server must allow the web client's origin in its configuration.
+
+See [server setup](packages/server/README.md#web-access-through-cloudflare-tunnel)
+for private deployment configuration, authentication and persistent tunnel services.
+The existing macOS client retains its local server and SSH connections. Native
+iOS support is future work.
 
 ## Release RAM usage
 

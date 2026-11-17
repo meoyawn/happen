@@ -64,6 +64,51 @@ const globalConfigSchema = <String, Object?>{
           }
         ]
       }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Public HTTPS origin of this server tunnel."
+        },
+        "owner_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Private owner key file outside the checkout. Default: ~/.secrets/happen/owner-key."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8787
+        },
+        "allowed_origins": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Other web client origins allowed to authenticate and connect directly to this server."
+        }
+      }
+    },
+    "tunnel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Private Cloudflare connector token file outside the checkout. Default: ~/.secrets/happen/tunnel-token."
+        }
+      }
     }
   },
   "description": "Global tool discovery and MCP server configuration. Project layers configure icons and MCP servers; model and other host options are selected through their owning APIs.",

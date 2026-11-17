@@ -61,8 +61,8 @@ class NewSessionScreen extends StatelessWidget {
             style: heading.copyWith(fontWeight: FontWeight.w500, fontSize: narrow ? 20 : 30)))));
       return ColoredBox(color: const Color(0xfffdfdfd), child: Stack(children: [
         SingleChildScrollView(child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
-          child: ConstrainedBox(constraints: BoxConstraints(minHeight: (bounds.maxHeight - 80).clamp(0.0, double.infinity)),
+          padding: EdgeInsets.symmetric(horizontal: narrow ? 16 : 24, vertical: narrow ? 24 : 40),
+          child: ConstrainedBox(constraints: BoxConstraints(minHeight: (bounds.maxHeight - (narrow ? 48 : 80)).clamp(0.0, double.infinity)),
             child: Align(alignment: const Alignment(0, -.12), child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: desktopNewThreadComposerWidth),
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -76,7 +76,7 @@ class NewSessionScreen extends StatelessWidget {
                     ConstrainedBox(constraints: BoxConstraints(maxWidth: (bounds.maxWidth - 48).clamp(0.0, desktopNewThreadComposerWidth)),
                       child: projectSelector),
                   ]),
-                const SizedBox(height: 48),
+                SizedBox(height: narrow ? 28 : 48),
                 composer,
                 Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [
                   Expanded(child: Align(alignment: Alignment.centerLeft,
@@ -102,12 +102,12 @@ class NewSessionScreen extends StatelessWidget {
                     onSelected: (_) { session.chooseTracing(!session.currentDraft.tracing); onReturnFocus(); },
                     itemBuilder: (_) => [CheckedPopupMenuItem(value: 'trace', checked: session.currentDraft.tracing,
                       enabled: !session.submitting, child: const Text('Trace this session'))])),
-                  if (project?.branch case final branch?) ConstrainedBox(
+                  if (!narrow && project?.branch != null) ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: bounds.maxWidth * .3),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.fork_right_rounded, size: 14, color: desktopSecondary),
                     const SizedBox(width: 6),
-                    Flexible(child: Text(branch, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    Flexible(child: Text(project!.branch!, maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12, color: desktopSecondary))),
                   ])),
                 ])),
@@ -188,7 +188,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
       if (_active == projects.length) { widget.onAdd(); }
       else if (projects[_active].preferred.project.available) { widget.onSelect(projects[_active].preferred.project); }
     }
-    return SizedBox(width: 360, child: Focus(onKeyEvent: (_, event) {
+    return SizedBox(width: (MediaQuery.sizeOf(context).width - 32).clamp(0, 360), child: Focus(onKeyEvent: (_, event) {
       if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
       final key = event.logicalKey;
       if ((key == LogicalKeyboardKey.backspace || key == LogicalKeyboardKey.delete) &&
@@ -209,7 +209,7 @@ class _ProjectPickerState extends State<_ProjectPicker> {
       Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: TextField(
         key: const ValueKey('project-search'), controller: _search, autofocus: true,
         onChanged: (_) => setState(() => _active = 0),
-        style: const TextStyle(fontSize: 13, height: 20 / 13),
+        style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13, height: 20 / 13),
         decoration: const InputDecoration(hintText: 'Search projects', border: InputBorder.none,
           enabledBorder: InputBorder.none, focusedBorder: InputBorder.none,
           prefixIcon: Icon(Icons.search, size: 16), prefixIconConstraints: BoxConstraints(minWidth: 28)))),

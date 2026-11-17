@@ -1,6 +1,6 @@
 import 'package:ai/ai.dart';
-import 'package:openai/openai.dart';
-import 'package:opencode/opencode.dart';
+import 'package:openai/src/request.dart';
+import 'package:opencode/src/provider.dart' show openCodeRequest;
 import 'package:protocol/protocol.dart';
 
 /// Serialize the frozen buffer with the same adapter used to send inference.

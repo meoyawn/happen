@@ -7,7 +7,7 @@ import 'package:protocol/protocol.dart';
 /// Load the running bundle's icon directly instead of using Launch Services' cache.
 Future<void> restoreAppIcon(CancellationToken cancellation) async {
   cancellation.throwIfCancelled();
-  if (Platform.isMacOS) await CancellableIsolate.run(_restoreMacOSIcon, cancellation);
+  if (Platform.isMacOS) await computeCancellable(_restoreMacOSIcon, cancellation);
 }
 
 final _objc = DynamicLibrary.open('/usr/lib/libobjc.A.dylib');

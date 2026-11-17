@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 // Workspace and Git sections follow T3 Code ThreadDetailsPanel.tsx, 86d8838e9.
 import 'dart:async';
 import 'dart:io';
@@ -167,7 +168,7 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
     final scripts = actions.state.value.scripts;
     final available = widget.session.connected && widget.project.available && !widget.project.removing;
     final canRun = available && widget.session.task?.archived != true && widget.session.task?.archiving != true;
-    final host = (repo?.host ?? (local ? Platform.localHostname : 'Server')).replaceFirst(RegExp(r'\.local$'), '');
+    final host = (repo?.host ?? (local ? (kIsWeb ? Uri.base.host : Platform.localHostname) : 'Server')).replaceFirst(RegExp(r'\.local$'), '');
     return Material(key: const ValueKey('project-details-card'), color: Colors.white, clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16),
         side: const BorderSide(color: Color(0xffe5e5e5))),
@@ -177,7 +178,7 @@ class _ProjectDetailsCardState extends State<ProjectDetailsCard> {
             trailing: IconButton(tooltip: 'Open project folder', style: detailsMenuStyle,
               onPressed: local ? () => unawaited(_effect(() => actions.open(actions.openers.first, _lifetime))) : null,
               icon: const Icon(Icons.folder_outlined, size: 17))),
-          DetailsRow(icon: actions.opener.id == 'files' && Platform.isMacOS
+          DetailsRow(icon: actions.opener.id == 'files' && (!kIsWeb && Platform.isMacOS)
               ? const _FinderIcon() : const Icon(Icons.open_in_new_rounded),
             label: 'Open in ${actions.opener.label}', onPressed: local && settingsReady
               ? () => unawaited(_effect(() => _open(actions.opener))) : null,

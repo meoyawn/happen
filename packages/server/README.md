@@ -1,4 +1,4 @@
-The server runs as one detached, PID-managed daemon per Linux user and data directory, shared by all desktop connections. It uses no systemd unit. SSH forwards its private Unix socket; the VPS needs no public application port.
+The backend runs as one detached, PID-managed daemon per Linux user and data directory, shared by all client connections. SSH forwards its private Unix socket; the VPS needs no public application port. Optional web access uses persistent user services for an authenticated loopback gateway and Cloudflare Tunnel.
 
 Agent commands use Codex V2 shell snapshots. Unchanged startup files reuse the initialized shell state; editing, creating or removing a standard login/rc file, `BASH_ENV` or `ENV` refreshes it before the next command in that workspace. In-flight captures are discarded if their startup inputs change. Files sourced indirectly by a profile are not watched; start a fresh shell explicitly after changing those files.
 
@@ -87,3 +87,125 @@ Pull is fast-forward only, with autostash disabled. Unrelated local edits are pr
 Discovery uses registered project roots, recent Happen thread directories and Codex session metadata. A registered workspace container exposes its immediate Git checkouts; repository roots are not recursively scanned. Each matching repository is expanded with `git worktree list --porcelain`, including worktrees outside the original project directory and worktrees belonging to a bare repository. SSH, SCP and HTTPS remote spellings identify the same project. As in T3, `upstream` takes precedence over `origin`, then other fetch remotes in name order. Local folder paths do not group projects across machines. Subdirectory projects resolve to the same relative directory in each checkout.
 
 Changing a draft's machine preserves its prompt, model settings, file references and attachments. The destination draft is committed before the source is removed; attachment caches are copied so one machine's draft cannot delete another's files.
+
+## Web access through Cloudflare Tunnel
+
+The SPA is static Cloudflare Pages content at your configured hostname.
+HTTPS authentication and WebSocket connections go directly through the
+named tunnel to a loopback gateway. There is no Pages Function or Worker proxy.
+The gateway authenticates an owner session before opening a connection to the
+backend's private Unix socket. Browser origins are explicitly allowed, login
+preflights are cached for a day, and WebSockets use an Origin check and an
+authenticated first frame. Keys never appear in URLs.
+
+The pinned `cf@1.0.0-rc.1` CLI manages resources in the configured Cloudflare
+account. Its Pages deploy command currently targets Workers, so our Dart
+deployment tool uses the Pages Direct Upload API with the CLI's existing login.
+The result is verified to contain no Functions. Each complete asset set lives
+in a directory named by its content hash, including icon fonts; HTML revalidates
+on reload so a browser cannot combine new code with older cached assets.
+
+Keep deployment settings in `~/.secrets/happen/deployment.json`, outside the
+checkout. Set directory mode `0700` and file mode `0600`. For example:
+
+```json
+{
+  "account": "<Cloudflare account ID>",
+  "zone": "<Cloudflare zone ID>",
+  "project": "happen",
+  "hostname": "happen.example.com",
+  "server_hostname": "server.example.com"
+}
+```
+
+The deployment tools read account IDs and hostnames from this file. Web builds
+and development use its server hostname as the default sign-in URL;
+`HAPPEN_SERVER_URL` overrides that default. A build without either setting lets
+the user enter a server URL at sign-in. Credentials remain in their separate
+private files.
+
+On the VPS, from the checkout:
+
+```sh
+moonx deploy-tunnel -- provision
+moonx build-server
+moonx deploy-tunnel -- install
+moonx deploy-tunnel -- status
+moonx deploy-web
+```
+
+Provisioning retains an existing owner key. It writes the owner key to
+`~/.secrets/happen/owner-key` and the connector token to
+`~/.secrets/happen/tunnel-token`, with directory mode `0700` and file mode
+`0600`. These paths are on the VPS running the server, not on the computer
+opening the browser. Neither credential is written into the checkout, build
+output, client database or config schema. Cloudflare CLI credentials stay in
+the CLI's private home configuration directory.
+
+The server AOT executable embeds the pinned, checksum-verified `cloudflared`
+binary alongside its native libraries. `happen-server cloudflared --version`
+checks the bundled connector. Install switches the current release and enables
+`happen-web.service` and `happen-tunnel.service` as user services with automatic
+restart and lingering across logout/reboot. The gateway starts the existing
+PID backend idempotently and the tunnel reads its token from the private file.
+This installation refreshes the gateway and connector while keeping active
+backend turns running; the new backend binary is used on its next start.
+
+Server configuration in `~/.config/happen/config.yaml` contains credential
+paths only:
+
+```yaml
+web:
+  public_url: https://server.example.com
+  port: 8787
+  owner_key_file: ~/.secrets/happen/owner-key
+  allowed_origins:
+    - https://happen.example.com
+tunnel:
+  token_file: ~/.secrets/happen/tunnel-token
+```
+
+Add another server's HTTPS tunnel URL and owner key in web **Settings →
+Environments → Add environment**. Each server needs the Pages origin in its
+allowlist. Connection metadata, preferences, drafts and browser attachment
+data are stored in SQLite WASM, backed by IndexedDB through sqlite3.dart's
+virtual filesystem. A shared worker owns the database across tabs and waits
+for the browser transaction to commit before acknowledging writes. Passwords
+and session tokens stay out of SQLite; session restoration uses a Secure,
+HttpOnly, partitioned cookie with a one-year lifetime, including for servers on
+different domains. The gateway stores keyed session
+digests in `~/.secrets/happen/owner-key.sessions.sqlite`, so sessions and logout
+revocations survive process restarts without storing raw tokens. Rotating the
+owner key invalidates old sessions. Separate servers retain separate histories
+and credentials.
+
+macOS still uses native SQLite, a bundled local server and SSH remotes. Native
+iOS client work is deferred; the sqlite3 package supports its native database
+path without introducing a different query layer.
+
+## Hot reload the current server
+
+```sh
+moonx dev-server
+moonx dev-server -- status
+moonx dev-server -- release
+```
+
+The development task prepares native hooks, then a separate systemd handoff
+waits for active turns to finish, stops the release gateway and waits for the existing daemon's verified PID to
+exit before starting the Dart VM backend. Development and release share the
+same serving lock and Unix socket. The private data directory records the
+selected runtime; SSH `daemon start` requests use the development service while
+that mode is selected. A failed switch restores the release service.
+The handoff verifies owner authentication, WSS and backend initialization over
+the public tunnel before recording success. `moonx dev-server -- web` hot reloads
+the gateway while retaining the current backend; this is useful during an active
+turn. `moonx dev-server -- verify` runs the public connection check independently.
+
+`happen-server-dev.service` owns the only backend, while
+`happen-web-dev.service` owns the loopback gateway. Both support Dart VM hot
+reload; the connector keeps its existing edge connections. VM service metadata
+is written outside the checkout in `~/.cache/happen/server-vm.json` and
+`~/.cache/happen/web-vm.json`. Debug ports bind to loopback and are never routed
+through the public tunnel. `release` stops development before returning to the
+installed AOT bundle.

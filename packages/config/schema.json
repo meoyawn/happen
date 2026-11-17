@@ -62,45 +62,150 @@
           }
         ]
       }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Public HTTPS origin of this server tunnel."
+        },
+        "owner_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Private owner key file outside the checkout. Default: ~/.secrets/happen/owner-key."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8787
+        },
+        "allowed_origins": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Other web client origins allowed to authenticate and connect directly to this server."
+        }
+      }
+    },
+    "tunnel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Private Cloudflare connector token file outside the checkout. Default: ~/.secrets/happen/tunnel-token."
+        }
+      }
     }
   },
   "description": "Global tool discovery and MCP server configuration. Project layers configure icons and MCP servers; model and other host options are selected through their owning APIs.",
   "definitions": {
     "iconColor": {
-      "enum": ["gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"]
+      "enum": [
+        "gray",
+        "red",
+        "orange",
+        "amber",
+        "yellow",
+        "lime",
+        "green",
+        "emerald",
+        "teal",
+        "cyan",
+        "sky",
+        "blue",
+        "indigo",
+        "violet",
+        "purple",
+        "fuchsia",
+        "pink",
+        "rose"
+      ]
     },
     "projectIcon": {
       "description": "A local image path (absolute or relative to the project directory), a Lucide icon, emoji, or monogram. Null restores the default icon.",
       "oneOf": [
-        {"type": "null"},
-        {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "\\S"},
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "\\S"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "name", "color"],
+          "required": [
+            "kind",
+            "name",
+            "color"
+          ],
           "properties": {
-            "kind": {"const": "lucide"},
-            "name": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
-            "color": {"$ref": "#/definitions/iconColor"}
+            "kind": {
+              "const": "lucide"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            },
+            "color": {
+              "$ref": "#/definitions/iconColor"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "emoji"],
+          "required": [
+            "kind",
+            "emoji"
+          ],
           "properties": {
-            "kind": {"const": "emoji"},
-            "emoji": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S"}
+            "kind": {
+              "const": "emoji"
+            },
+            "emoji": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "\\S"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "text", "color"],
+          "required": [
+            "kind",
+            "text",
+            "color"
+          ],
           "properties": {
-            "kind": {"const": "monogram"},
-            "text": {"type": "string", "pattern": "^[A-Z0-9]{1,2}$"},
-            "color": {"$ref": "#/definitions/iconColor"}
+            "kind": {
+              "const": "monogram"
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^[A-Z0-9]{1,2}$"
+            },
+            "color": {
+              "$ref": "#/definitions/iconColor"
+            }
           }
         }
       ]
@@ -163,7 +268,11 @@
         },
         "protocol": {
           "type": "string",
-          "enum": ["legacy", "auto", "2026-07-28"],
+          "enum": [
+            "legacy",
+            "auto",
+            "2026-07-28"
+          ],
           "default": "auto",
           "description": "MCP protocol negotiation: auto discovers 2026-07-28 and falls back only for a recognized older server; legacy sends initialize directly; 2026-07-28 requires that revision."
         },
@@ -226,7 +335,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "icon": {"$ref": "#/definitions/projectIcon"},
+        "icon": {
+          "$ref": "#/definitions/projectIcon"
+        },
         "mcp_servers": {
           "type": "object",
           "maxProperties": 64,

@@ -2,8 +2,11 @@
 download_cache_max_size = "4GiB"
 
 [tool_alias]
+cf = "npm:cf"
 moon = "aqua:moonrepo/moon"
 
 [tools]
+cf = "1.0.0-rc.1"
+cloudflared = "2026.11.0"
 flutter = "3.50.0"
 moon = "2.6.5"

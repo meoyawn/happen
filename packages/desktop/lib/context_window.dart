@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -5,7 +6,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart' show readContextSnapshot;
+import 'connection.dart' show readContextSnapshot;
 
 import 'appearance.dart';
 import 'code_highlight.dart';
@@ -93,7 +94,7 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
     final snapshot = _snapshot;
     if (_exporting || trace && !widget.task.tracing || !trace && snapshot == null) return;
     setState(() => _exporting = true);
-    final destination = attach ? Directory('${widget.session.attachmentDirectory}/${newId()}')
+    final destination = attach && !kIsWeb ? Directory('${widget.session.attachmentDirectory}/${newId()}')
       : widget.downloadsDirectory;
     var attached = false;
     try {
@@ -106,15 +107,15 @@ class _SessionContextWindowState extends State<SessionContextWindow> {
       if (attach) {
         _lifetime.throwIfCancelled();
         final owner = widget.session.projects.where((project) => project.tasks.contains(widget.task)).firstOrNull;
-        widget.session.attachExportToNewSession(file, owner: owner, ownedDirectory: destination!.path);
+        widget.session.attachExportToNewSession(file.path, file.uri.pathSegments.last, owner: owner, ownedDirectory: destination?.path);
         attached = true;
         widget.onAttached?.call();
       } else {
         final path = file.absolute.path;
-        await Clipboard.setData(ClipboardData(text: path));
+        if (!kIsWeb) await Clipboard.setData(ClipboardData(text: path));
         if (mounted) {
           showDesktopToast(context, trace ? 'End-to-end trace exported' : 'LLM context exported',
-            description: 'Path copied to clipboard: $path', type: DesktopToastType.success);
+            description: kIsWeb ? 'Download started' : 'Path copied to clipboard: $path', type: DesktopToastType.success);
         }
       }
     } on CancelledException { /* The caller owns the export lifetime. */ }

@@ -2,10 +2,40 @@
 
 lockfile_version = 4
 
+[[tools.cf]]
+version = "1.0.0-rc.1"
+aube = { path = ".mise/locks/cf/1.0.0-rc.1", digest = "sha256:15841947060a7d1d971a9f8ea6e88be30007933cad6b256051abfd313bb87b33" }
+backend = "npm:cf"
+specifiers = ["1.0.0-rc.1"]
+
+[tools.cf.provenance]
+repository = "github.com/cloudflare/cf"
+
+[[tools.cloudflared]]
+version = "2026.11.0"
+backend = "aqua:cloudflare/cloudflared"
+specifiers = ["2026.11.0"]
+
+[tools.cloudflared."platforms.linux-x64"]
+checksum = "sha256:51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd"
+checksum_source = "mise-versions"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.11.0/cloudflared-linux-amd64"
+url_api = "https://api.github.com/repos/cloudflare/cloudflared/releases/assets/739395030"
+
+[tools.cloudflared."platforms.macos-arm64"]
+checksum = "sha256:8c2f90277ef06a6080bb40b964d33f09f1188102f8798f2e344174b6cf41accf"
+checksum_source = "mise-versions"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.11.0/cloudflared-darwin-arm64.tgz"
+url_api = "https://api.github.com/repos/cloudflare/cloudflared/releases/assets/739392999"
+
 [[tools.flutter]]
 version = "3.50.0"
 backend = "http:flutter"
 specifiers = ["3.50.0"]
+
+[tools.flutter."platforms.linux-x64"]
+checksum = "sha256:6ea2d806fd57269ae783e6788e2a81fc26eaad782f1e0d0ff38623bb765ff9f5"
+url = "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.50.0-stable.tar.xz"
 
 [tools.flutter."platforms.macos-arm64"]
 checksum = "blake3:17f6ca22a2e61ddbda4c0103f2cc813ce804031ac2bc7be6fa2f717079778862"
@@ -15,6 +45,12 @@ url = "https://storage.googleapis.com/flutter_infra_release/releases/stable/maco
 version = "2.6.5"
 backend = "aqua:moonrepo/moon"
 specifiers = ["2.6.5"]
+
+[tools.moon."platforms.linux-x64"]
+checksum = "sha256:29b4bae3242c7bb65232227ae21a9996dba2d2d21871fe5bb946cbc88695ef20"
+checksum_source = "mise-versions"
+url = "https://github.com/moonrepo/moon/releases/download/v2.6.5/moon_cli-x86_64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/moonrepo/moon/releases/assets/689680457"
 
 [tools.moon."platforms.macos-arm64"]
 checksum = "sha256:71a2ce796f844af4cd705af19e3a836ca7b97c8e38f702b7c1f0a95ba8b08290"

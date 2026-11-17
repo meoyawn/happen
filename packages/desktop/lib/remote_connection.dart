@@ -10,7 +10,12 @@ RemoteMachine remoteMachine(Json value) {
   final port = value['port'] as int?;
   if (alias == 'local' || !RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]*$').hasMatch(alias)) throw const FormatException('Invalid server ID');
   if (name.isEmpty || name.length > 200) throw const FormatException('Enter a server name');
-  if (host.length > 253 || !RegExp(r'^[a-zA-Z0-9:][a-zA-Z0-9_.:-]*$').hasMatch(host)) throw const FormatException('Enter a hostname or SSH config alias');
+  final tunnel = Uri.tryParse(host);
+  final isTunnel = tunnel != null && tunnel.scheme == 'https' && tunnel.host.isNotEmpty && tunnel.userInfo.isEmpty &&
+    !tunnel.hasQuery && !tunnel.hasFragment && (tunnel.path.isEmpty || tunnel.path == '/');
+  if (!isTunnel && (host.length > 253 || !RegExp(r'^[a-zA-Z0-9:][a-zA-Z0-9_.:-]*$').hasMatch(host))) {
+    throw const FormatException('Enter an HTTPS tunnel URL or SSH hostname');
+  }
   if (user != null && user.isNotEmpty && !RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(user)) throw const FormatException('Invalid SSH username');
   if (port != null && (port < 1 || port > 65535)) throw const FormatException('SSH port must be between 1 and 65535');
   if (identity != null && (identity.length > 4096 || RegExp(r'[\x00\r\n]').hasMatch(identity))) throw const FormatException('Invalid SSH key path');

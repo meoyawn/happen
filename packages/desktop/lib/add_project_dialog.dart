@@ -329,7 +329,7 @@ class _AddProjectDialogState extends State<AddProjectDialog> {
               Expanded(child: TextField(key: const ValueKey('add-project-input'), controller: _input,
                 focusNode: _focus, autofocus: true,
                 readOnly: _controller.busy || state is ProjectSaveFailed && state.preparedPath != null,
-                style: TextStyle(fontSize: 13, height: 20 / 13, color: desktopForeground,
+                style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13, height: 20 / 13, color: desktopForeground,
                   fontFamily: location == null ? null : desktopMonoFamily),
                 decoration: InputDecoration(hintText: placeholder, hintStyle: const TextStyle(color: desktopTertiary),
                   contentPadding: const EdgeInsets.symmetric(vertical: 10)),

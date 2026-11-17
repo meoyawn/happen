@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 Future<void> showMcpAuthentication(BuildContext context, AgentClient client, String server, {String? cwd, bool signOut = false}) async {
   await showDialog<void>(context: context, barrierDismissible: false,

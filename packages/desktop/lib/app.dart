@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:macos_file_picker/macos_file_picker.dart';
+import 'browser_files.dart';
 import 'package:protocol/protocol.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
@@ -50,9 +51,10 @@ import 'add_project_state.dart';
 typedef _ArchivedThread = ({DesktopSession source, DesktopTask task});
 
 class DesktopView extends StatefulWidget {
-  const DesktopView({super.key, required this.session, this.machines});
+  const DesktopView({super.key, required this.session, this.machines, this.onSignOut});
   final DesktopSession session;
   final MachinesController? machines;
+  final VoidCallback? onSignOut;
 
   @override
   State<DesktopView> createState() => _DesktopViewState();
@@ -77,11 +79,22 @@ class _DesktopViewState extends State<DesktopView> {
   double? _dragSidebarWidth;
   final _composer = GlobalKey<_ComposerState>();
   final _conversationPaneKey = GlobalKey();
+  final _scaffold = GlobalKey<ScaffoldState>();
   final _navigationHistory = <String>[];
   int _navigationIndex = -1;
   String? _sidebarProjectKey;
   _ArchivedThread? _archiveUndo;
   VoidCallback? _dismissArchiveToast;
+
+  bool get _compact => MediaQuery.sizeOf(context).width < 768;
+  void _toggleSidebar() {
+    if (_compact) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      if (_scaffold.currentState?.isDrawerOpen == true) { _scaffold.currentState?.closeDrawer(); }
+      else { _scaffold.currentState?.openDrawer(); }
+    } else { unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))); }
+  }
+  void _navigate(VoidCallback action) { _scaffold.currentState?.closeDrawer(); action(); }
 
   @override
   void initState() {
@@ -97,7 +110,7 @@ class _DesktopViewState extends State<DesktopView> {
 
   Listenable get _viewChanges => Listenable.merge([session, session.promptHistoryShortcut, session.machinePickerShortcut, _windowChrome,
     if (_homeOpen || session.task == null) widget.machines]);
-  double get _trafficInset => defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
+  double get _trafficInset => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen ? _windowChrome.value.trafficLightsEnd + 16 : 0;
 
   void _applyWindowChrome(Object? value) {
     if (!mounted || value is! Map) return;
@@ -107,7 +120,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _syncWindowChrome() {
-    if (defaultTargetPlatform != TargetPlatform.macOS) return;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.macOS) return;
     const layout = 'side';
     if (layout == _nativeLayout) return;
     _nativeLayout = layout;
@@ -162,7 +175,7 @@ class _DesktopViewState extends State<DesktopView> {
               await _run(() => _selectProject(project));
             },
             removeProject: (project) => _run(() => _removeProject(project)),
-            windowControls: defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen,
+            windowControls: !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS && !_windowChrome.value.fullscreen,
             accounts: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               for (final provider in session.providers) _accountCard(provider),
             ]),
@@ -212,7 +225,7 @@ class _DesktopViewState extends State<DesktopView> {
                 shortcut: mac ? '⌘ J' : 'Ctrl J', run: _toggleTerminal),
               (title: 'Toggle sidebar', keywords: 'show hide navigation', icon: Icons.view_sidebar_outlined,
                 shortcut: mac ? '⌘ B' : 'Ctrl B',
-                run: () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen)))),
+                run: _toggleSidebar),
             if (task != null && !_homeOpen) ...[
               (title: 'Open browser', keywords: 'web url page preview', icon: Icons.language_rounded,
                 shortcut: mac ? '⌘ ⇧ J' : 'Ctrl Shift J', run: _toggleBrowserPanel),
@@ -465,7 +478,7 @@ class _DesktopViewState extends State<DesktopView> {
     final panels = session.panelLayouts[panelTask.id];
     final terminalFocused = !includeUnavailable && terminalHasFocus;
     return {
-      shortcut(LogicalKeyboardKey.keyB): () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
+      shortcut(LogicalKeyboardKey.keyB): _toggleSidebar,
       shortcut(LogicalKeyboardKey.keyJ): _toggleTerminal,
       shortcut(LogicalKeyboardKey.keyB, alt: true): _toggleSidePanel,
       shortcut(LogicalKeyboardKey.keyJ, shift: true): _toggleBrowserPanel,
@@ -718,49 +731,99 @@ class _DesktopViewState extends State<DesktopView> {
   Widget build(BuildContext context) => DesktopToastListener(notices: session.notices, child: FocusScope(
     autofocus: true,
     child: Scaffold(
-      body: LayoutBuilder(builder: (context, constraints) => ListenableBuilder(
+      key: _scaffold,
+      drawer: _compact ? Drawer(width: (MediaQuery.sizeOf(context).width - 32).clamp(0, 360),
+        child: SafeArea(child: Stack(children: [
+          Positioned.fill(child: ListenableBuilder(listenable: Listenable.merge([session, _sidebar, _sidebar.sidebarChanges, widget.machines]),
+            builder: (context, _) => _threadSidebar())),
+          Positioned(top: 6, left: 4, child: IconButton(tooltip: 'Close navigation',
+            onPressed: () => _scaffold.currentState?.closeDrawer(), icon: const Icon(Icons.close))),
+        ]))) : null,
+      body: SafeArea(child: LayoutBuilder(builder: (context, constraints) => ListenableBuilder(
         listenable: _viewChanges,
         builder: (context, _) => _workspace(context, constraints),
-      )),
+      ))),
     ),
   ));
 
   Widget _workspace(BuildContext context, BoxConstraints constraints) {
     final tasks = session.projects.expand((project) => project.tasks).toSet();
+    final pane = _conversationPane(context, tasks);
+    if (constraints.maxWidth < 768) {
+      return Column(children: [_mobileHeader(), Expanded(child: pane)]);
+    }
     final minSidebarWidth = 280.0;
     final maxSidebarWidth = (constraints.maxWidth - 488).clamp(minSidebarWidth, 640.0);
     final savedWidth = _sidebar.sidebarWidth;
     final sidebarWidth = (_dragSidebarWidth ?? savedWidth).clamp(minSidebarWidth, maxSidebarWidth);
-    final pane = _conversationPane(context, tasks);
     return ListenableBuilder(listenable: Listenable.merge([_sidebar, _sidebar.sidebarChanges, widget.machines]), child: pane,
       builder: (context, pane) => ColoredBox(color: desktopSidebar, child: DesktopSidebarFrame(
       open: _sidebar.sidebarOpen, width: sidebarWidth,
       resizerOffset: 4, resizing: _dragSidebarWidth != null,
       collapsedInset: _trafficInset == 0 ? 18 : _trafficInset,
-      onToggle: () => unawaited(_run(() => _sidebar.chooseSidebarOpen(!_sidebar.sidebarOpen))),
+      onToggle: _toggleSidebar,
       unread: _sources.any((source) => source.projects.where((project) => !project.removing).expand((project) => project.tasks)
         .any((task) => source.hasUnseenCompletion(task) || !task.archived && task.questions.isNotEmpty) ||
         source.sideChats.values.any((task) => !task.archived && !task.archiving &&
           (task.questions.isNotEmpty || source.hasUnseenCompletion(task)))),
-      sidebar: ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
+      sidebar: _threadSidebar(),
+      resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
+      child: pane!,
+    )));
+  }
+
+  Widget _threadSidebar() => ThreadSidebar(session: session, home: _homeOpen, windowControls: _trafficInset > 0,
             sources: _sources,
             machineIcon: (source) => widget.machines?.iconFor(source.machineAlias) ?? parseMachineIcon(null, remote: source.machineAlias != null),
             titlebarInset: _trafficInset, projectKey: _sidebarProjectKey,
             onProjectFilter: (key) => setState(() => _sidebarProjectKey = key),
             onBack: _navigationIndex > 0 ? () => _navigateHistory(-1) : null,
             onForward: _navigationIndex < _navigationHistory.length - 1 ? () => _navigateHistory(1) : null,
-            onHome: _showHome, onSearch: () => unawaited(_commandMenu()),
-            onNew: () => unawaited(_run(_newChat)), onSettings: _settings,
-            onProjectSettings: (project) { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); },
-            onAddProject: () => unawaited(_addProject()),
+            onHome: () => _navigate(_showHome), onSearch: () => _navigate(() => unawaited(_commandMenu())),
+            onNew: () => _navigate(() => unawaited(_run(_newChat))),
+            onSettings: () async { _scaffold.currentState?.closeDrawer(); await _settings(); },
+            onProjectSettings: (project) => _navigate(() { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); }),
+            onAddProject: () => _navigate(() => unawaited(_addProject())),
             onRefresh: () => unawaited(_run(widget.machines?.refreshCatalogs ?? session.refreshProjects)),
-            onSelect: _openTask, onDraft: _activateDraft,
-            onArchive: (task, archived) => unawaited(_run(() => _setArchived(task, archived))))
-        ,
-      resizer: _sidebarResizer(sidebarWidth, minSidebarWidth, maxSidebarWidth),
-      child: pane!,
-    )));
-  }
+            onSelect: (project, task) => _navigate(() => _openTask(project, task)),
+            onDraft: (draft) => _navigate(() => _activateDraft(draft)),
+            onArchive: (task, archived) => unawaited(_run(() => _setArchived(task, archived))));
+
+  Widget _mobileHeader() => Material(color: desktopCanvas, child: SizedBox(height: 56,
+    child: Row(children: [
+      TextButton.icon(key: const ValueKey('mobile-navigation'),
+        onPressed: _toggleSidebar, icon: const Icon(Icons.arrow_back, size: 19), label: const Text('Threads'),
+        style: TextButton.styleFrom(minimumSize: const Size(44, 48), padding: const EdgeInsets.symmetric(horizontal: 10))),
+      Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(_homeOpen ? 'Happen' : session.task?.title ?? session.project?.name ?? 'New thread',
+          maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        Text(session.machineName, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11, color: desktopSecondary)),
+      ])),
+      IconButton(tooltip: 'New thread', onPressed: () => unawaited(_run(_newChat)), icon: const Icon(Icons.edit_square, size: 21)),
+      PopupMenuButton<String>(tooltip: 'Workspace actions', onSelected: (value) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        switch (value) {
+          case 'home': _showHome();
+          case 'panels': _toggleSidePanel();
+          case 'terminal': _toggleTerminal();
+          case 'project': unawaited(showModalBottomSheet<void>(context: context, isScrollControlled: true, useSafeArea: true,
+            builder: (_) => DraggableScrollableSheet(expand: false, initialChildSize: .75, minChildSize: .4,
+              builder: (_, scroll) => SingleChildScrollView(controller: scroll, padding: const EdgeInsets.all(16),
+                child: ProjectDetailsCard(session: session, project: session.project!)))));
+          case 'settings': unawaited(_settings());
+          case 'sign-out': widget.onSignOut?.call();
+        }
+      }, itemBuilder: (_) => [
+        const PopupMenuItem(value: 'home', child: Text('All threads')),
+        if (session.task != null) const PopupMenuItem(value: 'panels', child: Text('Files and context')),
+        if (session.project?.available == true) const PopupMenuItem(value: 'project', child: Text('Project details')),
+        if (_canOpenTerminal) const PopupMenuItem(value: 'terminal', child: Text('Terminal')),
+        const PopupMenuItem(value: 'settings', child: Text('Settings')),
+        if (widget.onSignOut != null) const PopupMenuItem(value: 'sign-out', child: Text('Sign out')),
+      ]),
+    ])));
 
   Widget _sidebarResizer(double sidebarWidth, double minSidebarWidth, double maxSidebarWidth) =>
     SidebarResizer(key: const ValueKey('sidebar-resizer'), size: sidebarWidth,
@@ -783,7 +846,7 @@ class _DesktopViewState extends State<DesktopView> {
             onReturnFocus: () => _composer.currentState?._focus.requestFocus(),
             child: Material(color: desktopCanvas, child: Stack(fit: StackFit.expand, children: [
               if (!home) ProjectDetailsWorkspace(session: session,
-                header: (opened, toggle) => _header(context, opened, toggle),
+                header: (opened, toggle) => _compact ? const SizedBox.shrink() : _header(context, opened, toggle),
                 child: Column(children: [
                 if (transcript == null)
                   Expanded(child: NewSessionScreen(session: session, sources: _sources, picking: _picking,
@@ -1256,6 +1319,12 @@ class _ComposerState extends State<_Composer> {
     final lifetime = _attachmentLifetime;
     setState(() => _receivingAttachments = true);
     try {
+      if (kIsWeb) {
+        final files = await pickBrowserFiles(lifetime);
+        if (mounted && !lifetime.isCancelled) _addAttachments([for (final file in files)
+          ComposerAttachment(name: file.name, path: file.path, image: file.image)]);
+        return;
+      }
       final paths = await MacosFilePicker().pick(MacosFilePickerMode.file,
         allowsMultiple: true, initialDirectory: _project?.path, dialogTitle: 'Attach files');
       try {
@@ -1399,6 +1468,7 @@ class _ComposerState extends State<_Composer> {
   }
 
   Widget _input(BuildContext context, {QuestionComposer? answer}) {
+    final compact = MediaQuery.sizeOf(context).width < 768;
     final session = widget.session;
     final historyShortcut = session.promptHistoryShortcut.state.value;
     final newThread = answer == null && _target == null;
@@ -1441,7 +1511,7 @@ class _ComposerState extends State<_Composer> {
           if (_canSetGoal) '/goal': (description: 'Set a goal to keep pursuing', run: _enableGoal),
           if (widget.target == null && _project != null)
             '/new': (description: 'Start a new session', run: () => session.newSession(_project!)),
-          if (defaultTargetPlatform == TargetPlatform.macOS)
+          if (kIsWeb || defaultTargetPlatform == TargetPlatform.macOS)
             '/attach': (description: 'Attach files and images', run: () => unawaited(_pickAttachments())),
           '/history': (description: 'Search previous prompts', run: () => _autocomplete.currentState?.openHistory()),
           if (session.task != null) '/context': (description: 'Inspect session context',
@@ -1474,7 +1544,7 @@ class _ComposerState extends State<_Composer> {
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: newThread ? desktopNewThreadComposerWidth : desktopConversationWidth + 40),
         child: Padding(
-          padding: newThread ? EdgeInsets.zero : const EdgeInsets.fromLTRB(20, 8, 20, 16),
+          padding: newThread ? EdgeInsets.zero : EdgeInsets.fromLTRB(compact ? 10 : 20, 8, compact ? 10 : 20, compact ? 8 : 16),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: answer == null ? double.infinity : MediaQuery.sizeOf(context).height * .65),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1574,7 +1644,7 @@ class _ComposerState extends State<_Composer> {
                         label: answer == null ? _goalMode ? 'Goal' : 'Message' : 'Answer',
                         paste: paste, copy: copy,
                       )),
-                      SizedBox(height: 40, child: Row(
+                      SizedBox(height: compact ? 48 : 40, child: Row(
                         children: [
                           if (answer == null)
                           PopupMenuButton<String>(tooltip: 'Add context or commands', enabled: available && !_dictating,
@@ -1584,7 +1654,7 @@ class _ComposerState extends State<_Composer> {
                                 case 'context': _autocomplete.currentState?.openContext();
                                 case 'commands': _autocomplete.currentState?.openCommands();
                                 case 'history': _autocomplete.currentState?.openHistory();
-                                case 'attach': unawaited(_pickAttachments());
+                                case 'attach': break;
                                 case 'goal': _enableGoal(); _focus.requestFocus();
                               }
                             },
@@ -1602,14 +1672,14 @@ class _ComposerState extends State<_Composer> {
                                 mouseCursor: MouseCursor.defer,
                                 leading: const Icon(Icons.history_rounded, size: 16), title: const Text('Prompt history'),
                                 trailing: historyShortcut == null ? null : Text(shortcutLabel(historyShortcut)))),
-                              if (defaultTargetPlatform == TargetPlatform.macOS)
-                                const PopupMenuItem(value: 'attach', child: ListTile(dense: true, contentPadding: EdgeInsets.zero,
+                              if (kIsWeb || defaultTargetPlatform == TargetPlatform.macOS)
+                                PopupMenuItem(value: 'attach', onTap: () => unawaited(_pickAttachments()), child: const ListTile(dense: true, contentPadding: EdgeInsets.zero,
                                   mouseCursor: MouseCursor.defer,
                                   leading: Icon(Icons.attach_file_rounded, size: 16), title: Text('Attach files'))),
                             ],
                             child: MouseRegion(cursor: available && !_dictating ? SystemMouseCursors.click : SystemMouseCursors.basic,
-                              child: const SizedBox.square(dimension: 32,
-                                child: Icon(Icons.add_rounded, size: 20, color: desktopSecondary)))),
+                              child: SizedBox.square(dimension: compact ? 44 : 32,
+                                child: const Icon(Icons.add_rounded, size: 20, color: desktopSecondary)))),
                           if (answer == null && _goalMode) ...[
                             GoalModeButton(onClear: _submitting ? null : _exitGoal),
                             const SizedBox(width: 6),
@@ -1635,7 +1705,7 @@ class _ComposerState extends State<_Composer> {
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          if (defaultTargetPlatform == TargetPlatform.macOS) ...[
+                          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) ...[
                             DictationButton(
                               phase: _voicePhase,
                               amplitude: _voice.amplitude,
@@ -1665,7 +1735,7 @@ class _ComposerState extends State<_Composer> {
                             style: IconButton.styleFrom(
                               backgroundColor: desktopForeground, foregroundColor: desktopSurface,
                               disabledBackgroundColor: const Color(0xffececef), disabledForegroundColor: const Color(0xffb0b3b9),
-                              minimumSize: const Size.square(32), maximumSize: const Size.square(32), padding: EdgeInsets.zero,
+                              minimumSize: Size.square(compact ? 40 : 32), maximumSize: Size.square(compact ? 40 : 32), padding: EdgeInsets.zero,
                               shape: const CircleBorder(),
                             ),
                             tooltip: _target?.sidePreparing == true ? 'Preparing side chat…'

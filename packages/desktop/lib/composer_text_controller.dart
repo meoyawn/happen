@@ -38,6 +38,17 @@ class ComposerTextController extends TextEditingController {
   // The virtual editor owns native undo history and its own weak snapshots.
   final _snapshots = Expando<List<ComposerFileReference>>();
   List<ComposerFileReference> get files => List.unmodifiable(_files.where(_valid));
+  @override
+  TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
+    final display = text.replaceAll(marker, '▣');
+    final composing = value.composing;
+    if (!withComposing || !composing.isValid || composing.end > display.length) return TextSpan(text: display, style: style);
+    return TextSpan(style: style, children: [
+      TextSpan(text: display.substring(0, composing.start)),
+      TextSpan(text: display.substring(composing.start, composing.end), style: const TextStyle(decoration: TextDecoration.underline)),
+      TextSpan(text: display.substring(composing.end)),
+    ]);
+  }
   bool _valid(ComposerFileReference file) => file.offset >= 0 && file.offset < text.length && text[file.offset] == marker;
   void _remember() => _snapshots[super.value] = files;
 

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 import 'appearance.dart';
 import 'file_icon.dart';
@@ -29,7 +29,7 @@ _FolderState _transition(_FolderState current, _FolderState next) => switch ((cu
 
 Future<List<_FolderEntry>> _readFolder(AgentClient client, String path, CancellationToken cancellation) async {
   final result = await client.fileSystemRequest('fs/readDirectory', path, cancellation: cancellation);
-  return CancellableIsolate.run(() {
+  return computeCancellable(() {
     final entries = <_FolderEntry>[];
     for (final value in result['entries'] as List<Object?>) {
       final entry = jsonObject(value);

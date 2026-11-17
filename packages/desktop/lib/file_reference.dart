@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
 
 typedef ConversationFileLocation = ({String path, int? line});
 
@@ -17,20 +18,22 @@ ConversationFileLocation? conversationFileLocation(String source, String directo
   }
   if (uri.path.isEmpty) return null;
   if (uri.scheme.isEmpty) {
-    final home = Platform.environment['HOME'];
+    final home = kIsWeb ? null : Platform.environment['HOME'];
     if (uri.path.startsWith('~/') && home != null) {
       uri = Uri.file('$home/${uri.path.substring(2)}').replace(fragment: uri.fragment);
     } else {
-      uri = Directory(directory.isEmpty ? Directory.current.path : directory).absolute.uri.resolveUri(uri);
+      uri = (kIsWeb ? Uri.directory(directory.isEmpty ? '/' : directory, windows: false)
+        : Directory(directory.isEmpty ? Directory.current.path : directory).absolute.uri).resolveUri(uri);
     }
   }
-  var path = uri.replace(fragment: '', query: '', host: '').toFilePath();
+  var path = uri.replace(fragment: '', query: '', host: '').toFilePath(windows: kIsWeb ? false : null);
   final suffix = RegExp(r':([1-9]\d*)(?::\d+)?$').firstMatch(path);
   final fragment = RegExp(r'^L?([1-9]\d*)(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$', caseSensitive: false)
     .firstMatch(uri.fragment);
   final line = int.tryParse(fragment?[1] ?? suffix?[1] ?? sourceSuffix?[1] ?? '');
   if (suffix != null) path = path.substring(0, suffix.start);
-  return (path: File(path).absolute.uri.normalizePath().toFilePath(), line: line);
+  return (path: kIsWeb ? Uri.file(path, windows: false).normalizePath().toFilePath(windows: false)
+    : File(path).absolute.uri.normalizePath().toFilePath(), line: line);
 }
 
 class ConversationFileScope extends InheritedWidget {

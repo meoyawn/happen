@@ -1,10 +1,11 @@
+import 'database.dart';
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 import 'machine_icons.dart';
 import 'remote_connection.dart';
@@ -131,7 +132,7 @@ class MachinesController extends ChangeNotifier {
   DesktopSession get active => _cachedSession(_states[_selected]) ?? local;
   MachineState? state(String alias) => _states[alias];
   List<MachineSession> get sessions => [
-    (alias: null, name: 'local', session: local),
+    (alias: null, name: machineLabel(local), session: local),
     for (final host in hosts)
       if (_cachedSession(_states[host.alias]) case final session?)
         (alias: host.alias, name: host.name, session: session),
@@ -145,7 +146,7 @@ class MachinesController extends ChangeNotifier {
     _selectionChanged = true;
     if (_selected == machine.alias) return;
     _selected = machine.alias;
-    unawaited(callIsolate(local.database.port, 'settings.set',
+    unawaited(desktopDatabaseRequest(local.database, 'settings.set',
       {'key': 'active_machine', 'value': machine.alias ?? ''}, cancellation: _lifetime)
       .catchError((Object error) {
         if (error is! CancelledException) local.showError(error, title: 'Could not save the selected machine');
@@ -159,7 +160,7 @@ class MachinesController extends ChangeNotifier {
     final alias = session.machineAlias ?? '';
     if (_projectMachines[id] == alias) return;
     _projectMachines[id] = alias;
-    unawaited(callIsolate(local.database.port, 'settings.set',
+    unawaited(desktopDatabaseRequest(local.database, 'settings.set',
       {'key': 'project_machine:$id', 'value': alias}, cancellation: _lifetime)
       .catchError((Object error) {
         if (error is! CancelledException) local.showError(error, title: 'Could not save the project machine');
@@ -204,7 +205,7 @@ class MachinesController extends ChangeNotifier {
     if (saving) throw StateError('Machine settings are already being saved');
     _write(RemoteWritePending(key));
     try {
-      await callIsolate(local.database.port, 'settings.set', {'key': 'machine_icon:$key', 'value': icon.name},
+      await desktopDatabaseRequest(local.database, 'settings.set', {'key': 'machine_icon:$key', 'value': icon.name},
         cancellation: cancellation.merge(_lifetime));
       _lifetime.throwIfCancelled();
       _icons[key] = icon;
@@ -216,7 +217,7 @@ class MachinesController extends ChangeNotifier {
   }
 
   Future<void> _restoreIcons() async {
-    final saved = jsonObject(await callIsolate(local.database.port, 'load', {}, cancellation: _lifetime));
+    final saved = jsonObject(await desktopDatabaseRequest(local.database, 'load', {}, cancellation: _lifetime));
     _lifetime.throwIfCancelled();
     final settings = jsonObject(saved['settings']);
     if (!_selectionChanged) {
@@ -354,7 +355,7 @@ class MachinesController extends ChangeNotifier {
     try {
       final remote = remoteMachine({'alias': alias, ...values});
       final before = _hosts.where((host) => host.alias == alias).firstOrNull;
-      await callIsolate(local.database.port, 'remotes.save', remoteMachineJson(remote), cancellation: cancellation.merge(_lifetime));
+      await desktopDatabaseRequest(local.database, 'remotes.save', remoteMachineJson(remote), cancellation: cancellation.merge(_lifetime));
       _write(RemoteWriteSaved(alias));
       _hosts = [..._hosts.where((host) => host.alias != alias), remote];
       if (before == null || !_sameConnection(before, remote)) {
@@ -376,7 +377,7 @@ class MachinesController extends ChangeNotifier {
     if (saving) throw StateError('An SSH server setting is already being saved');
     _write(RemoteWritePending(alias));
     try {
-      await callIsolate(local.database.port, 'remotes.remove', {'alias': alias}, cancellation: cancellation.merge(_lifetime));
+      await desktopDatabaseRequest(local.database, 'remotes.remove', {'alias': alias}, cancellation: cancellation.merge(_lifetime));
       _write(RemoteWriteSaved(alias));
       final cached = _cachedSession(_states[alias]);
       _hosts = _hosts.where((host) => host.alias != alias).toList();
@@ -429,7 +430,7 @@ class MachinesController extends ChangeNotifier {
   Future<void> _refresh() async {
     if (_lifetime.isCancelled) return;
     try {
-      final raw = (await callIsolate(local.database.port, 'remotes.list', {}, cancellation: _lifetime) as List).map(jsonObject);
+      final raw = (await desktopDatabaseRequest(local.database, 'remotes.list', {}, cancellation: _lifetime) as List).map(jsonObject);
       await (_iconsRead ??= _restoreIcons());
       _lifetime.throwIfCancelled();
       _hosts = raw.map(remoteMachine).toList();
@@ -490,7 +491,7 @@ class MachinesController extends ChangeNotifier {
       cancel = CancellationHook(cancellation, () => unawaited(client?.close()));
       final key = sha256.convert(utf8.encode(host.alias)).toString().substring(0, 24);
       final data = '$directory/remotes/$key';
-      await callIsolate(local.database.port, 'machine.import', {'machine': host.alias}, cancellation: cancellation.merge(_lifetime));
+      await desktopDatabaseRequest(local.database, 'machine.import', {'machine': host.alias}, cancellation: cancellation.merge(_lifetime));
       cancellation.throwIfCancelled();
       session = DesktopSession(client, local.database, attachmentDirectory: '$data/attachments',
         sidebarOwner: local, machineAlias: host.alias, machineName: host.name,

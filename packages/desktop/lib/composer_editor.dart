@@ -374,6 +374,8 @@ class _ComposerEditorState extends State<ComposerEditor> {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 768;
+    if (compact) return _mobileInput(context);
     final completing = ComposerAutocompleteScope.of(context);
     final autocomplete = ComposerAutocompleteScope.ownerOf(context);
     final toolbar = MobileSelectionToolbarController(builder: ({required context, required anchors,
@@ -471,6 +473,52 @@ class _ComposerEditorState extends State<ComposerEditor> {
         builder: (context, height, child) => SizedBox(height: height, child: child));
     });
   }
+
+  Widget _mobileInput(BuildContext context) => ValueListenableBuilder<TextEditingValue>(
+    valueListenable: widget.controller, builder: (context, value, _) {
+      final controller = widget.controller;
+      final files = controller is ComposerTextController ? controller.files : const <ComposerFileReference>[];
+      final height = ((MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom - 160) / 2).clamp(64.0, 180.0);
+      return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Padding(padding: files.isEmpty ? EdgeInsets.zero : const EdgeInsets.fromLTRB(8, 8, 8, 0), child: Wrap(spacing: 6, runSpacing: 4,
+          children: [for (final file in files) Tooltip(message: file.path, child: InputChip(
+            isEnabled: widget.enabled,
+            onPressed: widget.enabled ? widget.focusNode.requestFocus : null,
+            avatar: Icon(file.folder ? Icons.folder_outlined : Icons.description_outlined, size: 16),
+            label: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 180),
+              child: Text(file.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+            onDeleted: !widget.enabled ? null : () {
+              controller.value = controller.value.copyWith(
+                text: controller.text.replaceRange(file.offset, file.offset + 1, ''),
+                selection: TextSelection.collapsed(offset: file.offset));
+            },
+          ))])),
+        ConstrainedBox(constraints: BoxConstraints(maxHeight: height), child: TextField(
+          key: const ValueKey('mobile-composer-input'), controller: controller, focusNode: widget.focusNode,
+          enabled: widget.enabled, minLines: 2, maxLines: 6,
+          keyboardType: TextInputType.multiline, textInputAction: TextInputAction.newline,
+          autocorrect: false, enableSuggestions: false,
+          style: const TextStyle(fontFamily: desktopFontFamily, fontSize: 16, height: desktopProseHeight),
+          decoration: InputDecoration(hintText: widget.placeholder,
+            hintStyle: const TextStyle(fontSize: 16, color: desktopSecondary),
+            border: InputBorder.none, enabledBorder: InputBorder.none, focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none, contentPadding: const EdgeInsets.fromLTRB(8, 14, 8, 8)),
+          contextMenuBuilder: (context, editable) => AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: editable.contextMenuAnchors,
+            buttonItems: [for (final item in editable.contextMenuButtonItems)
+              switch (item.type) {
+                ContextMenuButtonType.copy => ContextMenuButtonItem(type: item.type,
+                  onPressed: () { editable.hideToolbar(); unawaited(widget.copy()); }),
+                ContextMenuButtonType.cut => ContextMenuButtonItem(type: item.type,
+                  onPressed: () { editable.hideToolbar(); unawaited(widget.copy(cut: true)); }),
+                ContextMenuButtonType.paste => ContextMenuButtonItem(type: item.type,
+                  onPressed: () { editable.hideToolbar(); unawaited(widget.paste(SelectionChangedCause.toolbar)); }),
+                _ => item,
+              },
+            ]),
+        )),
+      ]);
+    });
 }
 
 // Keep native IME candidate navigation outside the composer's shortcuts.

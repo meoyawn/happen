@@ -7,6 +7,7 @@ import 'package:yaml/yaml.dart';
 
 import 'build_server/common.dart';
 import 'native_contracts.dart' show linuxNativeContracts;
+import 'download_asset.dart';
 
 // Freeze only the server's Dart workspace packages. Neither local credentials,
 // Flutter, build output nor .git are ever mounted into the Linux builder.
@@ -80,6 +81,9 @@ Future<void> compileServer(Directory root, String architecture, CancellationToke
       await destination.parent.create(recursive: true);
       await File('${output.path}/native/$library').copy(destination.path);
     }
+    final cloudflared = await downloadAsset(cloudflaredAssets[architecture]!, cancellation);
+    await cloudflared.copy('${source.path}/native/cloudflared');
+    digest.addAll(utf8.encode('cloudflared-$cloudflaredVersion-${cloudflaredAssets[architecture]!.sha256}'));
     for (final relative in ['tool/cli_native_bootstrap.dart', 'tool/native_contracts.dart', 'tool/build_server/embed.dart']) {
       final bytes = await File('${root.path}/$relative').readAsBytes();
       digest..addAll(utf8.encode('$relative\x00'))..addAll(sha256.convert(bytes).bytes);

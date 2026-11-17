@@ -19,14 +19,14 @@ Future<void> main(List<String> arguments) async {
   final libraries = (await native.list().toList()).whereType<File>().toList()
     ..sort((a, b) => a.path.compareTo(b.path));
   final names = libraries.map((file) => file.uri.pathSegments.last).toSet();
-  if (names.length != linuxNativeContracts.length || !names.containsAll(linuxNativeContracts.keys)) {
+  if (names.length != linuxNativeContracts.length + 1 || !names.containsAll([...linuxNativeContracts.keys, 'cloudflared'])) {
     throw StateError('Native assets changed; update the explicit Linux binding contracts: $names');
   }
   final assets = <Json>[];
   final payloads = <List<int>>[];
   for (final library in libraries) {
     final name = library.uri.pathSegments.last, bytes = await library.readAsBytes();
-    assets.add({'name': name, 'asset_id': linuxNativeContracts[name]!.assetId,
+    assets.add({'name': name, if (linuxNativeContracts[name] case final contract?) 'asset_id': contract.assetId,
       'length': bytes.length, 'sha256': sha256.convert(bytes).toString()});
     payloads.add(bytes);
   }
@@ -68,11 +68,12 @@ List<int> _readPayload(int offset, int length) {
     final main = File('${work.path}/main.dart');
     await main.writeAsString("import '${File('${root.path}/packages/server/bin/happen_server.dart').uri}' as server;\n"
       "import '$bootstrap';\nimport 'payload.dart';\nFuture<void> main(List<String> arguments) async {\n"
-      "  await bootstrapNativeAssets(nativeId, assets);\n  await server.main(arguments);\n}\n");
+      "  final directory = await bootstrapNativeAssets(nativeId, assets);\n"
+      "  server.bundledCloudflaredPath = '\$directory/cloudflared';\n  await server.main(arguments);\n}\n");
     final target = switch (Abi.current()) { Abi.linuxX64 => 'linux_x64', Abi.linuxArm64 => 'linux_arm64', _ => throw UnsupportedError('Unsupported Linux ABI') };
     final manifest = File('${work.path}/native-assets.json');
     await manifest.writeAsString(jsonEncode({'format-version': [1, 0, 0], 'native-assets': {
-      target: {for (final asset in assets) asset['asset_id']: ['process']},
+      target: {for (final asset in assets) if (asset['asset_id'] != null) asset['asset_id']: ['process']},
     }}));
     final kernel = '${work.path}/program.dill', snapshot = '${work.path}/snapshot.aot';
     await _run('${sdk.path}/bin/dartaotruntime', [
@@ -97,6 +98,7 @@ List<int> _readPayload(int offset, int length) {
       await _run(output.path, ['--version'], cancellation,
         environment: {'HAPPEN_NATIVE_CACHE': cache.path, 'HAPPEN_BOOTSTRAP_REPORT': '1'});
     }
+    await _run(output.path, ['cloudflared', '--version'], cancellation, environment: {'HAPPEN_NATIVE_CACHE': cache.path});
     await File('${output.path}.native.json').writeAsString('${jsonEncode({
       'nativeId': nativeId, 'nativeAssets': assets, 'snapshotOffset': aligned,
     })}\n');

@@ -1,5 +1,5 @@
 name: desktop
-description: "Happen desktop client"
+description: "Happen client for desktop and web"
 publish_to: 'none'
 version: 0.1.0+1
 resolution: workspace
@@ -8,6 +8,7 @@ environment:
   sdk: '>=3.13.0 <4.0.0'
 
 dependencies:
+  web: ^1.1.1
   crypto: ^3.0.7
   ai: any
   desktop_drop: ^0.9.2

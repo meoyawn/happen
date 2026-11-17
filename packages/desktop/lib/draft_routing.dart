@@ -103,6 +103,11 @@ Future<List<Json>> _copyDraftAttachments(Json params, CancellationToken cancella
     for (final raw in params['attachments'] as List) {
       cancellation.throwIfCancelled();
       final attachment = jsonObject(raw);
+      if (kIsWeb && (attachment['path'] as String).startsWith('browser-file:')) {
+        final path = await copyBrowserFile(attachment['path'] as String, cancellation);
+        output.add({...attachment, 'path': path, 'owned_directory': path});
+        continue;
+      }
       if (attachment['owned_directory'] == null) { output.add(attachment); continue; }
       final directory = Directory('${params['directory']}/${newId()}');
       await directory.create(recursive: true);
@@ -122,6 +127,7 @@ Future<List<Json>> _copyDraftAttachments(Json params, CancellationToken cancella
 Future<void> _discardRoutedAttachments(Json params, CancellationToken cancellation, void Function(Json) emit) async {
   for (final path in (params['directories'] as List).cast<String>()) {
     cancellation.throwIfCancelled();
+    if (kIsWeb) { await deleteBrowserFile(path); continue; }
     try { await Directory(path).delete(recursive: true); }
     on FileSystemException { /* A disposable draft cache may already be gone. */ }
   }

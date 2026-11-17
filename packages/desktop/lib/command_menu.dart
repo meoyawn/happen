@@ -240,7 +240,7 @@ class _CommandMenuState extends State<CommandMenu> {
                   Expanded(child: TextField(
                     key: const ValueKey('command-menu-search'),
                     controller: _search, focusNode: _searchFocus, autofocus: true,
-                    style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopForeground),
+                    style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13, height: 20 / 13, color: desktopForeground),
                     decoration: InputDecoration(
                       hintText: _projectsOpen ? 'Search projects…' : 'Search sessions and commands…',
                       hintStyle: const TextStyle(color: desktopTertiary),

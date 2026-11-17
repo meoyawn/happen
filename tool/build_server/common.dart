@@ -40,6 +40,15 @@ Future<void> runServerBuilder(String image, Directory source, String architectur
       ...arguments], cancellation);
   } finally {
     if (cancellation.isCancelled) await Process.run('docker', ['rm', '-f', container]);
+    // Docker runs package hooks as root. Return ownership of this invocation's
+    // staging directory so a normal user can copy and remove its artifacts.
+    if (Platform.isLinux) {
+      final user = await Process.run('id', ['-u']), group = await Process.run('id', ['-g']);
+      final owner = '${(user.stdout as String).trim()}:${(group.stdout as String).trim()}';
+      final repaired = await Process.run('docker', ['run', '--rm', '--entrypoint', 'chown',
+        '--mount', 'type=bind,source=${source.path},target=/source', image, '-R', owner, '/source']);
+      if (repaired.exitCode != 0) throw StateError('Could not return ownership of the server build directory');
+    }
   }
 }
 

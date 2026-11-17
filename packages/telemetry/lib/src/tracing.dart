@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:isolate';
+import 'trace_sink_native.dart' if (dart.library.js_interop) 'trace_sink_web.dart';
+export 'trace_sink_native.dart' if (dart.library.js_interop) 'trace_sink_web.dart';
 import 'dart:math';
 
 import 'package:cancellation_token/cancellation_token.dart';
@@ -23,7 +24,7 @@ const traceServices = {
 class TraceContext {
   TraceContext({required this.sink, required this.service, String? trace,
     this.span, this.session}) : trace = trace ?? traceId();
-  final SendPort sink;
+  final TraceSink sink;
   final String service, trace;
   final String? span;
   String? session;
@@ -36,7 +37,7 @@ class TraceContext {
 
 TraceContext? get currentTrace => Zone.current[_traceKey] as TraceContext?;
 
-TraceContext? traceContextFrom(Object? carrier, {SendPort? sink, String? service}) {
+TraceContext? traceContextFrom(Object? carrier, {TraceSink? sink, String? service}) {
   if (carrier is! Map) return null;
   final trace = carrier['trace_id'];
   final span = carrier['span_id'];
@@ -45,7 +46,7 @@ TraceContext? traceContextFrom(Object? carrier, {SendPort? sink, String? service
     return null;
   }
   final target = sink ?? carrier['sink'];
-  if (target is! SendPort) return null;
+  if (target is! TraceSink) return null;
   return TraceContext(sink: target, service: service ?? 'network', trace: trace,
     span: span as String?, session: carrier['session_id'] is String ? carrier['session_id'] as String : null);
 }
@@ -64,7 +65,7 @@ void _record(TraceContext context, Map<String, dynamic> event) {
   context.sink.send({
     'event': {
       'pid': traceServices[context.service] ?? 6,
-      'tid': Isolate.current.hashCode,
+      'tid': traceThread,
       'ts': traceTime(),
       ...event,
       'args': {

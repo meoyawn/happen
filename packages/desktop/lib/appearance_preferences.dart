@@ -1,3 +1,4 @@
+import 'database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:protocol/protocol.dart';
@@ -45,7 +46,7 @@ class AppearanceController extends ChangeNotifier {
     ready = _operation = _restore();
   }
 
-  final IsolateOwner database;
+  final DesktopDatabase database;
   final _lifetime = CancellationToken();
   late final Future<void> ready;
   Future<void>? _operation, _closing;
@@ -59,7 +60,7 @@ class AppearanceController extends ChangeNotifier {
 
   Future<void> _restore() async {
     try {
-      final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: _lifetime));
+      final saved = jsonObject(await desktopDatabaseRequest(database, 'load', {}, cancellation: _lifetime));
       _lifetime.throwIfCancelled();
       final value = saved['settings']?['accent_color'] as String?;
       _set(AppearanceReady(value == null ? desktopDefaultAccent : parseDesktopAccent(value) ?? desktopDefaultAccent));
@@ -83,7 +84,7 @@ class AppearanceController extends ChangeNotifier {
     final previous = _state.value;
     _set(AppearanceSaving(previous, value));
     try {
-      await callIsolate(database.port, 'settings.set', {
+      await desktopDatabaseRequest(database, 'settings.set', {
         'key': 'accent_color', 'value': desktopAccentHex(value),
       }, cancellation: _lifetime);
       _lifetime.throwIfCancelled();

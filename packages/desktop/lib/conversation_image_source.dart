@@ -4,7 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
-import 'package:protocol/protocol.dart' show CancellationToken, CancellableIsolate, maxClientFrameBytes;
+import 'package:protocol/protocol.dart' show CancellationToken, computeCancellable, maxClientFrameBytes;
+import 'browser_files.dart';
 
 /// Workers own image I/O and decoding of embedded data. Flutter owns the
 /// resulting codec and shares its image cache across thumbnails and previews.
@@ -33,7 +34,8 @@ class ConversationImageSource extends ImageProvider<ConversationImageSource> {
 }
 
 Future<ui.Codec> _loadImage(String source, ImageDecoderCallback decode, CancellationToken cancellation) async {
-  final bytes = await CancellableIsolate.run(() => _readImage(source), cancellation);
+  final bytes = kIsWeb ? await readBrowserImage(source, cancellation)
+    : await computeCancellable(() => _readImage(source), cancellation);
   cancellation.throwIfCancelled();
   return decode(await ui.ImmutableBuffer.fromUint8List(bytes));
 }

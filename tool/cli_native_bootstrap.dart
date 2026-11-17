@@ -102,7 +102,7 @@ Future<bool> _install(Directory root, Directory directory, String id, List<Embed
 /// The release main runs this before touching any native package. Warm launches
 /// read only a small marker and file metadata before loading the cached libraries.
 /// No subprocess, network request, SDK, or runtime compiler is involved.
-Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) async {
+Future<String> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) async {
   if (!Platform.isMacOS && !Platform.isLinux) throw UnsupportedError('Embedded native assets require macOS or Linux');
   final started = Stopwatch()..start();
   final home = Platform.environment['HOME'];
@@ -116,6 +116,7 @@ Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) 
   final installed = _ready(directory, id, assets) ? false : await _install(root, directory, id, assets);
   final contracts = Platform.isLinux ? linuxNativeContracts : cliNativeContracts;
   for (final asset in assets) {
+    if (asset.name == 'cloudflared') continue;
     // Linux assets bind through the process symbol table. Make only these
     // verified libraries global before the first @Native lookup in any isolate.
     final flags = Platform.isLinux ? 0x2 | 0x100 : 0x2 | 0x4;
@@ -136,4 +137,5 @@ Future<void> bootstrapNativeAssets(String id, List<EmbeddedNativeAsset> assets) 
   if (Platform.environment['HAPPEN_BOOTSTRAP_REPORT'] == '1') {
     stderr.writeln(jsonEncode({'installed': installed, 'bootstrap_microseconds': started.elapsedMicroseconds, 'native_id': id}));
   }
+  return directory.path;
 }

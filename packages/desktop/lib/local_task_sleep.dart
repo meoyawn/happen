@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 /// One desktop-owned assertion for local tasks and saved MCP event watches.
 class LocalTaskSleepInhibitor {

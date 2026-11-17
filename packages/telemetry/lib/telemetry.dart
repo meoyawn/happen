@@ -1,7 +1,7 @@
 export 'src/tracing.dart';
 export 'src/export.dart';
-export 'src/trace_store.dart';
-export 'src/sqlite.dart';
+export 'src/trace_store.dart' if (dart.library.js_interop) 'src/trace_store_web.dart';
+export 'src/sqlite.dart' if (dart.library.js_interop) 'src/no_sqlite.dart';
 
 /// Fixed-name counters and bounded histograms.
 class Telemetry {

@@ -11,6 +11,7 @@ dependencies:
   ffi: ^2.1.4
   flutter_pty2: ^3.0.0
   path: ^1.9.1
+  sqlite3: ^3.8.0
   yaml: ^3.1.4
   protocol: any
   openai: any

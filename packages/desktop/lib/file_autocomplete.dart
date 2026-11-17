@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 import 'package:re_editor/re_editor.dart' show CodeEditorTapRegion;
 
 import 'composer_text_controller.dart';
@@ -56,6 +56,8 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
   DesktopTask? get _target => widget.target ?? widget.session?.task;
   final _link = LayerLink();
   final _overlay = OverlayPortalController();
+  final _anchor = GlobalKey();
+  double get _rowHeight => MediaQuery.sizeOf(context).width < 768 ? 52 : 28;
   final _scroll = ScrollController();
   final _historyQuery = TextEditingController();
   final _historyFocus = FocusNode();
@@ -579,7 +581,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
     if (count == 0) return;
     setState(() => _selected = (_selected + offset) % count);
     if (_scroll.hasClients) {
-      final top = _selected * 28.0;
+      final top = _selected * _rowHeight;
       final bottom = top + 28;
       if (top < _scroll.offset) { _scroll.jumpTo(top); }
       else if (bottom > _scroll.offset + _scroll.position.viewportDimension) {
@@ -689,31 +691,37 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
       child: LayoutBuilder(
         builder: (context, constraints) => OverlayPortal(
           controller: _overlay,
-          overlayChildBuilder: (context) => visible ? Positioned(
-            width: constraints.maxWidth - 26,
+          overlayChildBuilder: (context) {
+            if (!visible) return const SizedBox.shrink();
+            final box = _anchor.currentContext?.findRenderObject() as RenderBox?;
+            final top = box?.hasSize == true ? box!.localToGlobal(Offset.zero).dy : 0.0;
+            final space = (top - MediaQuery.paddingOf(context).top - 8).clamp(0.0, 320.0);
+            return Positioned(
+            width: (constraints.maxWidth - 26).clamp(0.0, double.infinity),
             child: CompositedTransformFollower(
               link: _link,
               targetAnchor: Alignment.topLeft,
               followerAnchor: Alignment.bottomLeft,
               offset: const Offset(13, -4),
               showWhenUnlinked: false,
-              child: CodeEditorTapRegion(child: TextFieldTapRegion(child: _menu(context))),
+              child: CodeEditorTapRegion(child: TextFieldTapRegion(child: _menu(context, space))),
             ),
-          ) : const SizedBox.shrink(),
-          child: CompositedTransformTarget(link: _link,
+          );
+          },
+          child: CompositedTransformTarget(key: _anchor, link: _link,
             child: ComposerAutocompleteScope(visible: visible, owner: this, child: widget.child)),
         ),
       ),
     );
   }
 
-  Widget _menu(BuildContext context) {
+  Widget _menu(BuildContext context, double maxHeight) {
+    final compact = MediaQuery.sizeOf(context).width < 768;
     final count = _choiceCount;
     final query = _command?.text.substring(1) ?? _mention?.query ?? '';
     final commands = _suggestions;
     final contexts = _contextOptions;
     final history = _historyOpen ? _historyItems : const <String>[];
-    final maxHeight = (MediaQuery.sizeOf(context).height * .5).clamp(100.0, 320.0);
     return Material(
       color: Colors.white,
       elevation: 8, shadowColor: const Color(0x24000000),
@@ -734,6 +742,9 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
             const Spacer(),
             if (_loading || _skillsLoading) const SizedBox.square(dimension: 10,
               child: CircularProgressIndicator(strokeWidth: 1.2, color: desktopTertiary)),
+            if (compact) IconButton(tooltip: 'Close file suggestions', onPressed: dismiss,
+              constraints: const BoxConstraints.tightFor(width: 36, height: 36), padding: EdgeInsets.zero,
+              icon: const Icon(Icons.close, size: 18)),
           ])),
           if (_historyOpen) Padding(padding: const EdgeInsets.symmetric(horizontal: 6),
             child: CallbackShortcuts(bindings: {
@@ -742,14 +753,14 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
               const SingleActivator(LogicalKeyboardKey.enter): () => completeSelection(),
               const SingleActivator(LogicalKeyboardKey.escape): () { dismiss(); widget.focusNode.requestFocus(); },
             }, child: TextField(controller: _historyQuery, focusNode: _historyFocus,
-              style: const TextStyle(fontSize: 13),
+              style: TextStyle(fontSize: compact ? 16 : 13),
               decoration: const InputDecoration(isDense: true, hintText: 'Search prompts…',
                 border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 8)),
               onChanged: (_) { setState(() => _selected = 0); if (_scroll.hasClients) _scroll.jumpTo(0); },
             ))),
-          if (count > 0) Flexible(child: SizedBox(height: count * 28.0,
+          if (count > 0) Flexible(child: SizedBox(height: count * _rowHeight,
             child: Scrollbar(controller: _scroll, child: ListView.builder(controller: _scroll,
-              padding: const EdgeInsets.symmetric(horizontal: 6), itemExtent: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 6), itemExtent: _rowHeight,
               itemCount: count, itemBuilder: (context, index) {
                 final commandCount = !_historyOpen && _command != null ? commands.length : 0;
                 final pathCount = !_historyOpen && _command == null ? _paths.length : 0;
@@ -784,13 +795,20 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
                             command.name.startsWith('/mcp') ? Icons.extension_outlined : Icons.terminal_rounded,
                             size: 16, color: desktopTertiary),
                           const SizedBox(width: 8),
-                          Flexible(child: Text.rich(_matched(name, query), maxLines: 1, overflow: TextOverflow.ellipsis,
+                          if (compact) Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text.rich(_matched(name, query), maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 14, color: desktopForeground)),
+                              if (detail.isNotEmpty) Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11, color: desktopTertiary)),
+                            ]))
+                          else Flexible(child: Text.rich(_matched(name, query), maxLines: 1, overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontSize: 13, height: 20 / 13, color: desktopForeground))),
-                          if (detail.isNotEmpty) ...[
+                          if (!compact && detail.isNotEmpty) ...[
                             const SizedBox(width: 8),
                             Expanded(child: Text(detail, maxLines: 1, overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontSize: 12, color: desktopTertiary))),
-                          ] else const Spacer(),
+                          ] else if (!compact) const Spacer(),
                           if (scope != null) Padding(padding: const EdgeInsets.only(left: 8),
                             child: Text(scope, style: const TextStyle(fontSize: 10, color: desktopTertiary))),
                         ]),
@@ -808,7 +826,7 @@ class ComposerAutocompleteState extends State<ComposerAutocomplete> {
             if (_mention != null && !_skillsOnly) unawaited(_lookup(_mention!));
             unawaited(_lookupSkills(_command?.text.substring(1) ?? _mention!.query));
           }, child: const Text('Retry search')),
-          Padding(padding: const EdgeInsets.fromLTRB(12, 6, 12, 8), child: Row(children: [
+          if (!compact) Padding(padding: const EdgeInsets.fromLTRB(12, 6, 12, 8), child: Row(children: [
             Text(_truncated || _skillsTruncated ? 'Type to narrow results' : '↑↓ Navigate',
               style: const TextStyle(fontSize: 10, color: desktopTertiary)),
             const Spacer(),

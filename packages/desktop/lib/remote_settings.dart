@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:protocol/protocol.dart';
 
 import 'appearance.dart';
 import 'desktop_menu.dart';
 import 'machines.dart';
 import 'machine_icons.dart';
+import 'tunnel_sign_in.dart';
 
 Future<void> showRemoteEditor(BuildContext context, MachinesController machines, {RemoteMachine? remote}) =>
   showDialog<void>(context: context, builder: (_) => _RemoteEditor(machines: machines, remote: remote));
@@ -95,17 +97,19 @@ class _RemoteSettingsState extends State<RemoteSettings> {
   Widget build(BuildContext context) => ListenableBuilder(listenable: widget.machines, builder: (context, _) {
     final machines = widget.machines;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Row(children: [
-        const Expanded(child: Text('Threads from all environments appear in one sidebar.',
-          style: TextStyle(fontSize: 13, color: desktopSecondary))),
-        const SizedBox(width: 16),
-        FilledButton.icon(onPressed: machines.saving ? null : () => unawaited(_edit()),
-          icon: const Icon(Icons.add, size: 16), label: const Text('Add environment')),
-      ]),
+      LayoutBuilder(builder: (context, bounds) {
+        const description = Text('Threads from all environments appear in one sidebar.',
+          style: TextStyle(fontSize: 13, color: desktopSecondary));
+        final add = FilledButton.icon(onPressed: machines.saving ? null : () => unawaited(_edit()),
+          icon: const Icon(Icons.add, size: 16), label: const Text('Add environment'));
+        return bounds.maxWidth < 500 ? Column(crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [description, const SizedBox(height: 12), Align(alignment: Alignment.centerRight, child: add)])
+          : Row(children: [const Expanded(child: description), const SizedBox(width: 16), add]);
+      }),
       const SizedBox(height: 20),
       DecoratedBox(decoration: BoxDecoration(border: Border.all(color: desktopBorder), borderRadius: BorderRadius.circular(10)),
         child: Column(children: [
-          _environmentRow(alias: null, name: 'local', transport: 'This computer',
+          _environmentRow(alias: null, name: machines.local.machineName, transport: kIsWeb ? 'HTTPS ${machines.local.machineName}' : 'This computer',
             status: machines.local.connected ? 'Connected' : 'Offline', connected: machines.local.connected),
           for (final remote in machines.hosts) ...[
             const Divider(height: 1),
@@ -116,7 +120,7 @@ class _RemoteSettingsState extends State<RemoteSettings> {
                 MachineConnecting(previous: null) || null => 'Connecting', _ => 'Reconnecting',
               };
               return _environmentRow(alias: remote.alias, name: remote.name, remote: remote,
-                transport: 'SSH ${remote.user == null ? '' : '${remote.user}@'}${remote.host}${remote.port == null ? '' : ':${remote.port}'}',
+                transport: kIsWeb ? remote.host : 'SSH ${remote.user == null ? '' : '${remote.user}@'}${remote.host}${remote.port == null ? '' : ':${remote.port}'}',
                 status: status, connected: connected, error: state is MachineFailed ? '${state.error}' : null);
             }),
           ],
@@ -144,13 +148,14 @@ class _RemoteEditorState extends State<_RemoteEditor> {
   late final _port = TextEditingController(text: widget.remote?.port?.toString() ?? '');
   late final _identity = TextEditingController(text: widget.remote?.identityFile ?? '');
   late final _projects = TextEditingController(text: widget.remote?.projects.join('\n') ?? '');
+  final _ownerKey = TextEditingController();
   bool _saving = false;
   String? _error;
 
   @override
   void dispose() {
     _lifetime.cancel();
-    for (final controller in [_name, _host, _user, _port, _identity, _projects]) { controller.dispose(); }
+    for (final controller in [_name, _host, _user, _port, _identity, _projects, _ownerKey]) { controller.dispose(); }
     super.dispose();
   }
 
@@ -158,6 +163,12 @@ class _RemoteEditorState extends State<_RemoteEditor> {
     if (_saving) return;
     setState(() { _saving = true; _error = null; });
     try {
+      if (kIsWeb) {
+        final uri = Uri.tryParse(_host.text.trim());
+        if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) throw const FormatException('Enter an HTTPS tunnel URL');
+        await signInTunnel(uri.toString(), _ownerKey.text, _lifetime);
+        _ownerKey.clear();
+      }
       final port = _port.text.trim().isEmpty ? null : int.tryParse(_port.text.trim());
       if (_port.text.trim().isNotEmpty && port == null) throw const FormatException('Enter a valid SSH port');
       await widget.machines.saveRemote(_alias, {
@@ -172,22 +183,29 @@ class _RemoteEditorState extends State<_RemoteEditor> {
 
   Widget _field(String label, TextEditingController controller, {String? hint, int lines = 1}) => Padding(
     padding: const EdgeInsets.only(bottom: 14), child: TextField(controller: controller,
-      enabled: !_saving, maxLines: lines, style: const TextStyle(fontSize: 13),
+      enabled: !_saving, maxLines: lines, style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13),
       decoration: InputDecoration(labelText: label, hintText: hint, border: const OutlineInputBorder(),
         isDense: true)));
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.remote == null ? 'Add SSH environment' : 'Edit SSH environment'),
+    insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+    title: Text(widget.remote == null ? kIsWeb ? 'Add tunnel environment' : 'Add SSH environment' : 'Edit environment'),
     content: SizedBox(width: 480, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _field('Name', _name, hint: 'Development server'),
-        _field('Hostname or SSH alias', _host, hint: 'dev.example.com'),
+        _field(kIsWeb ? 'Cloudflare tunnel URL' : 'Hostname or SSH alias', _host, hint: kIsWeb ? 'https://server.example.com' : 'dev.example.com'),
+        if (kIsWeb) Padding(padding: const EdgeInsets.only(bottom: 14), child: TextField(
+          controller: _ownerKey, obscureText: true, enabled: !_saving,
+          style: const TextStyle(fontSize: 16),
+          decoration: const InputDecoration(labelText: 'Owner key', border: OutlineInputBorder(), isDense: true))),
+        if (!kIsWeb) ...[
         Row(children: [Expanded(child: _field('User (optional)', _user)), const SizedBox(width: 12),
           SizedBox(width: 110, child: _field('Port (optional)', _port, hint: '22'))]),
         _field('SSH key path (optional)', _identity, hint: '~/.ssh/id_ed25519'),
         const Text('Leave user, port and key blank to inherit your SSH configuration and agent.',
           style: TextStyle(fontSize: 12, height: 1.5, color: desktopSecondary)),
+        ],
         const SizedBox(height: 18),
         _field('Workspace directories (optional, one per line)', _projects, hint: '/home/dev/workspace', lines: 3),
         if (_error != null) SelectableText(_error!, style: const TextStyle(fontSize: 12, color: desktopError)),

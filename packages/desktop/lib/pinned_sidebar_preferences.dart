@@ -1,3 +1,4 @@
+import 'database.dart';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -68,7 +69,7 @@ class PinnedSidebarController extends ChangeNotifier {
     ready = _operation = _restore();
   }
 
-  final IsolateOwner database;
+  final DesktopDatabase database;
   final _lifetime = CancellationToken();
   late final Future<void> ready;
   Future<void>? _operation, _closing;
@@ -84,7 +85,7 @@ class PinnedSidebarController extends ChangeNotifier {
 
   Future<void> _restore() async {
     try {
-      final saved = jsonObject(await callIsolate(database.port, 'load', {}, cancellation: _lifetime));
+      final saved = jsonObject(await desktopDatabaseRequest(database, 'load', {}, cancellation: _lifetime));
       _lifetime.throwIfCancelled();
       _set(PinnedSidebarReady(_decode(saved['settings']?['sidebar_pinned_view'])));
     } on CancelledException {
@@ -116,7 +117,7 @@ class PinnedSidebarController extends ChangeNotifier {
     final previous = value;
     _set(PinnedSidebarSaving(previous, next));
     try {
-      await callIsolate(database.port, 'settings.set', {
+      await desktopDatabaseRequest(database, 'settings.set', {
         'key': 'sidebar_pinned_view',
         'value': jsonEncode({'layout': next.layout.name, 'collapsedProjects': next.collapsedProjects.toList()}),
       }, cancellation: _lifetime);

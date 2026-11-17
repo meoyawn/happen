@@ -67,6 +67,18 @@ Future<void> _stop(String directory, Json? record, CancellationToken cancellatio
   throw StateError('Daemon did not stop within 30 seconds; deployment has not started another daemon');
 }
 
+Future<void> _devService(String action, CancellationToken cancellation) async {
+  final child = await Process.start('systemctl', ['--user', action, 'happen-server-dev.service']);
+  final hook = CancellationHook(cancellation, () => child.kill());
+  final output = child.stdout.drain<void>(), errors = child.stderr.transform(utf8.decoder).join();
+  try {
+    final code = await child.exitCode.asCancellable(cancellation);
+    await output;
+    final message = await errors;
+    if (code != 0) throw StateError('Development daemon $action failed: $message');
+  } finally { hook.dispose(); child.kill(); }
+}
+
 Future<Json> daemonCommand(String action, String directory, {
   String? configPath, required CancellationToken cancellation,
 }) async {
@@ -86,11 +98,14 @@ Future<Json> daemonCommand(String action, String directory, {
       on FileSystemException { await cancellableDelay(const Duration(milliseconds: 100), cancellation); }
     }
     var record = await _running(directory);
+    final runtime = File('$directory/runtime.json');
+    final dev = await runtime.exists() && jsonObject(jsonDecode(await runtime.readAsString()))['mode'] == 'dev';
     if (action == 'status') {
       return {'backend': 'pid', 'status': record == null ? 'stopped'
         : await _ready(socket, cancellation) ? 'running' : 'unhealthy', ...?record};
     }
     if (action == 'stop' || action == 'restart') {
+      if (dev) await _devService('stop', cancellation);
       await _stop(directory, record, cancellation);
       record = null;
       if (action == 'stop') return {'backend': 'pid', 'status': 'stopped'};
@@ -99,8 +114,18 @@ Future<Json> daemonCommand(String action, String directory, {
       if (!await _ready(socket, cancellation)) throw StateError('Daemon exists but is not ready; use daemon restart');
       return {'backend': 'pid', 'status': 'alreadyRunning', ...record};
     }
-    // Only remove a stale socket after proving the recorded owner is gone.
-    if (await FileSystemEntity.type(socket, followLinks: false) != FileSystemEntityType.notFound) await File(socket).delete();
+    if (dev) {
+      await _devService('start', cancellation);
+      for (var attempt = 0; attempt < 300; attempt++) {
+        cancellation.throwIfCancelled();
+        record = await _running(directory);
+        if (record != null && await _ready(socket, cancellation)) {
+          return {'backend': 'pid', 'status': 'started', 'runtime': 'dev', ...record};
+        }
+        await cancellableDelay(const Duration(milliseconds: 100), cancellation);
+      }
+      throw StateError('Development daemon did not become ready; see journalctl --user -u happen-server-dev');
+    }
     final executable = Platform.resolvedExecutable;
     final command = [executable,
       if (executable.split('/').last == 'dart') Platform.script.toFilePath(),
@@ -137,8 +162,13 @@ Future<void> serveDaemon(String directory, {String? configPath, required Cancell
   await serving.lock(FileLock.exclusive);
   AgentServer? server;
   try {
+    final active = await _running(directory);
+    if (active != null && active['pid'] != pid) throw StateError('Another Happen daemon still owns this data directory');
+    final socket = '$directory/server.sock';
+    if (await FileSystemEntity.type(socket, followLinks: false) != FileSystemEntityType.notFound) await File(socket).delete();
     server = await AgentServer.start(directory: directory, socketPath: '$directory/server.sock', configPath: configPath);
     final record = {'pid': pid, 'identity': identity, 'socketPath': '$directory/server.sock',
+      'runtime': const bool.fromEnvironment('dart.vm.product') ? 'release' : 'dev',
       'version': '0.1.0', 'executable': Platform.resolvedExecutable, 'cwd': Platform.environment['HOME'] ?? '/',
       'startedAt': DateTime.now().toUtc().toIso8601String()};
     final pending = File('${recordFile.path}.pending');

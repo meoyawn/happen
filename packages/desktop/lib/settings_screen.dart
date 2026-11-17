@@ -98,7 +98,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
       if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.escape) return KeyEventResult.ignored;
       unawaited(Navigator.maybePop(context));
       return KeyEventResult.handled;
-    }, child: Scaffold(backgroundColor: desktopSidebar, body: Column(children: [
+    }, child: Scaffold(backgroundColor: desktopSidebar, body: SafeArea(child: Column(children: [
       DesktopWindowDragRegion(child: SizedBox(height: widget.windowControls ? 40 : 8, width: double.infinity)),
       Expanded(child: Container(
         margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
@@ -206,7 +206,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
             ]));
         })),
       )),
-    ])));
+    ]))));
   }
 
   Widget _preferences() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -274,6 +274,7 @@ class _DesktopSettingsScreenState extends State<DesktopSettingsScreen> {
           suffixIcon: query.isEmpty ? null : IconButton(tooltip: 'Clear search',
             onPressed: () { _projectSearch.clear(); setState(() => _projectQuery = ''); },
             icon: const Icon(Icons.close, size: 14))),
+          style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13),
           controller: _projectSearch, onChanged: (value) => setState(() => _projectQuery = value)),
         const SizedBox(height: 16),
       ],
@@ -510,7 +511,7 @@ class _ProjectSettingsState extends State<_ProjectSettings> {
     _projectSettingsSection('Project', [
       _settingsRow('Name', 'The name shown for this project in Happen.',
         SizedBox(width: 244, child: TextField(controller: _name, focusNode: _nameFocus,
-          style: const TextStyle(fontSize: 13, color: desktopForeground),
+          style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 768 ? 16 : 13, color: desktopForeground),
           decoration: _settingsInput(widget.project.folderName).copyWith(labelText: 'Project name', floatingLabelBehavior: FloatingLabelBehavior.never),
           onSubmitted: (_) => _saveName(), onTapOutside: (_) => _nameFocus.unfocus()))),
       if (widget.session.projectIconSource(widget.project) != null) _settingsRow('Project icon', switch (widget.project.iconState) {

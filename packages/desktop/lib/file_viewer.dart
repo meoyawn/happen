@@ -4,11 +4,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as p;
 import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 
 import 'appearance.dart';
 import 'browser.dart';
@@ -39,7 +40,7 @@ Future<_FilePreview> _readFilePreview(AgentClient client, String path, Cancellat
     return (kind: 'pdf', text: null, bytes: null, size: null, truncated: false);
   }
   final result = await client.fileSystemRequest('fs/readFile', path, cancellation: cancellation);
-  return CancellableIsolate.run(() {
+  return computeCancellable(() {
     final bytes = base64Decode(result['dataBase64'] as String);
     if (media != null) return (kind: media, text: null, bytes: bytes, size: bytes.length, truncated: false);
     final kind = {'html', 'htm', 'xhtml'}.contains(extension) ? 'html' : 'text';
@@ -274,7 +275,7 @@ class _FileViewerState extends State<FileViewer> {
     }
     if (_isMarkdown(widget.path) && !_source && !preview.truncated) {
       return SingleChildScrollView(padding: const EdgeInsets.all(24),
-        child: ConversationMarkdown(text: preview.text!, directory: File(widget.path).parent.path));
+        child: ConversationMarkdown(text: preview.text!, directory: kIsWeb ? p.posix.dirname(widget.path) : File(widget.path).parent.path));
     }
     return RepaintBoundary(child: CodeEditor(key: const ValueKey('file-source'), controller: _code, scrollController: _scroll,
       readOnly: true, showCursorWhenReadOnly: false, autofocus: false, wordWrap: _wrap,

@@ -1,3 +1,4 @@
+import 'database.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -8,12 +9,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:protocol/protocol.dart';
-import 'package:server/server.dart';
+import 'connection.dart';
 import 'package:telemetry/telemetry.dart';
 
 import 'dictation.dart';
 import 'response_annotation.dart';
 import 'composer_attachments.dart';
+import 'browser_files.dart';
 import 'composer_text_controller.dart';
 import 'appearance_preferences.dart';
 import 'shortcut_preferences.dart';
@@ -69,7 +71,7 @@ class Project {
   }
   final List<DesktopTask> tasks;
   bool available = true, removing = false;
-  String get folderName => path.split(Platform.pathSeparator).where((part) => part.isNotEmpty).lastOrNull ?? path;
+  String get folderName => path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).lastOrNull ?? path;
   String get name => displayName ?? folderName;
 }
 
@@ -201,13 +203,13 @@ class SessionDraft {
   DesktopTask? submission;
 }
 
-String machineLabel(DesktopSession session) => session.machineAlias == null ? 'local' : session.machineName;
+String machineLabel(DesktopSession session) => session.machineAlias == null && session.client.sharedFilesystem ? 'local' : session.machineName;
 
 /// UI state only. Task execution and durable history stay behind the WebSocket.
 class DesktopSession extends ChangeNotifier {
   DesktopSession(this.client, this.database, {String? attachmentDirectory,
     this.sidebarOwner, this.machineAlias, this.machineName = 'local', bool initiallyConnected = true})
-    : attachmentDirectory = attachmentDirectory ?? '${Directory.systemTemp.path}/happen-attachments-${newId()}' {
+    : attachmentDirectory = attachmentDirectory ?? (kIsWeb ? 'browser-attachments' : '${Directory.systemTemp.path}/happen-attachments-${newId()}') {
     connected = initiallyConnected;
     _events = client.events.stream.listen(
       _onEvent,
@@ -221,9 +223,9 @@ class DesktopSession extends ChangeNotifier {
   }
 
   final AgentClient client;
-  final IsolateOwner database;
+  final DesktopDatabase database;
   Future<Object?> _databaseCall(String method, Json params, {CancellationToken? cancellation}) =>
-    callIsolate(database.port, method, {...params, 'machine': machineAlias ?? ''},
+    desktopDatabaseRequest(database, method, {...params, 'machine': machineAlias ?? ''},
       cancellation: cancellation ?? _lifetime);
   final DesktopSession? sidebarOwner;
   final String? machineAlias;
@@ -345,7 +347,7 @@ class DesktopSession extends ChangeNotifier {
   final String attachmentDirectory;
   TraceStore? _traceStore;
   Future<TraceStore> get tracing async =>
-    _traceStore ??= await client.startTracing(File(attachmentDirectory).parent.path);
+    _traceStore ??= await client.startTracing(kIsWeb ? 'browser-traces' : File(attachmentDirectory).parent.path);
   Future<void> _restoreTracing(DesktopTask target, bool enabled) async {
     target.tracing = enabled;
     if (!enabled) return;
@@ -501,7 +503,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> refreshSessions({Project? owner, CancellationToken? cancellation}) async {
     if (!connected) return;
     final operation = (cancellation?.merge(_lifetime) ?? _lifetime).merge(_recovery ?? _lifetime);
-    String key(String path) => Directory(path).absolute.uri.normalizePath().toString();
+    String key(String path) => kIsWeb ? Uri.file(path, windows: false).normalizePath().toString() : Directory(path).absolute.uri.normalizePath().toString();
     final owners = {for (final project in owner == null ? projects : [owner]) key(project.path): project};
     final existing = {for (final project in owner == null ? projects : [owner])
       for (final target in project.tasks) target.id: (project, target)};
@@ -1496,10 +1498,10 @@ class DesktopSession extends ChangeNotifier {
       final created = jsonObject(await client.request('thread/start', {
         for (final entry in params.entries) if (!{'prompt', 'message_id', 'attachments'}.contains(entry.key)) entry.key: entry.value,
         'historyMode': 'paginated',
-        if (defaultTargetPlatform == TargetPlatform.macOS) 'dynamicTools': desktopBrowserTools,
+        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) 'dynamicTools': desktopBrowserTools,
       }).asCancellable(_lifetime));
       final id = created['thread']['id'] as String;
-      if (defaultTargetPlatform == TargetPlatform.macOS) {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
         _browserRegistrations[id] = Future<void>.value();
         _browserToolThreads.add(id);
       }
@@ -2011,7 +2013,7 @@ class DesktopSession extends ChangeNotifier {
       target.turns[id] = {...turn, ...?target.turns[id]};
     }
     final turns = target.turns.entries.toList()..sort((a, b) =>
-      (a.value['order'] as int? ?? 9223372036854775807).compareTo(b.value['order'] as int? ?? 9223372036854775807));
+      (a.value['order'] as int? ?? 9007199254740991).compareTo(b.value['order'] as int? ?? 9007199254740991));
     target.turns..clear()..addEntries(turns);
     for (final raw in (page['data'] as List).reversed) {
       final entry = jsonObject(raw), item = jsonObject(entry['item']), id = item['id'] as String;
@@ -2148,8 +2150,9 @@ class DesktopSession extends ChangeNotifier {
         final remoteImages = <Json>[];
         if (images.isNotEmpty && !client.sharedFilesystem) {
           progress('Preparing images…');
-          remoteImages.addAll(await prepareRemoteImages(images.map((image) => image.toJson()).toList(),
-            cancellation: cancellation.merge(_lifetime)));
+          remoteImages.addAll(kIsWeb
+            ? await prepareBrowserImages(images.map((image) => image.toJson()).toList(), cancellation: cancellation.merge(_lifetime))
+            : await prepareRemoteImages(images.map((image) => image.toJson()).toList(), cancellation: cancellation.merge(_lifetime)));
           progress(null);
         }
         var imageIndex = 0;
@@ -2159,7 +2162,7 @@ class DesktopSession extends ChangeNotifier {
           if (!client.sharedFilesystem && attachment.image) {
             input.add(remoteImages[imageIndex++]);
           } else if (!client.sharedFilesystem) {
-            if (await FileSystemEntity.isDirectory(attachment.path)) {
+            if (!kIsWeb && await FileSystemEntity.isDirectory(attachment.path)) {
               throw StateError('Folders must be on the server; upload individual files instead');
             }
             progress('Uploading ${attachment.name}…');
@@ -2525,10 +2528,10 @@ class DesktopSession extends ChangeNotifier {
     });
   }
 
-  void attachExportToNewSession(File file, {Project? owner, String? ownedDirectory}) {
+  void attachExportToNewSession(String path, String name, {Project? owner, String? ownedDirectory}) {
     newSession(owner);
-    attachmentDrafts[currentDraft.id] = [ComposerAttachment(name: file.uri.pathSegments.last,
-      path: file.path, image: false, ownedDirectory: ownedDirectory)];
+    attachmentDrafts[currentDraft.id] = [ComposerAttachment(name: name,
+      path: path, image: false, ownedDirectory: ownedDirectory)];
     saveDrafts();
     notifyListeners();
   }

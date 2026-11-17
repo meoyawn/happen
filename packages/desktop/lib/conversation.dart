@@ -684,7 +684,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     }
     return LayoutBuilder(builder: (context, constraints) {
         final sidePadding = constraints.maxWidth > desktopConversationWidth + 40
-          ? (constraints.maxWidth - desktopConversationWidth) / 2 : 20.0;
+          ? (constraints.maxWidth - desktopConversationWidth) / 2 : constraints.maxWidth < 600 ? 12.0 : 20.0;
         return NotificationListener<ScrollMetricsNotification>(
             onNotification: (notification) {
               if (notification.depth == 0) {
@@ -970,7 +970,7 @@ class _Timestamp extends StatelessWidget {
 }
 
 String _duration(DateTime start, DateTime end) {
-  final seconds = end.difference(start).inSeconds.clamp(0, 1 << 32);
+  final seconds = end.difference(start).inSeconds.clamp(0, 0x100000000);
   return _durationSeconds(seconds);
 }
 
