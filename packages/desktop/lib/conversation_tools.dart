@@ -1,82 +1,85 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 import 'appearance.dart';
-import 'code_highlight.dart';
 import 'conversation_activity.dart';
-import 'conversation_changes.dart';
+import 'conversation_activity_icon.dart';
+import 'conversation_command.dart';
 import 'conversation_data.dart';
-import 'conversation_markdown.dart' show ConversationCopyButton, ConversationImage, ConversationImageGroup;
+import 'conversation_markdown.dart' show ConversationImage, ConversationImageGroup;
 import 'conversation_images.dart';
+import 'diff_patch.dart';
+import 'file_reference.dart';
 import 'session.dart';
 
-Object? _decode(Object? value) {
-  if (value is! String || value.length > 65536) return value;
-  try { return jsonDecode(value); } on FormatException { return value; }
+const _browserActions = {
+  'browser_list_tabs': ('Listing Browser tabs', 'Listed Browser tabs'),
+  'browser_open_tab': ('Opening a Browser tab', 'Opened a Browser tab'),
+  'browser_close_tab': ('Closing a Browser tab', 'Closed a Browser tab'),
+  'browser_navigate': ('Navigating in Browser', 'Navigated in Browser'),
+  'browser_history': ('Changing Browser history', 'Changed Browser history'),
+  'browser_evaluate': ('Evaluating Browser script', 'Evaluated Browser script'),
+  'browser_dom': ('Inspecting the Browser page', 'Inspected the Browser page'),
+  'browser_action': ('Interacting with the Browser page', 'Interacted with the Browser page'),
+  'browser_wait_for': ('Waiting for the Browser page', 'Waited for the Browser page'),
+  'browser_screenshot': ('Capturing the Browser page', 'Captured the Browser page'),
+  'browser_network_requests': ('Listing Browser requests', 'Listed Browser requests'),
+  'browser_network_request': ('Reading a Browser request', 'Read a Browser request'),
+  'browser_events': ('Reading Browser events', 'Read Browser events'),
+  'browser_visibility': ('Checking Browser visibility', 'Checked Browser visibility'),
+};
+
+const _desktopBrowserActions = {
+  'browser_tabs': 'browser_list_tabs',
+  'browser_open': 'browser_open_tab',
+  'browser_close': 'browser_close_tab',
+  'browser_snapshot': 'browser_dom',
+  'browser_click': 'browser_action',
+  'browser_fill': 'browser_action',
+};
+
+(String, String)? _browserAction(ToolActivity tool) {
+  final source = tool.item['server'] ?? tool.item['namespace'];
+  final name = tool.item['tool'];
+  if (name is String && name.startsWith('client__')) {
+    final action = name.substring('client__'.length);
+    if (action == 'browser_dev_servers') return ('Listing Browser servers', 'Listed Browser servers');
+    return _browserActions[_desktopBrowserActions[action] ?? action];
+  }
+  if (source == 'codex_app' || source == null && tool.item['type'] == 'dynamicToolCall') {
+    return _browserActions[name];
+  }
+  return null;
 }
 
-List<({String name, String path})> toolSkillReads(ToolActivity call) {
-  final input = _decode(call.rawInput);
-  if (input is! Map) return const [];
-  if (call.name.split('.').last == 'skill') {
-    final name = input['name'] ?? input['id'];
-    return name is String && name.isNotEmpty ? [(name: name, path: name)] : const [];
-  }
-  final paths = <String>{};
-  if ({'read', 'read_file'}.contains(call.name.split('.').last)) {
-    final path = input['path'] ?? input['filePath'] ?? input['file_path'];
-    if (path is String && path.endsWith('/SKILL.md')) paths.add(path);
-  }
-  final command = input['cmd'] ?? input['command'];
-  if (command is String) {
-    for (final match in RegExp(r'''(?:^|[;&|\n])\s*(?:cat|head|tail|sed)\s+([^;&|\n]+)''').allMatches(command)) {
-      for (final token in RegExp(r'''"([^"]*)"|'([^']*)'|([^\s"'<>]+)''').allMatches(match[1]!)) {
-        final path = token[1] ?? token[2] ?? token[3]!;
-        if (path.replaceAll(r'\', '/').endsWith('/SKILL.md')) paths.add(path);
-      }
-    }
-  }
-  return [for (final path in paths) (name: path.replaceAll(r'\', '/').split('/').reversed.skip(1).first, path: path)];
+final _whitespace = RegExp(r'\s+');
+final _pathSeparator = RegExp(r'[/\\]');
+String _labelText(Object? value) => value is String ? value.trim().replaceAll(_whitespace, ' ') : '';
+Map<Object?, Object?> _fields(Object? value) => value is Map ? value : const {};
+Iterable<Map<Object?, Object?>> _entries(Object? value) => value is List ? value.whereType<Map<Object?, Object?>>() : const [];
+
+String? _loadedSkill(ConversationCommandAction action) {
+  final path = action.path ?? action.name ?? '';
+  return action.type == 'read' && conversationPathName(path) == 'SKILL.md' ? path : null;
 }
 
-String toolKind(ToolActivity tool) {
-  final name = tool.name.split('.').last.split('__').last.toLowerCase();
-  if (_isCommand(tool)) {
-    final actions = _commandActions(tool);
-    if (actions.length == 1) {
-      final kind = actions.single['type'];
-      if (kind == 'read' || kind == 'listFiles') return 'read';
-      if (kind == 'search') return 'search';
-    }
-    return 'command';
-  }
-  if ({'read', 'read_file', 'read_text_file', 'list_directory'}.contains(name)) return 'read';
-  if ({'write', 'write_file', 'edit', 'edit_file', 'apply_patch'}.contains(name)) return 'edit';
-  if ({'wait', 'write_stdin', 'sleep'}.contains(name)) return 'wait';
-  if ({'question', 'request_user_input', 'request_user_input_async'}.contains(name)) return 'question';
-  if (name == 'skill') return 'skill';
-  if (name == 'view_image' || name == 'imagegen') return 'image';
-  if (tool.name.contains('chrome') || tool.name.contains('browser')) return 'browser';
-  if (name.contains('search') || name == 'find' || name == 'grep') return 'search';
-  return 'tool';
+bool isConversationQuestionTool(ToolActivity tool) =>
+  const {'question', 'request_user_input', 'request_user_input_async'}.contains(tool.name.split('.').last.split('__').last);
+
+bool _codeModeWrapper(ToolActivity tool) {
+  final item = tool.item;
+  return item['type'] == 'dynamicToolCall' &&
+    (item['namespace'] == null || item['namespace'] == 'functions') &&
+    const {'exec', 'wait', 'functions.exec', 'functions.wait'}.contains(tool.name);
 }
 
-bool _isCommand(ToolActivity tool) => {'exec', 'exec_command', 'shell', 'shell_command', 'bash', 'run_command'}
-  .contains(tool.name.split('.').last.split('__').last.toLowerCase());
-
-List<Map<Object?, Object?>> _commandActions(ToolActivity tool) {
-  final input = _decode(tool.rawInput);
-  final actions = input is Map ? input['commandActions'] : null;
-  return actions is List ? actions.whereType<Map<Object?, Object?>>().toList() : const [];
-}
-
-/// Code-mode envelopes retain their data; the transcript shows the operations
-/// they contain. Failed envelopes and image results remain inspectable.
+/// Code-mode envelopes carry the underlying steps. Keep errors and media
+/// available when an envelope itself is the source of the result.
 Iterable<ToolActivity> visibleConversationTools(Iterable<ToolActivity> tools) sync* {
   for (final tool in tools) {
-    final name = tool.name.split('.').last.split('__').last;
-    if ({'exec', 'wait'}.contains(name) && tool.status != 'failed' && tool.images.isEmpty) {
+    if (_codeModeWrapper(tool) && tool.status != 'failed' && tool.images.isEmpty) {
       yield* visibleConversationTools(tool.children);
     } else {
       yield tool;
@@ -84,138 +87,260 @@ Iterable<ToolActivity> visibleConversationTools(Iterable<ToolActivity> tools) sy
   }
 }
 
-String? toolCommand(ToolActivity tool) {
-  final input = _decode(tool.rawInput);
-  final command = input is Map ? input['cmd'] ?? input['command'] : _isCommand(tool) ? input : null;
-  return command is String ? command.trim() : null;
+bool isPersistentConversationTool(ToolActivity tool) {
+  final item = tool.item;
+  return item['approvalRequestId'] != null || item['requestId'] != null || item['requiresInput'] == true ||
+    _fields(item['appContext'])['resourceUri'] != null || item['mcpAppResourceUri'] != null ||
+    _fields(item['mcpAppUi'])['resourceUri'] != null ||
+    item['type'] == 'dynamicToolCall' && item['tool'] == 'finalize_environment' &&
+      (item['namespace'] == null || item['namespace'] == 'codex_app');
 }
 
-String? toolJavaScript(ToolActivity tool) {
-  if (tool.name.split('.').last.split('__').last != 'exec') return null;
-  final input = tool.rawInput;
-  if (input is String) return input;
-  if (input is Map) {
-    final source = input['code'] ?? input['script'] ?? input['source'];
-    if (source is String) return source;
+bool canGroupConversationTool(ToolActivity tool) =>
+  const {'commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'webSearch'}.contains(tool.item['type']) &&
+  !_codeModeWrapper(tool) && !isConversationQuestionTool(tool) && !isPersistentConversationTool(tool);
+
+(String, String)? _repeatableTool(ToolActivity tool) {
+  final item = tool.item;
+  if (item['type'] != 'mcpToolCall' || item['status'] != 'completed' || tool.status != 'done' ||
+      !canGroupConversationTool(tool) || item['appContext'] != null || item['mcpAppUi'] != null ||
+      item['automaticApprovalReviews'] is List && (item['automaticApprovalReviews'] as List).isNotEmpty) return null;
+  final server = item['server'], name = item['tool'], result = item['result'];
+  if (server is! String || name is! String || result is! Map || result['isError'] == true ||
+      const {'codex_app', 'computer-use', 'node_repl'}.contains(server)) return null;
+  final meta = result['_meta'];
+  return meta == null || meta is Map && meta.isEmpty ? (server, name) : null;
+}
+
+typedef _PatchStats = ({int added, int removed, int? line});
+typedef _ToolFile = ({String prefix, String name, String? path, _PatchStats? stats});
+
+class _ToolLabel {
+  const _ToolLabel(this.text, this.icon, {this.file});
+  final String text;
+  final ConversationActivityGlyph icon;
+  final _ToolFile? file;
+}
+
+double _toolFontSize(BuildContext context) {
+  final size = DefaultTextStyle.of(context).style.fontSize ?? 14;
+  return size > 12 ? size - 1 : size;
+}
+
+_ToolLabel _fileLabel(String prefix, String name, String? path, ConversationActivityGlyph icon, {_PatchStats? stats}) =>
+  _ToolLabel('$prefix $name', icon, file: (path: path, prefix: prefix, name: name, stats: stats));
+
+final _patchStatsCache = Expando<_PatchStats>();
+
+_PatchStats _patchStats(Map<Object?, Object?> change) =>
+  _patchStatsCache[change] ??= _readPatchStats(change);
+
+_PatchStats _readPatchStats(Map<Object?, Object?> change) {
+  const empty = (added: 0, removed: 0, line: null);
+  final diff = change['diff'];
+  if (diff is! String || diff.isEmpty) return empty;
+  final kind = _fields(change['kind'])['type'];
+  if (kind == 'add' || kind == 'delete') {
+    final count = '\n'.allMatches(diff).length + (diff.endsWith('\n') ? 0 : 1);
+    return kind == 'add' ? (added: count, removed: 0, line: 1) : (added: 0, removed: count, line: null);
   }
-  return null;
-}
-
-bool toolShowsFailure(ToolActivity tool) => tool.status == 'failed' &&
-  (!_isCommand(tool) || toolJavaScript(tool) != null);
-
-String? _commandPreview(ToolActivity tool) {
-  final actions = _commandActions(tool);
-  var source = actions.length == 1 && actions.single['command'] is String
-    ? actions.single['command'] as String : toolCommand(tool);
-  if (source == null || source.trim().isEmpty) return null;
-  source = source.trim();
-  // Native command history quotes argv, including the shell's entire script.
-  // Decode only that known wrapper; never interpret or rewrite shell syntax.
-  final wrapper = RegExp(r'^(?:\S*/)?(?:bash|zsh|sh|dash|ksh|fish)\s+(?:(?:--login|-l)\s+)?-[a-zA-Z]*c[a-zA-Z]*\s+(.+)$',
-    dotAll: true).firstMatch(source);
-  if (wrapper != null) {
-    final body = wrapper[1]!;
-    final quoted = RegExp(r"""^'((?:[^']|'"'"')*)'$""", dotAll: true).firstMatch(body);
-    if (quoted != null) source = quoted[1]!.replaceAll("'\"'\"'", "'");
-    else if (RegExp(r'^[a-zA-Z0-9_/@%+=:,.-]+$').hasMatch(body)) source = body;
-  }
-  final truncated = source.length > 512;
-  final preview = (truncated ? source.substring(0, 512) : source).replaceAll(RegExp(r'\s+'), ' ').trim();
-  return '$preview${truncated ? '…' : ''}';
-}
-
-String _relative(String path, String directory) => directory.isNotEmpty && path.startsWith('$directory/')
-  ? path.substring(directory.length + 1) : path;
-
-String toolLabel(ToolActivity tool, {String directory = '', bool active = false}) {
-  final input = _decode(tool.rawInput);
-  final name = tool.name.split('.').last.split('__').last;
-  final failed = toolShowsFailure(tool);
-  final kind = toolKind(tool);
-  if (_isCommand(tool)) {
-    if (toolJavaScript(tool) != null) return failed ? 'JavaScript failed' : active ? 'Running JavaScript' : 'Ran JavaScript';
-    final actions = _commandActions(tool);
-    if (actions.length == 1 && tool.status != 'interrupted') {
-      final action = actions.single;
-      final path = action['displayLabel'] ?? action['name'] ?? action['path'];
-      final target = path is String ? _relative(path, directory) : null;
-      if (action['type'] == 'read') return '${active ? 'Reading' : 'Read'} ${target ?? 'file'}';
-      if (action['type'] == 'listFiles') return '${active ? 'Listing' : 'Listed'} files${target == null ? '' : ' in $target'}';
-      if (action['type'] == 'search') {
-        final query = action['query'];
-        return '${active ? 'Searching' : 'Searched'}${query == null ? ' files' : ' for $query'}${target == null ? '' : ' in $target'}';
+  try {
+    var added = 0, removed = 0;
+    int? line;
+    for (final hunk in DiffPatch.parse(diff).hunks) {
+      for (final row in hunk.lines) {
+        if (row.kind == DiffLineKind.addition) { added++; line ??= row.newLine; }
+        if (row.kind == DiffLineKind.deletion) { removed++; line ??= hunk.newStart > 0 ? hunk.newStart : null; }
       }
     }
-    final verb = active ? 'Running' : tool.status == 'interrupted' ? 'Stopped' : 'Ran';
-    return '$verb ${_commandPreview(tool) ?? 'command'}';
+    return (added: added, removed: removed, line: line);
+  } on FormatException {
+    return empty;
   }
-  if (kind == 'read' || kind == 'edit') {
-    final path = input is Map ? input['path'] ?? input['filePath'] ?? input['file_path'] : null;
-    final changes = input is Map ? input['changes'] : null;
-    final changedPaths = changes is List ? changes.whereType<Map<Object?, Object?>>().map((change) => change['path']).whereType<String>().toList() : const <String>[];
-    final target = path is String ? _relative(path, directory) : changedPaths.length == 1
-      ? _relative(changedPaths.single, directory) : changedPaths.length > 1 ? '${changedPaths.length} files' : 'file';
-    return '${kind == 'read' ? active ? 'Reading' : 'Read' : active ? 'Editing' : 'Changed'} $target';
-  }
-  if (kind == 'wait') return active ? 'Waiting for ${name == 'sleep' ? 'timer' : 'command'}' : 'Waited for ${name == 'sleep' ? 'timer' : 'command'}';
-  if (kind == 'skill') {
-    final reads = toolSkillReads(tool);
-    return '${active ? 'Loading' : 'Loaded'} ${reads.isEmpty ? '' : '${reads.first.name} '}skill';
-  }
-  if (kind == 'question') return active ? 'Waiting for your answer' : 'Asked a question';
-  if (name == 'view_image') return active ? 'Opening image' : 'Viewed image';
-  if (name == 'web_search') {
-    if (active) return 'Browsing the web';
-    final action = input is Map ? input['action'] : null;
-    final queries = action is Map ? action['queries'] : null;
-    final query = queries is List ? queries.join(', ') : input is Map ? input['query'] : null;
-    return 'Searched the web${query is String && query.isNotEmpty ? ' for $query' : ''}';
-  }
-  if (kind == 'search') {
-    final query = input is Map ? input['query'] ?? input['q'] ?? input['pattern'] : null;
-    return '${active ? 'Searching' : 'Searched'}${query is String ? ' for $query' : ''}';
-  }
-  final friendly = name.replaceAll('_', ' ');
-  final source = tool.name.contains('__') ? tool.name.split('__').where((part) => part.isNotEmpty && part != 'mcp').first
-    : tool.name.contains('.') ? tool.name.split('.').first : null;
-  return source == null ? friendly : '$source · $friendly';
 }
 
-String toolGroupSummary(List<ToolActivity> tools) {
-  final groups = <String, int>{};
-  final edited = <String>{};
+String _patchVerb(Object? kind, bool running, bool failed) => failed ? 'File change failed ·' : switch (kind) {
+  'add' => running ? 'Creating' : 'Created',
+  'delete' => running ? 'Deleting' : 'Deleted',
+  _ => running ? 'Editing' : 'Edited',
+};
+
+_ToolLabel _patchLabel(Map<Object?, Object?> change, bool running, bool failed) {
+  final kind = _fields(change['kind']);
+  final path = kind['move_path'] ?? kind['movePath'] ?? change['path'];
+  final name = path is String ? _labelText(conversationPathName(path)) : '';
+  return _fileLabel(_patchVerb(kind['type'], running, failed), name.isEmpty ? 'file' : name,
+    kind['type'] == 'delete' || path is! String ? null : path, ConversationActivityGlyph.pencil, stats: _patchStats(change));
+}
+
+_ToolLabel _toolLabel(ToolActivity tool, {required bool running}) {
+  final item = tool.item;
+  final failed = tool.status == 'failed';
+  switch (item['type']) {
+    case 'commandExecution':
+      final command = _labelText(conversationCommandText(item));
+      final commandLabel = command.isEmpty ? 'Command' : command;
+      const terminal = ConversationActivityGlyph.terminal;
+      if (item['status'] == 'declined') return _ToolLabel('Command declined ($commandLabel)', terminal);
+      if (item['status'] == 'interrupted') return _ToolLabel('Command stopped ($commandLabel)', ConversationActivityGlyph.stop);
+      if (failed) return _ToolLabel('Command failed ($commandLabel)', terminal);
+      final actions = conversationCommandActions(item);
+      if (actions.length == 1) {
+        final action = actions.single;
+        final path = action.path ?? '';
+        final target = _labelText(conversationPathName(path));
+        final name = _labelText(action.name ?? target);
+        if (_loadedSkill(action) case final skillPath?) {
+          final segments = skillPath.split(_pathSeparator);
+          final skill = segments.length > 1 ? segments[segments.length - 2] : 'a skill';
+          return _ToolLabel('${running ? 'Loading' : 'Loaded'} $skill', ConversationActivityGlyph.book);
+        }
+        switch (action.type) {
+          case 'read':
+            final verb = running ? 'Reading' : 'Read';
+            return _fileLabel(verb, name.isEmpty ? 'file' : name, action.path, ConversationActivityGlyph.book);
+          case 'listFiles':
+            return _ToolLabel('${running ? 'Listing' : 'Listed'} files${target.isEmpty ? '' : ' in $target'}',
+              ConversationActivityGlyph.folder);
+          case 'search':
+            final query = _labelText(action.query);
+            final subject = query.isEmpty ? 'files' : 'for $query';
+            final prefix = '${running ? 'Searching' : 'Searched'} $subject';
+            return target.isEmpty ? _ToolLabel(prefix, ConversationActivityGlyph.search)
+              : _fileLabel('$prefix in', target, path, ConversationActivityGlyph.search);
+        }
+      }
+      return _ToolLabel(running ? 'Running ${command.isEmpty ? 'command' : command}' : commandLabel, terminal);
+    case 'fileChange':
+      final changes = _entries(item['changes']).toList();
+      if (changes.length == 1) return _patchLabel(changes.single, running, failed);
+      final subject = changes.isEmpty ? 'files' : '${changes.length} files';
+      return _ToolLabel('${_patchVerb(null, running, failed)} $subject', ConversationActivityGlyph.pencil);
+    case 'webSearch':
+      final detail = _labelText(_webSearchDetail(item));
+      final verb = running ? 'Searching the web' : 'Searched the web';
+      return _ToolLabel(detail.isEmpty ? verb : '$verb · $detail', ConversationActivityGlyph.search);
+    default:
+      if (_codeModeWrapper(tool)) {
+        return _ToolLabel(failed ? 'JavaScript failed' : 'JavaScript', ConversationActivityGlyph.terminal);
+      }
+      final progress = running ? _labelText(item['_progressMessage']) : '';
+      if (_browserAction(tool) case final browser?) {
+        return _ToolLabel(progress.isNotEmpty ? progress : running ? browser.$1 : failed ? 'Browser call failed · ${browser.$1}' : browser.$2,
+          ConversationActivityGlyph.window);
+      }
+      final action = _labelText(item['tool'] ?? tool.name).replaceAll('_', ' ');
+      final source = _labelText(item['server'] ?? item['namespace']).replaceAll('_', ' ');
+      final name = action.isEmpty ? 'Tool' : source.isEmpty ? action : '$source · $action';
+      return _ToolLabel(progress.isNotEmpty ? progress : failed ? 'Tool failed · $name' : running ? 'Running $name' : name,
+        ConversationActivityGlyph.link);
+  }
+}
+
+_ToolLabel _toolRunSummary(List<ToolActivity> tools) {
+  final skills = <String>{}, files = <String>{};
+  var commands = 0, calls = 0;
+  var browser = false, web = false, explored = false;
   for (final tool in tools) {
-    final kind = toolKind(tool);
-    var count = 1;
-    if (kind == 'edit') {
-      final input = tool.rawInput;
-      final changes = input is Map ? input['changes'] : null;
-      final paths = changes is List ? changes.whereType<Map<Object?, Object?>>()
-        .map((change) => change['path']).whereType<String>().toSet() : <String>{tool.id};
-      count = paths.difference(edited).length;
-      edited.addAll(paths);
+    switch (tool.item['type']) {
+      case 'commandExecution':
+        for (final action in conversationCommandActions(tool.item)) {
+          if (_loadedSkill(action) case final skill?) { skills.add(skill); }
+          else if (const {'read', 'search', 'listFiles'}.contains(action.type)) { explored = true; }
+          else { commands++; }
+        }
+      case 'fileChange':
+        files.addAll(_entries(tool.item['changes']).map((change) => _labelText(change['path'])).where((path) => path.isNotEmpty));
+      case 'webSearch':
+        web = true;
+      default:
+        if (_browserAction(tool) != null) { browser = true; } else { calls++; }
     }
-    groups.update(kind, (previous) => previous + count, ifAbsent: () => count);
   }
-  final labels = <String>[];
-  for (final entry in groups.entries.take(2)) {
-    final count = entry.value, plural = count == 1 ? '' : 's';
-    labels.add(switch (entry.key) {
-      'command' => count == 1 ? 'Ran a command' : 'Ran commands',
-      'read' => 'Read files',
-      'edit' => count == 1 ? 'Edited a file' : 'Edited files',
-      'search' => 'Searched files',
-      'browser' => 'Used browser $count ${count == 1 ? 'time' : 'times'}',
-      'skill' => 'Loaded $count skill$plural',
-      'wait' => 'Waited for $count ${count == 1 ? 'operation' : 'operations'}',
-      'question' => 'Asked $count question$plural',
-      _ => 'Used $count tool$plural',
-    });
+  final parts = <_ToolLabel>[
+    if (browser) const _ToolLabel('Used Browser', ConversationActivityGlyph.window),
+    if (skills.isNotEmpty) _ToolLabel(skills.length == 1 ? 'Loaded a tool' : 'Loaded tools', ConversationActivityGlyph.wrench),
+    if (calls > 0) _ToolLabel(calls == 1 ? 'Called a tool' : 'Called tools', ConversationActivityGlyph.link),
+    if (files.isNotEmpty) _ToolLabel(files.length == 1 ? 'Edited a file' : 'Edited files', ConversationActivityGlyph.pencil),
+    if (explored) const _ToolLabel('Read files', ConversationActivityGlyph.book),
+    if (commands > 0) _ToolLabel(commands == 1 ? 'Ran a command' : 'Ran commands', ConversationActivityGlyph.terminal),
+    if (web) const _ToolLabel('Searched the web', ConversationActivityGlyph.search),
+  ];
+  if (parts.isEmpty) return const _ToolLabel('Tool activity', ConversationActivityGlyph.wrench);
+  return _ToolLabel([parts.first.text, for (final part in parts.skip(1)) part.text[0].toLowerCase() + part.text.substring(1)]
+    .join(', '), parts.first.icon);
+}
+
+String _webSearchDetail(Map<String, dynamic> item) {
+  final action = _fields(item['action']);
+  final value = switch (action['type']) {
+    'openPage' => _labelText(action['url']),
+    'findInPage' => [_labelText(action['pattern']), _labelText(action['url'])].where((value) => value.isNotEmpty).join(' in '),
+    _ => _labelText(action['query']),
+  };
+  if (value.isNotEmpty) return value;
+  final queries = action['queries'];
+  if (queries is List) {
+    final detail = queries.whereType<String>().where((query) => query.trim().isNotEmpty).join('\n');
+    if (detail.isNotEmpty) return detail;
   }
-  final others = groups.entries.skip(2).fold(0, (total, entry) => total + entry.value);
-  if (others > 0) labels.add('Performed $others other ${others == 1 ? 'action' : 'actions'}');
-  return labels.indexed.map((item) => item.$1 == 0 ? item.$2 : '${item.$2[0].toLowerCase()}${item.$2.substring(1)}').join(' and ');
+  return item['query'] is String ? (item['query'] as String).trim() : '';
+}
+
+List<(String, Object?)> _toolDetails(ToolActivity tool) {
+  final item = tool.item;
+  final error = item['error'];
+  return switch (item['type']) {
+    'commandExecution' => [
+      ('Command', conversationCommandText(item)),
+      ('Output', tool.rawOutput),
+      if (item['exitCode'] is num) ('Exit status', item['exitCode'].toString()),
+    ],
+    'fileChange' => [('Output', tool.rawOutput)],
+    'webSearch' => [
+      ('Search', _webSearchDetail(item)),
+      ('Sources', _entries(item['sources'] ?? item['results']).map((source) => _labelText(source['url']))
+        .where((url) => url.isNotEmpty).join('\n')),
+    ],
+    _ => [
+      (_codeModeWrapper(tool) ? 'JavaScript' : 'Input', tool.rawInput),
+      ('Output', tool.rawOutput),
+      ('Error', error is Map ? error['message'] ?? error : error),
+    ],
+  };
+}
+
+ConversationFileLocation? _toolFileLocation(_ToolFile file, String directory) {
+  final path = file.path;
+  if (path == null || path.trim().isEmpty || path.contains('\u0000')) return null;
+  final windows = !p.posix.isAbsolute(path) && (p.windows.isAbsolute(path) ||
+    !p.posix.isAbsolute(directory) && p.windows.isAbsolute(directory));
+  final style = windows ? p.windows : p.posix;
+  if (!style.isAbsolute(path) && !style.isAbsolute(directory)) return null;
+  return (path: style.normalize(style.isAbsolute(path) ? path : style.join(directory, path)), line: file.stats?.line);
+}
+
+Widget _toolFileLabel(BuildContext context, _ToolFile file, TextStyle style, String directory) {
+  final location = _toolFileLocation(file, directory);
+  final scope = context.getInheritedWidgetOfExactType<ConversationFileScope>();
+  final open = scope == null || location == null ? null : () => scope.onOpen(location);
+  final name = Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: open == null ? style
+    : style.copyWith(color: DesktopAccent.of(context).reference, decoration: TextDecoration.underline));
+  final stats = file.stats;
+  return LayoutBuilder(builder: (context, constraints) => Row(mainAxisSize: MainAxisSize.min, children: [
+    ConstrainedBox(constraints: BoxConstraints(maxWidth: constraints.maxWidth * .78),
+      child: Text(file.prefix, maxLines: 1, overflow: TextOverflow.ellipsis, style: style)),
+    const SizedBox(width: 4),
+    Flexible(child: open == null ? name : Tooltip(message: location!.path,
+      child: Semantics(link: true, child: InkWell(onTap: open, mouseCursor: SystemMouseCursors.click,
+        borderRadius: BorderRadius.circular(3), child: name)))),
+    if (stats != null && (stats.added > 0 || stats.removed > 0)) ...[
+      const SizedBox(width: 7),
+      Semantics(label: '${stats.added} lines added, ${stats.removed} lines removed', excludeSemantics: true,
+        child: Text('+${stats.added} −${stats.removed}', maxLines: 1, style: style.copyWith(
+          fontSize: (style.fontSize ?? 13) - 1, fontFeatures: const [FontFeature.tabularFigures()]))),
+    ],
+  ]));
 }
 
 class ConversationToolCall extends StatelessWidget {
@@ -226,59 +351,141 @@ class ConversationToolCall extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (toolKind(tool) == 'question') return QuestionToolResult(tool: tool, onExpand: onExpand);
+    if (isConversationQuestionTool(tool)) return QuestionToolResult(tool: tool, onExpand: onExpand);
     if (tool.name == 'view_image') return ConversationInspectedImages(tools: [tool], directory: directory, onExpand: onExpand);
-    if (tool.rawInput case {'changes': final List<Object?> _}) {
-      return ConversationFileChangeActivity(tool: tool, onExpand: onExpand, directory: directory);
+    final running = tool.status == 'running';
+    final label = _toolLabel(tool, running: running);
+    final colors = Theme.of(context).colorScheme;
+    final fontSize = _toolFontSize(context);
+    final icon = ConversationActivityIcon(label.icon, size: 15);
+    final item = tool.item;
+    final cwd = item['cwd'] is String && (item['cwd'] as String).isNotEmpty ? item['cwd'] as String : directory;
+    final file = label.file;
+    final inline = file == null ? null : (TextStyle style) => _toolFileLabel(context, file, style, cwd);
+    final hasDetails = tool.children.isNotEmpty || tool.images.isNotEmpty || tool.rawOutput != null || switch (item['type']) {
+      'commandExecution' => conversationCommandText(item).isNotEmpty || item['exitCode'] != null,
+      'fileChange' => _entries(item['changes']).isNotEmpty,
+      'webSearch' => _webSearchDetail(item).isNotEmpty || _entries(item['sources'] ?? item['results']).isNotEmpty,
+      _ => tool.rawInput != null || item['error'] != null,
+    };
+    if (!hasDetails) {
+      return ConversationActivityHeader(label: label.text, fontSize: fontSize, icon: icon, inlineLabel: inline);
     }
-    final label = toolLabel(tool, directory: directory, active: tool.status == 'running');
-    final failed = toolShowsFailure(tool);
-    return ConversationDisclosure(
-    key: PageStorageKey('tool:${tool.id}'),
-    label: label,
-    fontSize: 14, shimmer: tool.status == 'running', timestamp: tool.startedAt,
-    color: failed ? desktopError : desktopSecondary,
-    icon: ConversationWorkIcon(kind: toolKind(tool), failed: failed),
-    onExpand: onExpand,
-    builder: (context) => Padding(padding: const EdgeInsets.only(left: 20, top: 4, bottom: 8),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        ConversationData(value: tool.rawInput, formatText: true, builder: (context, input) =>
-          ConversationData(value: tool.rawOutput, formatText: true, builder: (context, output) {
-            final script = toolJavaScript(tool);
-            final command = toolCommand(tool);
-            final source = script ?? command ?? input as String? ?? '';
-            final result = output as String?;
-            if (script != null || _isCommand(tool) && command != null) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Row(children: [
-                Expanded(child: Text(script == null ? 'Command' : 'JavaScript', style: const TextStyle(fontSize: 11, color: desktopSecondary))),
-                ConversationCopyButton(text: source, label: script == null ? 'Copy command' : 'Copy JavaScript', compact: true),
-              ]),
-              const SizedBox(height: 4),
-              ConstrainedBox(constraints: const BoxConstraints(maxHeight: 256),
-                child: SingleChildScrollView(key: PageStorageKey('tool-script:${tool.id}'),
-                  child: SelectableText.rich(highlightedCode(source, language: script == null ? 'bash' : 'javascript'),
-                    style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 12,
-                      height: 1.625, color: desktopForeground)))),
-              if (result?.isNotEmpty == true) ...[
-                const SizedBox(height: 12),
-                const Text('Output', style: TextStyle(fontSize: 11, color: desktopSecondary)),
-                const SizedBox(height: 4),
-                _ToolOutput(id: tool.id, text: result!),
-              ],
-            ]);
-            final text = [if (source.isNotEmpty) source, if (result?.isNotEmpty == true) result!].join('\n\n');
-            return _ToolOutput(id: tool.id, text: text.isEmpty ? 'No output' : text);
-          })),
-        if (tool.images.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8),
-          child: ConversationImageGroup(child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 12, children: [
-            for (final part in tool.images)
-              if (toolImageSource(part) case final String source)
-                ConversationImage(source: source, label: 'Tool image', directory: directory),
-          ]))),
-        for (final child in visibleConversationTools(tool.children)) ConversationToolCall(
-          key: ValueKey(child.id), tool: child, onExpand: onExpand, directory: directory),
-      ])),
-    );
+    final titleStyle = TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: colors.onSurfaceVariant);
+    final detailStyle = TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.45, color: colors.onSurface);
+    return ConversationDisclosure(key: PageStorageKey('tool:${tool.id}'),
+      label: label.text, fontSize: fontSize, icon: icon, toolActivity: true, onExpand: onExpand, inlineLabel: inline,
+      builder: (context) => Padding(padding: const EdgeInsets.fromLTRB(22, 4, 2, 8),
+        child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 280), child: SingleChildScrollView(
+          key: PageStorageKey('tool-details:${tool.id}'), primary: false,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+            if (item['type'] == 'fileChange')
+              for (final change in _entries(item['changes'])) Padding(padding: const EdgeInsets.only(bottom: 8),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  if (file == null) _toolFileLabel(context, _patchLabel(change, running, tool.status == 'failed').file!,
+                    titleStyle, cwd),
+                  if (change['diff'] case final String diff when diff.isNotEmpty) Text(diff, style: detailStyle),
+                ])),
+            for (final (name, value) in _toolDetails(tool))
+              if (value != null) ConversationData(value: value,
+                formatText: value is! String || name == 'Input' || item['type'] == 'mcpToolCall' || item['type'] == 'dynamicToolCall',
+                builder: (context, text) =>
+                text is! String || text.trim().isEmpty ? const SizedBox.shrink()
+                : Padding(padding: const EdgeInsets.only(bottom: 8), child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(name, style: titleStyle),
+                    const SizedBox(height: 2),
+                    Text(text, style: detailStyle),
+                  ]))),
+            if (tool.images.isNotEmpty) ConversationImageGroup(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, spacing: 12, children: [
+                for (final part in tool.images)
+                  if (toolImageSource(part) case final String source)
+                    ConversationImage(source: source, label: 'Tool image', directory: directory),
+              ])),
+            for (final child in visibleConversationTools(tool.children))
+              ConversationToolCall(key: ValueKey(child.id), tool: child, directory: directory, onExpand: onExpand),
+          ]),
+        ))));
+  }
+}
+
+class ConversationToolRun extends StatefulWidget {
+  const ConversationToolRun({super.key, required this.tools, required this.directory, required this.onExpand,
+    this.thinkingLabel, required this.inProgress});
+  final List<ToolActivity> tools;
+  final String directory;
+  final VoidCallback onExpand;
+  final String? thinkingLabel;
+  final bool inProgress;
+
+  @override
+  State<ConversationToolRun> createState() => _ConversationToolRunState();
+}
+
+class _ConversationToolRunState extends State<ConversationToolRun> {
+  final _header = GlobalKey();
+  bool? _expanded;
+  Object get _storageKey => ('tool-run', widget.tools.first.threadId, widget.tools.first.id);
+
+  void _toggle() => toggleConversationDisclosure(context, _header.currentContext, () {
+    setState(() => _expanded = !(_expanded ?? false));
+    PageStorage.maybeOf(context)?.writeState(context, _expanded, identifier: _storageKey);
+    widget.onExpand();
+  });
+
+  Widget _step(ToolActivity tool) => ConversationToolCall(key: ValueKey(tool.id),
+    tool: tool, directory: widget.directory, onExpand: widget.onExpand);
+
+  List<Widget> _steps(double fontSize) {
+    final groups = <List<ToolActivity>>[];
+    (String, String)? previous;
+    for (final tool in widget.tools) {
+      final key = _repeatableTool(tool);
+      if (key != null && key == previous) { groups.last.add(tool); }
+      else { groups.add([tool]); }
+      previous = key;
+    }
+    return [for (final group in groups)
+      if (group.length == 1) _step(group.single)
+      else if (_toolLabel(group.first, running: false) case final label)
+        ConversationDisclosure(key: PageStorageKey('tool-repeats:${group.first.id}'),
+          label: '${label.text} · ${group.length} calls',
+          fontSize: fontSize, toolActivity: true, onExpand: widget.onExpand,
+          icon: ConversationActivityIcon(label.icon, size: 15),
+          builder: (context) => Padding(padding: const EdgeInsets.only(top: 8, left: 22),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, spacing: 8,
+              children: [for (final tool in group) _step(tool)]))),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _expanded ??= PageStorage.maybeOf(context)?.readState(context, identifier: _storageKey) as bool?;
+    final expanded = _expanded == true;
+    final thinking = widget.thinkingLabel;
+    final active = thinking != null;
+    final tools = widget.tools;
+    if (tools.length == 1 && !active && _expanded == null) {
+      final tool = tools.single;
+      if ((tool.status != 'running' || !widget.inProgress) &&
+          (tool.item['type'] != 'fileChange' || _entries(tool.item['changes']).length == 1)) return _step(tool);
+    }
+    final running = active ? tools.where((tool) => tool.status == 'running').lastOrNull : null;
+    final label = thinking == null ? _toolRunSummary(tools) : running == null
+      ? _ToolLabel(thinking, ConversationActivityGlyph.ellipsis) : _toolLabel(running, running: true);
+    final fontSize = _toolFontSize(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      ConversationActivityHeader(key: _header, label: label.text, fontSize: fontSize,
+        icon: ConversationActivityIcon(label.icon, size: 16),
+        shimmer: active, expanded: expanded, onToggle: _toggle),
+      ConversationActivityDetails(expanded: expanded, builder: (context) => Padding(
+        padding: const EdgeInsets.only(left: 8, top: 8),
+        child: DecoratedBox(decoration: const BoxDecoration(border: Border(left: BorderSide(color: desktopBorder))),
+          child: Padding(padding: const EdgeInsets.only(left: 15),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, spacing: 8,
+              children: _steps(fontSize)))))),
+    ]);
   }
 }
 
@@ -333,8 +540,8 @@ class QuestionToolResult extends StatelessWidget {
         answers: [for (var i = 0; i < count; i++)
           (question: questions[i]['question'] as String, answer: answers[i].join(', '))],
         status: status, active: running, onExpand: onExpand,
-        error: tool.status == 'failed' && output != null
-          ? result is Map ? (result['error'] ?? result['output'] ?? result).toString() : result.toString() : null);
+        error: tool.status == 'failed'
+          ? (result is Map ? result['error'] ?? result['output'] ?? result : result ?? tool.item['error'])?.toString() : null);
     });
   });
 }
@@ -383,50 +590,6 @@ class QuestionAnswerRow extends StatelessWidget {
   }
 }
 
-class _ToolOutput extends StatefulWidget {
-  const _ToolOutput({required this.id, required this.text});
-  final String id, text;
-  @override
-  State<_ToolOutput> createState() => _ToolOutputState();
-}
-
-class _ToolOutputState extends State<_ToolOutput> {
-  final _scroll = ScrollController();
-  bool _following = true, _scheduled = false;
-
-  @override
-  void initState() { super.initState(); _follow(); }
-
-  @override
-  void didUpdateWidget(_ToolOutput oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.text != widget.text) _follow();
-  }
-
-  void _follow() {
-    if (!_following || _scheduled) return;
-    _scheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scheduled = false;
-      if (mounted && _following && _scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
-    });
-  }
-
-  @override
-  void dispose() { _scroll.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) => ConstrainedBox(constraints: const BoxConstraints(maxHeight: 256),
-    child: NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification.depth == 0) _following = notification.metrics.extentAfter <= 4;
-        return false;
-      },
-      child: SingleChildScrollView(key: PageStorageKey('tool-output:${widget.id}'), controller: _scroll,
-        child: SelectableText(widget.text, style: const TextStyle(fontFamily: desktopMonoFamily, fontSize: 11,
-          height: 1.625, color: desktopSecondary)))));
-}
-
 class ConversationWorkIcon extends StatelessWidget {
   const ConversationWorkIcon({super.key, required this.kind, this.failed = false});
   final String kind;
@@ -450,50 +613,15 @@ class _WorkIconPainter extends CustomPainter {
     void line(double x1, double y1, double x2, double y2) =>
       canvas.drawLine(Offset(x1, y1), Offset(x2, y2), stroke);
     switch (kind) {
-      case 'command':
-        canvas.drawPath(Path()..moveTo(4, 5)..lineTo(10, 11)..lineTo(4, 17), stroke);
-        line(12, 19, 20, 19);
-      case 'read':
-      case 'edit':
-        canvas.drawPath(Path()..moveTo(14, 2)..lineTo(6, 2)..quadraticBezierTo(4, 2, 4, 4)
-          ..lineTo(4, 20)..quadraticBezierTo(4, 22, 6, 22)..lineTo(18, 22)
-          ..quadraticBezierTo(20, 22, 20, 20)..lineTo(20, 8)..close(), stroke);
-        canvas.drawPath(Path()..moveTo(14, 2)..lineTo(14, 8)..lineTo(20, 8), stroke);
-        line(8, 13, 16, 13);
-        line(8, 17, kind == 'edit' ? 12 : 16, 17);
-      case 'search':
-        canvas.drawCircle(const Offset(10.5, 10.5), 7, stroke);
-        line(16, 16, 21, 21);
-      case 'browser':
-        canvas.drawCircle(const Offset(12, 12), 9, stroke);
-        canvas.drawOval(const Rect.fromLTWH(8, 3, 8, 18), stroke);
-        line(3, 12, 21, 12);
-      case 'wait':
-        canvas.drawCircle(const Offset(12, 12), 9, stroke);
-        canvas.drawPath(Path()..moveTo(12, 7)..lineTo(12, 12)..lineTo(15, 14), stroke);
       case 'image':
         canvas.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(3, 3, 18, 18), const Radius.circular(2)), stroke);
         canvas.drawCircle(const Offset(8.5, 8.5), 1.5, stroke);
         canvas.drawPath(Path()..moveTo(21, 15)..lineTo(16, 10)..lineTo(5, 21), stroke);
-      case 'reasoning':
-        canvas.drawPath(Path()..moveTo(12, 5)..cubicTo(9, 0, 5, 3, 5, 6)
-          ..cubicTo(0, 7, 2, 13, 4, 14)..cubicTo(1, 19, 7, 23, 10, 20)
-          ..lineTo(12, 18)..lineTo(12, 5)..cubicTo(15, 0, 19, 3, 19, 6)
-          ..cubicTo(24, 7, 22, 13, 20, 14)..cubicTo(23, 19, 17, 23, 14, 20)
-          ..lineTo(12, 18), stroke);
-        canvas.drawPath(Path()..moveTo(5, 7)..quadraticBezierTo(9, 7, 8, 11)
-          ..moveTo(4, 14)..quadraticBezierTo(9, 13, 9, 17)
-          ..moveTo(19, 7)..quadraticBezierTo(15, 7, 16, 11), stroke);
       case 'question':
         canvas.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(3, 3, 18, 15), const Radius.circular(3)), stroke);
         canvas.drawPath(Path()..moveTo(7, 18)..lineTo(7, 22)..lineTo(12, 18), stroke);
         line(8, 9, 16, 9);
         line(8, 13, 13, 13);
-      default:
-        canvas.drawPath(Path()..moveTo(12, 3)..lineTo(3, 8)..lineTo(12, 13)
-          ..lineTo(21, 8)..close(), stroke);
-        canvas.drawPath(Path()..moveTo(3, 12)..lineTo(12, 17)..lineTo(21, 12)
-          ..moveTo(3, 16)..lineTo(12, 21)..lineTo(21, 16), stroke);
     }
     canvas.restore();
   }

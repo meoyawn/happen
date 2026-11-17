@@ -10,10 +10,22 @@ import 'web_deployment.dart';
 // redirects users to Workers. Upload static assets through the documented Pages
 // API; cf still owns authentication, project, domain and DNS operations.
 Future<void> main(List<String> arguments) async {
+  final publishOnly = switch (arguments) {
+    [] => false,
+    ['--publish-only'] => true,
+    _ => throw ArgumentError('Expected no arguments or --publish-only'),
+  };
   final cancellation = CancellationToken();
-  final settings = await readWebDeployment(cancellation);
-  final account = requiredString(settings, 'account'), zone = requiredString(settings, 'zone');
-  final projectName = settings['project'] as String? ?? 'happen', hostname = requiredString(settings, 'hostname');
+  final environment = Platform.environment;
+  final settings = publishOnly ? {
+    'account': environment['CLOUDFLARE_ACCOUNT_ID'],
+    'project': environment['CLOUDFLARE_PAGES_PROJECT'],
+  } : await readWebDeployment(cancellation);
+  final account = requiredString(settings, 'account');
+  final projectName = publishOnly ? requiredString(settings, 'project') : settings['project'] as String? ?? 'happen';
+  final hostname = publishOnly ? null : requiredString(settings, 'hostname');
+  final zone = publishOnly ? null : requiredString(settings, 'zone');
+  final projectPath = '/accounts/$account/pages/projects/$projectName';
   Process? child;
   final http = HttpClient()..connectionTimeout = const Duration(seconds: 30);
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((signal) => signal.watch().listen((_) {
@@ -61,21 +73,30 @@ Future<void> main(List<String> arguments) async {
         throw StateError('The Pages deployment must contain only static files: $name');
       }
     }
-    final projects = (await cf(['pages', 'list']) as List).map(jsonObject).toList();
-    Json? project = projects.where((value) => value['name'] == projectName).firstOrNull;
+    final configuredToken = environment['CLOUDFLARE_API_TOKEN']?.trim();
+    final String token;
+    if (configuredToken != null && configuredToken.isNotEmpty) {
+      token = configuredToken;
+    } else {
+      if (publishOnly) throw StateError('CLOUDFLARE_API_TOKEN is required to publish to Pages');
+      // Refresh through cf before reading its private credential store.
+      await cf(['auth', 'whoami']);
+      final home = environment['HOME']!;
+      final credentials = jsonObject(jsonDecode(await File('$home/.config/cloudflare/config/default.json').readAsString()));
+      token = requiredString(credentials, 'oauth_token');
+    }
+    var project = publishOnly
+      ? jsonObject(await api('GET', projectPath, token))
+      : (await cf(['pages', 'list']) as List).map(jsonObject).where((value) => value['name'] == projectName).firstOrNull;
+    if (publishOnly && project?['production_branch'] != 'master') {
+      throw StateError('The Pages project must use master as its production branch');
+    }
     if (project == null) {
       final body = jsonEncode({'name': projectName, 'production_branch': 'master'});
       await cf(['pages', 'create', '--body', body, '--dry-run']);
       project = jsonObject(await cf(['pages', 'create', '--body', body]));
     }
-    // Refresh through cf before reading its private credential store. Tokens
-    // stay in memory and are never copied into the build output or checkout.
-    await cf(['auth', 'whoami']);
-    final home = Platform.environment['HOME']!;
-    final token = Platform.environment['CLOUDFLARE_API_TOKEN'] ??
-      jsonObject(jsonDecode(await File('$home/.config/cloudflare/config/default.json').readAsString()))['oauth_token'] as String?;
-    if (token == null || token.isEmpty) throw StateError('Sign in to the pinned cf CLI before deploying');
-    final jwt = requiredString(jsonObject(await api('GET', '/accounts/$account/pages/projects/$projectName/upload-token', token)), 'jwt');
+    final jwt = requiredString(jsonObject(await api('GET', '$projectPath/upload-token', token)), 'jwt');
     final manifest = <String, String>{}, assets = <String, Json>{};
     await for (final entry in root.list(recursive: true, followLinks: false)) {
       cancellation.throwIfCancelled();
@@ -102,13 +123,14 @@ Future<void> main(List<String> arguments) async {
     if (batch.isNotEmpty) await api('POST', '/pages/assets/upload', jwt, batch);
     await api('POST', '/pages/assets/upsert-hashes', jwt, {'hashes': assets.keys.toList()});
     stdout.writeln('Uploaded ${missing.length} changed static assets (${manifest.length} total).');
-    final deployArgs = ['pages', 'deployments', 'create', projectName, '--branch', 'master', '--commit-dirty', 'true',
-      '--manifest', jsonEncode(manifest), '--redirects', '@${root.path}/_redirects'];
-    await cf([...deployArgs, '--dry-run']);
+    if (!publishOnly) {
+      await cf(['pages', 'deployments', 'create', projectName, '--branch', 'master', '--commit-dirty', 'true',
+        '--manifest', jsonEncode(manifest), '--redirects', '@${root.path}/_redirects', '--dry-run']);
+    }
     // The pinned generated CLI omits the _headers multipart field, so use the
     // same public Pages deployment API for the complete static upload form.
-    var deployment = jsonObject(await api('POST', '/accounts/$account/pages/projects/$projectName/deployments', token, {
-      'manifest': jsonEncode(manifest), 'branch': 'master', 'commit_dirty': 'true',
+    var deployment = jsonObject(await api('POST', '$projectPath/deployments', token, {
+      'manifest': jsonEncode(manifest), 'branch': 'master', 'commit_dirty': '${!publishOnly}',
       '_headers': await File('${root.path}/_headers').readAsString(),
       '_redirects': await File('${root.path}/_redirects').readAsString(),
     }, true));
@@ -119,36 +141,42 @@ Future<void> main(List<String> arguments) async {
         throw StateError('Pages deployment did not finish successfully: $status');
       }
       await cancellableDelay(const Duration(seconds: 2), cancellation);
-      deployment = jsonObject(await cf(['pages', 'deployments', 'get', requiredString(deployment, 'id'), '--project-name', projectName]));
+      final id = requiredString(deployment, 'id');
+      deployment = jsonObject(await api('GET', '$projectPath/deployments/$id', token));
     }
     if (deployment['uses_functions'] == true) throw StateError('Unexpected Pages Functions in the static deployment');
-    final domains = (project['domains'] as List? ?? const []).cast<String>();
-    if (!domains.contains(hostname)) {
-      await cf(['pages', 'domains', 'create', projectName, '--name', hostname, '--dry-run']);
-      await cf(['pages', 'domains', 'create', projectName, '--name', hostname]);
-    }
-    final records = (await cf(['dns', 'records', 'list', '--zone', zone, '--name', hostname]) as List).map(jsonObject).toList();
-    final destination = requiredString(project, 'subdomain');
-    final body = jsonEncode({'type': 'CNAME', 'name': hostname, 'content': destination, 'proxied': true, 'ttl': 1});
-    if (records.isEmpty || records.single['type'] != 'CNAME' || records.single['content'] != destination || records.single['proxied'] != true) {
-      final dns = records.isEmpty ? ['dns', 'records', 'create', '--zone', zone, '--body', body]
-        : ['dns', 'records', 'update', requiredString(records.single, 'id'), '--zone', zone, '--body', body];
-      await cf([...dns, '--dry-run']); await cf(dns);
-    }
-    var domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
-    if (domain['status'] != 'active') {
-      final retry = ['pages', 'domains', 'validation', 'retry', hostname, '--project-name', projectName];
-      await cf([...retry, '--dry-run']); await cf(retry);
-      final domainDeadline = DateTime.now().add(const Duration(minutes: 3));
-      while (domain['status'] != 'active') {
-        if (DateTime.now().isAfter(domainDeadline)) throw StateError('Pages is deployed, but $hostname is still ${domain['status']}');
-        await cancellableDelay(const Duration(seconds: 3), cancellation);
-        domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
+    if (hostname != null && zone != null) {
+      final domains = (project['domains'] as List? ?? const []).cast<String>();
+      if (!domains.contains(hostname)) {
+        await cf(['pages', 'domains', 'create', projectName, '--name', hostname, '--dry-run']);
+        await cf(['pages', 'domains', 'create', projectName, '--name', hostname]);
+      }
+      final records = (await cf(['dns', 'records', 'list', '--zone', zone, '--name', hostname]) as List).map(jsonObject).toList();
+      final destination = requiredString(project, 'subdomain');
+      final body = jsonEncode({'type': 'CNAME', 'name': hostname, 'content': destination, 'proxied': true, 'ttl': 1});
+      if (records.isEmpty || records.single['type'] != 'CNAME' || records.single['content'] != destination || records.single['proxied'] != true) {
+        final dns = records.isEmpty ? ['dns', 'records', 'create', '--zone', zone, '--body', body]
+          : ['dns', 'records', 'update', requiredString(records.single, 'id'), '--zone', zone, '--body', body];
+        await cf([...dns, '--dry-run']); await cf(dns);
+      }
+      var domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
+      if (domain['status'] != 'active') {
+        final retry = ['pages', 'domains', 'validation', 'retry', hostname, '--project-name', projectName];
+        await cf([...retry, '--dry-run']); await cf(retry);
+        final domainDeadline = DateTime.now().add(const Duration(minutes: 3));
+        while (domain['status'] != 'active') {
+          if (DateTime.now().isAfter(domainDeadline)) throw StateError('Pages is deployed, but $hostname is still ${domain['status']}');
+          await cancellableDelay(const Duration(seconds: 3), cancellation);
+          domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
+        }
       }
     }
-    await File('build/web-deployment.json').writeAsString(jsonEncode({'project': projectName,
-      'deployment': deployment['id'], 'url': deployment['url'], 'domain': hostname, 'uses_functions': false}), flush: true);
-    stdout.writeln('Deployed static Pages SPA: https://$hostname (${deployment['url']}).');
+    final url = requiredString(deployment, 'url');
+    final report = File('build/web-deployment.json');
+    await report.parent.create(recursive: true);
+    await report.writeAsString(jsonEncode({'project': projectName,
+      'deployment': deployment['id'], 'url': url, 'domain': hostname, 'uses_functions': false}), flush: true);
+    stdout.writeln('Deployed static Pages SPA: ${hostname == null ? url : 'https://$hostname ($url)'}.');
   } finally {
     cancellation.cancel(); child?.kill(); http.close(force: true);
     for (final signal in signals) { await signal.cancel(); }

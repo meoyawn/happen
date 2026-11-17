@@ -3,11 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'appearance.dart';
-import 'conversation_activity.dart';
 import 'diff_viewer.dart';
 import 'file_change.dart';
 import 'file_icon.dart';
-import 'session.dart';
 
 class ConversationDiffScope extends InheritedWidget {
   const ConversationDiffScope({super.key, required this.onOpen, required super.child});
@@ -24,28 +22,6 @@ class ConversationDiffScope extends InheritedWidget {
   }
   @override
   bool updateShouldNotify(ConversationDiffScope oldWidget) => onOpen != oldWidget.onOpen;
-}
-
-class ConversationFileChangeActivity extends StatelessWidget {
-  const ConversationFileChangeActivity({super.key, required this.tool, required this.onExpand, this.directory = ''});
-  final ToolActivity tool;
-  final VoidCallback onExpand;
-  final String directory;
-  @override
-  Widget build(BuildContext context) {
-    final input = tool.rawInput;
-    final files = nativeFileChanges(input is Map ? input['changes'] : null);
-    final active = tool.status == 'running', failed = tool.status == 'failed';
-    return ConversationDisclosure(key: PageStorageKey('file-change:${tool.id}'),
-      label: '${failed ? 'Failed to change' : active ? 'Changing' : 'Changed'} ${files.length} file${files.length == 1 ? '' : 's'}',
-      fontSize: 14, timestamp: tool.startedAt, shimmer: active, onExpand: onExpand,
-      color: failed ? desktopError : desktopSecondary,
-      icon: Icon(Icons.description_outlined, size: 16, color: failed ? desktopError : desktopSecondary),
-      builder: (context) => Padding(padding: const EdgeInsets.only(left: 26, top: 6, bottom: 8),
-        child: ConversationChangedFiles(source: 'item:${tool.id}', files: files, directory: directory,
-          notice: failed ? 'This patch failed. The preview shows the requested changes.' :
-            tool.status == 'interrupted' ? 'This patch was interrupted.' : active ? 'Applying changes…' : null)));
-  }
 }
 
 // T3 Code ChangedFilesTree.tsx: compact folders, aggregate stats and a full diff action.

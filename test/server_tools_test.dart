@@ -167,7 +167,14 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
       endpoint: 'http://127.0.0.1:${provider.port}/responses',
     );
     final client = await AgentClient.connect(server.uri);
+    final activity = <Json>[];
+    final activitySubscription = client.events.stream.listen((event) {
+      if (const {'item/started', 'item/mcpToolCall/progress', 'item/completed'}.contains(event['method'])) {
+        activity.add(event);
+      }
+    });
     addTearDown(() async {
+      await activitySubscription.cancel();
       await client.close();
       await server.close();
       await provider.close(force: true);
@@ -184,6 +191,11 @@ setTimeout(() => { throw new Error("discarded timer"); }, 60000);
     )['output']);
 
     final filtered = await turn('filter');
+    final steps = activity.where((event) => event['params']['threadId'] == filtered &&
+      (event['params']['item']?['type'] == 'mcpToolCall' || event['method'] == 'item/mcpToolCall/progress')).toList();
+    expect(steps.map((event) => event['method']), ['item/started', 'item/mcpToolCall/progress', 'item/completed']);
+    expect(steps[1]['params']['itemId'], steps.first['params']['item']['id']);
+    expect(steps[1]['params']['message'], 'Reading the catalog');
     final selected = [{'uri': 'package:desktop/app.dart', 'id': 'app'}];
     expect(threadMetadata(root.path, filtered, 'values'), {'libraries': selected, 'complete': true});
     final filteredOutput = modelOutput();

@@ -270,7 +270,7 @@ void main() {
       if (message['type'] == 'agentMessage') {
         expect(tester.getTopLeft(activity).dy,
           greaterThan(tester.getBottomLeft(find.text('Checking the desktop panel next', findRichText: true)).dy));
-      } else {
+      } else if (message['type'] == 'commandExecution') {
         expect(find.byKey(const ValueKey('working')), findsNothing);
       }
       expect(find.text('Compacting context'), findsNothing);

@@ -91,6 +91,7 @@ class DesktopTask {
   bool sideSubmitting = false;
   final messages = <String, Json>{};
   final turns = <String, Json>{};
+  late final expandedConversationTurns = <String>{};
   final projectionState = <String, dynamic>{};
   final liveEvents = <Json>[];
   int through = 0;
@@ -2584,6 +2585,7 @@ class DesktopSession extends ChangeNotifier {
     }
     final sidebarState = _sidebarState(target);
     final appendingText = event['method'] == 'item/agentMessage/delta' && target.streamingText.isNotEmpty;
+    final hiddenReasoning = event['method'] == 'item/reasoning/textDelta' && target.retryStatus == null;
     _applyEvent(target, event);
     _observeActivity(target, [event]);
     _markViewed(target);
@@ -2598,7 +2600,7 @@ class DesktopSession extends ChangeNotifier {
         if (failure is! CancelledException) showError(failure);
       }));
     }
-    if (!appendingText) _taskChanged(target, sidebar: sidebarState != _sidebarState(target));
+    if (!appendingText && !hiddenReasoning) _taskChanged(target, sidebar: sidebarState != _sidebarState(target));
   }
 
   void _observeActivity(DesktopTask target, Iterable<Json> events) {
@@ -2657,7 +2659,7 @@ class DesktopSession extends ChangeNotifier {
     final data = jsonObject(event['params'] ?? {});
     final source = data['happen']?['sourceSeq'] as int?;
     if (source != null && source > target.through) target.through = source;
-    applyThreadNotification(target.messages, event);
+    if (event['method'] != 'item/reasoning/textDelta') applyThreadNotification(target.messages, event);
     switch (event['method']) {
       case 'thread/goal/updated':
         target._goal = savedGoal(data['goal']);
@@ -2676,6 +2678,11 @@ class DesktopSession extends ChangeNotifier {
       case 'item/agentMessage/delta':
         target.streamingText = target.messages[data['itemId']]?['text'] as String? ?? '';
         target.retryStatus = null;
+      case 'item/reasoning/summaryTextDelta':
+      case 'item/reasoning/textDelta':
+        if (target.messages[data['itemId']] case {'live': true, 'turnId': final turnId} when turnId == data['turnId']) {
+          target.retryStatus = null;
+        }
       case 'item/completed':
         final id = data['item']['id'] as String;
         if (target.messages[id] case final item?) target.messages[id] = _cacheConversationItem(item);
@@ -2820,43 +2827,37 @@ Json _cacheConversationItem(Json item) {
     if (part is! Map || !{'text', 'inputText'}.contains(part['type'])) part];
   return {...item, '_storedOutput': true,
     if (item['type'] == 'dynamicToolCall') 'contentItems': previews
-    else 'result': {'content': previews}};
+    else 'result': {
+      'content': previews,
+      'isError': item['result']['isError'],
+      '_meta': item['result']['_meta'],
+    }};
 }
 
 Object? conversationToolOutput(Json item) {
   final content = _toolContent(item);
   if (content != null) {
     final text = [for (final part in content)
-      if (part case {'type': 'text' || 'inputText', 'text': final String text}) text].join('\n');
-    return text.isEmpty ? null : text;
+      if (part case {'text': final String text} when text.isNotEmpty) text
+      else if (part case {'type': 'audio' || 'inputAudio' || 'input_audio'}) 'Audio result',
+    ].join('\n\n');
+    if (text.isNotEmpty) return text;
   }
-  return item['error'] ?? item['aggregatedOutput'] ?? switch (item['type']) {
-    'webSearch' => item['results'], 'collabAgentToolCall' => item['agentsStates'], _ => null,
+  return item['aggregatedOutput'] ?? item['output'] ?? switch (item['type']) {
+    'mcpToolCall' => item['result']?['structuredContent'],
+    'collabAgentToolCall' => item['agentsStates'],
+    _ => null,
   };
 }
 
 class ToolActivity {
-  ToolActivity(this.id, this.name, Object? input, {this.startedAt, this.preview, this.threadId, bool formatInput = false})
-    : _rawInput = input, _input = formatInput || input is! String ? null : input;
+  ToolActivity(this.id, this.name, this.rawInput, {this.startedAt, this.threadId, required this.item});
   final String id, name;
-  final String? preview;
   final String? threadId;
-  final Object? _rawInput;
-  String? _input, _output;
-  Object? _rawOutput;
-  bool _hasOutput = false;
-  // Collapsed tools should not parse and re-encode their potentially large JSON.
-  String get input => _input ??= _pretty(_rawInput);
-  Object? get rawInput => _rawInput;
-  String? get output => _hasOutput && _rawOutput is! StoredToolOutput ? _output ??= _pretty(_rawOutput) : null;
-  Object? get rawOutput => _rawOutput;
-  set output(Object? value) {
-    _hasOutput = true;
-    _rawOutput = value;
-    _output = null;
-  }
+  final Json item;
+  final Object? rawInput;
+  Object? rawOutput;
   final DateTime? startedAt;
-  DateTime? endedAt;
   final children = <ToolActivity>[];
   List<Json> images = const [];
   String status = 'running';
@@ -2896,6 +2897,21 @@ List<ChatQuestionAnswer> _questionReplyAnswers(String text) {
         item is! Map || item['question'] is! String || item['answer'] is! String)) return const [];
     return [for (final item in value) (question: item['question'] as String, answer: item['answer'] as String)];
   } on FormatException { return const []; }
+}
+
+final _reasoningHeading = RegExp(r'^(?:#{1,6}\s+(.+?)\s*#*|\*\*(.+?)\*\*)$');
+
+String _conversationReasoningHeading(Object? summary) {
+  if (summary is! List) return '';
+  final parts = summary.whereType<String>().where((part) => part.trim().isNotEmpty).toList();
+  final lines = parts.expand((part) => part.split('\n')).map((line) => line.trim())
+    .where((line) => line.isNotEmpty && !line.startsWith('<!--')).toList();
+  for (final line in lines.reversed) {
+    final heading = _reasoningHeading.firstMatch(line);
+    if (heading != null) return (heading[1] ?? heading[2])!.trim();
+  }
+  if (parts.length > 1 && lines.isNotEmpty && !lines.first.startsWith('**')) return lines.first;
+  return lines.where((line) => !line.startsWith('**')).lastOrNull ?? '';
 }
 
 class ChatEntry {
@@ -2956,18 +2972,19 @@ List<ChatEntry> conversation(DesktopTask task) {
           annotations: annotated?.annotations ?? const [],
           attachments: content.where((part) => part['type'] != 'text').toList(), timestamp: created,
           turnId: message['turnId'] as String?, questionAnswers: answers, event: _mcpEventInput(text)));
-      case 'agentMessage':
       case 'reasoning':
-        final reasoning = message['type'] == 'reasoning';
-        final text = reasoning ? [...message['summary'] as List? ?? [], ...message['content'] as List? ?? []].join('\n') : message['text'] as String? ?? '';
+        result.add(ChatEntry(id, 'Reasoning', _conversationReasoningHeading(message['summary']),
+          turnId: message['turnId'] as String?, streaming: task.running && message['live'] == true));
+      case 'agentMessage':
+        final text = message['text'] as String? ?? '';
         if (text.isEmpty) continue;
         final turn = task.turns[message['turnId']];
         final duration = turn?['startedAt'] is int && turn?['completedAt'] is int
           ? Duration(seconds: (turn!['completedAt'] as int) - (turn['startedAt'] as int)) : null;
-        result.add(ChatEntry(id, reasoning ? 'Reasoning' : 'Happen', text, timestamp: at(message['completedAtMs']) ?? created,
+        result.add(ChatEntry(id, 'Happen', text, timestamp: at(message['completedAtMs']) ?? created,
           startedAt: created, streaming: task.running && message['live'] == true,
           turnId: message['turnId'] as String?, phase: message['phase'] as String?,
-          response: reasoning || message['live'] == true || message['phase'] == 'commentary' ? null
+          response: message['live'] == true || message['phase'] == 'commentary' ? null
             : (provider: task.provider, model: task.model, reasoning: task.reasoning,
             duration: duration, interrupted: turn?['status'] == 'interrupted')));
       case 'imageGeneration':
@@ -2998,17 +3015,19 @@ List<ChatEntry> conversation(DesktopTask task) {
           'sleep' => {'duration': message['durationMs']},
           _ => {'prompt': message['prompt'], 'agents': message['receiverThreadIds']},
         };
-        final tool = ToolActivity(id, name, input, startedAt: created, threadId: task.id, formatInput: true);
+        final tool = ToolActivity(id, name, input, startedAt: created, threadId: task.id, item: message);
         tool.status = switch (message['status']) {'completed' => 'done', 'failed' => 'failed',
           'inProgress' => task.running ? 'running' : 'interrupted',
           null => message['live'] == true && task.running ? 'running' : 'done', _ => 'interrupted'};
         if (tool.status != 'interrupted' && (message['success'] == false || message['error'] != null ||
-            message['exitCode'] is int && message['exitCode'] != 0)) tool.status = 'failed';
-        tool.endedAt = at(message['completedAtMs']);
+            message['result'] is Map && message['result']['isError'] == true ||
+            message['exitCode'] is num && message['exitCode'] != 0)) {
+          tool.status = 'failed';
+        }
         final output = _toolContent(message);
         if (message['_storedOutput'] == true) {
-          tool.output = (threadId: task.id, turnId: message['turnId'] as String, itemId: id);
-        } else if (conversationToolOutput(message) case final value?) { tool.output = value; }
+          tool.rawOutput = (threadId: task.id, turnId: message['turnId'] as String, itemId: id);
+        } else { tool.rawOutput = conversationToolOutput(message); }
         if (output != null) {
           tool.images = output.whereType<Json>().where((part) =>
             {'image', 'inputImage', 'input_image'}.contains(part['type'])).toList(growable: false);
@@ -3080,15 +3099,4 @@ String conversationDataText(Object? value) {
     return value;
   }
   return const JsonEncoder.withIndent('  ').convert(display(value));
-}
-
-String _pretty(Object? value) {
-  if (value is String) {
-    try {
-      return const JsonEncoder.withIndent('  ').convert(jsonDecode(value));
-    } on FormatException {
-      return value;
-    }
-  }
-  return const JsonEncoder.withIndent('  ').convert(value);
 }

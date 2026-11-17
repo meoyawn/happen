@@ -48,7 +48,9 @@ tasks:
     inputs: []
     options:
       cache: false
+      interactive: false
       shell: false
+      runInCI: true
       outputStyle: stream
 
   deploy-tunnel:
@@ -99,7 +101,9 @@ tasks:
     inputs: []
     options:
       cache: false
+      interactive: false
       shell: false
+      runInCI: true
       outputStyle: stream
 
   dev-web:
@@ -349,7 +353,7 @@ tasks:
       outputStyle: stream
 
   release-ci-pub-get:
-    description: Resolve Dart workspace packages for macOS CI releases
+    description: Resolve locked Dart workspace packages for CI releases
     command: flutter
     args: [pub, get, --enforce-lockfile]
     preset: utility

@@ -545,10 +545,14 @@ Future<void> _networkMain(List<Object?> args) async {
             }
             result = await mcp.catalog(cancellation, knownRevision: params['revision'] as String?, scope: scope);
           case 'mcp.call':
+            final callId = params['call_id'] as String?;
             result = await mcp.callTool(
               requiredString(params, 'name'),
               params['arguments'],
               cancellation, scope: scope, onInput: input, readOnly: params['read_only'] == true,
+              onProgress: callId == null ? null : (message) => reply?.send({'event': {
+                'type': 'mcp.tool.progress', 'data': {'call_id': callId, 'message': message},
+              }}),
             );
           case 'mcp.resources':
             result = await mcp.resources(
