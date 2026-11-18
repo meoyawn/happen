@@ -14,7 +14,7 @@ import 'package:desktop/project_avatar.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/settings_screen.dart';
 import 'package:desktop_drop/src/native_transport.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

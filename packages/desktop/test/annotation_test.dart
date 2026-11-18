@@ -5,7 +5,7 @@ import 'package:desktop/response_annotation.dart';
 import 'package:desktop/response_annotation_reference.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 

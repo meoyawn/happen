@@ -31,7 +31,7 @@ const mcpEventCatalog = <Json>[
   {
     'name': 'list_mcp_event_subscriptions',
     'description': 'List this thread\'s native MCP event subscriptions and their current state. Subscriptions belong to this thread and persist between turns.',
-    'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': false},
+    'parameters': {'type': 'object', 'properties': <String, Json>{}, 'additionalProperties': false},
   },
   {
     'name': 'unsubscribe_mcp_events',

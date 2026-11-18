@@ -1,7 +1,7 @@
 import 'package:desktop/appearance.dart';
 import 'package:desktop/openai_usage.dart';
 import 'package:desktop/openai_usage_controller.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openai/account_usage.dart';
 import 'package:protocol/protocol.dart';

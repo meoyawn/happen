@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/widgets.dart';
 
 import 'conversation_markdown.dart';
 
@@ -37,7 +37,7 @@ class _SmoothConversationTextState extends State<SmoothConversationText> with Si
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _active = TickerMode.of(context);
+    _active = TickerMode.valuesOf(context).enabled;
     _motion = _active && !MediaQuery.disableAnimationsOf(context);
     if (!_motion) {
       _ticker.stop();

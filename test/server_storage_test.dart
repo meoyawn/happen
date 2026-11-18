@@ -56,7 +56,7 @@ void main() {
     try {
       store.append('task.created', config, metadata: {'config': config});
       store.mcpSubscription('save', {'create': true, 'snapshot': {'threadId': 'unregistered',
-        'subscription_id': 'a' * 32, 'server': 'events', 'name': 'changed', 'mode': 'poll', 'arguments': {}}});
+        'subscription_id': 'a' * 32, 'server': 'events', 'name': 'changed', 'mode': 'poll', 'arguments': <String, Object?>{}}});
     } finally { store.close(); }
     var catalog = await open();
     expect((await listThreads(root.path, {}, cancellation: cancellation))['data'], isEmpty);

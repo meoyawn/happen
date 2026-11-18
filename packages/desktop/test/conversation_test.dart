@@ -9,7 +9,7 @@ import 'package:desktop/conversation_response.dart';
 import 'package:desktop/inline_reference.dart';
 import 'package:desktop/image_preview.dart';
 import 'package:desktop/session.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';

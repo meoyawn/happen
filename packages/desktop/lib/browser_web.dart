@@ -1,14 +1,14 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:protocol/protocol.dart';
 import 'package:web/web.dart' as web;
 
 import 'appearance.dart';
-import 'browser_page_web.dart';
+import 'browser_page.dart';
 import 'browser_ports.dart';
 
-export 'browser_page_web.dart';
+export 'browser_page.dart' show BrowserPage, browserAddress, browserHostIsLocal, browserLocationAllowed;
 
 class ConversationBrowserScope extends InheritedWidget {
   const ConversationBrowserScope({super.key, required this.onOpen, required super.child});
@@ -138,7 +138,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         ? const Center(child: Text('Enter a URL to open a website.'))
         : BrowserPorts(active: widget.active, onOpen: _navigate, discover: discover);
     }
-    final url = _page.frameUrl;
+    final url = _page.loadAddress;
     if (url == null) return const SizedBox.shrink();
     return HtmlElementView.fromTagName(key: ValueKey((_page, _page.generation)), tagName: 'iframe',
       onElementCreated: (element) {
@@ -170,8 +170,10 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none)),
           onTap: () => _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length))),
         const SizedBox(width: 6),
-        _button('Open in new tab', Icons.open_in_new_rounded, _page.frameUrl == null ? null
-          : () => web.window.open(_page.frameUrl.toString(), '_blank', 'noopener,noreferrer')),
+        _button('Open in new tab', Icons.open_in_new_rounded, switch (_page.loadAddress) {
+          final url? => () => web.window.open(url.toString(), '_blank', 'noopener,noreferrer'),
+          null => null,
+        }),
       ])),
     if (_addressError case final error?) Padding(padding: const EdgeInsets.all(8),
       child: Text(error, style: const TextStyle(fontSize: 12, color: desktopError))),

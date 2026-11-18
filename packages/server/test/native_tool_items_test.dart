@@ -36,11 +36,13 @@ void main() {
     await client.request('turn/start', {'threadId': id, 'input': [{'type': 'text', 'text': 'Run the selected tool.'}]}); return id;
   }
   Future<void> coldReplay(String id, Json item) async {
-    final diffs = (await read(id))['thread']['turns'].map((turn) => turn['diff']).toList();
+    Iterable<Object?> turnDiffs(Json page) =>
+      (page['thread']['turns'] as List<Object?>).map((turn) => jsonObject(turn)['diff']);
+    final diffs = turnDiffs(await read(id)).toList();
     await subscription.cancel(); await client.close(); await server.close(); await launch();
     final requestsBeforeRead = requests.length, page = await read(id);
     expect(items(page).singleWhere((i) => i['id'] == item['id']), item);
-    expect((page['thread']['turns'] as List).map((turn) => turn['diff']), diffs);
+    expect(turnDiffs(page), diffs);
     expect(requests, hasLength(requestsBeforeRead), reason: 'Cold read cannot repeat host effects or inference.');
   }
   setUp(() async {

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Gives pointer-opened menus the same keyboard focus as keyboard-opened ones.
 class DesktopMenuAnchor extends StatefulWidget {

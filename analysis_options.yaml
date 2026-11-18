@@ -10,6 +10,7 @@ analyzer:
     strict-inference: true
     strict-raw-types: true
   errors:
+    deprecated_member_use: error
     discarded_futures: error
     unawaited_futures: error
     avoid_void_async: error

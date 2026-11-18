@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart';
 
@@ -379,6 +379,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
     if (compact) return _mobileInput(context);
     final completing = ComposerAutocompleteScope.of(context);
     final autocomplete = ComposerAutocompleteScope.ownerOf(context);
+    final selectionColor = DesktopAccent.of(context).selection;
     final toolbar = MobileSelectionToolbarController(builder: ({required context, required anchors,
         required controller, required onDismiss, required onRefresh}) => AdaptiveTextSelectionToolbar.buttonItems(
       anchors: anchors,
@@ -400,7 +401,7 @@ class _ComposerEditorState extends State<ComposerEditor> {
             style: CodeEditorStyle(fontFamily: desktopFontFamily, fontSize: 14, fontHeight: desktopProseHeight,
               textColor: desktopForeground, hintTextColor: desktopSecondary, backgroundColor: Colors.transparent,
               cursorColor: desktopForeground, cursorWidth: 1.5, cursorLineColor: Colors.transparent,
-              selectionColor: DesktopAccent.of(context).selection),
+              selectionColor: selectionColor, highlightColor: selectionColor),
             shortcutsActivatorsBuilder: _ComposerShortcuts(completing), toolbarController: toolbar,
             shortcutOverrideActions: {
               CodeShortcutCursorMoveIntent: _ComposerAction<CodeShortcutCursorMoveIntent>(_code, onInvoke: (intent) {

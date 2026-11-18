@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:config/config.dart';
 import 'package:elk_stroke_icons/elk_stroke_icons.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:macos_file_picker/macos_file_picker.dart';
 import 'package:protocol/protocol.dart';
 

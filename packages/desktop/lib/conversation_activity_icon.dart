@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 // Outlines from cupertino_icons 1.0.9. See CUPERTINO-ICONS-NOTICE.

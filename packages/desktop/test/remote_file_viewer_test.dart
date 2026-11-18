@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:desktop/database.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/session_panels.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:re_editor/re_editor.dart';
