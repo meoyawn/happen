@@ -204,6 +204,8 @@ class SessionDraft {
   String? checkoutKey, provider, model, reasoning;
   bool tracing;
   DesktopTask? submission;
+  late final _panelTask = DesktopTask(id, 'Draft');
+  SessionPanelState? _panels;
 }
 
 String machineLabel(DesktopSession session) => session.machineAlias == null && session.client.sharedFilesystem ? 'local' : session.machineName;
@@ -380,13 +382,13 @@ class DesktopSession extends ChangeNotifier {
     }
   }
   final _lifetime = CancellationToken();
-  late final _browserPages = <(String, String), BrowserPage>{};
+  late final _browserPages = <String, ({DesktopTask task, BrowserPage page})>{};
   late final _browserRegistrations = <String, Future<void>>{};
   late final _browserToolThreads = <String>{};
   late final _browserCalls = <String, ({Object? task, CancellationToken cancellation})>{};
   late final _browserLifetime = CancellationToken();
-  /// Presentation owner for browser tabs opened before selecting a thread.
-  late final browserWorkspace = DesktopTask('desktop:browser', 'Browser');
+  late final _homePanelTask = DesktopTask('desktop:browser', 'Browser');
+  DesktopTask get panelTask => viewingConversation ? task ?? currentDraft._panelTask : _homePanelTask;
   late final StreamSubscription<Json> _events;
   late final CancellationHook _disconnect;
   final _earlyEvents = <Json>[];
@@ -817,7 +819,19 @@ class DesktopSession extends ChangeNotifier {
     await _setting('sidebar_open', open.toString());
   }
 
-  SessionPanelState panelsFor(DesktopTask target) => panelLayouts.putIfAbsent(target.id, SessionPanelState.new);
+  SessionDraft? _draftOwningPanels(DesktopTask target) => sessionDrafts.where((draft) => draft.id == target.id).firstOrNull;
+
+  Project? panelProjectFor(DesktopTask target) {
+    final draft = _draftOwningPanels(target);
+    return projects.where((project) => draft == null ? project.tasks.contains(target) : project.checkoutKey == draft.checkoutKey).firstOrNull;
+  }
+
+  SessionPanelState? panelLayoutFor(DesktopTask target) => _draftOwningPanels(target)?._panels ?? panelLayouts[target.id];
+
+  SessionPanelState panelsFor(DesktopTask target) {
+    if (_draftOwningPanels(target) case final draft?) return draft._panels ??= SessionPanelState();
+    return panelLayouts.putIfAbsent(target.id, SessionPanelState.new);
+  }
 
   Future<void> loadPanelLayouts(CancellationToken cancellation) async {
     if (_panelsLoaded) return;
@@ -837,12 +851,17 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _savePanels(DesktopTask target, {bool selectionOnly = false}) {
-    _changedPanelLayouts.add(target.id);
+    final isDraft = _draftOwningPanels(target) != null;
+    if (!isDraft) _changedPanelLayouts.add(target.id);
     final viewed = _markViewed(target);
     if (selectionOnly) {
       panelSelection.notifyListeners();
       if (viewed) sidebarChanges.notifyListeners();
     } else { notifyListeners(); }
+    if (isDraft) {
+      saveDrafts();
+      return;
+    }
     unawaited(loadPanelLayouts(_lifetime).then((_) {
       _saveNavigation('session_panels', jsonEncode({
         for (final entry in panelLayouts.entries) entry.key: writeSessionPanels(entry.value),
@@ -850,6 +869,29 @@ class DesktopSession extends ChangeNotifier {
     }).catchError((Object failure) {
       if (!_lifetime.isCancelled) showError(failure);
     }));
+  }
+
+  void _adoptDraftPanels(SessionDraft draft, DesktopTask target) {
+    final state = draft._panels;
+    if (state == null) return;
+    draft._panels = null;
+    if (panelLayouts[target.id] case final existing?) {
+      state.tabs.addAll(existing.tabs.where((tab) => !state.tabs.contains(tab)));
+      state.closed.addAll(existing.closed.where((tab) => !state.closed.contains(tab)));
+      state.closed.removeWhere(state.tabs.contains);
+      state.browserPages.addAll(existing.browserPages);
+      state.fileReveals.addAll(existing.fileReveals);
+      state.diffReveals.addAll(existing.diffReveals);
+      state.active ??= existing.active;
+      state.opened |= existing.opened;
+      state.sessionWidth ??= existing.sessionWidth;
+    }
+    panelLayouts[target.id] = state;
+    for (final tab in state.tabs.where(isBrowserPanel)) {
+      final entry = _browserPages[tab];
+      if (entry != null && entry.task.id == draft.id) _browserPages[tab] = (task: target, page: entry.page);
+    }
+    _savePanels(target);
   }
 
   void toggleSidePanel(DesktopTask target) {
@@ -896,7 +938,7 @@ class DesktopSession extends ChangeNotifier {
     final tab = existing ?? 'browser:${newId()}';
     state.browserPages.putIfAbsent(tab, () => (url: url, title: ''));
     openSessionPanel(target, tab);
-    if (connected && !target.archived && target != browserWorkspace) {
+    if (connected && !target.archived && target != _homePanelTask && _draftOwningPanels(target) == null) {
       unawaited(_registerBrowserTools(target.id, _lifetime).catchError((Object error) {
         if (!_lifetime.isCancelled && !_browserLifetime.isCancelled) showError(error, title: 'Could not connect browser tools');
       }));
@@ -905,8 +947,8 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void updateBrowserPanel(DesktopTask target, String tab, String url, String title) {
-    final state = panelsFor(target);
-    if (!state.tabs.contains(tab)) return;
+    final state = panelLayoutFor(target);
+    if (state == null || !state.tabs.contains(tab)) return;
     final page = (url: url, title: title);
     if (state.browserPages[tab] == page) return;
     state.browserPages[tab] = page;
@@ -925,7 +967,7 @@ class DesktopSession extends ChangeNotifier {
     final index = state.tabs.indexOf(tab);
     if (index < 0) return;
     state.tabs.removeAt(index);
-    if (isBrowserPanel(tab)) _browserPages.remove((target.id, tab))?.close();
+    if (isBrowserPanel(tab)) _browserPages.remove(tab)?.page.close();
     state.fileReveals.remove(tab);
     if (!tab.startsWith('new:') && !isSideChatPanel(tab)) { state.closed..remove(tab)..insert(0, tab); }
     if (state.active == tab) state.active = state.tabs.isEmpty ? null : state.tabs[index.clamp(0, state.tabs.length - 1)];
@@ -1417,6 +1459,7 @@ class DesktopSession extends ChangeNotifier {
           'provider': draft.provider, 'model': draft.model, 'reasoning': draft.reasoning,
           'tracing': draft.tracing,
           'text': drafts[draft.id] ?? '',
+          if (draft._panels case final panels?) 'panels': writeSessionPanels(panels),
           if (draftSelections[draft.id] case final selection?)
             'selection': [selection.baseOffset, selection.extentOffset],
           'files': [for (final file in fileDrafts[draft.id] ?? const <ComposerFileReference>[])
@@ -1454,12 +1497,13 @@ class DesktopSession extends ChangeNotifier {
     composerMode(draft.id) is MessageComposer &&
     (drafts[draft.id] ?? '').trim().isEmpty &&
     (fileDrafts[draft.id]?.isEmpty ?? true) &&
-    (attachmentDrafts[draft.id]?.isEmpty ?? true) && annotationsFor(draft.id).isEmpty;
+    (attachmentDrafts[draft.id]?.isEmpty ?? true) && annotationsFor(draft.id).isEmpty &&
+    draft._panels?.tabs.any(isBrowserPanel) != true;
 
   int _pruneEmptyDrafts() {
     bool unused(SessionDraft draft) => _emptyDraft(draft) &&
       !terminals.groups.entries.any((entry) => entry.key.$2 == draft.id && entry.value.sessions.isNotEmpty) &&
-      !panelLayouts.containsKey(draft.id);
+      draft._panels == null;
     final keepers = <String?, SessionDraft>{};
     for (final draft in sessionDrafts.where(unused)) {
       final previous = keepers[draft.checkoutKey];
@@ -1644,8 +1688,10 @@ class DesktopSession extends ChangeNotifier {
     for (final raw in restored['drafts'] as List? ?? const []) {
       final value = jsonObject(raw);
       final id = requiredString(value, 'id');
-      sessionDrafts.add(SessionDraft(id, value['project'] as String?, provider: value['provider'] as String?,
-        model: value['model'] as String?, reasoning: value['reasoning'] as String?, tracing: value['tracing'] == true));
+      final draft = SessionDraft(id, value['project'] as String?, provider: value['provider'] as String?,
+        model: value['model'] as String?, reasoning: value['reasoning'] as String?, tracing: value['tracing'] == true);
+      if (value['panels'] case final Json panels) draft._panels = readSessionPanels(panels);
+      sessionDrafts.add(draft);
       drafts[id] = value['text'] as String? ?? '';
       if (value['selection'] case [final int base, final int extent]) {
         draftSelections[id] = TextSelection(baseOffset: base, extentOffset: extent);
@@ -2260,6 +2306,7 @@ class DesktopSession extends ChangeNotifier {
           if (_activeDraftId == draft?.id) _activeDraftId = null;
           _saveNavigation('open_tabs', jsonEncode(openTabIds));
           _replayEarlyEvents(created);
+          if (draft != null) _adoptDraftPanels(draft, created);
           if (created.archived) {
             await terminals.removeTask(created.id);
             if (task == created) task = null;
@@ -2774,7 +2821,7 @@ class DesktopSession extends ChangeNotifier {
   Future<void> close() async {
     _browserLifetime.cancel();
     _disconnectBrowserTools();
-    for (final page in _browserPages.values) { page.close(); }
+    for (final entry in _browserPages.values) { entry.page.close(); }
     _browserPages.clear();
     _draftSave?.cancel();
     await _appearance?.close();

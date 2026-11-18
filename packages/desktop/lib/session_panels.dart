@@ -26,10 +26,12 @@ import 'workspace_changes.dart';
 /// The side region is a sibling of the entire chat, including its composer.
 /// Hiding a region retains its tabs; closing a tab releases its content and reads.
 class SessionPanelWorkspace extends StatefulWidget {
-  const SessionPanelWorkspace({super.key, required this.session, required this.task,
-    required this.child, required this.onReturnFocus, required this.sideComposer});
+  SessionPanelWorkspace({super.key, required this.session, required this.task,
+    required this.child, required this.onReturnFocus, required this.sideComposer})
+    : panelTask = task ?? session.panelTask;
   final DesktopSession session;
   final DesktopTask? task;
+  final DesktopTask panelTask;
   final Widget child;
   final VoidCallback onReturnFocus;
   final Widget Function(DesktopTask task, bool active) sideComposer;
@@ -39,7 +41,7 @@ class SessionPanelWorkspace extends StatefulWidget {
 }
 
 class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
-  DesktopTask get _panelTask => widget.task ?? widget.session.browserWorkspace;
+  DesktopTask get _panelTask => widget.panelTask;
   final _lifetime = CancellationToken();
   final _focus = FocusScopeNode(debugLabel: 'Session side panel');
   double? _dragWidth;
@@ -55,7 +57,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   @override
   void didUpdateWidget(covariant SessionPanelWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.task != widget.task) _dragWidth = null;
+    if (oldWidget.panelTask != _panelTask) _dragWidth = null;
   }
 
   @override
@@ -125,8 +127,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
     child: ListenableBuilder(listenable: Listenable.merge([widget.session, widget.session.panelSelection]),
     child: widget.child, builder: (context, child) => LayoutBuilder(builder: (context, bounds) {
       final task = _panelTask;
-      final state = widget.session.panelsFor(task);
-      final directory = widget.session.projects.where((project) => project.tasks.contains(task)).firstOrNull?.path;
+      final state = widget.session.panelLayoutFor(task) ?? SessionPanelState();
+      final directory = widget.session.panelProjectFor(task)?.path;
       final opened = state.opened;
       final wide = bounds.maxWidth >= 768;
       final available = bounds.maxWidth - 8;
@@ -171,7 +173,7 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
                           directory: directory ?? '', selectedPath: state.diffReveals[tab]?.path,
                           revealRevision: state.diffReveals[tab]?.revision ?? 0))),
                   for (final tab in state.tabs.where(isBrowserPanel))
-                    Offstage(key: ValueKey((task.id, tab)), offstage: state.active != tab,
+                    Offstage(key: ValueKey((widget.session, tab)), offstage: state.active != tab,
                       child: ExcludeFocus(excluding: !opened || state.active != tab,
                         child: DesktopBrowser(initialUrl: state.browserPages[tab]?.url ?? '',
                           page: widget.session.browserPageFor(task, tab),
@@ -236,13 +238,13 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   ));
 
   Future<void> _tabMenu(SessionPanelState state, String tab, Offset position) async {
-    final task = widget.task;
+    final task = _panelTask;
     final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
     final action = await showMenu<String>(context: context,
       position: RelativeRect.fromRect(position & Size.zero, Offset.zero & overlay.size),
       items: [const PopupMenuItem(value: 'close', child: Text('Close tab')),
         PopupMenuItem(value: 'others', enabled: state.tabs.length > 1, child: const Text('Close other tabs'))]);
-    if (!mounted || widget.task != task) return;
+    if (!mounted || _panelTask != task) return;
     if (action == 'close') _close(tab);
     if (action == 'others') {
       for (final other in state.tabs.toList()) { if (other != tab) _close(other); }

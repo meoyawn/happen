@@ -42,21 +42,20 @@ extension DesktopBrowserSession on DesktopSession {
     _browserToolThreads.add(id);
   }
 
-  BrowserPage browserPageFor(DesktopTask target, String tab) =>
-    _browserPages.putIfAbsent((target.id, tab), () {
-      final page = BrowserPage(initialUrl: panelsFor(target).browserPages[tab]?.url ?? '',
-        directory: projects.where((project) => project.tasks.contains(target)).firstOrNull?.path, client: client);
-      page.addListener(() {
-        if (!_lifetime.isCancelled && page.state is! BrowserClosed) {
-          updateBrowserPanel(target, tab, page.location?.toString() ?? '', page.title);
-        }
-      });
-      return page;
+  BrowserPage browserPageFor(DesktopTask target, String tab) => _browserPages.putIfAbsent(tab, () {
+    final page = BrowserPage(initialUrl: panelsFor(target).browserPages[tab]?.url ?? '',
+      directory: panelProjectFor(target)?.path, client: client);
+    page.addListener(() {
+      final owner = _browserPages[tab];
+      if (owner == null || owner.page != page || _lifetime.isCancelled || page.state is BrowserClosed) return;
+      updateBrowserPanel(owner.task, tab, page.location?.toString() ?? '', page.title);
     });
+    return (task: target, page: page);
+  }).page;
 
   void _closeBrowserPages(String taskID) {
-    for (final key in _browserPages.keys.where((key) => key.$1 == taskID).toList()) {
-      _browserPages.remove(key)!.close();
+    for (final tab in _browserPages.keys.where((tab) => _browserPages[tab]!.task.id == taskID).toList()) {
+      _browserPages.remove(tab)!.page.close();
     }
     for (final call in _browserCalls.values.where((call) => call.task == taskID)) {
       call.cancellation.cancel();
@@ -69,7 +68,7 @@ extension DesktopBrowserSession on DesktopSession {
   }
 
   Json _browserTab(DesktopTask task, String tab) {
-    final page = _browserPages[(task.id, tab)];
+    final page = _browserPages[tab]?.page;
     final stored = panelsFor(task).browserPages[tab];
     return {'tab_id': tab, 'url': page?.location?.toString() ?? stored?.url ?? '',
       'title': page?.title ?? stored?.title ?? '', 'loading': page?.loading ?? false,

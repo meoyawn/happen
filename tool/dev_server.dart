@@ -167,7 +167,7 @@ WantedBy=default.target
     final packages = await prepareNativeRuntime();
     await units.create(recursive: true); await cache.create(recursive: true);
     await File('${units.path}/happen-server-dev.service').writeAsString(unit('Happen Dart VM server, web and tunnel supervisor',
-      '${quote(dart)} --packages=${quote(packages)} --enable-vm-service=8181/127.0.0.1 '
+      '${quote(dart)} --packages=${quote(packages)} --no-dds --enable-vm-service=8181/127.0.0.1 '
       '--write-service-info=${quote('${cache.path}/server-vm.json')} ${quote(entry)} _serve --data-dir ${quote(directory)}',
       connectorPath: '${File(packages).parent.path}/cloudflared'), flush: true);
     await systemctl(['daemon-reload']);

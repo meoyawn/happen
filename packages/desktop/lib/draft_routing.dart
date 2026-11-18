@@ -48,6 +48,7 @@ extension DraftRouting on DesktopSession {
       path: value['path'] as String, image: value['type'] == 'image', ownedDirectory: value['owned_directory'] as String?)).toList();
     final draft = SessionDraft(original.id, destination.checkoutKey, provider: original.provider ?? source.providerId,
       model: original.model ?? source.modelId, reasoning: original.reasoning ?? source.reasoning, tracing: original.tracing);
+    if (original._panels case final panels?) draft._panels = readSessionPanels(writeSessionPanels(panels));
     sessionDrafts.add(draft);
     openTabIds.add(draft.id);
     drafts[draft.id] = contents.text;
@@ -89,6 +90,8 @@ extension DraftRouting on DesktopSession {
       if (contents.annotations.isNotEmpty) _annotationDrafts[draft.id] = contents.annotations;
       rethrow;
     }
+    draft._panels = null;
+    _closeBrowserPages(draft.id);
     if (discardAttachments) {
       await runIsolateEffect(_discardRoutedAttachments, {'directories': contents.attachments
         .map((attachment) => attachment.ownedDirectory).nonNulls.toSet().toList()}, cancellation: _lifetime);
