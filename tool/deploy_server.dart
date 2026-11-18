@@ -8,6 +8,8 @@ import 'package:protocol/protocol.dart';
 import 'build_server.dart';
 import 'build_server/common.dart' show runBuildProcess;
 
+const _targetPath = '~/.secrets/happen/vps.json';
+
 String quoteRemote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
 // Unison splits sshargs on whitespace and recognizes backslash escapes only.
@@ -47,12 +49,14 @@ Future<void> withDeploymentSsh(String host, List<String> options, CancellationTo
       await drained;
       if (await File(socket).exists()) await File(socket).delete();
       if (errors.toString().contains('Permission denied')) {
-        throw StateError('Deployment SSH authentication failed. Set identityFile in .local/deploy-server.json '
-          'or load the server key into your SSH agent. ${errors.toString().trim()}');
+        throw StateError('VPS SSH authentication failed. Check the identity in $_targetPath or load it into your SSH agent.');
       }
-      if (attempt >= 5) throw StateError('Could not establish deployment SSH connection ($code): ${errors.toString().trim()}');
+      if (errors.toString().contains('Host key verification failed')) {
+        throw StateError('VPS SSH host key verification failed. Check your SSH known hosts.');
+      }
+      if (attempt >= 5) throw StateError('Could not establish the VPS SSH connection ($code).');
       final delay = Duration(seconds: 1 << attempt);
-      stderr.writeln('Deployment SSH connection failed; retrying in ${delay.inSeconds}s. ${errors.toString().trim()}');
+      stderr.writeln('VPS SSH connection failed. Retrying in ${delay.inSeconds}s.');
       await cancellableDelay(delay, cancellation);
     }
     // This private master belongs to this invocation, independently of desktop.
@@ -66,20 +70,66 @@ Future<void> withDeploymentSsh(String host, List<String> options, CancellationTo
   }
 }
 
+Future<Json> _readTarget() async {
+  final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  if (home == null) throw StateError('Cannot locate the home directory for $_targetPath');
+  final file = File('$home/.secrets/happen/vps.json');
+  final stat = await file.stat();
+  if (stat.type != FileSystemEntityType.file) throw StateError('Set the private VPS target in $_targetPath');
+  if (!Platform.isWindows && stat.mode & 0x3f != 0) throw StateError('Protect $_targetPath with mode 600');
+  try { return jsonObject(jsonDecode(await file.readAsString())); }
+  on FormatException { throw const FormatException('Invalid private VPS target JSON'); }
+}
+
+Future<void> _syncTrackedFiles(Directory root, String checkout, String destination, List<String> ssh,
+    CancellationToken cancellation) async {
+  final tracked = await runBuildProcess('git', ['ls-files', '--cached', '--recurse-submodules', '-z'],
+    cancellation, workingDirectory: root.path, capture: true, trimOutput: false);
+  final paths = <String>[];
+  for (final path in tracked.split('\u0000').where((path) => path.isNotEmpty).toSet()) {
+    cancellation.throwIfCancelled();
+    final type = await FileSystemEntity.type('${root.path}/$path', followLinks: false);
+    if (type == FileSystemEntityType.file || type == FileSystemEntityType.link) paths.add(path);
+  }
+  if (paths.isEmpty) throw StateError('No Git-tracked files to sync');
+  stdout.writeln('Syncing ${paths.length} Git-tracked files to the VPS checkout.');
+  final options = ['-root', root.path, '-root', destination, '-ui', 'text', '-batch', '-silent',
+    '-force', root.path, '-noupdate', root.path, '-nocreation', root.path, '-nodeletion', checkout,
+    '-backup', 'Name *', '-backuploc', 'central', '-times', '-fastcheck', 'false',
+    '-rsrc', 'false', '-xattrs=false', '-links', 'true', '-perms', '0o111',
+    '-sshargs', ssh.map(quoteUnisonArgument).join(' ')];
+  final batch = <String>[];
+  var bytes = 0;
+  for (final path in paths) {
+    final size = utf8.encode(path).length + 24;
+    if (bytes + size > 100 * 1024 && batch.isNotEmpty) {
+      await runBuildProcess('unison', [...options, ...batch], cancellation);
+      batch.clear();
+      bytes = 0;
+    }
+    batch.addAll(['-path', path]);
+    bytes += size;
+  }
+  await runBuildProcess('unison', [...options, ...batch], cancellation);
+  stdout.writeln('Unison finished syncing the VPS checkout.');
+}
+
 Future<void> main(List<String> arguments) async {
   final root = Directory.fromUri(Platform.script).parent.parent;
+  final syncSource = arguments.contains('--sync-source');
   final aliases = arguments.where((value) => !value.startsWith('--')).toList();
   final architectures = arguments.where((value) => value.startsWith('--architecture=')).toList();
-  if (aliases.length > 1 || architectures.length > 1 ||
+  if (syncSource && arguments.length != 1 || aliases.length > 1 || architectures.length > 1 ||
       arguments.any((value) => value.startsWith('--') && !{
-        '--skip-build', '--from-codex', '--architecture=x64', '--architecture=arm64',
+        '--sync-source', '--skip-build', '--from-codex', '--architecture=x64', '--architecture=arm64',
       }.contains(value))) {
-    throw ArgumentError('Usage: dart tool/deploy_server.dart [SSH_ALIAS] [--skip-build] [--from-codex] [--architecture=x64|arm64]');
+    throw ArgumentError('Use --sync-source alone, or pass [SSH_ALIAS] [--skip-build] [--from-codex] [--architecture=x64|arm64]');
   }
-  final saved = aliases.isNotEmpty ? <String, dynamic>{'host': aliases.single}
-    : await File('${root.path}/.local/deploy-server.json').exists()
-      ? jsonObject(jsonDecode(await File('${root.path}/.local/deploy-server.json').readAsString()))
-      : throw StateError('Set the private target in .local/deploy-server.json (host, optional user, port, identityFile), or pass an SSH alias.');
+  final saved = aliases.isNotEmpty ? <String, dynamic>{'host': aliases.single} : await _readTarget();
+  final checkout = syncSource ? requiredString(saved, 'checkout') : null;
+  if (checkout != null && (!checkout.startsWith('/') || checkout == '/' || RegExp(r'[\x00-\x1f]').hasMatch(checkout))) {
+    throw const FormatException('Expected an absolute VPS checkout path');
+  }
   final host = saved['host'], user = saved['user'], port = saved['port'], identity = saved['identityFile'];
   if (host is! String || !RegExp(r'^[a-zA-Z0-9:][a-zA-Z0-9_.:-]*$').hasMatch(host) ||
       user != null && (user is! String || !RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(user)) ||
@@ -95,9 +145,18 @@ Future<void> main(List<String> arguments) async {
     if (user != null) ...['-l', user as String], if (port != null) ...['-p', '$port'],
     if (identity != null) ...['-i', identity as String, '-o', 'IdentitiesOnly=yes']];
   try {
-    await runBuildProcess('unison', ['-version'], cancellation);
+    await runBuildProcess('unison', ['-version'], cancellation, capture: syncSource);
     await withDeploymentSsh(host, options, cancellation, (ssh) async {
       Future<String> remote(List<String> command) => runBuildProcess('ssh', [...ssh, '--', host, command.map(quoteRemote).join(' ')], cancellation, capture: true);
+      final remoteUser = await remote(['id', '-un']);
+      if (!RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(remoteUser)) throw StateError('Invalid remote username');
+      final destinationHost = host.contains(':') ? '[$host]' : host;
+      if (checkout != null) {
+        final repo = await remote(['git', '-C', checkout, 'rev-parse', '--is-inside-work-tree', '--show-prefix']);
+        if (repo != 'true') throw StateError('The VPS checkout must be the root of a Git working tree');
+        await _syncTrackedFiles(root, checkout, 'ssh://$remoteUser@$destinationHost/$checkout', ssh, cancellation);
+        return;
+      }
       final machine = await remote(['uname', '-m']);
       final architecture = switch (machine) { 'x86_64' => 'x64', 'aarch64' => 'arm64', _ => throw StateError('Unsupported VPS architecture') };
       if (architectures.isNotEmpty && architectures.single != '--architecture=$architecture') {
@@ -113,8 +172,6 @@ Future<void> main(List<String> arguments) async {
       }
       final home = await remote(['printenv', 'HOME']);
       if (!home.startsWith('/') || home == '/' || RegExp(r'[\x00-\x1f]').hasMatch(home)) throw StateError('Invalid remote home');
-      final remoteUser = await remote(['id', '-un']);
-      if (!RegExp(r'^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$').hasMatch(remoteUser)) throw StateError('Invalid remote username');
       final releases = '$home/.local/share/happen/releases';
       final release = '$releases/$checksum';
       final pending = '$release/pending';
@@ -130,7 +187,6 @@ Future<void> main(List<String> arguments) async {
         'cp -p -- ${quoteRemote('$current/happen-server')} ${quoteRemote('$pending/happen-server')}; fi';
       await remote(['sh', '-c', seed]);
       stdout.writeln('Uploading the AOT executable with Unison delta transfer over deployment SSH.');
-      final destinationHost = host.contains(':') ? '[$host]' : host;
       await runBuildProcess('unison', [
         '-root', executable.parent.path, '-root', 'ssh://$remoteUser@$destinationHost/$pending',
         '-ui', 'text', '-batch', '-path', 'happen-server', '-force', executable.parent.path,

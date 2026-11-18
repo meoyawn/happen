@@ -238,13 +238,24 @@ tasks:
     inputs:
       - tool/deploy_server.dart
       - tool/build_server/common.dart
-      - file: .local/deploy-server.json
-        optional: true
     options:
       cache: false
       interactive: false
       shell: false
       outputStyle: stream
+
+  sync-server:
+    description: Sync Git-tracked working files to the private VPS checkout using Unison
+    command: dart --disable-dart-dev tool/deploy_server.dart --sync-source
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      interactive: false
+      shell: false
+      runInCI: false
+      outputStyle: stream
+      mutex: happen-server-source-sync
 
   analyze:
     description: Check Dart types and configured lint rules across the workspace
