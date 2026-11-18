@@ -427,6 +427,22 @@ String? _plan(String token) {
   } on FormatException { return null; }
 }
 
+/// Identifies the endpoint and account across OAuth access token renewals.
+String? openAICredentialScope(Uri endpoint, Json auth) {
+  final access = auth['access_token'];
+  if (access is! String || access.isEmpty) return null;
+  Json claims = {}, principal = {};
+  try {
+    claims = _claims(access);
+    principal = jsonObject(claims['https://api.openai.com/auth'] ?? {});
+  } on FormatException { /* Opaque provider credentials have no JWT claims. */ }
+  return sha256.convert(utf8.encode(jsonEncode([
+    endpoint.toString(), auth['account_id'] ?? access,
+    auth['user_id'] ?? principal['chatgpt_user_id'] ?? claims['sub'],
+    auth['email'] ?? claims['email'], auth['plan_type'] ?? principal['chatgpt_plan_type'],
+  ]))).toString();
+}
+
 String _accountId(String access) {
   final claims = _claims(access);
   return requiredString(

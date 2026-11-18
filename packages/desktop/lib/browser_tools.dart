@@ -45,7 +45,7 @@ extension DesktopBrowserSession on DesktopSession {
   BrowserPage browserPageFor(DesktopTask target, String tab) =>
     _browserPages.putIfAbsent((target.id, tab), () {
       final page = BrowserPage(initialUrl: panelsFor(target).browserPages[tab]?.url ?? '',
-        directory: projects.where((project) => project.tasks.contains(target)).firstOrNull?.path);
+        directory: projects.where((project) => project.tasks.contains(target)).firstOrNull?.path, client: client);
       page.addListener(() {
         if (!_lifetime.isCancelled && page.state is! BrowserClosed) {
           updateBrowserPanel(target, tab, page.location?.toString() ?? '', page.title);
@@ -121,7 +121,10 @@ extension DesktopBrowserSession on DesktopSession {
     cancellation.throwIfCancelled();
     final panels = panelsFor(target);
     if (name == 'browser_tabs') return {'tabs': [for (final tab in panels.tabs.where(isBrowserPanel)) _browserTab(target, tab)]};
-    if (name == 'browser_dev_servers') return {'servers': await discoverBrowserPorts(cancellation: cancellation)};
+    if (name == 'browser_dev_servers') {
+      final discover = client.sharedFilesystem ? discoverDevServers : client.discoverRemoteDevServers;
+      return {'servers': await discover(cancellation: cancellation)};
+    }
     if (name == 'browser_open') {
       final uri = browserAddress(arguments['url'] as String? ?? '');
       final tab = openBrowserPanel(target);

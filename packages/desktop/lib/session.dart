@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:protocol/protocol.dart';
+import 'package:server/dev_servers.dart';
 import 'connection.dart';
 import 'package:telemetry/telemetry.dart';
 
@@ -24,6 +25,7 @@ import 'goal_state.dart';
 import 'terminal.dart';
 import 'panel_state.dart';
 import 'notification_preferences.dart';
+import 'openai_usage_controller.dart';
 import 'desktop_notice.dart';
 import 'pin_state.dart';
 import 'pinned_sidebar_preferences.dart';
@@ -33,7 +35,7 @@ import 'project_actions_state.dart';
 import 'project_icon_state.dart';
 import 'local_project_icons.dart';
 import 'browser_page.dart';
-import 'browser_ports.dart';
+import 'browser_preview.dart';
 
 part 'draft_routing.dart';
 part 'annotation_drafts.dart';
@@ -251,6 +253,7 @@ class DesktopSession extends ChangeNotifier {
 
   void _connectionLost() {
     connected = false;
+    openAIUsage.invalidate();
     _disconnectBrowserTools();
     _recovery?.cancel();
     for (final target in [...projects.expand((project) => project.tasks), ...sideChats.values]) {
@@ -338,6 +341,8 @@ class DesktopSession extends ChangeNotifier {
   late final _composerModes = <String, ComposerMode>{};
   late final _annotationDrafts = <String, List<ResponseAnnotation>>{};
   late final annotationChanges = ValueNotifier<int>(0);
+  late final _browserAnnotationSends = StreamController<String>.broadcast(sync: true);
+  Stream<String> get browserAnnotationSends => _browserAnnotationSends.stream;
   late _AnnotationWriteState _annotationWrite = const _AnnotationWriteIdle();
   late int _annotationWriteRevision = 0;
   late final sessionDrafts = <SessionDraft>[];
@@ -468,6 +473,12 @@ class DesktopSession extends ChangeNotifier {
   }
   Json? get providerInfo =>
       providers.where((p) => p['id'] == providerId).firstOrNull;
+  late final openAIUsage = OpenAIUsageController(client.openAIUsageRequest,
+    onRedemption: (notice) => _notice(notice.message,
+      type: notice.error ? DesktopToastType.error : DesktopToastType.info));
+  bool get hasOpenAIUsage => connected && signingOut != 'openai' && !(signingIn && loginProvider == 'openai') &&
+    providers.any((provider) => provider['id'] == 'openai' && provider['account_usage'] == true &&
+      _signedInStatuses.contains(provider['status']));
   List<Json> get models => [
     for (final provider in providers)
       for (final model in provider['models'] as List? ?? [])
@@ -477,10 +488,9 @@ class DesktopSession extends ChangeNotifier {
   Json? modelFor(DesktopTask? target) => target == null ? modelInfo
     : models.where((model) => model['provider'] == target.provider && model['id'] == target.model).firstOrNull;
   String? effortFor(DesktopTask? target) => target == null ? reasoning : target.nextReasoning ?? target.reasoning;
-  bool authenticatedFor(DesktopTask? target) => {
-    'signed_in',
-    'refresh_required',
-  }.contains(providers.where((provider) => provider['id'] == (target?.provider ?? providerId)).firstOrNull?['status']);
+  static const _signedInStatuses = {'signed_in', 'refresh_required'};
+  bool authenticatedFor(DesktopTask? target) => _signedInStatuses.contains(
+    providers.where((provider) => provider['id'] == (target?.provider ?? providerId)).firstOrNull?['status']);
   bool get authenticated => authenticatedFor(null);
 
   Future<void> refreshProviders({CancellationToken? cancellation}) async {
@@ -1260,6 +1270,7 @@ class DesktopSession extends ChangeNotifier {
     final id = _loginId = newId();
     signingIn = true;
     loginProvider = provider;
+    if (provider == 'openai') openAIUsage.invalidate(accountChanged: true);
     loginSucceeded = false;
     _loginCancelled = false;
     _openLogin = openBrowser;
@@ -1304,6 +1315,7 @@ class DesktopSession extends ChangeNotifier {
     if (signingOut != null || signingIn) return;
     if (provider == 'openai' && sidebarOwner == null) await _dictation?.cancel();
     signingOut = provider;
+    if (provider == 'openai') openAIUsage.invalidate(accountChanged: true);
     loginError = null;
     loginProvider = provider;
     loginSucceeded = false;
@@ -2073,7 +2085,10 @@ class DesktopSession extends ChangeNotifier {
       }
       if (selected != null && attachments.isEmpty) {
         final accepted = await changeGoal(selected, objective: objective, status: 'active');
-        if (accepted) _consumeAnnotations(selected.draftKey, annotations);
+        if (accepted) {
+          _beginAnnotatedSend(selected.draftKey, annotations);
+          _consumeAnnotations(selected.draftKey, annotations);
+        }
         return accepted;
       }
     }
@@ -2112,6 +2127,7 @@ class DesktopSession extends ChangeNotifier {
         !authenticatedFor(target)) {
       return false;
     }
+    _beginAnnotatedSend(annotationDraft, annotations);
     if (target == null) {
       submitting = true;
       error = null;
@@ -2566,6 +2582,7 @@ class DesktopSession extends ChangeNotifier {
       return;
     }
     if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
+      openAIUsage.invalidate(accountChanged: true);
       if (sidebarOwner == null) unawaited(_dictation?.cancel());
       return;
     }
@@ -2783,6 +2800,7 @@ class DesktopSession extends ChangeNotifier {
       _dictation = null;
     } else { await _cancelSessionDictation(); }
     _lifetime.cancel();
+    openAIUsage.dispose();
     await Future.wait(_synchronizations.toList());
     _stopIconWatch();
     await Future.wait(_iconWatches.toList());
@@ -2805,6 +2823,7 @@ class DesktopSession extends ChangeNotifier {
     panelSelection.dispose();
     sidebarChanges.dispose();
     annotationChanges.dispose();
+    unawaited(_browserAnnotationSends.close());
     dispose();
   }
 }

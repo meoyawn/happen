@@ -93,8 +93,8 @@ class _SessionPanelWorkspaceState extends State<SessionPanelWorkspace> {
   }
 
   void _openBrowser(Uri uri) {
-    if (widget.task case final task?) {
-      widget.session.openBrowserPanel(task, url: uri.toString());
+    if (widget.task != null || !widget.session.client.sharedFilesystem) {
+      widget.session.openBrowserPanel(_panelTask, url: uri.toString());
     } else {
       unawaited(showDialog<void>(context: context, builder: (context) => ConversationBrowserScope(
         onOpen: _openBrowser, child: ConversationFileScope(onOpen: _openFile, child: Dialog(

@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart' show sha256;
 import 'package:agent/agent.dart';
 import 'package:ai/ai.dart';
 import 'package:code_mode/code_mode.dart';
+import 'package:openai/account_usage.dart';
 import 'package:protocol/protocol.dart';
 import 'package:path/path.dart' as p;
 import 'package:storage/storage.dart';
@@ -26,6 +27,8 @@ import 'src/git.dart';
 import 'src/workspaces.dart';
 import 'src/project_folders.dart';
 import 'src/terminals.dart';
+import 'dev_servers.dart';
+import 'src/browser_previews.dart';
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
@@ -49,6 +52,7 @@ class AgentServer {
     this.maxAgents,
     this.telemetry,
     this._networkEvents,
+    this._browserPreviews,
   );
   final String directory;
   final HttpServer? http;
@@ -57,6 +61,7 @@ class AgentServer {
   final int maxAgents;
   final Telemetry telemetry;
   final ReceivePort _networkEvents;
+  final BrowserPreviews? _browserPreviews;
   final _lifetime = CancellationToken();
   final _clientTools = ClientToolBridge();
   late final _taskTools = TaskToolBridge(_broadcast);
@@ -129,6 +134,7 @@ class AgentServer {
     String? configPath,
     String? skillsHome,
     String? socketPath,
+    String? previewCloudflaredPath,
     int maxAgents = 256,
     bool telemetry = true,
     bool inProcess = false,
@@ -204,6 +210,7 @@ class AgentServer {
         maxAgents,
         Telemetry(enabled: telemetry),
         events,
+        previewCloudflaredPath == null ? null : BrowserPreviews(previewCloudflaredPath),
       );
       server.socketPath = socketPath;
       server._networkConfiguration = {
@@ -406,7 +413,7 @@ class AgentServer {
             return;
           }
           if (id == null) return; // Unknown notifications never produce replies.
-          if (client.inFlight >= 32) {
+          if (client.inFlight >= 32 && request['method'] != 'browser.preview.close') {
             throw const _RpcError(-32000, 'Server overloaded; retry later');
           }
           client.inFlight++;
@@ -453,6 +460,7 @@ class AgentServer {
       }));
     }
     client.cancellation.cancel();
+    _browserPreviews?.detach(client.id);
     unawaited(client.closeFileWatches().catchError((Object _) {}));
     unawaited(_terminals.detach(client.id).catchError((Object _) {}));
     unawaited(client.attachments.close());
@@ -517,7 +525,9 @@ class AgentServer {
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
     final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
-    final preparation = method == 'session.side.create' || method.startsWith('fs/') || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/')
+    final preparation = method == 'session.side.create' || openAIUsageMethods.contains(method) ||
+      method.startsWith('fs/') || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/') ||
+      method.startsWith('browser.')
       ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
     try {
       // Export reads must not recursively record their own trace pages.
@@ -566,6 +576,20 @@ class AgentServer {
       return {'userAgent': 'happen/0.1.0', 'serverInfo': {'name': 'happen', 'version': '0.1.0'}, 'platformFamily': Platform.operatingSystem};
     }
     if (!client.initialized) throw const _RpcError(-32600, 'Not initialized');
+    if (method.startsWith('browser.')) {
+      final previews = _browserPreviews;
+      if (previews == null) throw const RemoteFailure('Dev server previews are unavailable on this server');
+      final cancellation = client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime);
+      switch (method) {
+        case 'browser.ports':
+          return {'servers': await discoverDevServers(cancellation: cancellation)};
+        case 'browser.preview.open':
+          return previews.open(client.id, params, cancellation);
+        case 'browser.preview.close':
+          previews.release(client.id, requiredString(params, 'lease'));
+          return null;
+      }
+    }
     if (method == 'workspace.inspect') {
       return inspectWorkspace(requiredString(params, 'path'), client.sessionReads[requestId]!.merge(client.cancellation).merge(_lifetime),
         includeIcon: params['includeIcon'] == true);
@@ -774,6 +798,14 @@ class AgentServer {
           {},
           cancellation: client.cancellation,
         );
+      case openAIUsageReadMethod:
+        return _callNetwork(method, {}, cancellation: cancellation);
+      case openAIUsageResetMethod:
+        return _callNetwork(method, {
+          'account_scope': requiredString(params, 'account_scope'),
+          'redeem_request_id': requiredString(params, 'redeem_request_id'),
+          if (params.containsKey('credit_id')) 'credit_id': requiredString(params, 'credit_id'),
+        }, cancellation: cancellation);
       case 'auth.desktop':
         // Access credentials are only available to the local desktop connection.
         // Audio and transcription never pass through the task WebSocket.
@@ -1771,6 +1803,7 @@ class AgentServer {
     _closeNetworkRecovery();
     _maintenanceTimer?.cancel();
     _lifetime.cancel();
+    await _browserPreviews?.close();
     try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
     _clientTools.close();
     _questions.close();
@@ -2131,6 +2164,14 @@ class AgentClient {
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
 
+  Future<Object?> browserRequest(String method, Json params, {CancellationToken? cancellation, required Duration timeout}) =>
+    _request(method, params, cancellation: cancellation, timeout: timeout);
+
+  Future<Json> openAIUsageRequest(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!openAIUsageMethods.contains(method)) throw ArgumentError('Unknown OpenAI usage operation');
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
+
   /// Answer a server-initiated tool request on the connection that owns it.
   /// Worker transports must send a response envelope, not a new RPC request.
   Future<void> respondClientTool(String id, Json result, {required CancellationToken cancellation}) async {
@@ -2380,8 +2421,8 @@ class AgentClient {
       if (method.startsWith('git/') && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'git/cancel', 'params': {'requestId': id}}));
       }
-      if ((method.startsWith('fs/') || method.startsWith('terminal/') || method.startsWith('workspace.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'session.context', 'session.trace.page', 'session.trace.status',
-        'session.side.create'}.contains(method)) && socket!.readyState == WebSocket.open) {
+      if ((method.startsWith('fs/') || method.startsWith('terminal/') || method.startsWith('workspace.') || method.startsWith('browser.') || {'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/item/read', 'session.context', 'session.trace.page', 'session.trace.status',
+        'session.side.create'}.contains(method) || openAIUsageMethods.contains(method)) && socket!.readyState == WebSocket.open) {
         socket!.add(jsonEncode({'method': 'session.read.cancel', 'params': {'request_id': id}}));
       }
       if (method == 'files.search' && socket!.readyState == WebSocket.open) {

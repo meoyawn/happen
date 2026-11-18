@@ -129,8 +129,9 @@ var __happenBrowserAnnotations = window.__happenBrowserAnnotations || (function 
       event.preventDefault(); return;
     }
     if (event.type === 'keydown' && event.key === 'Escape' && (enabled || picked.length || !add.hidden)) {
-      picked = []; current = null; add.hidden = true; dragging = null; hover.hidden = true;
-      setMode(false); HappenAnnotation.postMessage(JSON.stringify({type:'escape',document:documentId})); render();
+      if (enabled) { event.preventDefault(); event.stopImmediatePropagation(); }
+      setMode(false);
+      HappenAnnotation.postMessage(JSON.stringify({type:'escape',document:documentId}));
     }
   }
   function render() {
@@ -143,7 +144,7 @@ var __happenBrowserAnnotations = window.__happenBrowserAnnotations || (function 
       root.append(box);
     }
   }
-  function setMode(value) { enabled = value; suspended = false; dragging = null; picked = []; add.hidden = true; hover.hidden = true; render(); }
+  function setMode(value) { enabled = value; suspended = false; dragging = null; picked = []; current = null; add.hidden = true; hover.hidden = true; render(); }
   function commit(id, number, selectionSerial) {
     const selection = pending.get(selectionSerial);
     if (!selection) return;

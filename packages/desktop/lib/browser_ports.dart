@@ -1,101 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:protocol/protocol.dart';
+import 'package:server/dev_servers.dart';
 
 import 'appearance.dart';
-
-/// Ported from t3code's preview/PortScanner: machine-readable listener records,
-/// loopback/wildcard filtering, deduplication, bounded HTML/redirect probes.
-/// Process and HTTP resources are created and released in the effect isolate.
-Future<List<Json>> discoverBrowserPorts({required CancellationToken cancellation}) =>
-  runIsolateEffect(_discover, {}, cancellation: cancellation, timeout: const Duration(seconds: 15));
-
-Future<List<Json>> _discover(Json params, CancellationToken cancellation, void Function(Json) emit) async {
-  final deadline = TimeoutCancellationToken(const Duration(seconds: 5));
-  final token = cancellation.merge(deadline);
-  String output;
-  try {
-    token.throwIfCancelled();
-    final process = await Process.start('lsof', ['-iTCP', '-sTCP:LISTEN', '-P', '-n', '-Fpcn']);
-    final hook = CancellationHook(token, () => process.kill(ProcessSignal.sigkill));
-    try {
-      final results = await Future.wait<Object>([
-        process.exitCode,
-        utf8.decoder.bind(process.stdout).join(),
-        utf8.decoder.bind(process.stderr).join(),
-      ]).asCancellable(token);
-      output = results[1] as String;
-      if (output.length > 1024 * 1024) throw StateError('Too many listening ports.');
-      if (results.first != 0 && !(results.first == 1 && output.isEmpty)) {
-        throw StateError('Could not discover local servers.');
-      }
-    } finally {
-      process.kill(ProcessSignal.sigkill);
-      await process.exitCode;
-      hook.dispose();
-    }
-  } finally { deadline.cancel(); }
-  cancellation.throwIfCancelled();
-  final listeners = <String, Json>{};
-  int? processId;
-  String? name;
-  for (final line in const LineSplitter().convert(output)) {
-    if (line.isEmpty) continue;
-    final value = line.substring(1);
-    switch (line[0]) {
-      case 'p': processId = int.tryParse(value); name = null;
-      case 'c': name = value;
-      case 'n':
-        if (processId == pid) continue;
-        final match = RegExp(r'^(.*):(\d+)$').firstMatch(value);
-        if (match == null) continue;
-        final port = int.tryParse(match[2]!);
-        var host = match[1]!.replaceAll(RegExp(r'^\[|\]$'), '');
-        if (!{'*', '0.0.0.0', '::', 'localhost'}.contains(host) &&
-            InternetAddress.tryParse(host)?.isLoopback != true) continue;
-        if (port == null || port < 1 || port > 65535) continue;
-        if (host == '*' || host == '0.0.0.0' || host == 'localhost') host = '127.0.0.1';
-        if (host == '::') host = '::1';
-        final url = Uri(scheme: 'http', host: host, port: port).toString();
-        listeners.putIfAbsent(url, () => {'url': url, 'port': port, 'processName': name, 'pid': processId});
-    }
-  }
-  final candidates = listeners.values.toList(), servers = <int, Json>{};
-  var next = 0;
-  await Future.wait(List.generate(candidates.length.clamp(0, 16), (_) async {
-    while (next < candidates.length) {
-      cancellation.throwIfCancelled();
-      final candidate = candidates[next++];
-      if (await _webServer(Uri.parse(candidate['url'] as String), cancellation)) {
-        servers.putIfAbsent(candidate['port'] as int, () => candidate);
-      }
-    }
-  }));
-  return servers.values.toList()..sort((a, b) => (a['port'] as int).compareTo(b['port'] as int));
-}
-
-Future<bool> _webServer(Uri uri, CancellationToken cancellation) async {
-  final deadline = TimeoutCancellationToken(const Duration(seconds: 1));
-  final token = cancellation.merge(deadline);
-  final client = HttpClient()..findProxy = (_) => 'DIRECT';
-  final hook = CancellationHook(token, () => client.close(force: true));
-  try {
-    final request = await client.getUrl(uri).asCancellable(token);
-    request.followRedirects = false;
-    final response = await request.close().asCancellable(token);
-    final redirect = {301, 302, 303, 307, 308}.contains(response.statusCode) &&
-      response.headers.value(HttpHeaders.locationHeader)?.trim().isNotEmpty == true;
-    final type = response.headers.contentType?.mimeType.toLowerCase();
-    return redirect || response.statusCode >= 200 && response.statusCode < 300 &&
-      !{204, 205}.contains(response.statusCode) && {'text/html', 'application/xhtml+xml'}.contains(type);
-  } catch (_) {
-    cancellation.throwIfCancelled();
-    return false;
-  } finally { hook.dispose(); deadline.cancel(); client.close(force: true); }
-}
 
 sealed class _PortsState {
   const _PortsState(this.servers);
@@ -113,9 +22,10 @@ _PortsState _transition(_PortsState current, _PortsState next) => switch ((curre
 };
 
 class BrowserPorts extends StatefulWidget {
-  const BrowserPorts({super.key, required this.active, required this.onOpen});
+  const BrowserPorts({super.key, required this.active, required this.onOpen, this.discover = discoverDevServers});
   final bool active;
   final ValueChanged<Uri> onOpen;
+  final Future<List<Json>> Function({required CancellationToken cancellation}) discover;
   @override
   State<BrowserPorts> createState() => _BrowserPortsState();
 }
@@ -131,7 +41,7 @@ class _BrowserPortsState extends State<BrowserPorts> {
   void didUpdateWidget(BrowserPorts oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!widget.active) { _poll?.cancel(); _operation?.cancel(); }
-    else if (!oldWidget.active) unawaited(_refresh());
+    else if (!oldWidget.active || oldWidget.discover != widget.discover) { unawaited(_refresh()); }
   }
   @override
   void dispose() { _poll?.cancel(); _operation?.cancel(); super.dispose(); }
@@ -143,7 +53,7 @@ class _BrowserPortsState extends State<BrowserPorts> {
     if (_state is _PortsLoading) _state = _transition(_state, _PortsReady(_state.servers));
     setState(() => _state = _transition(_state, _PortsLoading(_state.servers)));
     try {
-      final servers = await discoverBrowserPorts(cancellation: operation);
+      final servers = await widget.discover(cancellation: operation);
       if (mounted && !operation.isCancelled) setState(() => _state = _transition(_state, _PortsReady(servers)));
     } on CancelledException { /* Hidden and closed tabs stop discovery. */ }
     catch (_) {

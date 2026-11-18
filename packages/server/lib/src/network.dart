@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:ai/ai.dart';
 import 'package:config/config.dart';
+import 'package:openai/account_usage.dart';
 import 'package:openai/openai.dart';
 import 'package:opencode/opencode.dart';
 import 'package:protocol/protocol.dart';
@@ -623,6 +624,19 @@ Future<void> _networkMain(List<Object?> args) async {
         reply?.send({'result': result});
         return;
       }
+      if (openAIUsageMethods.contains(request['method'])) {
+        if (apiKeyEnv != null || !CodexUsageClient.supports(gptClient.endpoint)) {
+          throw StateError('OpenAI usage requires a ChatGPT subscription connection');
+        }
+        final usage = CodexUsageClient(http, auth.credentials);
+        final result = request['method'] == openAIUsageReadMethod
+          ? await usage.read(cancellation: cancellation)
+          : await usage.redeem(requiredString(params, 'account_scope'), params['credit_id'] as String?,
+            requiredString(params, 'redeem_request_id'),
+            cancellation: cancellation);
+        reply?.send({'result': result});
+        return;
+      }
       if (request['method'] == 'providers.list') {
         await gptCatalog.refresh(cancellation);
         reply?.send({
@@ -633,6 +647,7 @@ Future<void> _networkMain(List<Object?> args) async {
                 'id': 'openai',
                 'name': 'ChatGPT',
                 'auth': 'chatgpt',
+                'account_usage': apiKeyEnv == null && CodexUsageClient.supports(gptClient.endpoint),
                 'status': await auth.status(),
                 'default_model': gpt.defaultModel,
                 'models': [

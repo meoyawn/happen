@@ -26,6 +26,10 @@ _AnnotationWriteState _transitionAnnotationWrite(_AnnotationWriteState current, 
 extension AnnotationDrafts on DesktopSession {
   List<ResponseAnnotation> annotationsFor(String draft) => _annotationDrafts[draft] ?? const [];
 
+  void _beginAnnotatedSend(String draft, List<ResponseAnnotation> annotations) {
+    if (annotations.any((annotation) => annotation.browser != null)) _browserAnnotationSends.add(draft);
+  }
+
   void putAnnotation(String draft, ResponseAnnotation annotation) {
     final previous = annotationsFor(draft);
     final index = previous.indexWhere((item) => item.id == annotation.id);

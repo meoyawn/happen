@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:protocol/protocol.dart';
 
+import '../auth.dart' show openAICredentialScope;
 import 'catalog.dart';
 import 'responses.dart';
 
@@ -130,29 +131,10 @@ class GptCatalog {
     operation.cancellation.cancel();
   }
 
-  String? _identity(Json auth) {
-    if (auth['access_token'] is! String || (auth['access_token'] as String).isEmpty) return null;
-    Json claims = {}, principal = {};
-    try {
-      final parts = (auth['access_token'] as String).split('.');
-      if (parts.length == 3) {
-        claims = jsonObject(jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1])))));
-        principal = jsonObject(claims['https://api.openai.com/auth'] ?? {});
-      }
-    } on FormatException { /* Opaque provider credentials have no JWT claims. */ }
-    // A ChatGPT token can rotate without changing its account. Opaque bearer
-    // credentials without account metadata must be scoped to the token itself.
-    return sha256.convert(utf8.encode(jsonEncode([
-      client.endpoint.toString(), auth['account_id'] ?? auth['access_token'],
-      auth['user_id'] ?? principal['chatgpt_user_id'] ?? claims['sub'],
-      auth['email'] ?? claims['email'], auth['plan_type'] ?? principal['chatgpt_plan_type'],
-    ]))).toString();
-  }
-
   Future<bool> _current(_CatalogOperation operation, String identity, CancellationToken token) async {
     token.throwIfCancelled();
     if (!_owns(operation)) return false;
-    final current = _identity(await client.credentials().asCancellable(token));
+    final current = openAICredentialScope(client.endpoint, await client.credentials().asCancellable(token));
     token.throwIfCancelled();
     if (!_owns(operation)) return false;
     if (current == identity) return true;
@@ -168,7 +150,7 @@ class GptCatalog {
       final auth = await client.credentials().asCancellable(token);
       token.throwIfCancelled();
       if (!_owns(operation)) return;
-      final identity = _identity(auth);
+      final identity = openAICredentialScope(client.endpoint, auth);
       previous = _snapshot?.identity == identity ? _snapshot : null;
       _transition(_CatalogLoading(previous, operation));
       if (identity == null) { _transition(const _CatalogReady(null)); return; }
