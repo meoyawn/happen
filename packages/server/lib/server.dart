@@ -1853,6 +1853,7 @@ class AgentServer {
       task.turnCancellation?.cancel();
       task.codeInterrupt?.interrupt();
       release(task.agent?.close());
+      release(task.running);
       release(task.memoryStore?.close());
     }
     _clientTools.close();
@@ -1875,13 +1876,13 @@ class AgentServer {
     unawaited(_activity.close());
     unawaited(_mcpActivity.close());
 
-    Future<void> closeWriter(Future<IsolateOwner> opening) async {
-      try { await (await opening).close(); }
+    Future<void> closeWriter(Future<IsolateOwner> opening, {bool interrupt = false}) async {
+      try { await (await opening).close(params: {if (interrupt) 'interrupt_turn': true}); }
       on CancelledException { /* A cancelled startup has released its writer. */ }
     }
 
     try {
-      await Future.wait(_historyWriters.toList().map(closeWriter));
+      await Future.wait(_historyWriters.toList().map((opening) => closeWriter(opening, interrupt: true)));
     } finally {
       // History commits update the catalog, so its writer closes last.
       await Future.wait([

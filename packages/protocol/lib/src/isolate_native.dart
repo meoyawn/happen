@@ -207,13 +207,13 @@ class IsolateOwner {
     }
   }
 
-  Future<void> close() => _closing ??= _close();
-  Future<void> _close() async {
+  Future<void> close({Json params = const {}}) => _closing ??= _close(params);
+  Future<void> _close(Json params) async {
     Object? failure;
     StackTrace? failureStack;
     try {
       try {
-        await callIsolate(port, 'close', {}, timeout: const Duration(seconds: 10));
+        await callIsolate(port, 'close', params, timeout: const Duration(seconds: 10));
       } catch (error, stack) {
         if (error is! RemoteFailure || error.code != 'worker_exited' && error.code != 'worker_failed') {
           failure = error; failureStack = stack;

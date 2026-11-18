@@ -153,10 +153,14 @@ Future<void> _databaseMain(List<Object?> args) async {
         closing = true;
         for (final token in operations.values) { token.cancel(); }
         unawaited(() async {
-          await writes;
-          await Future.wait(readers.toList());
-          reply?.send({'result': null});
-          stopped.complete();
+          try {
+            await Future.wait([writes, ...readers]);
+            reply?.send({'result': null});
+          } catch (error) {
+            reply?.send({'error': error.toString()});
+          } finally {
+            stopped.complete();
+          }
         }());
         return;
       }

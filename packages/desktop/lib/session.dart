@@ -2820,7 +2820,7 @@ class DesktopSession extends ChangeNotifier {
     return true;
   }
 
-  void _closeBrowserPages() {
+  void _closeAllBrowserPages() {
     _browserLifetime.cancel();
     _disconnectBrowserTools();
     for (final entry in _browserPages.values) { entry.page.close(); }
@@ -2845,7 +2845,7 @@ class DesktopSession extends ChangeNotifier {
 
   /// Submit the final draft snapshot before cancelling its session lifetime.
   Future<void> cancelForExit() async {
-    _closeBrowserPages();
+    _closeAllBrowserPages();
     _draftSave?.cancel();
     final saving = _draftSave != null || sessionDrafts.isNotEmpty ? _persistDrafts() : null;
     _cancelSubmissions();
@@ -2870,7 +2870,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   Future<void> close() async {
-    _closeBrowserPages();
+    _closeAllBrowserPages();
     _draftSave?.cancel();
     await _appearance?.close();
     await _pinnedSidebar?.close();

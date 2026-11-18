@@ -61,7 +61,7 @@ Future<void> _storeMain(List<Object?> args) async {
     final method = requiredString(request, 'method');
     if (method == 'close') { closing = true; for (final token in operations.values) { token.cancel(); } }
     if (method != 'close' && !_commitsHistory(method) &&
-        !{'catalog.sync', 'kv.set', 'kv.remove'}.contains(method)) {
+        !{'catalog.sync', 'native.item.queue', 'kv.set', 'kv.remove'}.contains(method)) {
       operations[requiredString(request, 'operation_id')] = CancellationToken();
     }
     queue.add(request);
@@ -72,18 +72,17 @@ Future<void> _storeMain(List<Object?> args) async {
     await for (final request in queue.stream) {
       final params = jsonObject(request['params']), reply = request['reply'] as SendPort?;
       final id = requiredString(request, 'operation_id'), cancellation = operations[id];
-      var stopped = false;
       await traceIncoming(request, () async {
         try {
           cancellation?.throwIfCancelled();
           final result = await _storeRequest(store, requiredString(request, 'method'), params, cancellation,
             catalog: config['catalog'] as SendPort?);
-          reply?.send({'result': result}); stopped = request['method'] == 'close';
+          reply?.send({'result': result});
         } catch (error) {
           traceError(error); reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
         } finally { operations.remove(id); cancellation?.cancel(); }
       }, service: 'storage');
-      if (stopped) break;
+      if (request['method'] == 'close') break;
     }
   } finally { store?.close(); await listener.cancel(); port.close(); unawaited(queue.close()); }
 }
@@ -94,7 +93,7 @@ bool _commitsHistory(String method) => const {
   'tool_runtime.start', 'session.inbox.cancel', 'session.inbox.update',
   'session.inbox.commit', 'append', 'append_batch', 'thread.name.set', 'mcp.subscription.save',
   'mcp.subscription.remove', 'mcp.event.admit', 'archive',
-}.contains(method) || method.startsWith('goal.');
+}.contains(method) || method.startsWith('goal.') && !{'goal.get', 'goal.hasDeferral'}.contains(method);
 
 Future<Object?> _storeRequest(TaskStore? store, String method, Json params, CancellationToken? cancellation, {SendPort? catalog}) async {
   if (method == 'catalog.sync') {
@@ -102,7 +101,8 @@ Future<Object?> _storeRequest(TaskStore? store, String method, Json params, Canc
       requiredString(params, 'ticket'), cancellation);
     return null;
   }
-  final mutating = _commitsHistory(method) || method == 'session.prepare' || method == 'fork';
+  final interrupt = method == 'close' && params['interrupt_turn'] == true && store?.metadata('status') == 'running';
+  final mutating = _commitsHistory(method) || method == 'session.prepare' || method == 'fork' || interrupt;
   final ticket = catalog == null || store == null || !mutating ? null
     : await callIsolate(catalog, 'thread.dirty', {'threadId': store.taskId}, cancellation: cancellation) as String;
   final childTicket = catalog == null || method != 'fork' ? null
@@ -140,6 +140,7 @@ Future<Object?> _storeRequest(TaskStore? store, String method, Json params, Canc
       cancellation: cancellation!).then((_) => null),
     'export' => await store!.exportTo(params['path'] as String, cancellation: cancellation!).then((_) => null),
     'import' => await _importStored(params, catalog, cancellation!),
+    'close' when interrupt => store!.append('turn.cancelled', {'error': 'Application quit'}, metadata: {'status': 'idle'}),
     'close' => null,
     _ => throw StateError('Unknown persistence operation'),
   });

@@ -151,15 +151,18 @@ void _traceMain(List<Object?> arguments) {
         }); }
         return;
       }
-      flush();
       if (message['method'] == 'close') {
-        insert.close();
-        bind.close();
-        db.close();
-        port.close();
+        try { flush(); }
+        finally {
+          insert.close();
+          bind.close();
+          db.close();
+          port.close();
+        }
         reply?.send({'closed': true});
         return;
       }
+      flush();
       final session = message['session'] as String;
       if (message['method'] == 'status') {
         final rows = db.select("SELECT json_extract(data, '\$.cat') AS category, "

@@ -190,7 +190,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   Future<void> _commitDesktopState() async {
     final clients = {
-      if (_client case final client?) client,
+      ?_client,
       ...?_machines?.sessions.map((machine) => machine.session.client),
     };
     try {
