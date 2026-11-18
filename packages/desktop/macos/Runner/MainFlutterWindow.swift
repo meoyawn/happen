@@ -104,10 +104,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     showMainWindow()
   }
 
-  @objc private func quitFromTray(_ sender: Any?) {
-    NSApp.terminate(sender)
-  }
-
   private func createStatusItem() {
     let item = NSStatusBar.system.statusItem(withLength: 22)
     let image = NSImage(named: "HappenStatus")
@@ -119,8 +115,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     let show = NSMenuItem(title: "Show", action: #selector(showFromTray(_:)), keyEquivalent: "")
     show.target = self
     menu.addItem(show)
-    let quit = NSMenuItem(title: "Quit", action: #selector(quitFromTray(_:)), keyEquivalent: "")
-    quit.target = self
+    // Flutter shows the quitting overlay while it drains work.
+    let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    quit.target = NSApp
     menu.addItem(quit)
     item.menu = menu
     statusItem = item
