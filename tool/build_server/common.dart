@@ -70,7 +70,7 @@ Future<void> resolveServerPackages(String image, Directory root, Directory sourc
 }
 
 Future<String> runBuildProcess(String executable, List<String> arguments, CancellationToken cancellation,
-    {bool capture = false, String? workingDirectory}) async {
+    {bool capture = false, bool trimOutput = true, String? workingDirectory}) async {
   cancellation.throwIfCancelled();
   final process = await Process.start(executable, arguments, workingDirectory: workingDirectory);
   final exit = process.exitCode.asCancellable(cancellation, onCancel: () { process.kill(); });
@@ -79,13 +79,15 @@ Future<String> runBuildProcess(String executable, List<String> arguments, Cancel
   try {
     await process.stdin.close();
     await Future.wait([
-      process.stdout.forEach((bytes) { if (capture) { output.write(utf8.decode(bytes)); } else { stdout.add(bytes); } }),
+      if (capture) process.stdout.transform(utf8.decoder).forEach(output.write)
+      else process.stdout.forEach(stdout.add),
       process.stderr.forEach(stderr.add),
     ]);
     final code = await exit;
     cancellation.throwIfCancelled();
     if (code != 0) throw StateError('$executable failed ($code)');
-    return output.toString().trim();
+    final text = output.toString();
+    return trimOutput ? text.trim() : text;
   } finally {
     process.kill();
     await process.exitCode;

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 
+import 'package:openai/account_usage.dart';
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 import 'package:web/web.dart' as web;
@@ -109,7 +110,7 @@ class AgentClient {
   int _next = 0;
   bool get sharedFilesystem => false;
   bool get isClosed => _state is _Closed;
-  bool get isConnected => _state is _Connected;
+  bool get isConnected => switch (_state) { _Connected(:final socket) => socket.readyState == 1, _ => false };
 
   static Future<AgentClient> connect(Uri uri, {String? token, bool? sharedFilesystem, CancellationToken? cancellation}) async {
     if (token != null) throw ArgumentError('Browser connections use the owner session');
@@ -162,7 +163,13 @@ class AgentClient {
               events.add(message['method'] == 'happen/event' ? jsonObject(message['params']) : message);
             } else {
               final pending = _pending.remove(message['id']);
-              if (message.containsKey('error')) { pending?.completeError(StateError(message['error'].toString())); }
+              if (message.containsKey('error')) {
+                final error = message['error'];
+                pending?.completeError(StateError(switch (error) {
+                  {'message': final String message} => message,
+                  _ => error.toString(),
+                }));
+              }
               else { pending?.complete(message['result']); }
             }
           } catch (_) { socket.close(1002, 'Invalid protocol message'); }
@@ -213,6 +220,14 @@ class AgentClient {
   }
 
   Future<Object?> request(String method, [Json params = const {}]) => _request(method, params);
+
+  Future<Object?> browserRequest(String method, Json params, {CancellationToken? cancellation, required Duration timeout}) =>
+    _request(method, params, cancellation: cancellation, timeout: timeout);
+
+  Future<Json> openAIUsageRequest(String method, Json params, {required CancellationToken cancellation}) async {
+    if (!openAIUsageMethods.contains(method)) throw ArgumentError('Unknown OpenAI usage operation');
+    return jsonObject(await _request(method, params, cancellation: cancellation));
+  }
 
   Future<Json> inspectWorkspace(String path, {required CancellationToken cancellation}) async =>
     jsonObject(await _request('workspace.inspect', {'path': path, 'includeIcon': true}, cancellation: cancellation));

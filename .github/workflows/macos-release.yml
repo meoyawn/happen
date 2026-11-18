@@ -1,24 +1,55 @@
-name: macOS release
+name: Release
 
 on:
   push:
     branches: [master]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: macos-release-version
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-26
+  prepare:
+    name: Bump release version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           filter: blob:none
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/mise/downloads-cas
+          key: mise-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v5
+        with:
+          version: '2026.11.7'
+          cache: false
+      - name: Resolve Dart packages
+        run: moon run release-ci-pub-get
+      - name: Reserve patch version
+        id: version
+        run: moon run release-prepare
+
+  macos:
+    name: Publish macOS release
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          fetch-depth: 2
       - uses: actions/cache@v6
         with:
           path: ~/Library/Caches/mise/downloads-cas
@@ -29,11 +60,7 @@ jobs:
           cache: false
       - name: Resolve Dart packages
         run: moon run release-ci-pub-get
-      - name: Reserve desktop patch version
-        id: version
-        run: moon run release-prepare
       - name: Import Apple signing credentials
-        if: steps.version.outputs.tag != ''
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -44,15 +71,52 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: moon run release-ci-signing-setup
       - name: Build, notarize, and package DMG
-        if: steps.version.outputs.tag != ''
         run: moon run release-dmg
       - name: Remove Apple credentials
-        if: always() && steps.version.outputs.tag != ''
+        if: always()
         run: moon run release-ci-signing-cleanup
-      - name: Publish this master commit
-        if: steps.version.outputs.tag != ''
+      - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          HAPPEN_RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          HAPPEN_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: moon run release-publish
+
+  web:
+    name: Deploy web release
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/mise/downloads-cas
+          key: mise-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v5
+        with:
+          version: '2026.11.7'
+          cache: false
+      - name: Resolve Dart packages
+        run: moon run release-ci-pub-get
+      - name: Build Flutter web release
+        env:
+          HAPPEN_SERVER_URL: ${{ vars.HAPPEN_SERVER_URL }}
+        run: moon run build-web
+      - name: Publish to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            master=$(git ls-remote --exit-code origin refs/heads/master)
+            if [[ "${master%%$'\t'*}" != "$GITHUB_SHA" ]]; then
+              echo 'Skipping web deploy for a superseded master commit.'
+              exit 0
+            fi
+          fi
+          moon run deploy-web --upstream none -- --publish-only

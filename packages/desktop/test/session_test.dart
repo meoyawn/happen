@@ -480,7 +480,7 @@ void main() {
       expect(cell.children.every((child) => child.status == 'done'), isTrue);
       expect(
         cell.children.every(
-          (child) => child.output!.contains('from a real tool'),
+          (child) => (child.rawOutput as String).contains('from a real tool'),
         ),
         isTrue,
       );

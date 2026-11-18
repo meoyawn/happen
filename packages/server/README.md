@@ -2,13 +2,15 @@ The backend runs as one daemon per Linux user and data directory, shared by all 
 
 Agent commands use Codex V2 shell snapshots. Unchanged startup files reuse the initialized shell state; editing, creating or removing a standard login/rc file, `BASH_ENV` or `ENV` refreshes it before the next command in that workspace. In-flight captures are discarded if their startup inputs change. Files sourced indirectly by a profile are not watched; start a fresh shell explicitly after changing those files.
 
-From the repository root, create the **gitignored** `.local/deploy-server.json` with your private SSH target:
+Save your private SSH target in `~/.secrets/happen/vps.json` with file mode `0600`.
 
 ```json
-{"host":"my-vps"}
+{"host":"my-vps","checkout":"/home/agent/workspace/happen"}
 ```
 
-`host` may be an alias from `~/.ssh/config`. Optional `user`, `port` and `identityFile` fields override SSH defaults. Keep real connection settings in this local file; the public Moon configuration and cached build artifacts contain no deployment target.
+`host` may be an alias from `~/.ssh/config`. Optional `user`, `port` and `identityFile` fields override SSH defaults.
+
+Run `moonx sync-server` to push the current contents of Git-tracked files to the VPS checkout. This includes tracked changes and initialized submodules. Unison keeps backups of replaced files on the VPS. The running daemon can keep serving during the transfer.
 
 Build, upload and restart the daemon with one command:
 

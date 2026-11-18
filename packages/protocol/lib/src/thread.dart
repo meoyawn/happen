@@ -58,7 +58,10 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
                 ((raw['content'] as List).any((p) => p['type'] == 'tool_call') ? 'commentary' : 'final_answer'),
               'startedAtMs': state['modelStarted'] ?? now, 'completedAtMs': now});
           case 'reasoning':
-            item({'id': id, 'type': 'reasoning', 'summary': [part['text'] ?? ''], 'content': <String>[],
+            final text = [part['text'] ?? ''];
+            final summary = part['native']?['gpt']?['channel'] == 'summary';
+            item({'id': id, 'type': 'reasoning', 'summary': summary ? text : <String>[],
+              'content': summary ? <String>[] : text,
               'startedAtMs': state['modelStarted'] ?? now, 'completedAtMs': now});
           case 'tool_call':
             final name = '${part['namespace'] == null ? '' : '${part['namespace']}.'}${part['name']}';
@@ -114,16 +117,21 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
     case 'text.delta':
     case 'reasoning.delta':
       final type = record['type'] == 'text.delta' ? 'agentMessage' : 'reasoning';
+      final summary = type == 'reasoning' && record['channel'] != 'content';
       var ordinal = state['ordinal'] as int? ?? 0;
       if (state['streamType'] != null && state['streamType'] != type) ordinal++;
       final id = '${assistant()}:$ordinal';
       if (state['streamType'] != type) item({'id': id, 'type': type,
         if (type == 'agentMessage') 'text': '' else ...{'summary': <String>[], 'content': <String>[]},
+        if (record['phase'] case final String phase when type == 'agentMessage') 'phase': phase,
         'startedAtMs': now}, started: true);
       state['ordinal'] = ordinal;
       state['streamType'] = type;
-      emit(type == 'agentMessage' ? 'item/agentMessage/delta' : 'item/reasoning/summaryTextDelta', {
-        'itemId': id, 'delta': record['delta'], if (type == 'reasoning') 'summaryIndex': 0,
+      emit(type == 'agentMessage' ? 'item/agentMessage/delta'
+        : summary ? 'item/reasoning/summaryTextDelta' : 'item/reasoning/textDelta', {
+        'itemId': id, 'delta': record['delta'],
+        if (summary) 'summaryIndex': record['index'] ?? 0,
+        if (type == 'reasoning' && !summary) 'contentIndex': record['index'] ?? 0,
       });
     case 'model.output':
       state['assistantID'] = data['assistantMessageID'] ?? state['assistantID'];
@@ -143,6 +151,11 @@ List<Json> threadNotifications(String threadID, Json record, Json state) {
     case 'host_tool.started':
       final call = tool(requiredString(data, 'id'), requiredString(data, 'name'), data['arguments'], parent: data['parent_call_id'] as String?);
       if (call != null) item(call, started: true);
+    case 'mcp.tool.progress':
+      final id = data['call_id'];
+      if (record['turn_id'] == state['turnID'] && state['calls']?[id]?['type'] == 'mcpToolCall') {
+        emit('item/mcpToolCall/progress', {'itemId': id, 'message': data['message']});
+      }
     case 'host_tool.completed':
     case 'tool.completed':
       final parts = record['type'] == 'tool.completed' ? (data['item']?['content'] as List? ?? []) : [data];
@@ -217,7 +230,11 @@ void applyThreadNotification(Map<String, Json> items, Json notification, {bool r
   final params = jsonObject(notification['params'] ?? {}), method = notification['method'];
   if (method == 'item/started' || method == 'item/completed') {
     final value = jsonObject(params['item']), id = requiredString(value, 'id');
-    if (method == 'item/started' && items[id]?['completedAtMs'] != null) return;
+    final previous = items[id];
+    if (method == 'item/started' && previous?['turnId'] == params['turnId'] &&
+        (previous?['completedAtMs'] != null || const ['completed', 'failed', 'interrupted', 'declined'].contains(previous?['status']))) {
+      return;
+    }
     if (method == 'item/completed' && value['type'] == 'userMessage') {
       // Steering interrupts sampling without completing its streamed items.
       // Freeze that text before admitting input and the next model response.
@@ -236,18 +253,39 @@ void applyThreadNotification(Map<String, Json> items, Json notification, {bool r
       'turnId': params['turnId'], 'live': method == 'item/started',
       'order': items[id]?['order'] ?? items.values.fold<int>(0, (next, item) =>
         (item['order'] as int? ?? -1) >= next ? (item['order'] as int) + 1 : next)};
-  } else if (method == 'item/agentMessage/delta' || method == 'item/reasoning/summaryTextDelta') {
-    final id = requiredString(params, 'itemId'), previous = items[id];
-    if (previous == null || previous['live'] != true) return;
-    if (method == 'item/agentMessage/delta') {
-      items[id] = {...previous, 'text': '${previous['text'] ?? ''}${params['delta']}'};
-    } else {
-      final summary = List<String>.from(previous['summary'] as List? ?? []);
-      final index = params['summaryIndex'] as int? ?? 0;
-      if (index < 0 || index > 1000) throw const FormatException('Invalid reasoning summary index');
-      while (summary.length <= index) { summary.add(''); }
-      summary[index] += params['delta'] as String;
-      items[id] = {...previous, 'summary': summary};
+  } else if (const ['item/agentMessage/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta',
+      'item/mcpToolCall/progress', 'item/commandExecution/outputDelta', 'item/fileChange/outputDelta'].contains(method)) {
+    final id = params['itemId'];
+    final previous = items[id];
+    if (id is! String || previous == null || previous['live'] != true || previous['turnId'] != params['turnId']) return;
+    switch (method) {
+      case 'item/agentMessage/delta':
+        if (params['delta'] case final String delta when previous['type'] == 'agentMessage') {
+          items[id] = {...previous, 'text': '${previous['text'] ?? ''}$delta'};
+        }
+      case 'item/reasoning/summaryTextDelta':
+      case 'item/reasoning/textDelta':
+        final summary = method == 'item/reasoning/summaryTextDelta';
+        final index = params[summary ? 'summaryIndex' : 'contentIndex'] ?? 0;
+        final delta = params['delta'];
+        if (previous['type'] != 'reasoning' || index is! int || index < 0 || index > 1000 ||
+            delta is! String || delta.isEmpty) return;
+        final field = summary ? 'summary' : 'content';
+        final parts = [...previous[field] as List? ?? const []];
+        while (parts.length <= index) { parts.add(''); }
+        parts[index] = '${parts[index] ?? ''}$delta';
+        items[id] = {...previous, field: parts};
+      case 'item/mcpToolCall/progress':
+        final message = params['message'];
+        if (previous['type'] == 'mcpToolCall' && message is String && message.trim().isNotEmpty) {
+          items[id] = {...previous, '_progressMessage': message};
+        }
+      case 'item/commandExecution/outputDelta':
+      case 'item/fileChange/outputDelta':
+        final type = method == 'item/commandExecution/outputDelta' ? 'commandExecution' : 'fileChange';
+        if (params['delta'] case final String delta when previous['type'] == type) {
+          items[id] = {...previous, 'aggregatedOutput': '${previous['aggregatedOutput'] ?? ''}$delta'};
+        }
     }
   } else if (method == 'turn/completed' || method == 'happen/turn/retrying') {
     for (final entry in items.entries.toList()) {

@@ -136,13 +136,15 @@ class ThreadSidebar extends StatefulWidget {
     required this.onHome, required this.onSearch, required this.onNew, required this.onSettings,
     required this.onSelect, required this.onArchive, required this.onDraft,
     required this.onAddProject, required this.onRefresh, required this.onProjectFilter,
-    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.sources, this.machineIcon});
+    this.onProjectSettings, this.projectKey, this.titlebarInset = 0, this.onBack, this.onForward, this.sources, this.machineIcon,
+    this.usage});
   final DesktopSession session;
   final List<DesktopSession>? sources;
   final MachineIcon Function(DesktopSession)? machineIcon;
   final bool home, windowControls;
   final double titlebarInset;
   final String? projectKey;
+  final Widget? usage;
   final VoidCallback onHome, onSearch, onNew, onSettings, onAddProject, onRefresh;
   final VoidCallback? onBack, onForward;
   final ValueChanged<String?> onProjectFilter;
@@ -874,6 +876,7 @@ class _ThreadSidebarState extends State<ThreadSidebar> {
           _button('App settings', const Icon(Icons.settings_outlined), widget.onSettings),
           const SizedBox(width: 4),
           _button('All sessions', const Icon(Icons.grid_view_outlined), widget.onHome),
+          if (widget.usage case final usage?) ...[const SizedBox(width: 4), usage],
           const Spacer(),
           if (!session.connected) const Padding(padding: EdgeInsets.only(right: 8),
             child: Text('Disconnected', style: TextStyle(fontSize: 11, color: desktopTertiary))),

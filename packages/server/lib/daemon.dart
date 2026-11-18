@@ -216,8 +216,9 @@ Future<void> serveDaemon(String directory, {String? configPath, String? cloudfla
     if (active != null && active['pid'] != pid) throw StateError('Another Happen daemon still owns this data directory');
     final socket = '$directory/server.sock';
     if (await FileSystemEntity.type(socket, followLinks: false) != FileSystemEntityType.notFound) await File(socket).delete();
-    server = await AgentServer.start(directory: directory, socketPath: '$directory/server.sock', configPath: configPath);
     final web = await loadWebConfiguration(path: configPath, cancellation: cancellation);
+    server = await AgentServer.start(directory: directory, socketPath: socket, configPath: configPath,
+      previewCloudflaredPath: cloudflaredPath ?? 'cloudflared');
     if (web.publicUrl case final publicUrl?) {
       if (cloudflaredPath == null) throw StateError('Configure the Cloudflare connector executable for the server daemon');
       gateway = await WebGateway.start(socketPath: socket, publicUrl: publicUrl,

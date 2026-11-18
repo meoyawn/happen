@@ -16,17 +16,21 @@ import 'session.dart';
 /// Each main or side composer owns its draft and the lifetime of its popover.
 class ConversationAnnotationScope extends InheritedWidget {
   const ConversationAnnotationScope({super.key, required this.onAdd, required this.onEdit,
-    required this.readAnnotations, required this.changes, required this.enabled, required super.child});
+    required this.readAnnotations, required this.changes, required this.enabled,
+    this.draftKey, this.browserAnnotationSends, required super.child});
   final void Function(ResponseAnnotation annotation, Offset anchor) onAdd;
   final ValueChanged<ResponseAnnotation> onEdit;
   final List<ResponseAnnotation> Function() readAnnotations;
   final Listenable changes;
   final bool enabled;
+  final String? draftKey;
+  final Stream<String>? browserAnnotationSends;
   static ConversationAnnotationScope? maybeOf(BuildContext context) =>
     context.dependOnInheritedWidgetOfExactType<ConversationAnnotationScope>();
   @override
   bool updateShouldNotify(ConversationAnnotationScope oldWidget) => onAdd != oldWidget.onAdd || onEdit != oldWidget.onEdit ||
-    changes != oldWidget.changes || enabled != oldWidget.enabled;
+    changes != oldWidget.changes || enabled != oldWidget.enabled || draftKey != oldWidget.draftKey ||
+    browserAnnotationSends != oldWidget.browserAnnotationSends;
 }
 
 class AnnotationWorkspace extends StatefulWidget {
@@ -116,7 +120,8 @@ class _AnnotationWorkspaceState extends State<AnnotationWorkspace> {
   @override
   Widget build(BuildContext context) => ConversationAnnotationScope(onAdd: _add, onEdit: _edit,
     readAnnotations: () => widget.session.annotationsFor(widget.draftKey),
-    changes: widget.session.annotationChanges, enabled: widget.active, child: widget.child);
+    changes: widget.session.annotationChanges, enabled: widget.active, draftKey: widget.draftKey,
+    browserAnnotationSends: widget.session.browserAnnotationSends, child: widget.child);
   @override
   void dispose() {
     widget.session.annotationChanges.removeListener(_annotationsChanged);

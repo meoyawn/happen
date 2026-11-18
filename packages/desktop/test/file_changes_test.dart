@@ -50,8 +50,8 @@ deleted file mode 100644
       expect(find.text('2 changed files'), findsOneWidget);
       expect(tester.getTopLeft(find.text('2 changed files')).dy,
         greaterThan(tester.getBottomLeft(find.text('Updated the application.', findRichText: true)).dy));
-      expect(find.text('Worked'), findsNWidgets(2));
-      await tester.tap(find.text('Worked').first); await tester.pumpAndSettle();
+      expect(find.text('2 previous messages'), findsOneWidget);
+      await tester.tap(find.text('2 previous messages')); await tester.pumpAndSettle();
       expect(find.text('Updating the application.', findRichText: true), findsOneWidget);
       expect(find.text('2 changed files'), findsOneWidget);
       expect(find.text('app.dart'), findsNothing);
@@ -64,16 +64,30 @@ deleted file mode 100644
       final files = changesForSource(task, openedSource!);
       await tester.pumpWidget(MaterialApp(theme: desktopTheme(), home: Scaffold(
         body: DiffViewer(files: files, selectedPath: openedPath, directory: '/project'))));
+      Future<void> findDiffLine(String text) async {
+        final line = find.text(text, findRichText: true);
+        await tester.runAsync(() async {
+          final wait = Stopwatch()..start();
+          while (line.evaluate().isEmpty && wait.elapsed < const Duration(seconds: 5)) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
+        });
+        expect(line, findsOneWidget);
+      }
       await tester.pumpAndSettle();
-      expect(find.text('old value'), findsOneWidget); expect(find.text('new value'), findsOneWidget);
+      await findDiffLine('old value');
+      expect(find.text('new value'), findsOneWidget);
       expect(find.text('++ header-looking content'), findsOneWidget);
-      await tester.tap(find.byTooltip('Split diff')); await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Auto diff: switch to unified diff')); await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Switch to split diff')); await tester.pumpAndSettle();
       expect(find.text('old value'), findsOneWidget); expect(find.text('new value'), findsOneWidget);
-      expect(find.byTooltip('Unified diff'), findsOneWidget);
+      expect(find.byTooltip('Switch to Auto diff'), findsOneWidget);
       expect(find.text('2'), findsNWidgets(2)); expect(find.text('3'), findsOneWidget);
-      await tester.tap(find.byTooltip('Next file')); await tester.pumpAndSettle();
-      expect(find.text('deleted value'), findsOneWidget);
-      expect(find.byTooltip('Open file'), findsNothing);
+      await tester.tap(find.byTooltip('Jump to file')); await tester.pumpAndSettle();
+      await tester.tap(find.text('lib/old.dart').last); await tester.pumpAndSettle();
+      await findDiffLine('deleted value');
+      expect(find.byTooltip('Open file'), findsOneWidget, reason: 'Only the changed file can open in the file viewer.');
       expect(tester.takeException(), isNull);
     });
   });

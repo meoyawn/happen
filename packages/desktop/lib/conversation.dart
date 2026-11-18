@@ -26,6 +26,7 @@ import 'response_annotation.dart';
 import 'response_annotation_reference.dart';
 
 typedef _TranscriptRow = ({String id, String kind, List<ChatEntry> entries, String? label});
+typedef _TranscriptFold = ({String turnId, List<_TranscriptRow> rows});
 typedef PendingMessageAction = Future<void> Function(DesktopTask task, String inboxID, String action);
 typedef ForkResponseAction = Future<void> Function(DesktopTask task, String turnId);
 
@@ -53,12 +54,8 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
       }
       continue;
     }
-    if (entry.tool != null && (toolKind(entry.tool!) == 'question' || toolShowsFailure(entry.tool!))) {
-      flush();
-      rows.add((id: entry.id, kind: 'message', entries: [entry], label: null));
-      continue;
-    }
-    if (entry.tool != null || entry.role == 'Reasoning') { activity.add(entry); continue; }
+    if (entry.role == 'Reasoning' || entry.tool?.name == 'sleep') continue;
+    if (entry.tool case final tool? when canGroupConversationTool(tool)) { activity.add(entry); continue; }
     flush();
     if (entry.role == 'Status' && entry.text == 'Completed') continue;
     rows.add((id: entry.id, kind: 'message', entries: [entry], label: null));
@@ -67,7 +64,18 @@ List<_TranscriptRow> _workRows(List<ChatEntry> entries) {
   return rows;
 }
 
-List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, Set<String> expandedTurns) {
+String _workedDuration(num milliseconds) {
+  final seconds = math.max(0, milliseconds.round()) ~/ 1000;
+  if (seconds < 60) return '${seconds}s';
+  return [
+    if (seconds ~/ 86400 case final days when days > 0) '${days}d',
+    if (seconds ~/ 3600 % 24 case final hours when hours > 0) '${hours}h',
+    if (seconds ~/ 60 % 60 case final minutes when minutes > 0) '${minutes}m',
+    if (seconds % 60 case final remaining when remaining > 0) '${remaining}s',
+  ].join(' ');
+}
+
+({List<_TranscriptRow> rows, Map<String, _TranscriptFold> folds}) _transcriptRows(List<ChatEntry> entries, DesktopTask task) {
   entries = [for (final entry in entries)
     if (entry.tool case final tool?)
       for (final visible in visibleConversationTools([tool]))
@@ -77,90 +85,106 @@ List<_TranscriptRow> _transcriptRows(List<ChatEntry> entries, DesktopTask task, 
     else entry,
   ];
   final rows = <_TranscriptRow>[];
-  // Steering and question replies can split one turn into several segments.
-  final lastEntries = {
-    for (final entry in entries)
-      if (entry.turnId != null && entry.role != 'Queued') entry.turnId!: entry,
-  };
+  final folds = <String, _TranscriptFold>{};
   final queued = <ChatEntry>[];
+  bool asynchronous(ChatEntry entry) {
+    final item = task.messages[entry.id];
+    return item?['delivery'] == 'async' || item?['requestUserInputAsync'] != null;
+  }
+  bool collapsible(ChatEntry entry) =>
+    !const {'You', 'Answer', 'Error', 'Status', 'Compaction', 'Image', 'Reasoning'}.contains(entry.role) &&
+    !asynchronous(entry) && entry.tool?.name != 'sleep' &&
+    (entry.tool == null || !isPersistentConversationTool(entry.tool!));
+  bool finalAnswer(ChatEntry entry, {bool allowUnphased = false}) => entry.role == 'Happen' &&
+    !asynchronous(entry) && (entry.phase == 'final_answer' || allowUnphased && entry.response != null && entry.phase == null);
   var response = <ChatEntry>[];
   String? responseTurnId;
-  var segment = 'initial';
   void flush({bool latest = false}) {
+    if (response.isEmpty) return;
     final turnId = responseTurnId;
     final turn = task.turns[turnId];
-    if (response.isEmpty && !(latest && task.running)) {
-      responseTurnId = null;
-      return;
-    }
     final active = task.running && (turn?['status'] == 'inProgress' || latest && turn == null);
-    if (active) {
-      rows.addAll(_workRows(response));
+    var firstWork = 0;
+    while (firstWork < response.length && _isUserEntry(response[firstWork])) { firstWork++; }
+    rows.addAll(_workRows(response.sublist(0, firstWork)));
+    final finalIndex = response.lastIndexWhere((entry) => finalAnswer(entry, allowUnphased: !active));
+    final before = response.sublist(firstWork, finalIndex < 0 ? response.length : finalIndex);
+    final work = finalIndex < 0 ? const <ChatEntry>[] : before.where(collapsible).toList();
+    if (work.isNotEmpty && turn?['status'] != 'interrupted') {
+      final id = 'turn:${turnId ?? response.first.id}';
+      final duration = turn?['durationMs'];
+      rows.add((id: id, kind: 'turn', entries: work,
+        label: duration is num ? 'Worked for ${_workedDuration(duration)}'
+          : '${work.length} previous ${work.length == 1 ? 'message' : 'messages'}'));
+      var fold = <_TranscriptRow>[];
+      void flushFold() {
+        if (fold.isEmpty) return;
+        // Keep each contiguous body next to its neighbors so steering and
+        // interactive items stay in chronological order during transitions.
+        final key = rows.last.id == id ? id : 'turn-work:${fold.first.id}';
+        if (key != id) rows.add((id: key, kind: 'turn-work', entries: const [], label: null));
+        folds[key] = (turnId: id, rows: fold);
+        fold = [];
+      }
+      for (final row in _workRows(before)) {
+        if (collapsible(row.entries.first)) {
+          fold.add(row);
+        } else {
+          flushFold();
+          rows.add(row);
+        }
+      }
+      flushFold();
     } else {
-      final answer = response.where((entry) => entry.role == 'Happen' && entry.phase != 'commentary').lastOrNull;
-      final work = response.where((entry) => entry != answer && !{'Answer', 'Error', 'Status', 'Compaction', 'Image'}.contains(entry.role)).toList();
-      if (work.isNotEmpty) {
-        final start = turn?['startedAt'] is int ? DateTime.fromMillisecondsSinceEpoch((turn!['startedAt'] as int) * 1000)
-          : work.first.startedAt ?? work.first.timestamp;
-        final end = turn?['completedAt'] is int ? DateTime.fromMillisecondsSinceEpoch((turn!['completedAt'] as int) * 1000)
-          : answer?.timestamp ?? work.last.tool?.endedAt ?? work.last.timestamp;
-        final elapsed = start != null && end != null ? _duration(start, end) : null;
-        final stopped = turn?['status'] == 'interrupted' || response.any((entry) => entry.role == 'Status' && entry.text == 'Stopped');
-        final id = 'turn:$segment';
-        rows.add((id: id, kind: 'turn', entries: work,
-          label: stopped ? elapsed == null ? 'You stopped this response' : 'You stopped after $elapsed'
-            : elapsed == null ? 'Worked' : 'Worked for $elapsed'));
-        if (expandedTurns.contains(id)) rows.addAll(_workRows(work));
-        final visible = response.where((entry) => entry == answer ||
-          {'Answer', 'Error', 'Status', 'Compaction', 'Image'}.contains(entry.role)).toSet();
-        rows.addAll(_workRows(response).where((row) => visible.contains(row.entries.first)));
-      } else {
-        rows.addAll(_workRows(response));
-      }
-      if (turn?['diff'] case final String diff when diff.isNotEmpty && response.contains(lastEntries[turnId])) {
-        rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
-      }
+      rows.addAll(_workRows(before));
+    }
+    if (finalIndex >= 0) rows.addAll(_workRows(response.sublist(finalIndex)));
+    if (turn?['diff'] case final String diff when !active && diff.isNotEmpty) {
+      rows.add((id: 'changes:$turnId', kind: 'changes', entries: const [], label: turnId));
     }
     response = [];
     responseTurnId = null;
   }
   for (final entry in entries) {
     if (entry.role == 'Queued') { queued.add(entry); continue; }
-    if (entry.role == 'You' || entry.role == 'Answer') {
+    if (entry.turnId != null && responseTurnId != null && responseTurnId != entry.turnId ||
+        entry.turnId == null && _isUserEntry(entry)) {
       flush();
-      segment = entry.id;
-      responseTurnId = entry.turnId;
-      rows.addAll(_workRows([entry]));
+    }
+    responseTurnId ??= entry.turnId;
+    response.add(entry);
+  }
+  final lastSegment = response;
+  final lastTurn = responseTurnId;
+  final segmentStart = rows.length;
+  flush(latest: true);
+  final activeTurn = task.turns.values.lastOrNull;
+  final current = activeTurn?['status'] != 'inProgress' || activeTurn?['id'] == lastTurn;
+  final latest = current ? lastSegment.lastOrNull : null;
+  final lastRow = current && rows.length > segmentStart ? rows.last : null;
+  final retrying = task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true;
+  String? working;
+  if (_indicatingWork(task, latest) && (retrying || lastRow?.entries.lastOrNull?.compaction?.status != 'running' &&
+      !lastSegment.any((entry) => current && entry.image != null && entry.streaming) &&
+      (latest == null || !finalAnswer(latest)))) {
+    final afterInput = lastSegment.skip(lastSegment.lastIndexWhere(_isUserEntry) + 1);
+    final heading = task.retryStatus?['message'] as String? ??
+      (current ? afterInput.where((entry) => entry.role == 'Reasoning' && entry.text.isNotEmpty).lastOrNull?.text : null) ??
+      'Thinking';
+    if (!retrying && lastRow?.kind == 'activity') {
+      rows[rows.length - 1] = (id: lastRow!.id, kind: lastRow.kind, entries: lastRow.entries, label: heading);
     } else {
-      // Retrying starts a new turn without another user message. Its live
-      // activity must not inherit the failed turn's collapsed presentation.
-      if (responseTurnId != null && entry.turnId != null && responseTurnId != entry.turnId) {
-        flush();
-        segment = entry.id;
-      }
-      responseTurnId ??= entry.turnId;
-      response.add(entry);
+      working = heading;
     }
   }
-  flush(latest: true);
-  final lastEntry = entries.where((entry) => entry.role != 'Queued').lastOrNull;
-  final activeTurn = task.turns.values.lastOrNull;
-  final latest = activeTurn?['status'] == 'inProgress' && activeTurn?['id'] != lastEntry?.turnId
-    ? null : lastEntry;
-  final activity = rows.lastOrNull;
-  final activityOwnsStatus = activity?.kind == 'activity' && identical(activity?.entries.last, latest);
-  final retrying = task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true;
   rows.addAll(_workRows(queued));
-  // The latest activity group owns the live status, including the pause after
-  // its tools finish. Commentary and steering hand it back to the placeholder.
-  if (_indicatingWork(task, latest) && (retrying || !activityOwnsStatus &&
-      latest?.tool?.status != 'running' && latest?.compaction?.status != 'running' &&
-      !(latest?.image != null && latest!.streaming) &&
-      !(latest?.role == 'Happen' && latest!.phase == 'final_answer'))) {
-    rows.add((id: 'working', kind: 'working', entries: const [], label: 'Thinking'));
+  if (working != null) {
+    rows.add((id: 'working', kind: 'working', entries: const [], label: working));
   }
-  return rows;
+  return (rows: rows, folds: folds);
 }
+
+bool _isUserEntry(ChatEntry entry) => entry.role == 'You' || entry.role == 'Answer';
 
 /// Task data is cached by the session; only the selected transcript is mounted.
 class ConversationDeck extends StatefulWidget {
@@ -179,7 +203,6 @@ class ConversationDeck extends StatefulWidget {
   @override
   State<ConversationDeck> createState() => _ConversationDeckState();
 }
-
 class _ConversationDeckState extends State<ConversationDeck> {
   @override
   Widget build(BuildContext context) {
@@ -226,7 +249,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   bool _pagingScheduled = false, _latestScheduled = false;
   bool _autofillBlocked = false;
   String? _lastSentID;
-  final _expandedTurns = <String>{};
   int _expansionRevision = 0;
   Object? _contentState;
   Widget? _content;
@@ -243,6 +265,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   void didUpdateWidget(ConversationTranscript oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (_lastSentID != widget.task.lastSentID) {
+      if (_scroll.hasClients) cancelConversationDisclosureAnchor(_scroll.position);
       _lastSentID = widget.task.lastSentID;
       _following = true;
       _showLatest = false;
@@ -356,7 +379,8 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       if (!mounted || !_list.isAttached) return;
       final anchor = _viewportAnchor;
       _viewportAnchor = null;
-      if (!_following && _promptNavigation == null && _scroll.hasClients && !_scroll.position.isScrollingNotifier.value) {
+      if (!_following && _promptNavigation == null && _scroll.hasClients &&
+          !hasConversationDisclosureAnchor(_scroll.position) && !_scroll.position.isScrollingNotifier.value) {
         final box = anchor == null ? null : _rowAnchors[anchor.id];
         if (box != null && _anchorLaidOut(box)) {
           final delta = box.localToGlobal(Offset.zero).dy - anchor!.top;
@@ -387,6 +411,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
 
   void _cancelPromptNavigation() {
     _viewportAnchor = null;
+    if (_scroll.hasClients) cancelConversationDisclosureAnchor(_scroll.position);
     final navigation = _promptNavigation;
     if (navigation == null) return;
     _promptNavigation = null;
@@ -475,22 +500,12 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
     child: child,
   ));
 
-  void _toggleTurn(BuildContext context, String id) {
-    _cancelPromptNavigation();
-    final box = context.findRenderObject();
-    final top = box is RenderBox ? box.localToGlobal(Offset.zero).dy : null;
-    _following = false;
+  void _toggleTurn(String id) {
+    _expand();
     setState(() {
-      if (!_expandedTurns.remove(id)) _expandedTurns.add(id);
+      final expanded = widget.task.expandedConversationTurns;
+      if (!expanded.remove(id)) expanded.add(id);
       _expansionRevision++;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !context.mounted || top == null || !_scroll.hasClients) return;
-      final next = context.findRenderObject();
-      if (next is! RenderBox || !next.attached) return;
-      final delta = next.localToGlobal(Offset.zero).dy - top;
-      if (delta.abs() > .5) _scroll.jumpTo((_scroll.offset - delta)
-        .clamp(_scroll.position.minScrollExtent, _scroll.position.maxScrollExtent));
     });
   }
 
@@ -556,7 +571,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   Widget _buildContent(List<ChatEntry> entries) {
     final task = widget.task;
     _follow();
-    final rows = _transcriptRows(entries, task, _expandedTurns);
+    final (:rows, :folds) = _transcriptRows(entries, task);
     final responses = <String, String>{}, toolCalls = <String, int>{};
     int calls(ToolActivity tool) => 1 + tool.children.fold(0, (count, child) => count + calls(child));
     final annotationContexts = <String, List<ResponseAnnotation>>{};
@@ -572,7 +587,6 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       annotationContexts[entry.id] = annotations;
     }
     final latest = entries.where((entry) => entry.role != 'Queued').lastOrNull;
-    final latestRowID = rows.where((row) => row.entries.isEmpty || row.entries.last.role != 'Queued').lastOrNull?.id;
     final count = rows.length;
     _visibleRows = count;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -601,33 +615,14 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       _promptForRow[indices[row.id]!] = promptId;
     }
     _scheduleRailRead();
-    final started = task.runStartedAt;
-    final startedAt = started == null ? null : DateTime.fromMillisecondsSinceEpoch(started);
-    Widget buildRow(BuildContext context, int index) {
-      if (historyOffset == 1 && index == count) return Column(
-        key: const ValueKey('transcript-history'),
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (task.loadError != null) TextButton(
-            onPressed: widget.onLoadEarlier, child: const Text('Could not load earlier messages. Retry'))
-          else if (task.loadingEarlier) const Padding(padding: EdgeInsets.all(16),
-            child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5)))
-          else const SizedBox(height: 1),
-        ],
-      );
-      final row = rows[count - 1 - index];
+    Widget buildActivityRow(_TranscriptRow row, {bool hasEarlier = false}) {
       if (row.kind == 'working') {
         if (task.retryStatus?['error'] != null || task.retryStatus?['provider_delay'] == true) {
           return _ProviderRetryNotice(key: const ValueKey('working'), status: task.retryStatus!);
         }
-        return _TurnClock(key: const ValueKey('working'), startedAt: startedAt,
-          status: task.retryStatus?['message'] as String? ?? row.label);
+        return Semantics(key: const ValueKey('working'), liveRegion: true, label: row.label, excludeSemantics: true,
+          child: SelectionContainer.disabled(child: ThinkingLabel(label: row.label!, lineHeight: 21)));
       }
-      if (row.kind == 'turn') return Padding(
-        key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 6),
-        child: Builder(builder: (context) => _TurnFold(
-          label: row.label!, expanded: _expandedTurns.contains(row.id),
-          onToggle: () => _toggleTurn(context, row.id))));
       if (row.kind == 'changes') return Padding(
         key: ValueKey(row.id), padding: const EdgeInsets.only(bottom: 16, left: 4, right: 4),
         child: ConversationChangedFiles(key: PageStorageKey(row.id), source: 'turn:${row.label}',
@@ -645,21 +640,19 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
       return Padding(
         key: ValueKey(row.id),
         padding: EdgeInsets.only(
-          top: entry?.role == 'You' && index > 0 ? 8 : 0,
-          bottom: entry == null ? 8 : entry.role == 'You' || entry.response != null ? 16 : 8),
-        child: entry == null ? _ActivityGroup(
-          key: PageStorageKey(row.id), entries: row.entries,
-          active: _indicatingWork(task, row.entries.last) && row.id == latestRowID &&
-            task.retryStatus?['error'] == null && task.retryStatus?['provider_delay'] != true,
+          top: entry?.role == 'You' && hasEarlier ? 8 : 0,
+          bottom: entry == null || entry.role == 'You' || entry.role == 'Happen' ? 16 : 8),
+        child: entry == null ? ConversationToolRun(
+          key: ValueKey(row.id), tools: row.entries.map((entry) => entry.tool!).toList(growable: false),
+          thinkingLabel: row.label, inProgress: task.running &&
+            (task.turns[row.entries.last.turnId]?['status'] ?? 'inProgress') == 'inProgress',
           directory: widget.directory, onExpand: _expand,
         ) : switch (entry.role) {
-          'Tool' => _ToolRow(tool: entry.tool!, directory: widget.directory, onExpand: _expand),
+          'Tool' => ConversationToolCall(tool: entry.tool!, directory: widget.directory, onExpand: _expand),
           'Compaction' => _CompactionRow(
             entry: entry, directory: widget.directory, retryStatus: task.retryStatus,
             onExpand: _expand,
           ),
-          'Reasoning' => _ReasoningRow(entry: entry, active: entry.streaming && identical(entry, latest),
-            directory: widget.directory, onExpand: _expand),
           'Status' => _TurnStatus(entry: entry),
           'Answer' => QuestionAnswerRow(id: entry.id, answers: entry.questionAnswers,
             onExpand: _expand),
@@ -682,6 +675,32 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
         },
       );
     }
+
+    Widget buildFold(_TranscriptFold fold) => ConversationActivityDetails(turn: true,
+      expanded: task.expandedConversationTurns.contains(fold.turnId),
+      builder: (context) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [for (final row in fold.rows) buildActivityRow(row)]));
+
+    Widget buildRow(int index) {
+      if (historyOffset == 1 && index == count) return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (task.loadError != null) TextButton(
+            onPressed: widget.onLoadEarlier, child: const Text('Could not load earlier messages. Retry'))
+          else if (task.loadingEarlier) const Padding(padding: EdgeInsets.all(16),
+            child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 1.5)))
+          else const SizedBox(height: 1),
+        ],
+      );
+      final row = rows[count - 1 - index];
+      final fold = folds[row.id];
+      if (row.kind == 'turn') return _TurnFold(
+        label: row.label!, expanded: task.expandedConversationTurns.contains(row.id),
+        onToggle: () => _toggleTurn(row.id), body: fold == null ? null : buildFold(fold));
+      if (fold != null) return buildFold(fold);
+      return buildActivityRow(row, hasEarlier: index > 0);
+    }
+
     return LayoutBuilder(builder: (context, constraints) {
         final sidePadding = constraints.maxWidth > desktopConversationWidth + 40
           ? (constraints.maxWidth - desktopConversationWidth) / 2 : constraints.maxWidth < 600 ? 12.0 : 20.0;
@@ -718,7 +737,7 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
                     itemBuilder: (context, index) {
                       final id = index == count ? 'transcript-history' : rows[count - 1 - index].id;
                       return ConversationScrollAnchor(key: ValueKey(id), id: id, anchors: _rowAnchors,
-                        child: buildRow(context, index));
+                        child: buildRow(index));
                     },
                   ),
                 )],
@@ -729,99 +748,24 @@ class _ConversationTranscriptState extends State<ConversationTranscript> {
   }
 }
 
-class _ActivityGroup extends StatelessWidget {
-  const _ActivityGroup({super.key, required this.entries, required this.directory, required this.onExpand,
-    required this.active});
-  final List<ChatEntry> entries;
-  final String directory;
-  final VoidCallback onExpand;
-  final bool active;
-
-  @override
-  Widget build(BuildContext context) {
-    final tools = [for (final entry in entries) if (entry.tool != null) entry.tool!];
-    final running = tools.where((tool) => tool.status == 'running').lastOrNull;
-    final thinking = active && running == null;
-    if (entries.length == 1 && tools.length == 1 && !active) {
-      return _ToolRow(tool: tools.single, directory: directory, onExpand: onExpand);
-    }
-    if (entries.length == 1 && tools.isEmpty) {
-      return _ReasoningRow(entry: entries.single, active: active,
-        directory: directory, onExpand: onExpand);
-    }
-    final thought = entries.where((entry) => entry.role == 'Reasoning').lastOrNull;
-    final label = thinking ? entries.last.role == 'Reasoning' ? _thoughtPreview(thought?.text ?? '', active: true) : 'Thinking'
-      : active && running != null ? toolLabel(running, directory: directory, active: true)
-      : tools.isEmpty ? entries.length == 1 ? 'Thought' : 'Thought (×${entries.length})' : toolGroupSummary(tools);
-    final failed = tools.any(toolShowsFailure);
-    return ConversationDisclosure(
-      key: PageStorageKey('disclosure:${entries.first.id}'),
-      label: label, shimmer: active, timestamp: entries.first.timestamp,
-      color: failed ? desktopError : desktopSecondary,
-      icon: thinking && entries.last.role != 'Reasoning' ? null : ConversationWorkIcon(kind: thinking || tools.isEmpty ? 'reasoning'
-        : active && running != null ? toolKind(running)
-        : tools.map(toolKind).toSet().length == 1 ? toolKind(tools.first) : 'tool', failed: failed),
-      fontSize: 14,
-      onExpand: onExpand,
-      builder: (context) => ConstrainedBox(constraints: const BoxConstraints(maxHeight: 224),
-          child: SingleChildScrollView(key: PageStorageKey('work-log:${entries.first.id}'),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, spacing: 4, children: [
-              for (final entry in entries)
-                if (entry.tool != null) _ToolRow(key: ValueKey(entry.id),
-                  tool: entry.tool!, directory: directory, onExpand: onExpand)
-                else _ReasoningRow(entry: entry, active: thinking && identical(entry, entries.last),
-                  directory: directory, onExpand: onExpand),
-            ]))),
-    );
-  }
-}
-
-class _ReasoningRow extends StatelessWidget {
-  const _ReasoningRow({required this.entry, required this.active, required this.directory, required this.onExpand});
-  final ChatEntry entry;
-  final bool active;
-  final String directory;
-  final VoidCallback onExpand;
-
-  @override
-  Widget build(BuildContext context) => ConversationDisclosure(
-    key: PageStorageKey('reasoning:${entry.id}'),
-    label: _thoughtPreview(entry.text, active: active), fontSize: 14, timestamp: entry.timestamp,
-    icon: const ConversationWorkIcon(kind: 'reasoning'),
-    shimmer: active,
-    onExpand: onExpand,
-    builder: (context) => Padding(padding: const EdgeInsets.fromLTRB(30, 4, 2, 8),
-      child: ConstrainedBox(constraints: const BoxConstraints(maxHeight: 384),
-        child: SingleChildScrollView(child: ConversationMarkdown(text: entry.text, directory: directory, reasoning: true)))),
-  );
-}
-
-String _thoughtPreview(String text, {required bool active}) {
-  final plain = text.replaceAll(RegExp(r'[#*`_]+'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-  return plain.isEmpty ? active ? 'Thinking' : 'Thought' : plain;
-}
-
 class _TurnFold extends StatelessWidget {
-  const _TurnFold({required this.label, required this.expanded, required this.onToggle});
+  const _TurnFold({required this.label, required this.expanded, required this.onToggle, this.body});
   final String label;
   final bool expanded;
   final VoidCallback onToggle;
+  final Widget? body;
+
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.only(top: 4, bottom: 8),
-    decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x99e4e4e7)))),
-    child: Align(alignment: Alignment.centerLeft, child: Semantics(button: true, expanded: expanded,
-      child: InkWell(onTap: onToggle, borderRadius: BorderRadius.circular(6),
-        mouseCursor: WidgetStateMouseCursor.clickable,
-        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Text(label, style: const TextStyle(fontSize: 14, height: 1.625,
-              color: desktopSecondary, fontFeatures: [FontFeature.tabularFigures()])),
-            const SizedBox(width: 4),
-            Icon(expanded ? Icons.keyboard_arrow_down_rounded : Icons.chevron_right_rounded,
-              size: 16, color: desktopSecondary),
-          ]))))),
-  );
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Padding(padding: const EdgeInsets.only(bottom: 16), child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Builder(builder: (header) => ConversationActivityHeader(label: label, expanded: expanded, toolActivity: false,
+          onToggle: () => toggleConversationDisclosure(context, header, onToggle, turn: true))),
+        const SizedBox(height: 4),
+        const Divider(height: 1, thickness: 1, color: desktopBorder),
+      ])),
+    ?body,
+  ]);
 }
 
 class _Message extends StatefulWidget {
@@ -1042,7 +986,7 @@ class _CompactionRow extends StatelessWidget {
 }
 
 class _TurnClock extends StatefulWidget {
-  const _TurnClock({super.key, required this.startedAt, this.status});
+  const _TurnClock({required this.startedAt, this.status});
   final DateTime? startedAt;
   final String? status;
 
@@ -1193,15 +1137,4 @@ class _ErrorMessage extends StatelessWidget {
         icon: const Icon(Icons.refresh, size: 16), label: const Text('Retry')),
     ]),
   );
-}
-
-class _ToolRow extends StatelessWidget {
-  const _ToolRow({super.key, required this.tool, required this.directory, required this.onExpand});
-  final ToolActivity tool;
-  final String directory;
-  final VoidCallback onExpand;
-
-  @override
-  Widget build(BuildContext context) => ConversationImageGroup(
-    child: ConversationToolCall(tool: tool, directory: directory, onExpand: onExpand));
 }

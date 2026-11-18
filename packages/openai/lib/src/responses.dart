@@ -368,6 +368,7 @@ class ResponsesClient {
     Duration? idleTimeout,
   }) async {
     final items = <int, Json>{};
+    final messagePhases = <String, String>{};
     final reasoningStarts = <String, int>{};
     final reasoningParts = <String, String>{};
     final reasoningTimes = <String, Json>{};
@@ -451,22 +452,24 @@ class ResponsesClient {
             onEvent?.call({'type': 'model.connected'});
           case 'response.output_item.added':
             final item = jsonObject(event['item']);
+            if (item case {'type': 'message', 'id': final String id, 'phase': final String phase}) {
+              messagePhases[id] = phase;
+            }
             if (item['type'] == 'reasoning' && item['id'] is String) {
               reasoningStarts[item['id'] as String] = DateTime.now().millisecondsSinceEpoch;
             }
           case 'response.output_text.delta':
-            onEvent?.call({'type': 'text.delta', 'delta': event['delta']});
+            onEvent?.call({'type': 'text.delta', 'delta': event['delta'],
+              'phase': ?messagePhases[event['item_id']]});
           case 'response.reasoning_summary_text.delta':
             reasoningPart(event, 'summary');
-            onEvent?.call({'type': 'reasoning.delta', 'delta': event['delta']});
+            onEvent?.call({'type': 'reasoning.delta', 'delta': event['delta'], 'index': event['summary_index'] ?? 0});
           case 'response.reasoning_text.delta':
             reasoningPart(event, 'content');
-            onEvent?.call({'type': 'reasoning.delta', 'delta': event['delta']});
+            onEvent?.call({'type': 'reasoning.delta', 'channel': 'content',
+              'delta': event['delta'], 'index': event['content_index'] ?? 0});
           case 'response.reasoning_summary_part.added':
             reasoningPart(event, 'summary');
-            if ((event['summary_index'] as int? ?? 0) > 0) {
-              onEvent?.call({'type': 'reasoning.delta', 'delta': '\n\n'});
-            }
           case 'response.reasoning_summary_part.done':
           case 'response.reasoning_summary_text.done':
             reasoningPart(event, 'summary', completed: true);

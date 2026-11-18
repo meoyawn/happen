@@ -206,6 +206,10 @@ void main(List<String> arguments) {
                 return;
               }
               if (action == 'large' || action == 'large_error') {
+                if (params['_meta']?['progressToken'] case final String progressToken) {
+                  send({'method': 'notifications/progress',
+                    'params': {'progressToken': progressToken, 'progress': 1, 'message': 'Reading the catalog'}});
+                }
                 final bytes = params['arguments']['bytes'] as int;
                 send({
                   'id': id,

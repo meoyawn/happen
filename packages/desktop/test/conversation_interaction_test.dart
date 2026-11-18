@@ -9,6 +9,7 @@ import 'package:desktop/image_preview.dart';
 import 'package:desktop/conversation_tools.dart';
 import 'package:desktop/conversation_data.dart';
 import 'package:desktop/conversation_images.dart';
+import 'package:desktop/file_reference.dart';
 import 'package:desktop/generated_image_loading.dart';
 import 'package:desktop/session.dart';
 import 'package:flutter/material.dart';
@@ -50,14 +51,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> open(WidgetTester tester, Widget child) async {
+  Future<void> open(WidgetTester tester, Widget child, {bool disableAnimations = true}) async {
     tester.view.physicalSize = const Size(1000, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.runAsync(() async {
       await tester.pumpWidget(MaterialApp(home: MediaQuery(
-        data: const MediaQueryData(size: Size(1000, 1000), disableAnimations: true), child: Scaffold(body: child))));
+        data: MediaQueryData(size: const Size(1000, 1000), disableAnimations: disableAnimations), child: Scaffold(body: child))));
       for (final image in tester.widgetList<Image>(find.byType(Image))) {
         await precacheImage(image.image, tester.element(find.byType(Scaffold)));
       }
@@ -142,8 +143,8 @@ void main() {
         'text': 'Your images are ready', 'phase': 'final_answer'},
     });
     await open(tester, ConversationTranscript(task: task, directory: '', onRetry: () {}));
-    expect(find.text('Worked'), findsOneWidget);
-    expect(find.text('Read 1 file'), findsNothing);
+    expect(find.text('2 previous messages'), findsOneWidget);
+    expect(find.text('read file'), findsNothing);
     expect(find.byType(ConversationGeneratedImages), findsNWidgets(2));
     final gallery = find.ancestor(
       of: find.byWidgetPredicate((widget) => widget is Semantics && widget.properties.label == 'Show generated image 2'),
@@ -209,7 +210,7 @@ void main() {
     testWidgets('${native ? 'dynamic' : 'MCP'} tool responses render their images beside text', (tester) async {
       final task = DesktopTask('tool-images', 'Tool images');
       task.messages['tool'] = {'id': 'tool', 'type': native ? 'dynamicToolCall' : 'mcpToolCall',
-        'server': 'images', 'tool': 'read', 'status': 'completed', 'arguments': {'path': '/image'},
+        if (!native) 'server': 'images', 'tool': 'read', 'status': 'completed', 'arguments': {'path': '/image'},
         if (native) 'contentItems': [
           {'type': 'inputText', 'text': 'Image result'}, {'type': 'inputImage', 'imageUrl': 'data:image/png;base64,$first'},
         ] else 'result': {'content': [
@@ -218,7 +219,7 @@ void main() {
       };
       final tool = conversation(task).single.tool!;
       await open(tester, ConversationToolCall(tool: tool, onExpand: () {}));
-      await tester.tap(find.text('Read /image'));
+      await tester.tap(find.text(native ? 'read' : 'images · read'));
       await settleFormatting(tester);
       expect(find.textContaining('Image result', findRichText: true), findsOneWidget);
       final image = find.byWidgetPredicate((widget) => widget is ConversationImage && widget.label == 'Tool image');
@@ -275,8 +276,10 @@ void main() {
     addTearDown(() => root.delete(recursive: true));
     await open(tester, ConversationDataScope(client: client,
       child: ConversationInspectedImages(tools: conversation(task).map((entry) => entry.tool!).toList(),
-        directory: '', onExpand: () {})));
+        directory: '', onExpand: () {})), disableAnimations: false);
     expect(find.byType(ConversationImage), findsNothing, reason: 'Collapsed inspections must not decode images');
+    final inspection = find.byType(ConversationInspectedImages);
+    final collapsed = tester.getSize(inspection).height;
     await tester.runAsync(() async {
       await tester.tap(find.text('Viewed 2 images'));
       await tester.pump();
@@ -284,7 +287,11 @@ void main() {
         await precacheImage(image.image, tester.element(find.byType(Scaffold)));
       }
     });
+    expect(tester.getSize(inspection).height, closeTo(collapsed, .5));
+    await tester.pump(const Duration(milliseconds: 65));
+    final opening = tester.getSize(inspection).height;
     await tester.pumpAndSettle();
+    expect(opening, inExclusiveRange(collapsed, tester.getSize(inspection).height));
     expect(tester.widgetList<RawImage>(find.byType(RawImage)).where((image) => image.image != null), hasLength(2));
     await tester.runAsync(() async {
       await tester.tap(find.byType(ConversationImage).last);
@@ -306,65 +313,175 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('live activity stays collapsed and respects a closed JavaScript cell', (tester) async {
-    final task = DesktopTask('activity', 'Activity')..loaded = true..running = true;
-    void update(int calls) {
-      task.messages['cell'] = {'id': 'cell', 'type': 'dynamicToolCall', 'tool': 'functions.exec', 'startedAtMs': 1,
-        'order': 0, 'status': 'inProgress', 'arguments': 'await tools.read()'};
-      for (var index = 0; index < calls; index++) {
-        task.messages['read$index'] = {'id': 'read$index', 'type': 'dynamicToolCall', 'tool': 'read_file',
-          'startedAtMs': 1, 'order': index + 1, 'parentCallId': 'cell', 'status': 'completed', 'arguments': {'path': '/file$index'}};
-      }
+  testWidgets('tool activity animates and opens file references independently of details', (tester) async {
+    final task = DesktopTask('file-activity', 'File activity')..loaded = true;
+    addTearDown(task.liveText.dispose);
+    const commands = [
+      r"rg -n 'ThemeData\(|fontFamily:|colorScheme:' lib/theme.dart | head -20",
+      "ls 'build/artifacts'",
+      "sed -n '1,40p' 'notes#1'",
+      'git diff --check',
+      'git status --short',
+    ];
+    for (final (index, command) in commands.indexed) {
+      final id = 'command-$index';
+      task.messages[id] = {'id': id, 'type': 'commandExecution', 'status': 'completed',
+        'order': index, 'cwd': '/project/execution', 'command': '/bin/zsh -lc $command',
+        'commandActions': [{'type': 'unknown', 'command': command}]};
     }
-    Widget transcript() => ConversationTranscript(task: task, directory: '', onRetry: () {});
-    update(1);
-    await open(tester, transcript());
-    expect(find.byTooltip('View code'), findsNothing, reason: 'Running activity must not force its group open');
-    await tester.tap(find.textContaining('Used 1', findRichText: true));
+    task.messages['edit'] = {'id': 'edit', 'type': 'fileChange', 'status': 'completed', 'order': commands.length,
+      'changes': [{'path': 'lib/main.dart', 'kind': {'type': 'update'}, 'diff': '@@ -11 +11 @@\n-old\n+new\n'}]};
+    ConversationFileLocation? opened;
+    Future<void> render({bool reducedMotion = false}) => tester.pumpWidget(MaterialApp(
+      builder: (context, child) => MediaQuery(data: MediaQuery.of(context).copyWith(disableAnimations: reducedMotion), child: child!),
+      home: Scaffold(body: ConversationFileScope(onOpen: (location) => opened = location,
+        child: ConversationTranscript(task: task, directory: '/project', onRetry: () {})))));
+    await render();
+    final run = find.byType(ConversationToolRun);
+    double height() => tester.getSize(run).height;
+    final collapsed = height();
+    final summary = find.text('Edited a file, read files, ran commands');
+    expect(summary, findsOneWidget);
+    expect(find.text('notes#1'), findsNothing);
+    await tester.tap(summary);
     await tester.pump();
-    expect(find.text('read_file'), findsNothing, reason: 'The work log does not force an individual call open');
-    await tester.tap(find.text('JavaScript').first);
+    expect(height(), closeTo(collapsed, .01));
+    await tester.pump(const Duration(milliseconds: 70));
+    final opening = height();
+    expect(opening, greaterThan(collapsed));
     await tester.pumpAndSettle();
-    expect(find.text('read_file'), findsOneWidget);
-    await tester.tap(find.text('JavaScript').first);
+    final expanded = height();
+    expect(expanded, greaterThan(opening));
+    expect(find.text(r'Searched for ThemeData\(|fontFamily:|colorScheme: in'), findsOneWidget);
+    expect(find.text('Listed files in artifacts'), findsOneWidget);
+    expect(find.text('+1 −1'), findsOneWidget);
+    expect(find.text('git diff --check'), findsOneWidget);
+    for (final (label, path, line) in [
+      ('theme.dart', '/project/execution/lib/theme.dart', null),
+      ('notes#1', '/project/execution/notes#1', null),
+      ('main.dart', '/project/lib/main.dart', 11),
+    ]) {
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+      expect(opened, (path: path, line: line));
+    }
+    expect(find.text('Command'), findsNothing);
+    await tester.tap(summary);
     await tester.pump();
-    update(2);
+    await tester.pump(const Duration(milliseconds: 70));
+    expect(height(), inExclusiveRange(collapsed, expanded));
+    expect(find.text('notes#1'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.text('notes#1'), findsNothing);
+    await render(reducedMotion: true);
+    await tester.tap(summary);
+    await tester.pump();
+    expect(height(), closeTo(expanded, .01));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('live tool runs follow public headings and progress while detail rows stay open', (tester) async {
+    final task = DesktopTask('activity', 'Activity')..loaded = true..running = true;
+    addTearDown(task.liveText.dispose);
+    const turn = 'turn';
+    task.turns[turn] = {'id': turn, 'status': 'inProgress'};
+    void notify(String method, Json params, {String turnId = turn}) => applyThreadNotification(task.messages,
+      {'method': method, 'params': {'turnId': turnId, ...params}});
+    void item(Json item, {bool live = false}) => notify(live ? 'item/started' : 'item/completed', {'item': item});
+    Widget transcript() => ConversationTranscript(task: task, directory: '', onRetry: () {});
+
+    item({'id': 'cell', 'type': 'dynamicToolCall', 'namespace': 'functions', 'tool': 'exec',
+      'status': 'inProgress', 'arguments': 'wrapper source'}, live: true);
+    item({'id': 'skill', 'type': 'commandExecution', 'command': 'cat flutter/SKILL.md',
+      'commandActions': [{'type': 'read', 'path': 'flutter/SKILL.md'}], 'parentCallId': 'cell', 'status': 'completed'});
+    item({'id': 'version', 'type': 'commandExecution', 'command': 'flutter --version', 'status': 'completed'});
+    item({'id': 'commentary', 'type': 'agentMessage', 'text': 'Checking the browser layout.', 'phase': 'commentary'});
+    item({'id': 'browser', 'type': 'dynamicToolCall', 'tool': 'client__browser_snapshot', 'status': 'completed'});
+    item({'id': 'search', 'type': 'webSearch', 'query': 'Flutter layouts'});
+    item({'id': 'command', 'type': 'commandExecution', 'command': 'flutter test', 'status': 'failed',
+      'aggregatedOutput': 'Layout check failed', 'exitCode': 1});
+    item({'id': 'reasoning', 'type': 'reasoning'}, live: true);
+    notify('item/reasoning/textDelta', {'itemId': 'reasoning', 'delta': '**Raw reasoning**'});
+    for (final delta in ['**Checking', ' the layout**\nLooking for the cause.']) {
+      notify('item/reasoning/summaryTextDelta', {'itemId': 'reasoning', 'summaryIndex': 1, 'delta': delta});
+    }
+
     await open(tester, transcript());
-    expect(find.text('read_file'), findsNothing, reason: 'New calls must not reopen a closed cell');
-    await tester.tap(find.textContaining('Used 1', findRichText: true));
-    await tester.pump();
-    await tester.tap(find.textContaining('Used 1', findRichText: true));
-    await tester.pump();
-    expect(find.text('read_file'), findsNothing, reason: 'Remounting the cell must preserve the explicit closed choice');
-    await tester.tap(find.text('JavaScript').first);
-    await tester.pump();
-    expect(find.text('read_file'), findsNWidgets(2));
+    expect(find.text('Loaded a tool, ran a command'), findsOneWidget);
+    expect(find.text('Raw reasoning'), findsNothing);
+    expect(find.text('Checking the layout'), findsOneWidget);
+    expect(find.text('Searched the web · Flutter layouts'), findsNothing);
+    await tester.tap(find.text('Checking the layout'));
+    await tester.pumpAndSettle();
+    expect(find.text('Inspected the Browser page'), findsOneWidget);
+    expect(find.text('Searched the web · Flutter layouts'), findsOneWidget);
+    expect(find.text('JavaScript'), findsNothing);
+    await tester.tap(find.text('Command failed (flutter test)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Layout check failed'), findsOneWidget);
+
+    const call = {'id': 'call', 'type': 'mcpToolCall', 'server': 'catalog', 'tool': 'lookup', 'arguments': {'query': 'layout'}};
+    item({...call, 'status': 'inProgress'}, live: true);
+    notify('item/mcpToolCall/progress', {'itemId': 'call', 'message': 'Reading the catalog'});
+    notify('item/mcpToolCall/progress', {'itemId': 'call', 'message': 'Wrong turn'}, turnId: 'other');
+    await open(tester, transcript());
+    expect(find.text('Reading the catalog'), findsNWidgets(2));
+    expect(find.text('Wrong turn'), findsNothing);
+    for (final id in ['call', 'second-call']) {
+      item({...call, 'id': id, 'status': 'completed', 'result': {'content': [{'type': 'text', 'text': 'Guide found'}]}});
+    }
+    notify('item/mcpToolCall/progress', {'itemId': 'call', 'message': 'Late progress'});
+    await open(tester, transcript());
+    expect(find.text('Reading the catalog'), findsNothing);
+    expect(find.text('Late progress'), findsNothing);
+    expect(find.text('Checking the layout'), findsOneWidget);
+    expect(find.text('Layout check failed'), findsOneWidget);
+    await tester.tap(find.text('catalog · lookup · 2 calls'));
+    await tester.pumpAndSettle();
+    expect(find.text('catalog · lookup'), findsNWidgets(2));
+    await tester.ensureVisible(find.text('catalog · lookup').first);
+    await tester.tap(find.text('catalog · lookup').first);
+    await settleFormatting(tester);
+    expect(find.text('Guide found'), findsOneWidget);
+
+    item({'id': 'answer', 'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Layout checked.'}, live: true);
+    await open(tester, transcript());
+    expect(find.text('8 previous messages'), findsOneWidget);
+    expect(find.text('Checking the layout'), findsNothing);
+    expect(find.text('Layout checked.', findRichText: true), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('JavaScript child disclosure choices belong to each call', (tester) async {
-    ToolActivity cell(bool append) => ToolActivity('cell', 'functions.exec', {'code': 'await tools.read()'})
-      ..status = 'done'
-      ..children.addAll([
-        ToolActivity('first', 'read_file', {'path': '/first'})..status = 'done'..output = 'First result',
-        if (append) ToolActivity('second', 'read_file', {'path': '/second'})..status = 'done'..output = 'Second result',
-      ]);
+    final task = DesktopTask('cell-details', 'Cell details');
+    addTearDown(task.liveText.dispose);
+    ToolActivity cell(bool append) {
+      task.messages['cell'] = {'id': 'cell', 'type': 'dynamicToolCall', 'tool': 'exec', 'namespace': 'functions',
+        'arguments': 'await tools.read()', 'status': 'failed', 'order': 0};
+      for (final (index, id, result) in [(1, 'first', 'First result'), if (append) (2, 'second', 'Second result')]) {
+        task.messages[id] = {'id': id, 'type': 'dynamicToolCall', 'tool': 'read_file', 'status': 'completed',
+          'parentCallId': 'cell', 'arguments': {'path': '/$id'}, 'order': index,
+          'contentItems': [{'type': 'inputText', 'text': result}]};
+      }
+      return conversation(task).single.tool!;
+    }
     await open(tester, ConversationToolCall(tool: cell(false), onExpand: () {}));
-    await tester.tap(find.text('JavaScript'));
+    await tester.tap(find.text('JavaScript failed'));
     await settleFormatting(tester);
-    await tester.tap(find.text('read_file'));
+    await tester.tap(find.text('read file'));
     await settleFormatting(tester);
     expect(find.textContaining('First result', findRichText: true), findsOneWidget);
     await open(tester, ConversationToolCall(tool: cell(true), onExpand: () {}));
     expect(find.textContaining('First result', findRichText: true), findsOneWidget);
     expect(find.textContaining('Second result', findRichText: true), findsNothing, reason: 'A newly mounted call must start collapsed');
-    await tester.tap(find.text('read_file').first);
+    await tester.tap(find.text('read file').first);
     await settleFormatting(tester);
     expect(find.textContaining('First result', findRichText: true), findsNothing);
-    await tester.tap(find.text('JavaScript'));
+    await tester.tap(find.text('JavaScript failed'));
     await settleFormatting(tester);
-    await tester.tap(find.text('JavaScript'));
+    await tester.tap(find.text('JavaScript failed'));
     await settleFormatting(tester);
     expect(find.textContaining('First result', findRichText: true), findsNothing);
     expect(find.textContaining('Second result', findRichText: true), findsNothing);

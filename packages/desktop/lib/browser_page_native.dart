@@ -3,8 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:protocol/protocol.dart';
+import 'package:server/dev_servers.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+
+import 'connection.dart' show AgentClient;
+import 'browser_preview.dart';
 
 Uri browserAddress(String input) {
   final value = input.trim();
@@ -28,7 +32,7 @@ Uri browserAddress(String input) {
 }
 
 bool browserHostIsLocal(String host) => host == 'localhost' || host.endsWith('.localhost') ||
-  InternetAddress.tryParse(host)?.isLoopback == true;
+  host == '0.0.0.0' || InternetAddress.tryParse(host)?.isLoopback == true;
 
 bool browserLocationAllowed(Uri uri) => !uri.toString().contains('\x00') && uri.userInfo.isEmpty && (
   {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty ||
@@ -62,16 +66,25 @@ BrowserPageState _transition(BrowserPageState current, BrowserPageState next) =>
 /// Owns a native page independently of the currently displayed workspace.
 /// WebKit owns networking; this owner dispatches platform requests only.
 class BrowserPage extends ChangeNotifier {
-  BrowserPage({String initialUrl = '', this.navigationEnabled = true, this.toolbar = true, this.directory}) {
+  BrowserPage({String initialUrl = '', this.navigationEnabled = true, this.toolbar = true, this.directory,
+      AgentClient? client}) : _preview = client == null || client.sharedFilesystem ? null : BrowserPreview(client) {
     try { _state = BrowserDormant(initialUrl.isEmpty ? null : browserAddress(initialUrl)); }
     on FormatException catch (error) { _state = BrowserFailed(null, error.message); }
+    _connection = _preview?.client.events.stream.listen(_connectionChanged);
   }
   final bool navigationEnabled, toolbar;
   final String? directory;
+  final BrowserPreview? _preview;
+  StreamSubscription<Json>? _connection;
+  bool _reopenOnConnect = false;
   final _lifetime = CancellationToken();
   late BrowserPageState _state;
   BrowserPageState get state => _state;
   Uri? get location => _state.location;
+  Uri? get loadAddress => switch (location) { final uri? => _preview?.loadAddress(uri) ?? uri, null => null };
+  Uri displayAddress(Uri uri) => _preview?.displayAddress(uri) ?? uri;
+  Future<List<Json>> Function({required CancellationToken cancellation}) get discoverPorts =>
+    _preview?.client.discoverRemoteDevServers ?? discoverDevServers;
   String get title => _title;
   String? get error => switch (_state) { BrowserFailed(:final error) => error, _ => null };
   bool get loading => _state is BrowserLoading;
@@ -120,6 +133,16 @@ class BrowserPage extends ChangeNotifier {
           _pendingFileLoad = null;
           return NavigationDecision.navigate;
         }
+        if (request.isMainFrame && navigationEnabled && uri != null && browserLocationAllowed(uri) && _isRemotePreview(uri)) {
+          // Some dev servers issue absolute loopback links or redirects.
+          final target = _preview!.loadAddress(uri);
+          unawaited(Future<void>(() async {
+            if (_lifetime.isCancelled) return;
+            if (target == uri) { await navigate(uri, cancellation: _lifetime); }
+            else { await controller.loadRequest(target).asCancellable(_lifetime); }
+          }).catchError((Object _) {}));
+          return NavigationDecision.prevent;
+        }
         if (navigationEnabled && uri != null && browserLocationAllowed(uri)) return NavigationDecision.navigate;
         if (request.isMainFrame && uri != null) onExternalNavigation?.call(uri);
         return NavigationDecision.prevent;
@@ -129,11 +152,11 @@ class BrowserPage extends ChangeNotifier {
         if (_loaded == null || _loaded!.isCompleted) _loaded = Completer<void>();
         _generation++;
         _annotationDocument = newId();
-        _set(BrowserLoading(Uri.tryParse(url) ?? location));
+        _set(BrowserLoading(_displayLocation(url) ?? location));
       },
       onUrlChange: (change) {
         if (_lifetime.isCancelled || change.url == null) return;
-        final uri = Uri.tryParse(change.url!) ?? location;
+        final uri = _displayLocation(change.url!) ?? location;
         _set(loading ? BrowserLoading(uri, progress) : BrowserReady(uri));
         unawaited(_updatePage());
       },
@@ -141,7 +164,7 @@ class BrowserPage extends ChangeNotifier {
         if (!_lifetime.isCancelled && loading) _set(BrowserLoading(location, value));
       },
       onPageFinished: (url) {
-        if (Uri.tryParse(url) == location) unawaited(_finish());
+        if (_displayLocation(url) == location) unawaited(_finish());
       },
       onWebResourceError: (error) {
         if (_lifetime.isCancelled || error.isForMainFrame == false || error.errorCode == -999) return;
@@ -152,6 +175,27 @@ class BrowserPage extends ChangeNotifier {
     _lifetime.throwIfCancelled();
     _controller = controller;
     return controller;
+  }
+
+  Uri? _displayLocation(String url) {
+    final uri = Uri.tryParse(url);
+    return uri == null ? null : displayAddress(uri);
+  }
+
+  bool _isRemotePreview(Uri uri) => _preview != null && (uri.scheme == 'http' || uri.scheme == 'https') &&
+    browserHostIsLocal(uri.host);
+
+  void _connectionChanged(Json event) {
+    final uri = location;
+    if (_lifetime.isCancelled || _state is BrowserDormant || uri == null || !_isRemotePreview(uri)) return;
+    if (event['method'] == 'connection/closed' && (_preview?.isOpen == true || loading || _reopenOnConnect)) {
+      _operation?.cancel();
+      _preview?.release();
+      _reopenOnConnect = true;
+      _set(BrowserFailed(uri, 'Reconnecting to Happen Server…'));
+    } else if (event['method'] == 'connection/ready' && _reopenOnConnect) {
+      unawaited(navigate(uri, cancellation: _lifetime).catchError((Object _) {}));
+    }
   }
 
   Future<void> _updatePage() async {
@@ -187,9 +231,11 @@ class BrowserPage extends ChangeNotifier {
     _lifetime.throwIfCancelled();
     if (!browserLocationAllowed(uri)) throw const FormatException('Enter a web address or a local file.');
     _operation?.cancel();
+    _reopenOnConnect = false;
     _completeLoad();
     final operation = _operation = CancellationToken();
-    final deadline = TimeoutCancellationToken(const Duration(seconds: 30));
+    final remote = _isRemotePreview(uri);
+    final deadline = TimeoutCancellationToken(Duration(seconds: remote ? 60 : 30));
     final token = cancellation.merge(operation).merge(_lifetime).merge(deadline);
     final navigation = ++_navigation;
     final loaded = _loaded = Completer<void>();
@@ -202,6 +248,11 @@ class BrowserPage extends ChangeNotifier {
       _completeLoad();
     });
     try {
+      var target = uri;
+      if (remote) {
+        _reopenOnConnect = !_preview!.client.isConnected;
+        target = await _preview.open(uri, token);
+      } else { _preview?.release(); }
       final controller = _controller ?? await (_opening ??= _open()).asCancellable(token);
       token.throwIfCancelled();
       if (uri.scheme == 'file') {
@@ -212,7 +263,7 @@ class BrowserPage extends ChangeNotifier {
         if (controller.platform case final WebKitWebViewController webkit) {
           await webkit.loadFileWithParams(WebKitLoadFileParams(absoluteFilePath: path, readAccessPath: readAccess)).asCancellable(token);
         } else { await controller.loadFile(path).asCancellable(token); }
-      } else { await controller.loadRequest(uri).asCancellable(token); }
+      } else { await controller.loadRequest(target).asCancellable(token); }
       await loaded.future.asCancellable(token);
       token.throwIfCancelled();
       if (error case final message?) throw StateError(message);
@@ -259,6 +310,8 @@ class BrowserPage extends ChangeNotifier {
   void close() {
     if (_state is BrowserClosed) return;
     _lifetime.cancel();
+    unawaited(_connection?.cancel());
+    _preview?.release();
     _operation?.cancel();
     _completeLoad();
     unawaited(_controller?.runJavaScript('window.stop();').catchError((Object _) {}));

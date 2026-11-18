@@ -272,6 +272,7 @@ class McpConnection {
       metadata.addAll(requestMetadata!(jsonObject(discovery['capabilities'] ?? {})) ?? {});
     }
     if (readOnly) metadata['openai/readOnly'] = true;
+    if (method == 'tools/call' && onNotification != null) metadata['progressToken'] = id;
     final body = <String, dynamic>{
       'jsonrpc': '2.0',
       'id': id,
@@ -634,6 +635,7 @@ class McpConnection {
         }
         final params = jsonObject(message['params'] ?? {});
         final method = message['method'] as String? ?? '';
+        if (method == 'notifications/progress' && params['progressToken'] != body['params']['_meta']?['progressToken']) continue;
         if (method.startsWith('notifications/events/') ||
             method.startsWith('notifications/subscriptions/') ||
             method.endsWith('/list_changed') ||

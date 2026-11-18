@@ -30,6 +30,7 @@ import 'goal_state.dart';
 import 'goal_status.dart';
 import 'model_picker.dart';
 import 'new_session.dart';
+import 'openai_usage.dart';
 import 'mcp_conversation.dart';
 import 'project_avatar.dart';
 import 'session.dart';
@@ -309,6 +310,10 @@ class _DesktopViewState extends State<DesktopView> {
           ]),
         if (session.loginProvider == id && session.loginError != null)
           Padding(padding: const EdgeInsets.only(top: 8), child: Text(session.loginError!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12))),
+        if (id == 'openai' && session.hasOpenAIUsage) ...[
+          const Divider(height: 24, color: desktopBorder),
+          OpenAIUsageSection(key: ObjectKey(session), usage: session.openAIUsage),
+        ],
       ]),
     );
   }
@@ -782,6 +787,8 @@ class _DesktopViewState extends State<DesktopView> {
             onHome: () => _navigate(_showHome), onSearch: () => _navigate(() => unawaited(_commandMenu())),
             onNew: () => _navigate(() => unawaited(_run(_newChat))),
             onSettings: () async { _scaffold.currentState?.closeDrawer(); await _settings(); },
+            usage: session.hasOpenAIUsage ? OpenAIUsageMenu(key: ObjectKey(session), usage: session.openAIUsage,
+              onManage: () => _navigate(() => unawaited(_settings(page: 'providers')))) : null,
             onProjectSettings: (project) => _navigate(() { widget.machines?.activate(_source(project)); unawaited(_settings(project: project)); }),
             onAddProject: () => _navigate(() => unawaited(_addProject())),
             onRefresh: () => unawaited(_run(widget.machines?.refreshCatalogs ?? session.refreshProjects)),

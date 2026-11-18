@@ -1024,10 +1024,12 @@ class _Agent {
                     } else if (name.startsWith('mcp__')) {
                       output = jsonObject(
                         await callIsolate(network, 'mcp.call', {
-                          'task_id': taskId, 'cwd': cwd,
+                          'task_id': taskId, 'cwd': cwd, 'call_id': id,
                           'name': name,
                           'arguments': arguments,
-                        }, cancellation: cancellation),
+                        }, cancellation: cancellation, onEvent: (progress) {
+                          if (!cancellation.isCancelled) event(progress);
+                        }),
                       )..remove('_meta');
                     } else if (service != null) {
                       output = await callIsolate(network, 'mcp.resources', {

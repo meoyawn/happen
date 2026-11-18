@@ -66,18 +66,60 @@ void main() {
     task.turns['last'] = {'id': 'last', 'status': 'completed'};
     task.messages['read'] = {'id': 'read', 'type': 'dynamicToolCall', 'order': 58, 'turnId': 'last',
       'tool': 'read_file', 'arguments': {'path': '/input'}, 'status': 'completed'};
-    Widget view() => MaterialApp(home: Scaffold(body: ConversationTranscript(
-      task: task, directory: '/project', onRetry: () {})));
+    Widget view({bool reducedMotion = false}) => MaterialApp(
+      builder: (context, child) => MediaQuery(data: MediaQuery.of(context).copyWith(disableAnimations: reducedMotion), child: child!),
+      home: Scaffold(body: ConversationTranscript(task: task, directory: '/project', onRetry: () {})));
     await tester.pumpWidget(view());
-    expect(find.text('Answer 19', findRichText: true), findsOneWidget);
-    expect(tester.getBottomLeft(find.text('Answer 19', findRichText: true)).dy, lessThanOrEqualTo(600));
-    final fold = find.text('Worked');
-    final foldTop = tester.getTopLeft(fold).dy;
+    final answer = find.text('Answer 19', findRichText: true);
+    expect(answer, findsOneWidget);
+    expect(tester.getBottomLeft(answer).dy, lessThanOrEqualTo(600));
+    final fold = find.text('1 previous message');
+    double foldTop() => tester.getTopLeft(fold).dy;
+    double gap() => tester.getTopLeft(answer).dy - foldTop();
+    final anchorBefore = foldTop();
+    final collapsed = gap();
+    await tester.tap(fold);
+    await tester.pump();
+    expect(gap(), closeTo(collapsed, .5));
+    await tester.pump(const Duration(milliseconds: 55));
+    final opening = gap();
+    await tester.pump();
+    expect(foldTop(), closeTo(anchorBefore, .5));
+    await tester.pumpAndSettle();
+    final expanded = gap();
+    expect(opening, inExclusiveRange(collapsed, expanded));
+    expect(foldTop(), closeTo(anchorBefore, .5));
+
+    await tester.tap(fold);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 45));
+    expect(gap(), inExclusiveRange(collapsed, expanded));
+    await tester.pump();
+    expect(foldTop(), closeTo(anchorBefore, .5));
+    await tester.pump(const Duration(milliseconds: 106));
+    expect(gap(), closeTo(collapsed, .5));
+    await tester.pumpAndSettle();
+    expect(foldTop(), closeTo(anchorBefore, .5));
+
+    await tester.pumpWidget(view(reducedMotion: true));
+    await tester.tap(fold);
+    await tester.pump();
+    expect(gap(), closeTo(expanded, .5));
+    await tester.pump();
+    expect(foldTop(), closeTo(anchorBefore, .5));
+    await tester.pumpAndSettle();
+    expect(foldTop(), closeTo(anchorBefore, .5));
+    await tester.tap(fold);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 45));
+    expect(gap(), closeTo(expanded, .5));
+    await tester.pumpAndSettle();
+    expect(gap(), closeTo(collapsed, .5));
+    expect(foldTop(), closeTo(anchorBefore, .5));
     await tester.tap(fold);
     await tester.pumpAndSettle();
-    expect(tester.getTopLeft(fold).dy, closeTo(foldTop, .5));
 
-    await tester.dragUntilVisible(find.text('User 0', findRichText: true), find.byType(ListView), const Offset(0, 400));
+    await tester.dragUntilVisible(find.text('User 0', findRichText: true), find.byType(Scrollable), const Offset(0, 400));
     await tester.pumpAndSettle();
     final anchor = tester.getTopLeft(find.text('User 0', findRichText: true));
     for (var index = -5; index < 0; index++) { add(index); }
@@ -102,9 +144,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Inspect the file', findRichText: true), findsOneWidget);
     expect(find.text('The answer is 42', findRichText: true), findsOneWidget);
-    await tester.tap(find.text('Worked'));
+    await tester.tap(find.text('1 previous message'));
     await tester.pumpAndSettle();
-    expect(find.text('Read 1 file'), findsOneWidget);
+    expect(find.text('read'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -153,14 +195,14 @@ void main() {
     await render();
     expect(thinking('Thinking'), findsNothing);
     expect(thinking('Checking the follow-up'), findsNothing);
-    expect(thinking('Reading input.txt'), findsOneWidget);
+    expect(thinking('Running read'), findsOneWidget);
     expect(find.byType(ThinkingLabel), findsOneWidget);
     expect(find.byKey(const ValueKey('working')), findsNothing);
 
     item({'id': 'read', 'type': 'dynamicToolCall', 'tool': 'read',
       'parentCallId': 'cell', 'arguments': {'path': 'input.txt'}, 'status': 'completed'});
     await render();
-    expect(thinking('Thinking'), findsOneWidget);
+    expect(thinking('Checking the follow-up'), findsOneWidget);
     expect(find.byKey(const ValueKey('working')), findsNothing);
 
     item({'id': 'after-tool', 'type': 'reasoning', 'summary': ['Checking the result']}, live: true);
@@ -170,18 +212,18 @@ void main() {
 
     item({'id': 'commentary', 'type': 'agentMessage', 'text': 'Preparing the answer', 'phase': 'commentary'}, live: true);
     await render();
-    expect(thinking('Thinking'), findsOneWidget);
+    expect(thinking('Checking the result'), findsOneWidget);
     task.questions['question'] = {'async': false};
     await render();
     expect(find.byType(ThinkingLabel), findsNothing);
     task.questions['question'] = {'async': true};
     await render();
-    expect(thinking('Thinking'), findsOneWidget);
+    expect(thinking('Checking the result'), findsOneWidget);
     task.questions.clear();
 
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Answering the follow-up'}, live: true);
     await render();
-    expect(thinking('Thinking'), findsOneWidget);
+    expect(thinking('Checking the result'), findsOneWidget);
 
     item({'id': 'answer', 'type': 'agentMessage', 'text': 'Done', 'phase': 'final_answer'});
     await render();

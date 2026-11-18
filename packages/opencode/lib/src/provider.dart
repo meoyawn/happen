@@ -689,7 +689,7 @@ class OpenCodeProvider implements ModelProvider {
           onEvent?.call({'type': 'text.delta', 'delta': block.text});
         }
         if (block.type == 'thinking' && block.text.isNotEmpty) {
-          onEvent?.call({'type': 'reasoning.delta', 'delta': block.text});
+          onEvent?.call({'type': 'reasoning.delta', 'channel': 'content', 'delta': block.text});
         }
       } else if (type == 'content_block_delta' ||
           type == 'content_block_stop') {
@@ -714,7 +714,7 @@ class OpenCodeProvider implements ModelProvider {
             }
             final text = _string(delta['thinking']);
             block.text += text;
-            onEvent?.call({'type': 'reasoning.delta', 'delta': text});
+            onEvent?.call({'type': 'reasoning.delta', 'channel': 'content', 'delta': text});
           case 'signature_delta':
             if (block.type != 'thinking') {
               _malformed('Signature on another block');
@@ -831,7 +831,7 @@ class OpenCodeProvider implements ModelProvider {
           reasoningField = field;
           final chunk = _string(delta[field]);
           reasoning += chunk;
-          onEvent?.call({'type': 'reasoning.delta', 'delta': chunk});
+          onEvent?.call({'type': 'reasoning.delta', 'channel': 'content', 'delta': chunk});
         }
         if (delta['reasoning_details'] != null) {
           if (delta['reasoning_details'] is! List) {

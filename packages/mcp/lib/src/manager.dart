@@ -346,7 +346,7 @@ class McpManager {
     String name,
     Object? arguments,
     CancellationToken cancellation, {String? scope, McpInputHandler? onInput, Json? meta,
-      Duration? timeout = mcpToolTimeout, bool readOnly = false}
+      Duration? timeout = mcpToolTimeout, bool readOnly = false, void Function(String)? onProgress}
   ) async {
     for (final server in _visible(scope).values) {
       final tool = server.tools[name];
@@ -357,6 +357,12 @@ class McpManager {
         cancellation,
         inputSchema: jsonObject(tool['inputSchema']),
         onInput: onInput, timeout: mcpRequestedToolTimeout(timeout), readOnly: readOnly,
+        onNotification: onProgress == null ? null : (notification) {
+          if (notification case {'method': 'notifications/progress', 'params': {'message': final String message}}
+              when !cancellation.isCancelled && message.trim().isNotEmpty) {
+            onProgress(message);
+          }
+        },
         retrySafe: tool['annotations']?['readOnlyHint'] == true ||
             tool['annotations']?['idempotentHint'] == true,
       );
@@ -659,10 +665,10 @@ class _Server {
     return shared.ready(cancellation.merge(lifetime));
   }
   Future<Json> request(String method, Json params, CancellationToken cancellation, {Json? inputSchema, bool retrySafe = false,
-    McpInputHandler? onInput, Duration? timeout = mcpToolTimeout, bool readOnly = false}) async {
+    McpInputHandler? onInput, Duration? timeout = mcpToolTimeout, bool readOnly = false, void Function(Json)? onNotification}) async {
     await ready(cancellation);
     return shared.request(method, params, cancellation.merge(lifetime), inputSchema: inputSchema, retrySafe: retrySafe,
-      onInput: onInput, timeout: timeout, readOnly: readOnly);
+      onInput: onInput, timeout: timeout, readOnly: readOnly, onNotification: onNotification);
   }
   Future<List<Json>> list(String method, String key, CancellationToken cancellation) async {
     await ready(cancellation);
@@ -798,6 +804,7 @@ class _Connection {
     McpInputHandler? onInput,
     Duration? timeout = mcpToolTimeout,
     bool readOnly = false,
+    void Function(Json)? onNotification,
   }) async {
     final current = await ready(cancellation);
     try {
@@ -807,7 +814,7 @@ class _Connection {
         cancellation: cancellation,
         inputSchema: inputSchema,
         retrySafe: retrySafe,
-        onInput: onInput, timeout: timeout, readOnly: readOnly,
+        onInput: onInput, timeout: timeout, readOnly: readOnly, onNotification: onNotification,
       );
       if (result['isError'] == true && result['_meta']?['mcp/www_authenticate'] != null) {
         authenticationRequired = true;
