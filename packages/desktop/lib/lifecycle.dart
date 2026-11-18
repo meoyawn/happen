@@ -5,6 +5,22 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+sealed class _QuitState { const _QuitState(); }
+final class _Running extends _QuitState { const _Running(); }
+final class _Confirming extends _QuitState {
+  const _Confirming(this.timer);
+  final Timer timer;
+}
+final class _Quitting extends _QuitState {
+  const _Quitting(this.done);
+  final Future<void> done;
+}
+
+_QuitState _transition(_QuitState current, _QuitState next) => switch ((current, next)) {
+  (_Running(), _Confirming() || _Quitting()) || (_Confirming(), _Running() || _Quitting()) => next,
+  _ => throw StateError('Invalid desktop quit transition'),
+};
+
 /// Window visibility is native; only an explicit quit releases the server.
 class DesktopLifecycle extends StatefulWidget {
   const DesktopLifecycle({super.key, required this.onQuit, this.onResume,
@@ -22,8 +38,7 @@ class DesktopLifecycle extends StatefulWidget {
 class _DesktopLifecycleState extends State<DesktopLifecycle> {
   static const _channel = MethodChannel('happen/lifecycle');
   late final AppLifecycleListener _lifecycle;
-  Timer? _confirmation;
-  Future<void>? _closing, _exiting;
+  _QuitState _state = const _Running();
 
   @override
   void initState() {
@@ -34,7 +49,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
       await _exit();
     });
     _lifecycle = AppLifecycleListener(
-      onResume: () => widget.onResume?.call(),
+      onResume: () { if (_state is! _Quitting) widget.onResume?.call(); },
       onInactive: _dismissConfirmation,
       onHide: _dismissConfirmation,
       onExitRequested: () async {
@@ -53,6 +68,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
   }
 
   KeyEventResult _handleKey(KeyEvent event) {
+    if (_state is _Quitting) return KeyEventResult.handled;
     final keyboard = HardwareKeyboard.instance;
     final macOS = defaultTargetPlatform == TargetPlatform.macOS;
     final desktop = macOS || defaultTargetPlatform == TargetPlatform.windows;
@@ -61,16 +77,16 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
         !keyboard.isAltPressed && !keyboard.isShiftPressed &&
         !(macOS ? keyboard.isControlPressed : keyboard.isMetaPressed)) {
       // Holding the key must never confirm quitting through key repeat.
-      if (event is KeyDownEvent && _closing == null) {
-        if (!widget.hasActiveLocalTasks || _confirmation != null) {
+      if (event is KeyDownEvent) {
+        if (!widget.hasActiveLocalTasks || _state is _Confirming) {
           unawaited(_exit());
         } else {
-          setState(() => _confirmation = Timer(const Duration(seconds: 1), _dismissConfirmation));
+          _set(_Confirming(Timer(const Duration(seconds: 1), _dismissConfirmation)));
         }
       }
       return KeyEventResult.handled;
     }
-    if (_confirmation != null && event is KeyDownEvent &&
+    if (_state is _Confirming && event is KeyDownEvent &&
         !{LogicalKeyboardKey.metaLeft, LogicalKeyboardKey.metaRight,
           LogicalKeyboardKey.controlLeft, LogicalKeyboardKey.controlRight}.contains(event.logicalKey)) {
       _dismissConfirmation();
@@ -79,22 +95,28 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
     return KeyEventResult.ignored;
   }
 
+  void _set(_QuitState next) => setState(() => _state = _transition(_state, next));
+
   void _dismissConfirmation() {
-    if (_confirmation == null) return;
-    _confirmation!.cancel();
-    setState(() => _confirmation = null);
+    if (_state case _Confirming(:final timer)) {
+      timer.cancel();
+      _set(const _Running());
+    }
   }
 
-  Future<void> _close() {
-    _dismissConfirmation();
-    return _closing ??= widget.onQuit();
+  Future<void> _exit() {
+    if (!mounted) return Future.value();
+    if (_state case _Quitting(:final done)) return done;
+    if (_state case _Confirming(:final timer)) timer.cancel();
+    final done = Completer<void>();
+    _set(_Quitting(done.future));
+    done.complete(_exitAfterClosing());
+    return done.future;
   }
-
-  Future<void> _exit() => _exiting ??= _exitAfterClosing();
 
   Future<void> _exitAfterClosing() async {
     try {
-      await _close();
+      await widget.onQuit();
     } finally {
       // Cleanup precedes the required native exit, including from a hidden tray.
       await ServicesBinding.instance.exitApplication(AppExitType.required);
@@ -103,7 +125,7 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
 
   @override
   void dispose() {
-    _confirmation?.cancel();
+    if (_state case _Confirming(:final timer)) timer.cancel();
     _lifecycle.dispose();
     FocusManager.instance.removeEarlyKeyEventHandler(_handleKey);
     _channel.setMethodCallHandler(null);
@@ -111,44 +133,54 @@ class _DesktopLifecycleState extends State<DesktopLifecycle> {
   }
 
   @override
-  Widget build(BuildContext context) => Listener(
-    behavior: HitTestBehavior.translucent,
-    onPointerDown: (_) => _dismissConfirmation(),
-    child: Stack(
-      fit: StackFit.expand,
-      children: [
-        widget.child,
-        IgnorePointer(child: Center(child: AnimatedSwitcher(
-          duration: Duration.zero,
-          reverseDuration: const Duration(milliseconds: 200),
-          child: _confirmation == null ? null : Semantics(
-            liveRegion: true,
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xbf333333),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
-                  child: Text('Press ${defaultTargetPlatform == TargetPlatform.macOS ? '⌘Q' : 'Ctrl+Q'} again to quit',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      inherit: false,
-                      fontFamily: Theme.of(context).textTheme.titleLarge?.fontFamily,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      height: 1.25,
-                      shadows: const [Shadow(color: Color(0x99000000), offset: Offset(0, 1), blurRadius: 1)],
-                    )),
+  Widget build(BuildContext context) {
+    final message = switch (_state) {
+      _Running() => null,
+      _Confirming() => 'Press ${defaultTargetPlatform == TargetPlatform.macOS ? '⌘Q' : 'Ctrl+Q'} again to quit',
+      _Quitting() => 'Quitting…',
+    };
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _dismissConfirmation(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (_state is _Quitting)
+            ColoredBox(color: Theme.of(context).scaffoldBackgroundColor)
+          else
+            widget.child,
+          IgnorePointer(child: Center(child: AnimatedSwitcher(
+            duration: Duration.zero,
+            reverseDuration: const Duration(milliseconds: 200),
+            child: message == null ? null : Semantics(
+              liveRegion: true,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xbf333333),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
+                    child: Text(message,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        inherit: false,
+                        fontFamily: Theme.of(context).textTheme.titleLarge?.fontFamily,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        height: 1.25,
+                        shadows: const [Shadow(color: Color(0x99000000), offset: Offset(0, 1), blurRadius: 1)],
+                      )),
+                  ),
                 ),
               ),
             ),
-          ),
-        ))),
-      ],
-    ),
-  );
+          ))),
+        ],
+      ),
+    );
+  }
 }

@@ -96,9 +96,9 @@ Future<void> _agentMain(List<Object?> args) async {
           reply?.send({'result': null});
         case 'close':
           actor.cancel();
+          for (final read in reads.values.toList()) { read.cancel(); }
           await running;
           actor.dispose();
-          for (final read in reads.values) { read.cancel(); }
           reply?.send({'result': null});
           port.close();
         default:

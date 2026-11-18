@@ -9,7 +9,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var clipboard: ClipboardBridge?
   private var keyboardRouting: DesktopKeyboardRouting?
   private var statusItem: NSStatusItem?
-  private var isQuitting = false
   private var fullscreenCloseObserver: NSObjectProtocol?
   private let windowControls = WindowControlsView()
   private var trafficLights: [NSButton] = []
@@ -96,7 +95,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
 
   func showMainWindow() {
-    guard !isQuitting else { return }
     if isMiniaturized { deminiaturize(nil) }
     makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
@@ -107,11 +105,6 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   }
 
   @objc private func quitFromTray(_ sender: Any?) {
-    guard !isQuitting else { return }
-    isQuitting = true
-    // Flutter removes its widgets before resource cleanup completes.
-    animationBehavior = .none
-    orderOut(nil)
     NSApp.terminate(sender)
   }
 

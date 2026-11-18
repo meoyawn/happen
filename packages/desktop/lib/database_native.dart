@@ -15,7 +15,13 @@ final _writers = <String, Object>{};
 typedef DesktopDatabase = IsolateOwner;
 
 Future<Object?> desktopDatabaseRequest(DesktopDatabase database, String method, Json params,
-  {CancellationToken? cancellation}) => callIsolate(database.port, method, params, cancellation: cancellation);
+    {CancellationToken? cancellation}) async {
+  cancellation?.throwIfCancelled();
+  return callIsolate(database.port, method, params,
+    cancellation: _readsSnapshot(method) ? cancellation : null);
+}
+
+bool _readsSnapshot(String method) => method == 'load' || method == 'remotes.list';
 
 /// One desktop-wide writer; independent read isolates open WAL snapshots.
 Future<IsolateOwner> openDesktopDatabase(String directory, {CancellationToken? cancellation}) async {
@@ -154,21 +160,23 @@ Future<void> _databaseMain(List<Object?> args) async {
         }());
         return;
       }
-      final id = requiredString(request, 'operation_id'), token = operations[id] = CancellationToken();
-      final before = writes, read = method == 'load' || method == 'remotes.list';
+      final id = requiredString(request, 'operation_id');
+      final before = writes, read = _readsSnapshot(method);
+      // Only reads can be cancelled after admission. Close waits for queued commits.
+      final token = read ? operations[id] = CancellationToken() : null;
       final operation = () async {
         // A read observes earlier committed writes, without holding up later writes.
         await before;
         await traceIncoming(request, () async {
           try {
-            token.throwIfCancelled();
+            token?.throwIfCancelled();
             final params = jsonObject(request['params']);
-            final result = read ? await _readSnapshot(directory, method, params, token)
+            final result = token != null ? await _readSnapshot(directory, method, params, token)
               : _writeNative(db, directory, method, params);
             reply?.send({'result': result});
           } catch (error) {
             reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
-          } finally { operations.remove(id); token.cancel(); }
+          } finally { if (token != null) { operations.remove(id); token.cancel(); } }
         }, service: 'desktop.storage');
       }();
       if (read) {

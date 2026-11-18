@@ -1671,7 +1671,7 @@ class _ComposerState extends State<_Composer> {
                       else if (_ownsVoice && _voice.error != null)
                         Semantics(liveRegion: true, child: Row(children: [
                           Expanded(child: Text(_voice.error!, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error))),
-                          if (_voice.microphonePermissionDenied)
+                          if (_voice.microphonePermissionDenied && _voice.openMicrophoneSettings != null)
                             TextButton(onPressed: _voice.openMicrophoneSettings, child: const Text('Open microphone settings')),
                           IconButton(tooltip: 'Dismiss dictation error', onPressed: _cancelVoice, icon: const Icon(Icons.close, size: 16)),
                         ])),
@@ -1746,10 +1746,11 @@ class _ComposerState extends State<_Composer> {
                             DictationCancelButton(onCancel: () => unawaited(_cancelVoice())),
                             const SizedBox(width: 8),
                           ],
-                          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) ...[
+                          if (kIsWeb || defaultTargetPlatform == TargetPlatform.macOS) ...[
                             DictationButton(
                               phase: _voicePhase,
                               amplitude: _voice.amplitude,
+                              statusHint: _voice.liveTranscriptionHint,
                               enabled: available && (!_voice.active || _ownsVoice),
                               onStart: () => unawaited(_startVoice(answer: answer)),
                               onStop: () => unawaited(_finishVoice(DictationAction.insert)),

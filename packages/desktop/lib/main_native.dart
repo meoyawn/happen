@@ -33,6 +33,7 @@ class _HappenDesktopState extends State<HappenDesktop> {
   final _navigator = GlobalKey<NavigatorState>();
   AgentServer? _server;
   IsolateOwner? _database;
+  Future<IsolateOwner>? _databaseOpening;
   AgentClient? _client;
   DesktopSession? _session;
   late MachinesController? _machines = null;
@@ -41,7 +42,6 @@ class _HappenDesktopState extends State<HappenDesktop> {
   LocalTaskSleepInhibitor? _sleep;
   StreamSubscription<int>? _activity;
   String? _error;
-  bool _quitting = false;
   late final Future<void> _opening;
   Future<void>? _closing;
 
@@ -141,10 +141,10 @@ class _HappenDesktopState extends State<HappenDesktop> {
           (home == null
               ? throw StateError('Set AGENT_DATA_DIR, HOME, or USERPROFILE')
               : '$home/.local/share/agent-server');
-      _server = await AgentServer.startEmbedded(directory: directory);
+      _server = await AgentServer.startEmbedded(directory: directory, cancellation: _lifetime);
       _lifetime.throwIfCancelled();
       _watchLocalTasks();
-      _database = await openDesktopDatabase(directory, cancellation: _lifetime);
+      _database = await (_databaseOpening = openDesktopDatabase(directory, cancellation: _lifetime));
       _lifetime.throwIfCancelled();
       _client = await AgentClient.connect(
         _server!.uri,
@@ -155,9 +155,9 @@ class _HappenDesktopState extends State<HappenDesktop> {
       final session = _session = DesktopSession(_client!, _database!, attachmentDirectory: '$directory/attachments');
       _notifications = DesktopNotifications(session);
       await session.restore();
+      _lifetime.throwIfCancelled();
       _watchMachines();
       unawaited(session.load());
-      _lifetime.throwIfCancelled();
       if (mounted) setState(() {});
     } on CancelledException {
       // Quit can cancel startup before all embedded owners are ready.
@@ -167,16 +167,46 @@ class _HappenDesktopState extends State<HappenDesktop> {
     }
   }
 
-  Future<void> _close() => _closing ??= _closeOwners();
+  Future<void> _quit() => _closing ??= _closeForExit();
+
+  Future<void> _closeForExit() async {
+    _lifetime.cancel();
+    _machines?.removeListener(_machineChanged);
+    unawaited(Future.wait([
+      if (_activity case final activity?) activity.cancel(),
+      if (_notifications case final notifications?) notifications.close(),
+      if (_sleep case final sleep?) sleep.close(),
+    ]).then<void>((_) {}, onError: (Object error, StackTrace stack) {
+      if (error is! CancelledException) {
+        FlutterError.reportError(FlutterErrorDetails(exception: error, stack: stack, library: 'desktop shutdown'));
+      }
+    }));
+
+    await Future.wait([
+      if (_server case final server?) server.closeForExit(),
+      _commitDesktopState(),
+    ]);
+  }
+
+  Future<void> _commitDesktopState() async {
+    final clients = {
+      if (_client case final client?) client,
+      ...?_machines?.sessions.map((machine) => machine.session.client),
+    };
+    try {
+      await Future.wait([
+        if (_session case final session?) session.cancelForExit(),
+        if (_machines case final machines?) machines.cancelForExit(),
+        for (final client in clients) client.closeForExit(),
+      ]);
+    } finally {
+      try { await (await _databaseOpening)?.close(); }
+      on CancelledException { /* Quit can cancel database startup before it opens. */ }
+    }
+  }
 
   Future<void> _closeOwners() async {
     _lifetime.cancel();
-    if (mounted && !_quitting) {
-      setState(() => _quitting = true);
-      // Tray Quit also works while the window is hidden and frames are paused.
-      if (!WidgetsBinding.instance.framesEnabled) WidgetsBinding.instance.scheduleForcedFrame();
-      await WidgetsBinding.instance.endOfFrame;
-    }
     await _opening;
     await _activity?.cancel();
     _machines?.removeListener(_machineChanged);
@@ -206,19 +236,18 @@ class _HappenDesktopState extends State<HappenDesktop> {
 
   @override
   void dispose() {
-    _quitting = true;
-    unawaited(_close());
+    unawaited(_closing ??= _closeOwners());
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => _quitting ? const SizedBox.shrink() : ListenableBuilder(
+  Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([_session?.appearance]),
     builder: (context, _) => MaterialApp(
     title: 'Happen',
     navigatorKey: _navigator,
     builder: (context, child) => DesktopLifecycle(
-      onQuit: _close,
+      onQuit: _quit,
       onResume: () => unawaited(_refreshProjects()),
       hasActiveLocalTasks: (_server?.activeTaskCount ?? 0) > 0,
       child: child!,

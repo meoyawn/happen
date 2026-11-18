@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:protocol/protocol.dart';
+import 'package:server/server.dart';
 import 'package:server/web_gateway.dart';
 import 'package:test/test.dart';
 
@@ -17,6 +18,12 @@ void main() {
   const origin = 'https://happen.example';
   const otherClient = 'https://client.example';
 
+  Future<void> startGateway(String socketPath) async {
+    gateway = await WebGateway.start(socketPath: socketPath, publicUrl: origin,
+      ownerKeyFile: '${root.path}/owner', allowedOrigins: {otherClient}, port: 0);
+    url = Uri.parse('http://127.0.0.1:${gateway.http.port}');
+  }
+
   setUp(() async {
     root = await Directory.systemTemp.createTemp('happen-web-');
     key = '${newId()}${newId()}';
@@ -29,9 +36,7 @@ void main() {
       final socket = await WebSocketTransformer.upgrade(request);
       socket.listen(socket.add);
     });
-    gateway = await WebGateway.start(socketPath: '${root.path}/backend',
-      publicUrl: origin, ownerKeyFile: '${root.path}/owner', allowedOrigins: {otherClient}, port: 0);
-    url = Uri.parse('http://127.0.0.1:${gateway.http.port}');
+    await startGateway('${root.path}/backend');
     http = HttpClient();
   });
   tearDown(() async {
@@ -79,14 +84,16 @@ void main() {
     final signedIn = await auth('/auth/login', body: {'key': key});
     final token = signedIn.body['token'] as String;
     final ws = url.replace(scheme: 'ws', path: '/ws').toString();
-    for (final credentials in [('invalid', origin), (token, otherClient)]) {
-      final socket = await WebSocket.connect(ws, headers: {'Origin': credentials.$2});
-      final messages = StreamIterator<dynamic>(socket);
-      socket.add(jsonEncode({'type': 'authenticate', 'token': credentials.$1}));
-      expect(await messages.moveNext().timeout(const Duration(seconds: 5)), isFalse);
-      expect(socket.closeCode, 1008);
-      await messages.cancel();
-      expect(connections, 0);
+    for (final path in ['/ws', '/dictation']) {
+      for (final credentials in [('invalid', origin), (token, otherClient)]) {
+        final socket = await WebSocket.connect(url.replace(scheme: 'ws', path: path).toString(), headers: {'Origin': credentials.$2});
+        final messages = StreamIterator<dynamic>(socket);
+        socket.add(jsonEncode({'type': 'authenticate', 'token': credentials.$1}));
+        expect(await messages.moveNext().timeout(const Duration(seconds: 5)), isFalse);
+        expect(socket.closeCode, 1008);
+        await messages.cancel();
+        expect(connections, 0);
+      }
     }
     final socket = await WebSocket.connect(ws, headers: {'Origin': origin});
     final messages = StreamIterator<dynamic>(socket);
@@ -109,14 +116,65 @@ void main() {
     expect(connections, 1);
   });
 
+  test('browser dictation is scoped to the ChatGPT account while credentials stay local', () async {
+    final path = '${root.path}/agent';
+    const access = 'fixture-provider-access-token';
+    final authFile = File('${root.path}/auth.json');
+    Future<void> signIn(String account) => authFile.writeAsString(jsonEncode({
+      'type': 'chatgpt', 'access_token': access, 'account_id': account,
+      'expires_at': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
+    }));
+    await signIn('first-workspace');
+    final server = await AgentServer.start(directory: root.path, socketPath: path, configPath: '${root.path}/config.yaml');
+    addTearDown(server.close);
+    final local = await AgentClient.connect(server.uri);
+    addTearDown(local.close);
+    expect(await local.desktopAuthorization(cancellation: CancellationToken()), containsPair('access_token', access));
+
+    await gateway.close();
+    await startGateway(path);
+    final signedIn = await auth('/auth/login', body: {'key': key});
+    final frame = jsonEncode({'type': 'authenticate', 'token': signedIn.body['token']});
+    Future<Json> receive(StreamIterator<dynamic> messages) async {
+      expect(await messages.moveNext().timeout(const Duration(seconds: 5)), isTrue);
+      return jsonObject(jsonDecode(messages.current as String));
+    }
+
+    final browser = await WebSocket.connect(url.replace(scheme: 'ws', path: '/ws').toString(), headers: {'Origin': origin});
+    final messages = StreamIterator<dynamic>(browser);
+    addTearDown(() async { await browser.close(); await messages.cancel(); });
+    browser.add(frame);
+    expect(await receive(messages), {'type': 'authenticated'});
+    browser.add('''{"id":1,"method":"initialize","params":{"clientInfo":{"name":"browser","version":"1"}}}''');
+    expect(await receive(messages), contains('result'));
+    browser.add('{"id":2,"method":"auth.desktop"}');
+    expect(await receive(messages), contains('error'));
+    browser.add('{"id":3,"method":"dictation.authorize"}');
+    final reply = jsonObject((await receive(messages))['result']);
+    expect(reply.keys, ['account_scope']);
+    final scope = requiredString(reply, 'account_scope');
+
+    Future<Json> startDictation() async {
+      final socket = await WebSocket.connect(url.replace(scheme: 'ws', path: '/dictation').toString(), headers: {'Origin': origin});
+      final incoming = StreamIterator<dynamic>(socket);
+      try {
+        socket.add(frame);
+        expect(await receive(incoming), {'type': 'authenticated'});
+        socket.add(jsonEncode({'type': 'start', 'live': false, 'account_scope': scope}));
+        return await receive(incoming);
+      } finally { await socket.close(); await incoming.cancel(); }
+    }
+    expect(await startDictation(), {'type': 'ready'});
+    await signIn('second-workspace');
+    expect(await startDictation(), containsPair('type', 'error'));
+  });
+
   test('gateway restart retains owner sessions and revocations; key rotation invalidates sessions', () async {
     final signedIn = await auth('/auth/login', body: {'key': key});
     final token = signedIn.body['token'] as String;
     Future<void> restart() async {
       await gateway.close();
-      gateway = await WebGateway.start(socketPath: '${root.path}/backend',
-        publicUrl: origin, ownerKeyFile: '${root.path}/owner', allowedOrigins: {otherClient}, port: 0);
-      url = Uri.parse('http://127.0.0.1:${gateway.http.port}');
+      await startGateway('${root.path}/backend');
     }
     Future<int> restore() async {
       final request = await http.getUrl(url.resolve('/auth/session'));

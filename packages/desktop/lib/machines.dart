@@ -527,13 +527,26 @@ class MachinesController extends ChangeNotifier {
   }
 
   Future<void> close() => _closing ??= _close();
-  Future<void> _close() async {
+
+  void _cancelDiscovery() {
     _poll?.cancel();
     _lifetime.cancel();
     for (final retry in _retries.values) { retry.cancel(); }
     _retries.clear();
     local.removeListener(_sessionChanged);
     local.sidebarChanges.removeListener(_sidebarChanged);
+  }
+
+  Future<void> cancelForExit() async {
+    _cancelDiscovery();
+    await Future.wait([
+      for (final state in _states.values)
+        if (_cachedSession(state) case final session?) session.cancelForExit(),
+    ]);
+  }
+
+  Future<void> _close() async {
+    _cancelDiscovery();
     await _refreshing;
     await Future.wait(_pending.values.toList());
     await Future.wait(_catalogRefreshes.values.toList());

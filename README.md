@@ -86,18 +86,17 @@ The app is written to
 See the [desktop guide](packages/desktop/README.md) for controls, configuration,
 toolchain details, and installation.
 
-## Run and publish the web client
+## Publish the web client
 
 ```sh
-moonx dev-web
 moonx deploy-web
 ```
 
-`dev-web` uses a separate headless browser. `deploy-web` builds the Flutter web
-client and publishes static files to the Cloudflare Pages hostname configured
-in `~/.secrets/happen/deployment.json`. The same private file supplies the default
-server tunnel URL for web builds and development; `HAPPEN_SERVER_URL` can override
-it. Without a configured default, enter the server URL at sign-in.
+`deploy-web` builds the Flutter web client and publishes static files to the
+Cloudflare Pages hostname configured in `~/.secrets/happen/deployment.json`.
+The same private file supplies the default server tunnel URL for web builds.
+`HAPPEN_SERVER_URL` can override it. If no default is configured, enter the
+server URL at sign-in.
 
 Sign in with that server's owner key, then use **Settings → Environments** to
 add other tunnel URLs. Remote metadata, drafts and preferences are committed

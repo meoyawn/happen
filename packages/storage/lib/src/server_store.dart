@@ -56,22 +56,26 @@ Future<void> _serverMain(List<Object?> args) async {
       final request = jsonObject(raw), reply = request['reply'] as SendPort?;
       if (request['method'] == 'cancel') { operations[request['params']['operation_id']]?.cancel(); reply?.send({'result': null}); return; }
       if (closing) { reply?.send({'error': 'Server catalog is closing'}); return; }
-      if (request['method'] == 'close') { closing = true; for (final token in operations.values) { token.cancel(); } }
-      operations[requiredString(request, 'operation_id')] = CancellationToken(); queue.add(request);
+      final method = requiredString(request, 'method');
+      if (method == 'close') { closing = true; for (final token in operations.values) { token.cancel(); } }
+      if (method == 'recover' || method == 'mcp.threads') {
+        operations[requiredString(request, 'operation_id')] = CancellationToken();
+      }
+      queue.add(request);
     });
     (args[0] as SendPort).send(port.sendPort);
     await for (final request in queue.stream) {
-      final id = requiredString(request, 'operation_id'), cancellation = operations[id]!;
+      final id = requiredString(request, 'operation_id'), cancellation = operations[id];
       await traceIncoming(request, () async {
         final reply = request['reply'] as SendPort?;
         try {
-          cancellation.throwIfCancelled();
+          cancellation?.throwIfCancelled();
           reply?.send({'result': await _serverRequest(db, directory, requiredString(request, 'method'),
             jsonObject(request['params']), cancellation)});
         } catch (error) {
           traceError(error);
           reply?.send({'error': error.toString(), if (error is CancelledException) 'code': 'cancelled'});
-        } finally { operations.remove(id); cancellation.cancel(); }
+        } finally { operations.remove(id); cancellation?.cancel(); }
       }, service: 'storage.server');
       if (request['method'] == 'close') break;
     }
@@ -100,11 +104,11 @@ void _catalogUpsert(TracedDatabase db, Json row) {
     : 'DELETE FROM mcp_event_threads WHERE thread_id IS ?', [id]);
 }
 
-Future<Object?> _serverRequest(TracedDatabase db, String directory, String method, Json params, CancellationToken cancellation) async {
+Future<Object?> _serverRequest(TracedDatabase db, String directory, String method, Json params, CancellationToken? cancellation) async {
   switch (method) {
     case 'recover':
       final dirty = {for (final row in db.select('SELECT thread_id,ticket FROM dirty_threads')) row['thread_id'] as String: row['ticket']};
-      final rows = await readCatalogThreads(directory, dirty.keys.toList(), cancellation: cancellation);
+      final rows = await readCatalogThreads(directory, dirty.keys.toList(), cancellation: cancellation!);
       for (final row in rows) { _catalogSync(db, row, dirty[row['id']] as String); }
       return null;
     case 'thread.dirty':

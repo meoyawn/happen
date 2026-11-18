@@ -5,22 +5,9 @@ import 'package:protocol/protocol.dart';
 import 'package:web/web.dart' as web;
 
 import 'appearance.dart';
-import 'browser_page_web.dart';
+import 'browser.dart' show ConversationBrowserScope, DesktopBrowser;
+import 'browser_page.dart';
 import 'browser_ports.dart';
-
-export 'browser_page_web.dart';
-
-class ConversationBrowserScope extends InheritedWidget {
-  const ConversationBrowserScope({super.key, required this.onOpen, required super.child});
-  final ValueChanged<Uri> onOpen;
-  static bool open(BuildContext context, Uri uri) {
-    final scope = context.getInheritedWidgetOfExactType<ConversationBrowserScope>();
-    if (scope == null) return false;
-    scope.onOpen(uri); return true;
-  }
-  @override
-  bool updateShouldNotify(ConversationBrowserScope oldWidget) => onOpen != oldWidget.onOpen;
-}
 
 Future<void> openDesktopLink(BuildContext context, String href, {required String directory, required CancellationToken cancellation}) async {
   cancellation.throwIfCancelled();
@@ -31,18 +18,8 @@ Future<void> openDesktopLink(BuildContext context, String href, {required String
   web.window.open(uri.toString(), '_blank', 'noopener,noreferrer');
 }
 
-class DesktopBrowser extends StatefulWidget {
-  const DesktopBrowser({super.key, this.initialUrl = '', this.active = true,
-    this.navigationEnabled = true, this.toolbar = true, this.page, this.onPageChanged, this.directory, this.onNewTab});
-  final String initialUrl;
-  final bool active, navigationEnabled, toolbar;
-  final BrowserPage? page;
-  final VoidCallback? onNewTab;
-  final String? directory;
-  final void Function(String url, String title)? onPageChanged;
-  @override
-  State<DesktopBrowser> createState() => _DesktopBrowserState();
-}
+State<DesktopBrowser> createDesktopBrowserState() => _DesktopBrowserState();
+
 class _DesktopBrowserState extends State<DesktopBrowser> {
   final _lifetime = CancellationToken();
   final _address = TextEditingController();
@@ -138,7 +115,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
         ? const Center(child: Text('Enter a URL to open a website.'))
         : BrowserPorts(active: widget.active, onOpen: _navigate, discover: discover);
     }
-    final url = _page.frameUrl;
+    final url = _page.loadAddress;
     if (url == null) return const SizedBox.shrink();
     return HtmlElementView.fromTagName(key: ValueKey((_page, _page.generation)), tagName: 'iframe',
       onElementCreated: (element) {
@@ -160,7 +137,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: desktopBorder, width: .5))),
       child: Row(children: [
         _button(_page.loading ? 'Stop loading' : 'Reload page', _page.loading ? Icons.close_rounded : Icons.refresh_rounded,
-          _page.blank || !widget.navigationEnabled ? null : _page.loading ? _page.stop : _reload),
+          _page.blank || !widget.navigationEnabled ? null : _page.loading ? () => unawaited(_page.stop()) : _reload),
         const SizedBox(width: 6),
         Expanded(child: TextField(key: const ValueKey('browser-address'), controller: _address, focusNode: _addressFocus,
           readOnly: !widget.navigationEnabled, onSubmitted: _submit,
@@ -170,8 +147,8 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none)),
           onTap: () => _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length))),
         const SizedBox(width: 6),
-        _button('Open in new tab', Icons.open_in_new_rounded, _page.frameUrl == null ? null
-          : () => web.window.open(_page.frameUrl.toString(), '_blank', 'noopener,noreferrer')),
+        _button('Open in new tab', Icons.open_in_new_rounded, _page.loadAddress == null ? null
+          : () => web.window.open(_page.loadAddress.toString(), '_blank', 'noopener,noreferrer')),
       ])),
     if (_addressError case final error?) Padding(padding: const EdgeInsets.all(8),
       child: Text(error, style: const TextStyle(fontSize: 12, color: desktopError))),

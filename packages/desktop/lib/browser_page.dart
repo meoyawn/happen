@@ -52,7 +52,8 @@ abstract class BrowserPage extends ChangeNotifier {
   @protected
   void updateState(BrowserPageState next, {bool notify = true}) {
     _state = switch ((_state, next)) {
-      (_, BrowserLoading() || BrowserReady() || BrowserFailed() || BrowserClosed()) when _state is! BrowserClosed => next,
+      (final current, BrowserLoading() || BrowserReady() || BrowserFailed() || BrowserClosed())
+        when current is! BrowserClosed => next,
       _ => throw StateError('Invalid browser page transition'),
     };
     if (notify) notifyListeners();

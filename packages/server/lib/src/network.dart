@@ -840,6 +840,8 @@ Future<void> _networkMain(List<Object?> args) async {
       closing = true;
       try {
         lifetime.cancel();
+        mcp.lifetime.cancel();
+        loginCancellation?.cancel();
         for (final token in operations.values.toList()) {
           token.cancel();
         }

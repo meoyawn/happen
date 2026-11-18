@@ -122,8 +122,10 @@ Future<void> main(List<String> arguments) async {
       final web = <String, Object?>{if (values?['web'] case final Map<Object?, Object?> previous)
         ...previous.map((key, value) => MapEntry(key as String, value)),
         'public_url': 'https://$hostname', 'owner_key_file': '${secrets.path}/owner-key',
-        'allowed_origins': <String>{webOrigin, 'http://localhost:8788',
-          ...(values?['web']?['allowed_origins'] as List? ?? const []).cast<String>()}.toList(),
+        'allowed_origins': <String>{
+          webOrigin,
+          ...(values?['web']?['allowed_origins'] as List? ?? const []).cast<String>(),
+        }.toList(),
       }..remove('directory');
       var updated = _configValue(source, 'web', web);
       if (values?['tunnel'] == null) updated = _configValue(updated, 'tunnel', {'token_file': '${secrets.path}/tunnel-token'});

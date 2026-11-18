@@ -9,30 +9,15 @@ import 'package:protocol/protocol.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'appearance.dart';
+import 'browser.dart' show ConversationBrowserScope, DesktopBrowser;
 import 'desktop_toast.dart';
 import 'file_reference.dart';
 import 'browser_annotation_script.dart';
 import 'conversation_annotations.dart';
 import 'response_annotation.dart';
 import 'browser_page.dart';
+import 'browser_page_native.dart' show PlatformBrowserPage;
 import 'browser_ports.dart';
-
-export 'browser_page.dart' show BrowserPage, browserAddress, browserHostIsLocal, browserLocationAllowed;
-
-class ConversationBrowserScope extends InheritedWidget {
-  const ConversationBrowserScope({super.key, required this.onOpen, required super.child});
-  final ValueChanged<Uri> onOpen;
-
-  static bool open(BuildContext context, Uri uri) {
-    final scope = context.getInheritedWidgetOfExactType<ConversationBrowserScope>();
-    if (scope == null) return false;
-    scope.onOpen(uri);
-    return true;
-  }
-
-  @override
-  bool updateShouldNotify(ConversationBrowserScope oldWidget) => onOpen != oldWidget.onOpen;
-}
 
 Future<void> _openSystemBrowser(Uri uri, CancellationToken cancellation) =>
   runIsolateEffect(_openSystemBrowserEffect, {'uri': uri.toString()}, cancellation: cancellation);
@@ -79,31 +64,13 @@ Future<void> openDesktopLink(BuildContext context, String href, {
   }
 }
 
-/// A retained browser tab, also used without the address bar for file previews.
-/// [initialUrl] is restored when the tab mounts; subsequent navigation belongs
-/// to its WebView. File reloads replace this widget using a new key.
-class DesktopBrowser extends StatefulWidget {
-  const DesktopBrowser({super.key, this.initialUrl = '', this.active = true,
-    this.toolbar = true, this.navigationEnabled = true, this.directory, this.page, this.onPageChanged, this.onNewTab});
-  final String initialUrl;
-  final bool active, toolbar;
-  /// File previews dispatch links to their desktop destination instead of
-  /// navigating this WebView after its initial file load.
-  final bool navigationEnabled;
-  final String? directory;
-  final BrowserPage? page;
-  final void Function(String url, String title)? onPageChanged;
-  final VoidCallback? onNewTab;
-
-  @override
-  State<DesktopBrowser> createState() => _DesktopBrowserState();
-}
+State<DesktopBrowser> createDesktopBrowserState() => _DesktopBrowserState();
 
 class _DesktopBrowserState extends State<DesktopBrowser> {
   final _lifetime = CancellationToken();
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'Browser address');
-  late BrowserPage _page;
+  late PlatformBrowserPage _page;
   WebViewController? get _controller => _page.controller;
   Uri? get _location => _page.location;
   String? _error;
@@ -267,11 +234,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   @override
   void initState() {
     super.initState();
-    _page = widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
-      toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory);
-    _page.addListener(_pageChanged);
-    _page.onExternalNavigation = _externalNavigation;
-    _page.onAnnotationMessage = _annotationMessage;
+    _attachPage();
     _addressFocus.addListener(_addressFocusChanged);
     _setAddress();
     if (widget.active && _location != null) _start();
@@ -282,6 +245,14 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
     }
   }
 
+  void _attachPage() {
+    _page = (widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
+      toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory)) as PlatformBrowserPage;
+    _page.addListener(_pageChanged);
+    _page.onExternalNavigation = _externalNavigation;
+    _page.onAnnotationMessage = _annotationMessage;
+  }
+
   @override
   void didUpdateWidget(DesktopBrowser oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -290,11 +261,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       _page.onExternalNavigation = null;
       _page.onAnnotationMessage = null;
       if (oldWidget.page == null) _page.close();
-      _page = widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
-        toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory);
-      _page.addListener(_pageChanged);
-      _page.onExternalNavigation = _externalNavigation;
-      _page.onAnnotationMessage = _annotationMessage;
+      _attachPage();
       _resetAnnotations();
       _setAddress();
     }

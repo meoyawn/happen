@@ -9,6 +9,8 @@ import 'package:agent/agent.dart';
 import 'package:ai/ai.dart';
 import 'package:code_mode/code_mode.dart';
 import 'package:openai/account_usage.dart';
+import 'package:openai/dictation.dart';
+import 'package:openai/openai.dart' show TranscriptionClient, TranscriptionStream, openAICredentialScope;
 import 'package:protocol/protocol.dart';
 import 'package:path/path.dart' as p;
 import 'package:storage/storage.dart';
@@ -29,6 +31,7 @@ import 'src/project_folders.dart';
 import 'src/terminals.dart';
 import 'dev_servers.dart';
 import 'src/browser_previews.dart';
+import 'web_gateway.dart' show browserRpcPath;
 
 part 'src/side_chats.dart';
 part 'src/thread_protocol.dart';
@@ -42,6 +45,7 @@ part 'src/network_lifecycle.dart';
 part 'src/goals.dart';
 part 'src/git_requests.dart';
 part 'src/ssh.dart';
+part 'src/web_dictation.dart';
 
 class AgentServer {
   AgentServer._(
@@ -76,7 +80,9 @@ class AgentServer {
   Directory? _socketDirectory;
   FileStat? _socketStat;
   final _clients = <_Client>{};
+  final _webDictations = <CancellationToken>{};
   final _tasks = <String, _Task>{};
+  final _historyWriters = <Future<IsolateOwner>>{};
   late final _titleRequests = <String, ({CancellationToken cancellation, Future<void> done})>{};
   late final _threadLifetimes = <String, ({CancellationToken cancellation, Future<void> released})>{};
   late final _gitActions = <String, String>{};
@@ -94,6 +100,7 @@ class AgentServer {
   final _mcpOperations = <String, CancellationToken>{};
   final _mcpInputs = <String, ({Json request, Completer<Json> answer, String? owner, String? threadId})>{};
   bool _closing = false;
+  Future<void>? _closed;
   bool _networkExited = false;
   late Json _networkConfiguration = const {};
   late _NetworkRecovery _networkRecovery = const _NetworkIdle();
@@ -106,9 +113,19 @@ class AgentServer {
   late Future<IsolateOwner>? _catalog = null;
   Future<IsolateOwner> get _serverStore => _catalog ??= startServerStore(directory, cancellation: _lifetime);
 
-  Future<IsolateOwner> _startStore(String id, {bool create = true, bool inMemory = false, Json? fork}) async =>
-    startStore(directory, id, create: create, inMemory: inMemory, fork: fork,
+  Future<IsolateOwner> _startStore(String id, {bool create = true, bool inMemory = false, Json? fork}) async {
+    _lifetime.throwIfCancelled();
+    Future<IsolateOwner> open() async => startStore(directory, id, create: create, inMemory: inMemory, fork: fork,
       catalog: inMemory ? null : (await _serverStore).port, cancellation: _lifetime);
+    final opening = open();
+    if (!inMemory) {
+      _historyWriters.add(opening);
+      unawaited(opening.then<void>((owner) {
+        unawaited(owner.done.then<void>((_) { _historyWriters.remove(opening); }));
+      }, onError: (Object _) { _historyWriters.remove(opening); }));
+    }
+    return opening;
+  }
   Future<TraceStore> get traces => _traces ??= TraceStore.open('$directory/telemetry.sqlite', cancellation: _lifetime);
   int _transfers = 0;
 
@@ -138,7 +155,9 @@ class AgentServer {
     int maxAgents = 256,
     bool telemetry = true,
     bool inProcess = false,
+    CancellationToken? cancellation,
   }) async {
+    cancellation?.throwIfCancelled();
     final address = InternetAddress.tryParse(host);
     if (!inProcess && socketPath == null &&
         (address == null || !address.isLoopback) &&
@@ -180,13 +199,16 @@ class AgentServer {
         skillsHome: skillsHome,
         events: events.sendPort,
         generation: generation,
+        cancellation: cancellation,
       );
     } catch (_) {
       events.close();
       rethrow;
     }
+    HttpServer? http;
     try {
-      final http = inProcess ? null : await HttpServer.bind(
+      cancellation?.throwIfCancelled();
+      http = inProcess ? null : await HttpServer.bind(
         socketPath == null
             ? host
             : InternetAddress(socketPath, type: InternetAddressType.unix),
@@ -195,13 +217,14 @@ class AgentServer {
       if (socketPath != null) {
         final permissions = await Process.run('chmod', ['600', socketPath]);
         if (permissions.exitCode != 0) {
-          await http!.close(force: true);
           throw FileSystemException(
             'Could not restrict socket permissions',
             socketPath,
           );
         }
       }
+      final socketStat = socketPath == null ? null : await File(socketPath).stat();
+      cancellation?.throwIfCancelled();
       final server = AgentServer._(
         directory,
         http,
@@ -213,6 +236,7 @@ class AgentServer {
         previewCloudflaredPath == null ? null : BrowserPreviews(previewCloudflaredPath),
       );
       server.socketPath = socketPath;
+      server._socketStat = socketStat;
       server._networkConfiguration = {
         'endpoint': endpoint, 'api_key_env': apiKeyEnv,
         'opencode_endpoint': openCodeEndpoint, 'opencode_search_endpoint': openCodeSearchEndpoint,
@@ -221,9 +245,6 @@ class AgentServer {
       server._networkGeneration = generation;
       server._watchNetwork(network);
       server._goalSubscription = server._goalRequests.listen(server._handleGoalRequest);
-      if (socketPath != null) {
-        server._socketStat = await File(socketPath).stat();
-      }
       events.listen((raw) {
         server._networkEvent(jsonObject(raw));
       });
@@ -244,7 +265,7 @@ class AgentServer {
       return server;
     } catch (_) {
       events.close();
-      await network.close();
+      try { await http?.close(force: true); } finally { await network.close(); }
       rethrow;
     }
   }
@@ -274,7 +295,9 @@ class AgentServer {
     String? configPath,
     String? skillsHome,
     bool telemetry = true,
+    CancellationToken? cancellation,
   }) async {
+    cancellation?.throwIfCancelled();
     if (Platform.isWindows) {
       return start(
         directory: directory,
@@ -288,6 +311,7 @@ class AgentServer {
         configPath: configPath,
         skillsHome: skillsHome,
         telemetry: telemetry,
+        cancellation: cancellation,
       );
     }
     final sockets = await Directory.systemTemp.createTemp('happen-');
@@ -306,6 +330,7 @@ class AgentServer {
         configPath: configPath,
         skillsHome: skillsHome,
         telemetry: telemetry,
+        cancellation: cancellation,
       );
       server._socketDirectory = sockets;
       return server;
@@ -341,26 +366,28 @@ class AgentServer {
       await _webhook(request);
       return;
     }
+    final path = request.uri.path;
     if (_closing ||
-        request.uri.path != '/ws' ||
+        (path != '/ws' && !(socketPath != null && {browserRpcPath, dictationSocketPath}.contains(path))) ||
         !WebSocketTransformer.isUpgradeRequest(request)) {
       request.response.statusCode = 404;
       await request.response.close();
       return;
     }
     // Browser callers must use an authenticated local proxy, not ambient localhost authority.
-    if (request.headers.value('origin') != null ||
-        (token != null &&
-            request.headers.value(HttpHeaders.authorizationHeader) !=
-                'Bearer $token')) {
+    if (token != null && request.headers.value(HttpHeaders.authorizationHeader) != 'Bearer $token') {
       request.response.statusCode = 401;
       await request.response.close();
+      return;
+    }
+    if (path == dictationSocketPath) {
+      await _acceptWebDictation(request);
       return;
     }
     final socket = await WebSocketTransformer.upgrade(request,
       compression: CompressionOptions.compressionOff);
     socket.pingInterval = const Duration(seconds: 30);
-    final client = _Client(socket, directory);
+    final client = _Client(socket, directory, browser: path == browserRpcPath);
     _clients.add(client);
     socket.listen(
       (raw) async {
@@ -525,7 +552,7 @@ class AgentServer {
 
   Future<Object?> _dispatch(String method, Json params, _Client client, Object requestId, {Json? trace}) async {
     final operations = method.startsWith('git/') ? client.gitOperations : client.sessionReads;
-    final preparation = method == 'session.side.create' || openAIUsageMethods.contains(method) ||
+    final preparation = method == 'session.side.create' || openAIUsageMethods.contains(method) || method == openAIDictationAuthorizeMethod ||
       method.startsWith('fs/') || method.startsWith('git/') || method.startsWith('workspace.') || method.startsWith('terminal/') ||
       method.startsWith('browser.')
       ? operations.putIfAbsent(requestId, CancellationToken.new) : null;
@@ -806,10 +833,11 @@ class AgentServer {
           'redeem_request_id': requiredString(params, 'redeem_request_id'),
           if (params.containsKey('credit_id')) 'credit_id': requiredString(params, 'credit_id'),
         }, cancellation: cancellation);
+      case openAIDictationAuthorizeMethod:
+        final authorization = await _dictationAuthorization(cancellation: cancellation);
+        return {'account_scope': _dictationScope(authorization)};
       case 'auth.desktop':
-        // Access credentials are only available to the local desktop connection.
-        // Audio and transcription never pass through the task WebSocket.
-        if (socketPath == null) throw StateError('Desktop authorization requires a local Unix socket');
+        if (socketPath == null || client.browser) throw StateError('Desktop authorization requires a local Unix socket');
         return _callNetwork(method, {
           'refresh': params['refresh'] == true, 'owner': client.id,
         }, cancellation: client.cancellation);
@@ -1797,12 +1825,74 @@ class AgentServer {
     if (event['type'] == 'model.started') _tasks[taskId]?.assistantMessageID = event['data']['assistantMessageID'] as String?;
   }
 
-  Future<void> close() async {
-    if (_closing) return;
+  void _beginClose() {
     _closing = true;
     _closeNetworkRecovery();
     _maintenanceTimer?.cancel();
     _lifetime.cancel();
+  }
+
+  Future<void> close() => _closed ??= _close();
+
+  /// Send cancellation to every producer, then wait for the SQLite writers.
+  Future<void> closeForExit() => _closed ??= _closeForExit();
+
+  Future<void> _closeForExit() async {
+    _beginClose();
+    void release(Future<void>? effect) {
+      if (effect != null) unawaited(effect.catchError((Object error) { traceError(error); }));
+    }
+
+    for (final request in _titleRequests.values.toList()) { request.cancellation.cancel(); }
+    for (final lifetime in _threadLifetimes.values.toList()) { lifetime.cancellation.cancel(); }
+    for (final token in [..._goalOperations.values, ..._mcpOperations.values, ..._webDictations]) { token.cancel(); }
+    for (final task in _tasks.values) {
+      task.unloadTimer?.cancel();
+      task.goalContinuation?.cancel();
+      task.cancelled = true;
+      task.turnCancellation?.cancel();
+      task.codeInterrupt?.interrupt();
+      release(task.agent?.close());
+      release(task.memoryStore?.close());
+    }
+    _clientTools.close();
+    _questions.close();
+    _files.clear();
+    for (final client in _clients.toList()) {
+      client.cancellation.cancel();
+      release(client.attachments.close());
+      release(client.close());
+    }
+    release(_browserPreviews?.close());
+    release(_terminals.close());
+    release(_taskTools.close());
+    release(network.close());
+    release(http?.close(force: true));
+    release(_removeSocket());
+    release(_goalSubscription?.cancel());
+    _goalRequests.close();
+    _networkEvents.close();
+    unawaited(_activity.close());
+    unawaited(_mcpActivity.close());
+
+    Future<void> closeWriter(Future<IsolateOwner> opening) async {
+      try { await (await opening).close(); }
+      on CancelledException { /* A cancelled startup has released its writer. */ }
+    }
+
+    try {
+      await Future.wait(_historyWriters.toList().map(closeWriter));
+    } finally {
+      // History commits update the catalog, so its writer closes last.
+      await Future.wait([
+        if (_catalog case final catalog?) closeWriter(catalog),
+        _closeTraces(),
+      ]);
+    }
+  }
+
+  Future<void> _close() async {
+    _beginClose();
     await _browserPreviews?.close();
     try { await _maintenance; } catch (_) { /* Shutdown still releases all owners. */ }
     _clientTools.close();
@@ -1855,6 +1945,11 @@ class AgentServer {
     for (final client in _clients.toList()) {
       await client.close();
     }
+    await _removeSocket();
+    await _closeTraces();
+  }
+
+  Future<void> _removeSocket() async {
     final path = socketPath;
     if (path != null) {
       final current = await File(path).stat();
@@ -1865,6 +1960,9 @@ class AgentServer {
       }
     }
     await _socketDirectory?.delete(recursive: true);
+  }
+
+  Future<void> _closeTraces() async {
     if (_traces != null) {
       try { await (await _traces!).close(); }
       on CancelledException { /* Shutdown can cancel recorder startup. */ }
@@ -1914,14 +2012,15 @@ class _Task {
 }
 
 class _Client {
-  _Client(this.socket, String directory) : local = null {
+  _Client(this.socket, String directory, {required this.browser}) : local = null {
     attachments = AttachmentUploads(directory, id);
     _startWriter();
   }
-  _Client.local(String directory) : socket = null, local = StreamController<Json>() {
+  _Client.local(String directory) : socket = null, browser = false, local = StreamController<Json>() {
     attachments = AttachmentUploads(directory, id);
   }
   final WebSocket? socket;
+  final bool browser;
   final StreamController<Json>? local;
   final id = newId();
   final afterResponse = <Object, void Function()>{};
@@ -2466,6 +2565,22 @@ class AgentClient {
   }
 
   Future<void> close() => _closingClient ??= _closeClient();
+
+  Future<void> closeForExit() {
+    unawaited(close().catchError((Object error) { traceError(error); }));
+    return _closeTraceStore();
+  }
+
+  Future<void>? _closingTraces;
+  Future<void> _closeTraceStore() => _closingTraces ??= _finishTracing();
+
+  Future<void> _finishTracing() async {
+    if (_tracing case final tracing?) {
+      try { await (await tracing).close(); }
+      on CancelledException { /* Shutdown can cancel recorder startup. */ }
+    }
+  }
+
   Future<void> _closeClient() async {
     _closed = true;
     _lifetime.cancel();
@@ -2485,10 +2600,7 @@ class AgentClient {
     } finally {
       await _subscription.cancel();
       _disconnected();
-      if (_tracing != null) {
-        try { await (await _tracing!).close(); }
-        on CancelledException { /* Shutdown can cancel recorder startup. */ }
-      }
+      await _closeTraceStore();
     }
   }
 }

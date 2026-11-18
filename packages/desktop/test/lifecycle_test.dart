@@ -2,17 +2,19 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse, AppExitType;
 
+import 'package:desktop/database.dart';
 import 'package:desktop/lifecycle.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:protocol/protocol.dart' show CancellationToken, jsonObject;
 import 'package:server/server.dart';
 
 void main() {
   final binding = _LifecycleTestBinding();
   setUp(binding.exits.clear);
-  testWidgets('idle desktop quits with one press and awaits shutdown without an overlay', (tester) async {
+  testWidgets('idle desktop shows Quitting while it awaits shutdown', (tester) async {
     final closed = Completer<void>();
     var closes = 0;
     await tester.pumpWidget(MaterialApp(home: DesktopLifecycle(
@@ -27,6 +29,8 @@ void main() {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
     await tester.pump();
     expect(find.textContaining('again to quit'), findsNothing);
+    expect(find.text('Quitting…'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
     expect(closes, 1);
     expect(binding.exits, isEmpty);
     await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyQ);
@@ -40,6 +44,23 @@ void main() {
     expect(find.textContaining('again to quit'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows}));
+
+  test('an admitted desktop commit survives caller cancellation and writer close', () async {
+    final directory = await Directory.systemTemp.createTemp('desktop-quit-');
+    addTearDown(() => directory.delete(recursive: true));
+    final database = await openDesktopDatabase(directory.path);
+    final cancellation = CancellationToken();
+    final saving = desktopDatabaseRequest(database, 'settings.set', {'key': 'session_drafts', 'value': '{}'},
+      cancellation: cancellation);
+    cancellation.cancel();
+    final closing = database.close();
+    try { await saving; } finally { await closing; }
+
+    final reopened = await openDesktopDatabase(directory.path);
+    addTearDown(reopened.close);
+    final saved = jsonObject(await desktopDatabaseRequest(reopened, 'load', {}));
+    expect(saved['settings']['session_drafts'], '{}');
+  });
 
   testWidgets('native quit finishes dispatching exit requests before disposing observers', (tester) async {
     late AppLifecycleListener later;

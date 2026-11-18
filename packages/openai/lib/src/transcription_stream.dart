@@ -5,7 +5,9 @@ import 'dart:typed_data';
 
 import 'package:protocol/protocol.dart';
 
-/// Direct desktop audio streaming. Transport failures leave HTTP recovery to
+import '../dictation.dart';
+
+/// ChatGPT's streaming composer protocol. Transport failures leave HTTP recovery to
 /// the recording owner; credentials and server messages never enter errors.
 class TranscriptionStream {
   TranscriptionStream({required this.onTranscript, required this.onError}) {
@@ -50,7 +52,7 @@ class TranscriptionStream {
       socket.add(jsonEncode({
         'type': 'session.start',
         'config': {
-          'input_audio_format': 'pcm16', 'sample_rate_hz': 16000, 'num_channels': 1,
+          'input_audio_format': 'pcm16', 'sample_rate_hz': dictationSampleRate, 'num_channels': 1,
           'max_buffer_size_bytes': 4194304, 'max_utterance_duration_ms': 30000,
           'session_ttl_ms': 300000, 'provider_mode': 'streaming_sse',
           'transcript_delivery_mode': 'segment',

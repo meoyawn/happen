@@ -18,6 +18,7 @@ class TraceStore {
   String? _failure;
 
   static Future<TraceStore> open(String path, {required CancellationToken cancellation}) async {
+    cancellation.throwIfCancelled();
     final ready = ReceivePort(), exit = ReceivePort(), errors = ReceivePort();
     final startup = Completer<SendPort>();
     TraceStore? store;
@@ -36,8 +37,11 @@ class TraceStore {
     final isolate = await Isolate.spawn(_traceMain, [ready.sendPort, path],
       onExit: exit.sendPort, onError: errors.sendPort, debugName: 'telemetry');
     try {
-      final sink = await startup.future.timeout(const Duration(seconds: 10)).asCancellable(cancellation);
-      return store = TraceStore._(path, sink, isolate, exit, errors);
+      final sink = await startup.future.timeout(const Duration(seconds: 10));
+      final owner = store = TraceStore._(path, sink, isolate, exit, errors);
+      if (cancellation.isCancelled) await owner.close();
+      cancellation.throwIfCancelled();
+      return owner;
     } catch (_) {
       isolate.kill(priority: Isolate.immediate);
       exit.close();
@@ -54,14 +58,15 @@ class TraceStore {
   Future<Map<String, dynamic>> status(String session, {required CancellationToken cancellation}) =>
     _request({'method': 'status', 'session': session}, cancellation);
 
-  Future<Map<String, dynamic>> _request(Map<String, dynamic> request, CancellationToken cancellation) async {
-    cancellation.throwIfCancelled();
+  Future<Map<String, dynamic>> _request(Map<String, dynamic> request, [CancellationToken? cancellation]) async {
+    cancellation?.throwIfCancelled();
     if (_closed || _failure != null) throw StateError(_failure ?? 'Trace database is closed');
     final reply = ReceivePort();
     sink.send({...request, 'reply': reply.sendPort});
     try {
-      final value = Map<String, dynamic>.from(await reply.first
-        .timeout(const Duration(seconds: 30)).asCancellable(cancellation) as Map);
+      final response = reply.first.timeout(const Duration(seconds: 30));
+      final value = Map<String, dynamic>.from(await (cancellation == null
+        ? response : response.asCancellable(cancellation)) as Map);
       if (value['error'] != null) throw StateError(value['error'] as String);
       return value;
     } finally { reply.close(); }
@@ -69,7 +74,7 @@ class TraceStore {
 
   Future<void> close() async {
     if (_closed) return;
-    try { await _request({'method': 'close'}, CancellationToken()); }
+    try { await _request({'method': 'close'}); }
     finally {
       _closed = true;
       _isolate.kill();

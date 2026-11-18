@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:openai/dictation.dart';
 import 'package:protocol/protocol.dart';
 import 'src/web_access.dart';
+
+// Mark proxied task clients at the private socket boundary.
+const browserRpcPath = '/web/ws';
 
 /// The public gateway keeps browser authentication at the HTTP boundary and
 /// forwards only authenticated connections to the private server socket.
@@ -49,7 +53,12 @@ class WebGateway {
       await request.response.close();
       return;
     }
-    if (request.uri.path != '/ws') {
+    final path = switch (request.uri.path) {
+      '/ws' => browserRpcPath,
+      dictationSocketPath => dictationSocketPath,
+      _ => null,
+    };
+    if (path == null) {
       await access.handle(request);
       return;
     }
@@ -64,7 +73,10 @@ class WebGateway {
       await request.response.close();
       return;
     }
-    final browser = await WebSocketTransformer.upgrade(request, compression: CompressionOptions.compressionOff);
+    final browser = path == dictationSocketPath
+      ? await WebSocketTransformer.upgrade(request, compression: CompressionOptions.compressionOff,
+          maxPayloadLength: dictationMaxFrameBytes)
+      : await WebSocketTransformer.upgrade(request, compression: CompressionOptions.compressionOff);
     final messages = StreamIterator<dynamic>(browser);
     final authentication = TimeoutCancellationToken(const Duration(seconds: 5));
     var valid = false;
@@ -87,7 +99,7 @@ class WebGateway {
     final hook = CancellationHook(_lifetime.merge(deadline), () => http.close(force: true));
     WebSocket? upstream;
     try {
-      upstream = await WebSocket.connect('ws://localhost/ws', customClient: http,
+      upstream = await WebSocket.connect('ws://localhost$path', customClient: http,
         compression: CompressionOptions.compressionOff).asCancellable(_lifetime.merge(deadline));
     } catch (_) {
       await browser.close(1013, 'The server is unavailable');

@@ -1435,6 +1435,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void saveDrafts() {
+    if (_lifetime.isCancelled) return;
     _draftSave?.cancel();
     _draftSave = Timer(const Duration(milliseconds: 250), () {
       unawaited(_persistDrafts().catchError((Object failure) {
@@ -2566,6 +2567,7 @@ class DesktopSession extends ChangeNotifier {
   }
 
   void _onEvent(Json event) {
+    if (_lifetime.isCancelled) return;
     if (event['method'] == 'tools.call') {
       unawaited(_executeBrowserTool(event));
       return;
@@ -2818,11 +2820,57 @@ class DesktopSession extends ChangeNotifier {
     return true;
   }
 
-  Future<void> close() async {
+  void _closeBrowserPages() {
     _browserLifetime.cancel();
     _disconnectBrowserTools();
     for (final entry in _browserPages.values) { entry.page.close(); }
     _browserPages.clear();
+  }
+
+  void _cancelSubmissions() {
+    _submission?.cancel();
+    for (final side in sideChats.values) {
+      side.sidePreparation?.cancel();
+      side.sideSubmission?.cancel();
+    }
+  }
+
+  Future<void> _closeDictation() async {
+    if (sidebarOwner == null) {
+      await _dictation?.cancel();
+      _dictation?.dispose();
+      _dictation = null;
+    } else { await _cancelSessionDictation(); }
+  }
+
+  /// Submit the final draft snapshot before cancelling its session lifetime.
+  Future<void> cancelForExit() async {
+    _closeBrowserPages();
+    _draftSave?.cancel();
+    final saving = _draftSave != null || sessionDrafts.isNotEmpty ? _persistDrafts() : null;
+    _cancelSubmissions();
+    final dictation = _closeDictation();
+    final shells = terminals.close();
+    _lifetime.cancel();
+    openAIUsage.dispose();
+    _stopIconWatch();
+    _recovery?.cancel();
+    unawaited(Future.wait([
+      dictation, shells, _events.cancel(),
+      if (_appearance case final appearance?) appearance.close(),
+      if (_pinnedSidebar case final pinned?) pinned.close(),
+      if (_promptHistoryShortcut case final shortcut?) shortcut.close(),
+      if (_machinePickerShortcut case final shortcut?) shortcut.close(),
+      for (final controller in _git.values) controller.close(),
+      for (final controller in _projectActions.values) controller.close(),
+    ]).then<void>((_) {}, onError: (Object error) {
+      if (error is! CancelledException) traceError(error);
+    }));
+    await saving;
+  }
+
+  Future<void> close() async {
+    _closeBrowserPages();
     _draftSave?.cancel();
     await _appearance?.close();
     await _pinnedSidebar?.close();
@@ -2836,16 +2884,8 @@ class DesktopSession extends ChangeNotifier {
     await Future.wait(_releasingThreads.values.toList());
     await terminals.close();
     terminals.dispose();
-    _submission?.cancel();
-    for (final side in sideChats.values) {
-      side.sidePreparation?.cancel();
-      side.sideSubmission?.cancel();
-    }
-    if (sidebarOwner == null) {
-      await _dictation?.cancel();
-      _dictation?.dispose();
-      _dictation = null;
-    } else { await _cancelSessionDictation(); }
+    _cancelSubmissions();
+    await _closeDictation();
     _lifetime.cancel();
     openAIUsage.dispose();
     await Future.wait(_synchronizations.toList());

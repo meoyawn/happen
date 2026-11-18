@@ -96,7 +96,7 @@ tasks:
 
   build-web:
     description: Build the browser client with SQLite WASM and no embedded server
-    command: dart --disable-dart-dev tool/web.dart build
+    command: dart --disable-dart-dev tool/web.dart
     preset: utility
     inputs: []
     options:
@@ -104,17 +104,6 @@ tasks:
       interactive: false
       shell: false
       runInCI: true
-      outputStyle: stream
-
-  dev-web:
-    description: Run the browser client in a separate headless Chrome instance
-    command: dart --disable-dart-dev tool/web.dart dev
-    preset: server
-    inputs: []
-    options:
-      cache: false
-      interactive: true
-      shell: false
       outputStyle: stream
 
   build-server-native-sqlite:

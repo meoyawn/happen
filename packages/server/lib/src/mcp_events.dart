@@ -60,6 +60,9 @@ extension _McpEvents on AgentServer {
       return;
     }
     final event = jsonObject(message['event']);
+    if (event['type'] == 'auth.changed' && event['provider'] == 'openai') {
+      for (final cancellation in _webDictations) { cancellation.cancel(); }
+    }
     final id = event['threadId'];
     if (event['type'] == 'mcp.event' && id is String) {
       if (_threadLifetimes[id]?.cancellation.isCancelled == true) return;

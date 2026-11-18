@@ -140,6 +140,7 @@ class TaskToolBridge {
 
   Future<void> close() async {
     _closed = true;
+    for (final token in _operations.values.toList()) { token.cancel(); }
     await Future.wait(_tasks.keys.toList().map(release));
     await Future.wait(_releasing.values.toList());
     _mailbox.close();

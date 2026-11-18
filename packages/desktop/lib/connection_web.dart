@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:js_interop';
 
 import 'package:openai/account_usage.dart';
+import 'package:openai/dictation.dart';
 import 'package:protocol/protocol.dart';
 import 'package:telemetry/telemetry.dart';
 import 'package:web/web.dart' as web;
 
 import 'browser_files_web.dart';
+import 'dictation_socket_web.dart';
 
 sealed class _ConnectionState { const _ConnectionState(); }
 final class _Idle extends _ConnectionState { const _Idle(); }
@@ -111,6 +113,8 @@ class AgentClient {
   bool get sharedFilesystem => false;
   bool get isClosed => _state is _Closed;
   bool get isConnected => switch (_state) { _Connected(:final socket) => socket.readyState == 1, _ => false };
+  String get _origin => uri.replace(scheme: uri.scheme == 'wss' ? 'https' : 'http').origin;
+  String get _authenticationFrame => jsonEncode({'type': 'authenticate', 'token': _sessions[_origin]});
 
   static Future<AgentClient> connect(Uri uri, {String? token, bool? sharedFilesystem, CancellationToken? cancellation}) async {
     if (token != null) throw ArgumentError('Browser connections use the owner session');
@@ -139,15 +143,12 @@ class AgentClient {
       var requiresAuthentication = false;
       final hook = CancellationHook(_lifetime, () { socket.close(); if (!dropped.isCompleted) dropped.complete(); });
       _subscriptions.addAll([
-        socket.onOpen.listen((_) {
-          final origin = uri.replace(scheme: uri.scheme == 'wss' ? 'https' : 'http').origin;
-          socket.send(jsonEncode({'type': 'authenticate', 'token': _sessions[origin]}).toJS);
-        }),
+        socket.onOpen.listen((_) => socket.send(_authenticationFrame.toJS)),
         socket.onError.listen((_) { if (!opened.isCompleted) opened.completeError(StateError('Could not connect to the server')); }),
         socket.onClose.listen((event) {
           if (event.code == 1008) {
             requiresAuthentication = true;
-            _sessions.remove(uri.replace(scheme: uri.scheme == 'wss' ? 'https' : 'http').origin);
+            _sessions.remove(_origin);
           }
           if (!opened.isCompleted) opened.completeError(StateError('The server closed the connection'));
           if (!dropped.isCompleted) dropped.complete();
@@ -317,9 +318,16 @@ class AgentClient {
   Future<void> mcpLogout(String server, {String? cwd, required CancellationToken cancellation}) async =>
       _request('mcp.auth.logout', {'server': server, 'cwd': ?cwd}, cancellation: cancellation);
 
-  Future<Json> desktopAuthorization({bool refresh = false, required CancellationToken cancellation}) async =>
-      jsonObject(await _request('auth.desktop', {'refresh': refresh}, cancellation: cancellation,
-        timeout: const Duration(seconds: 30)));
+  Future<String> dictationScope({required CancellationToken cancellation}) async {
+    final result = jsonObject(await _request(openAIDictationAuthorizeMethod, {}, cancellation: cancellation,
+      timeout: const Duration(seconds: 15)));
+    return requiredString(result, 'account_scope');
+  }
+
+  Future<BrowserDictationSocket> openDictationSocket(String scope, {required bool live, required CancellationToken cancellation,
+    void Function(String)? onTranscript, void Function()? onError}) => BrowserDictationSocket.connect(
+      uri.replace(path: dictationSocketPath, query: '').removeFragment(), _authenticationFrame, scope,
+      live: live, cancellation: cancellation.merge(_lifetime), onTranscript: onTranscript, onError: onError);
 
   Future<Object?> _request(String method, Json params, {CancellationToken? cancellation,
     Duration timeout = const Duration(minutes: 5)}) async {

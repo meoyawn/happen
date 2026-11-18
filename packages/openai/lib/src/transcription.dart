@@ -9,7 +9,7 @@ import 'package:ai/ai.dart' show HttpReply, httpRequest;
 
 typedef TranscriptionCredentials = Future<Json> Function({bool refresh, required CancellationToken cancellation});
 
-/// Harness's non-streaming composer protocol, sent directly by the desktop.
+/// ChatGPT's non-streaming composer protocol.
 /// Audio and response bodies never enter task history or diagnostics.
 class TranscriptionClient {
   TranscriptionClient({required this.http, required this.credentials, Uri? endpoint})
