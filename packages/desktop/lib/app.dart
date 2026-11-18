@@ -72,6 +72,8 @@ class _DesktopViewState extends State<DesktopView> {
   ThreadMachineController? _projectSelection;
   bool _commandMenuOpen = false;
   bool get _homeOpen => !session.viewingConversation;
+  DesktopTask get _panelTask => (_homeOpen ? null : session.task) ?? session.browserWorkspace;
+  bool get _sidePanelOpen => session.panelLayouts[_panelTask.id]?.opened == true;
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
   String? _nativeLayout;
   final _sessionSearchFocus = FocusNode();
@@ -479,7 +481,7 @@ class _DesktopViewState extends State<DesktopView> {
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
-    final panelTask = task ?? session.browserWorkspace;
+    final panelTask = _panelTask;
     final panels = session.panelLayouts[panelTask.id];
     final terminalFocused = !includeUnavailable && terminalHasFocus;
     return {
@@ -719,7 +721,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleBrowserPanel() {
-    final task = (_homeOpen ? null : session.task) ?? session.browserWorkspace;
+    final task = _panelTask;
     final tab = session.panelsFor(task).tabs.where(isBrowserPanel).firstOrNull;
     if (tab == null) { session.openBrowserPanel(task); }
     else { session.openSessionPanel(task, tab, toggle: true); }
@@ -727,9 +729,8 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleSidePanel() {
-    final task = (_homeOpen ? null : session.task) ?? session.browserWorkspace;
-    session.toggleSidePanel(task);
-    if (!session.panelsFor(task).opened) _composer.currentState?._focus.requestFocus();
+    session.toggleSidePanel(_panelTask);
+    if (!_sidePanelOpen) _composer.currentState?._focus.requestFocus();
   }
 
   @override
@@ -824,7 +825,7 @@ class _DesktopViewState extends State<DesktopView> {
         }
       }, itemBuilder: (_) => [
         const PopupMenuItem(value: 'home', child: Text('All threads')),
-        if (session.task != null) const PopupMenuItem(value: 'panels', child: Text('Files and context')),
+        if (!_homeOpen) const PopupMenuItem(value: 'panels', child: Text('Toggle side panel')),
         if (session.project?.available == true) const PopupMenuItem(value: 'project', child: Text('Project details')),
         if (_canOpenTerminal) const PopupMenuItem(value: 'terminal', child: Text('Terminal')),
         const PopupMenuItem(value: 'settings', child: Text('Settings')),
@@ -979,12 +980,11 @@ class _DesktopViewState extends State<DesktopView> {
             onPressed: _canOpenTerminal ? _toggleTerminal : null,
             icon: const BottomPanelIcon())),
           const SizedBox(width: 4),
-          WorkspacePanelButton(key: const ValueKey('toggle-side-panel'),
-            tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})',
-            opened: session.task != null && session.panelLayouts[session.task!.id]?.opened == true,
-            onPressed: session.task == null ? null : _toggleSidePanel,
-            icon: SidePanelIcon(opened: session.task != null && session.panelLayouts[session.task!.id]?.opened == true)),
         ],
+        WorkspacePanelButton(key: const ValueKey('toggle-side-panel'),
+          tooltip: 'Toggle side panel (${defaultTargetPlatform == TargetPlatform.macOS ? '⌘⌥B' : 'Ctrl+Alt+B'})',
+          opened: _sidePanelOpen, onPressed: _toggleSidePanel,
+          icon: SidePanelIcon(opened: _sidePanelOpen)),
       ],
     )),
   ));

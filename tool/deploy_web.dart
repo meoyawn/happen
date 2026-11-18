@@ -31,13 +31,15 @@ Future<void> main(List<String> arguments) async {
   final signals = [ProcessSignal.sigint, ProcessSignal.sigterm].map((signal) => signal.watch().listen((_) {
     cancellation.cancel(); child?.kill(); http.close(force: true);
   })).toList();
-  Future<Object?> cf(List<String> args) async {
+  Future<Object?> cf(List<String> args, {String? pagesToken}) async {
     cancellation.throwIfCancelled();
-    child = await Process.start('cf', args, environment: {'CLOUDFLARE_ACCOUNT_ID': account});
+    child = await Process.start('cf', args, environment: {'CLOUDFLARE_ACCOUNT_ID': account,
+      'CLOUDFLARE_API_TOKEN': ?pagesToken});
     final output = child!.stdout.transform(utf8.decoder).join(), errors = child!.stderr.transform(utf8.decoder).join();
     final code = await child!.exitCode;
     final text = await output, error = await errors;
-    if (code != 0) throw StateError('cf ${args.take(3).join(' ')} failed: ${clippedText(error, 1600)}');
+    final detail = pagesToken == null ? error : error.replaceAll(pagesToken, '[redacted]');
+    if (code != 0) throw StateError('cf ${args.take(3).join(' ')} failed: ${clippedText(detail, 1600)}');
     return jsonDecode(text);
   }
   Future<Object?> api(String method, String path, String token, [Object? body, bool multipart = false]) async {
@@ -60,7 +62,8 @@ Future<void> main(List<String> arguments) async {
       final response = await request.close();
       final result = jsonObject(jsonDecode(await response.transform(utf8.decoder).join()));
       if (response.statusCode >= 400 || result['success'] != true) {
-        throw StateError('Pages $method $path failed (${response.statusCode}): ${result['errors']}');
+        final detail = '${result['errors']}'.replaceAll(token, '[redacted]');
+        throw StateError('Pages $method $path failed (${response.statusCode}): ${clippedText(detail, 1600)}');
       }
       return result['result'];
     } finally { hook.dispose(); deadline.cancel(); }
@@ -73,28 +76,26 @@ Future<void> main(List<String> arguments) async {
         throw StateError('The Pages deployment must contain only static files: $name');
       }
     }
-    final configuredToken = environment['CLOUDFLARE_API_TOKEN']?.trim();
-    final String token;
-    if (configuredToken != null && configuredToken.isNotEmpty) {
-      token = configuredToken;
-    } else {
-      if (publishOnly) throw StateError('CLOUDFLARE_API_TOKEN is required to publish to Pages');
-      // Refresh through cf before reading its private credential store.
-      await cf(['auth', 'whoami']);
-      final home = environment['HOME']!;
-      final credentials = jsonObject(jsonDecode(await File('$home/.config/cloudflare/config/default.json').readAsString()));
-      token = requiredString(credentials, 'oauth_token');
+    final envToken = environment['CLOUDFLARE_API_TOKEN']?.trim();
+    if (publishOnly && (envToken == null || envToken.isEmpty)) {
+      throw StateError('CLOUDFLARE_API_TOKEN is required to publish to Pages');
     }
+    final home = environment['HOME'];
+    final pagesToken = envToken != null && envToken.isNotEmpty ? envToken
+      : home == null ? null : await _readPrivateCredential('$home/.secrets/happen/pages-token', cancellation);
+    // whoami refreshes the selected profile and reports its platform-specific store.
+    final token = pagesToken ?? await _pagesProfileToken(jsonObject(await cf(['auth', 'whoami'])), cancellation);
     var project = publishOnly
       ? jsonObject(await api('GET', projectPath, token))
-      : (await cf(['pages', 'list']) as List).map(jsonObject).where((value) => value['name'] == projectName).firstOrNull;
+      : (await cf(['pages', 'list'], pagesToken: pagesToken) as List).map(jsonObject)
+        .where((value) => value['name'] == projectName).firstOrNull;
     if (publishOnly && project?['production_branch'] != 'master') {
       throw StateError('The Pages project must use master as its production branch');
     }
     if (project == null) {
       final body = jsonEncode({'name': projectName, 'production_branch': 'master'});
-      await cf(['pages', 'create', '--body', body, '--dry-run']);
-      project = jsonObject(await cf(['pages', 'create', '--body', body]));
+      await cf(['pages', 'create', '--body', body, '--dry-run'], pagesToken: pagesToken);
+      project = jsonObject(await cf(['pages', 'create', '--body', body], pagesToken: pagesToken));
     }
     final jwt = requiredString(jsonObject(await api('GET', '$projectPath/upload-token', token)), 'jwt');
     final manifest = <String, String>{}, assets = <String, Json>{};
@@ -125,7 +126,7 @@ Future<void> main(List<String> arguments) async {
     stdout.writeln('Uploaded ${missing.length} changed static assets (${manifest.length} total).');
     if (!publishOnly) {
       await cf(['pages', 'deployments', 'create', projectName, '--branch', 'master', '--commit-dirty', 'true',
-        '--manifest', jsonEncode(manifest), '--redirects', '@${root.path}/_redirects', '--dry-run']);
+        '--manifest', jsonEncode(manifest), '--redirects', '@${root.path}/_redirects', '--dry-run'], pagesToken: pagesToken);
     }
     // The pinned generated CLI omits the _headers multipart field, so use the
     // same public Pages deployment API for the complete static upload form.
@@ -148,8 +149,8 @@ Future<void> main(List<String> arguments) async {
     if (hostname != null && zone != null) {
       final domains = (project['domains'] as List? ?? const []).cast<String>();
       if (!domains.contains(hostname)) {
-        await cf(['pages', 'domains', 'create', projectName, '--name', hostname, '--dry-run']);
-        await cf(['pages', 'domains', 'create', projectName, '--name', hostname]);
+        await cf(['pages', 'domains', 'create', projectName, '--name', hostname, '--dry-run'], pagesToken: pagesToken);
+        await cf(['pages', 'domains', 'create', projectName, '--name', hostname], pagesToken: pagesToken);
       }
       final records = (await cf(['dns', 'records', 'list', '--zone', zone, '--name', hostname]) as List).map(jsonObject).toList();
       final destination = requiredString(project, 'subdomain');
@@ -159,15 +160,17 @@ Future<void> main(List<String> arguments) async {
           : ['dns', 'records', 'update', requiredString(records.single, 'id'), '--zone', zone, '--body', body];
         await cf([...dns, '--dry-run']); await cf(dns);
       }
-      var domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
+      final getDomain = ['pages', 'domains', 'get', hostname, '--project-name', projectName];
+      var domain = jsonObject(await cf(getDomain, pagesToken: pagesToken));
       if (domain['status'] != 'active') {
         final retry = ['pages', 'domains', 'validation', 'retry', hostname, '--project-name', projectName];
-        await cf([...retry, '--dry-run']); await cf(retry);
+        await cf([...retry, '--dry-run'], pagesToken: pagesToken);
+        await cf(retry, pagesToken: pagesToken);
         final domainDeadline = DateTime.now().add(const Duration(minutes: 3));
         while (domain['status'] != 'active') {
           if (DateTime.now().isAfter(domainDeadline)) throw StateError('Pages is deployed, but $hostname is still ${domain['status']}');
           await cancellableDelay(const Duration(seconds: 3), cancellation);
-          domain = jsonObject(await cf(['pages', 'domains', 'get', hostname, '--project-name', projectName]));
+          domain = jsonObject(await cf(getDomain, pagesToken: pagesToken));
         }
       }
     }
@@ -181,6 +184,32 @@ Future<void> main(List<String> arguments) async {
     cancellation.cancel(); child?.kill(); http.close(force: true);
     for (final signal in signals) { await signal.cancel(); }
   }
+}
+
+Future<String?> _readPrivateCredential(String path, CancellationToken cancellation) async {
+  final file = File(path);
+  final stat = await file.stat().asCancellable(cancellation);
+  if (stat.type == FileSystemEntityType.notFound) return null;
+  if (stat.type != FileSystemEntityType.file || !Platform.isWindows && stat.mode & 0x3f != 0) {
+    throw StateError('Cloudflare credential files must be private (chmod 600)');
+  }
+  final value = (await file.readAsString().asCancellable(cancellation)).trim();
+  if (value.isEmpty) throw StateError('The Cloudflare credential file is empty');
+  return value;
+}
+
+Future<String> _pagesProfileToken(Json identity, CancellationToken cancellation) async {
+  const prefix = 'OAuth token from ';
+  final source = identity['authSource'];
+  if (identity['authenticated'] == true && identity['tokenValid'] != false && source is String && source.startsWith(prefix)) {
+    final path = source.substring(prefix.length);
+    final text = await _readPrivateCredential(path, cancellation);
+    if (text != null) {
+      try { return requiredString(jsonObject(jsonDecode(text)), 'oauth_token'); }
+      on FormatException { throw const FormatException('The Cloudflare CLI profile has an invalid credential format'); }
+    }
+  }
+  throw StateError('Set CLOUDFLARE_API_TOKEN, save a token in ~/.secrets/happen/pages-token, or sign in to cf');
 }
 
 String _contentType(String path) => switch (path.split('.').last.toLowerCase()) {

@@ -245,7 +245,7 @@ tasks:
       outputStyle: stream
 
   sync-server:
-    description: Sync Git-tracked working files to the private VPS checkout using Unison
+    description: Reconcile Git-tracked working files with the private VPS checkout using Unison
     command: dart --disable-dart-dev tool/deploy_server.dart --sync-source
     preset: utility
     inputs: []
@@ -256,6 +256,17 @@ tasks:
       runInCI: false
       outputStyle: stream
       mutex: happen-server-source-sync
+
+  sync-vps:
+    description: Alias for sync-server
+    command: noop
+    deps:
+      - '~:sync-server'
+    preset: utility
+    inputs: []
+    options:
+      cache: false
+      runInCI: false
 
   analyze:
     description: Check Dart types and configured lint rules across the workspace

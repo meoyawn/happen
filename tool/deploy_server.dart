@@ -81,7 +81,7 @@ Future<Json> _readTarget() async {
   on FormatException { throw const FormatException('Invalid private VPS target JSON'); }
 }
 
-Future<void> _syncTrackedFiles(Directory root, String checkout, String destination, List<String> ssh,
+Future<void> _syncTrackedFiles(Directory root, String destination, List<String> ssh,
     CancellationToken cancellation) async {
   final tracked = await runBuildProcess('git', ['ls-files', '--cached', '--recurse-submodules', '-z'],
     cancellation, workingDirectory: root.path, capture: true, trimOutput: false);
@@ -89,12 +89,13 @@ Future<void> _syncTrackedFiles(Directory root, String checkout, String destinati
   for (final path in tracked.split('\u0000').where((path) => path.isNotEmpty).toSet()) {
     cancellation.throwIfCancelled();
     final type = await FileSystemEntity.type('${root.path}/$path', followLinks: false);
-    if (type == FileSystemEntityType.file || type == FileSystemEntityType.link) paths.add(path);
+    if (type == FileSystemEntityType.file || type == FileSystemEntityType.link || type == FileSystemEntityType.notFound) {
+      paths.add(path);
+    }
   }
   if (paths.isEmpty) throw StateError('No Git-tracked files to sync');
-  stdout.writeln('Syncing ${paths.length} Git-tracked files to the VPS checkout.');
+  stdout.writeln('Reconciling ${paths.length} Git-tracked paths with the VPS checkout.');
   final options = ['-root', root.path, '-root', destination, '-ui', 'text', '-batch', '-silent',
-    '-force', root.path, '-noupdate', root.path, '-nocreation', root.path, '-nodeletion', checkout,
     '-backup', 'Name *', '-backuploc', 'central', '-times', '-fastcheck', 'false',
     '-rsrc', 'false', '-xattrs=false', '-links', 'true', '-perms', '0o111',
     '-sshargs', ssh.map(quoteUnisonArgument).join(' ')];
@@ -154,7 +155,7 @@ Future<void> main(List<String> arguments) async {
       if (checkout != null) {
         final repo = await remote(['git', '-C', checkout, 'rev-parse', '--is-inside-work-tree', '--show-prefix']);
         if (repo != 'true') throw StateError('The VPS checkout must be the root of a Git working tree');
-        await _syncTrackedFiles(root, checkout, 'ssh://$remoteUser@$destinationHost/$checkout', ssh, cancellation);
+        await _syncTrackedFiles(root, 'ssh://$remoteUser@$destinationHost/$checkout', ssh, cancellation);
         return;
       }
       final machine = await remote(['uname', '-m']);

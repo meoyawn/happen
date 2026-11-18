@@ -10,7 +10,7 @@ Save your private SSH target in `~/.secrets/happen/vps.json` with file mode `060
 
 `host` may be an alias from `~/.ssh/config`. Optional `user`, `port` and `identityFile` fields override SSH defaults.
 
-Run `moonx sync-server` to push the current contents of Git-tracked files to the VPS checkout. This includes tracked changes and initialized submodules. Unison keeps backups of replaced files on the VPS. The running daemon can keep serving during the transfer.
+Run `moonx sync-server` or `moonx sync-vps` to sync in both directions. The local Git index selects the files, including tracked files in initialized submodules. Unison reports conflicting edits and keeps backups of replaced or deleted files. The running daemon can keep serving during the transfer.
 
 Build, upload and restart the daemon with one command:
 
@@ -101,11 +101,12 @@ preflights are cached for a day, and WebSockets use an Origin check and an
 authenticated first frame. Keys never appear in URLs.
 
 The pinned `cf@1.0.0-rc.1` CLI manages resources in the configured Cloudflare
-account. Its Pages deploy command currently targets Workers, so our Dart
-deployment tool uses the Pages Direct Upload API with the CLI's existing login.
-The result is verified to contain no Functions. Each complete asset set lives
-in a directory named by its content hash, including icon fonts; HTML revalidates
-on reload so a browser cannot combine new code with older cached assets.
+account. The Dart deployment tool uses the Pages Direct Upload API. It reads
+`CLOUDFLARE_API_TOKEN`, a private `~/.secrets/happen/pages-token` file, or the
+active `cf` login, in that order. The result is verified to contain no Functions.
+Each complete asset set lives in a directory named by its content hash, including
+icon fonts; HTML revalidates on reload so a browser cannot combine new code with
+older cached assets.
 
 Keep deployment settings in `~/.secrets/happen/deployment.json`, outside the
 checkout. Set directory mode `0700` and file mode `0600`. For example:
