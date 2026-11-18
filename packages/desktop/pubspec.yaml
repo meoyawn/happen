@@ -1,7 +1,7 @@
 name: desktop
 description: "Happen client for desktop and web"
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.1.34+35
 resolution: workspace
 
 environment:
