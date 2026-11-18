@@ -45,6 +45,7 @@ abstract class BrowserPage extends ChangeNotifier {
 
   /// The address used to load the page, which may point to a preview tunnel.
   Uri? get loadAddress;
+  Uri? get addressBarLocation => blank ? null : loadAddress ?? location;
   String get title;
   int get generation;
   Future<List<Json>> Function({required CancellationToken cancellation})? get discoverPorts;

@@ -59,7 +59,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   }
 
   void _syncAddress() {
-    if (!_addressFocus.hasFocus) _address.text = _page.blank ? '' : _page.location.toString();
+    if (!_addressFocus.hasFocus) _address.text = _page.addressBarLocation?.toString() ?? '';
   }
 
   void _pageChanged() {

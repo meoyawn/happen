@@ -57,7 +57,7 @@ class PlatformBrowserPage extends BrowserPage {
   final _lifetime = CancellationToken();
   @override
   Uri? get loadAddress => switch (location) { final uri? => _preview?.loadAddress(uri) ?? uri, null => null };
-  Uri displayAddress(Uri uri) => _preview?.displayAddress(uri) ?? uri;
+  Uri localAddress(Uri uri) => _preview?.localAddress(uri) ?? uri;
   @override
   Future<List<Json>> Function({required CancellationToken cancellation}) get discoverPorts =>
     _preview?.client.discoverRemoteDevServers ?? discoverDevServers;
@@ -117,11 +117,11 @@ class PlatformBrowserPage extends BrowserPage {
         if (_loaded == null || _loaded!.isCompleted) _loaded = Completer<void>();
         _generation++;
         _annotationDocument = newId();
-        updateState(BrowserLoading(_displayLocation(url) ?? location));
+        updateState(BrowserLoading(_localLocation(url) ?? location));
       },
       onUrlChange: (change) {
         if (_lifetime.isCancelled || change.url == null) return;
-        final uri = _displayLocation(change.url!) ?? location;
+        final uri = _localLocation(change.url!) ?? location;
         updateState(loading ? BrowserLoading(uri, progress) : BrowserReady(uri));
         unawaited(_updatePage());
       },
@@ -129,7 +129,7 @@ class PlatformBrowserPage extends BrowserPage {
         if (!_lifetime.isCancelled && loading) updateState(BrowserLoading(location, value));
       },
       onPageFinished: (url) {
-        if (_displayLocation(url) == location) unawaited(_finish());
+        if (_localLocation(url) == location) unawaited(_finish());
       },
       onWebResourceError: (error) {
         if (_lifetime.isCancelled || error.isForMainFrame == false || error.errorCode == -999) return;
@@ -142,9 +142,9 @@ class PlatformBrowserPage extends BrowserPage {
     return controller;
   }
 
-  Uri? _displayLocation(String url) {
+  Uri? _localLocation(String url) {
     final uri = Uri.tryParse(url);
-    return uri == null ? null : displayAddress(uri);
+    return uri == null ? null : localAddress(uri);
   }
 
   bool _isRemotePreview(Uri uri) => _preview != null && (uri.scheme == 'http' || uri.scheme == 'https') &&
@@ -192,10 +192,11 @@ class PlatformBrowserPage extends BrowserPage {
   }
 
   @override
-  Future<void> navigate(Uri uri, {required CancellationToken cancellation}) async {
+  Future<void> navigate(Uri address, {required CancellationToken cancellation}) async {
     cancellation.throwIfCancelled();
     _lifetime.throwIfCancelled();
-    if (!browserLocationAllowed(uri)) throw const FormatException('Enter a web address or a local file.');
+    if (!browserLocationAllowed(address)) throw const FormatException('Enter a web address or a local file.');
+    final uri = localAddress(address);
     _operation?.cancel();
     _reopenOnConnect = false;
     _completeLoad();

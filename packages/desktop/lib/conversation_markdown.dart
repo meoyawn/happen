@@ -52,7 +52,9 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
   final _lifetime = CancellationToken();
   Object? _styleState;
   late MarkdownStyleSheet _styleSheet;
-  var _inlineSyntaxes = <md.InlineSyntax>[_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
+  var _inlineSyntaxes = <md.InlineSyntax>[
+    _SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax(), _LocalhostLinkSyntax(),
+  ];
   late final _links = <GestureRecognizer, String?>{};
   Object? _contentState;
   late Widget _content;
@@ -73,7 +75,8 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
       ..onTap = () {
         _hideLinkTooltip();
         if (href != null) {
-          unawaited(openDesktopLink(context, href, directory: widget.markdown.directory, cancellation: _lifetime));
+          unawaited(openDesktopLink(context, _localhostLinkDestination(href),
+            directory: widget.markdown.directory, cancellation: _lifetime));
         }
       }
       ..onSecondaryTapUp = href == null ? null : (details) {
@@ -161,7 +164,7 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
     _hideLinkTooltip();
     _styleState = null;
     _contentState = null;
-    _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax()];
+    _inlineSyntaxes = [_SkillInvocationSyntax(), _SkillLinkSyntax(), ResponseAnnotationSyntax(), _LocalhostLinkSyntax()];
   }
 
   @override
@@ -424,6 +427,39 @@ class _LinkTooltipLayout extends SingleChildLayoutDelegate {
 
   @override
   bool shouldRelayout(_LinkTooltipLayout oldDelegate) => position != oldDelegate.position;
+}
+
+final _bareLocalhostLink = RegExp(r'^localhost:[0-9]{1,5}(?=$|[/?#])', caseSensitive: false);
+
+String _localhostLinkDestination(String href) => _bareLocalhostLink.hasMatch(href) ? 'http://$href' : href;
+
+/// GitHub-flavored Markdown autolinks require a dotted hostname.
+class _LocalhostLinkSyntax extends md.InlineSyntax {
+  _LocalhostLinkSyntax() : super(
+    r'''(?:https?://)?localhost:[0-9]{1,5}(?:[/?#][^\s<>\[\]()`"']*)?(?=$|[\s<>\[\]()`"'.!,?;*_~])''',
+    caseSensitive: false,
+  );
+
+  static final _preceding = RegExp(r'''[\s(*_~>"']''');
+  static final _trailing = RegExp(r'[.,!?;:*_~]+$');
+
+  @override
+  bool tryMatch(md.InlineParser parser, [int? startMatchPos]) {
+    final start = startMatchPos ?? parser.pos;
+    if (start > 0 && !_preceding.hasMatch(parser.source[start - 1])) return false;
+    return super.tryMatch(parser, start);
+  }
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final label = match[0]!.replaceFirst(_trailing, '');
+    final uri = Uri.tryParse(_localhostLinkDestination(label));
+    parser.addNode(uri != null && uri.port > 0 && uri.port <= 65535
+      ? (md.Element.text('a', label)..attributes['href'] = uri.toString())
+      : md.Text(label));
+    parser.consume(label.length);
+    return false;
+  }
 }
 
 /// Composer atoms retain native paths, including spaces, in their Markdown.

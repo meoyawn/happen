@@ -42,7 +42,7 @@ class BrowserPreview {
     }
   }
 
-  Uri displayAddress(Uri uri) {
+  Uri localAddress(Uri uri) {
     if (_lease case final lease? when uri.scheme == 'https' && uri.origin == lease.tunnel.origin) {
       return _atOrigin(lease.local, uri);
     }

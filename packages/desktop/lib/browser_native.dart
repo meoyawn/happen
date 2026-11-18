@@ -178,7 +178,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
       final serial = value['serial'] as int;
       if (serial < 1 || !_annotationSelections.add(serial)) return;
       final target = jsonObject(value['target']);
-      final uri = _page.displayAddress(Uri.parse(requiredString(target, 'pageUrl')));
+      final uri = _page.localAddress(Uri.parse(requiredString(target, 'pageUrl')));
       if (uri != _location) return;
       final browser = BrowserAnnotation({...target, 'pageUrl': uri.toString()});
       final requiresMode = browser.target['kind'] != 'text';
@@ -303,8 +303,7 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   }
 
   void _setAddress() {
-    if (!_addressFocus.hasFocus) _address.text =
-      _location?.toString() == 'about:blank' ? '' : _location?.toString() ?? '';
+    if (!_addressFocus.hasFocus) _address.text = _page.addressBarLocation?.toString() ?? '';
   }
 
   void _focusAddress() {
@@ -430,8 +429,10 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
           if (widget.navigationEnabled && _annotations?.enabled == true) _button(
             _commenting ? 'Stop annotating' : 'Annotate page', Icons.add_comment_outlined,
             _annotationReady && !blank && !_loading ? () => _setAnnotationMode(!_commenting) : null),
-          _button('Copy link', Icons.link_rounded, blank ? null : () => _run(() =>
-            Clipboard.setData(ClipboardData(text: _location.toString())).asCancellable(_lifetime))),
+          _button('Copy link', Icons.link_rounded, switch (_page.addressBarLocation) {
+            final uri? => () => _run(() => Clipboard.setData(ClipboardData(text: uri.toString())).asCancellable(_lifetime)),
+            null => null,
+          }),
           _button('Open in system browser', Icons.open_in_new_rounded, blank ? null : () => _run(_external)),
         ])),
       if (_commenting) Container(width: double.infinity, color: desktopMuted,

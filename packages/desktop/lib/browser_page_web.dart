@@ -51,10 +51,11 @@ class PlatformBrowserPage extends BrowserPage {
     _preview?.client.discoverRemoteDevServers;
 
   @override
-  Future<void> navigate(Uri uri, {required CancellationToken cancellation}) async {
+  Future<void> navigate(Uri address, {required CancellationToken cancellation}) async {
     cancellation.throwIfCancelled();
     _lifetime.throwIfCancelled();
-    if (!browserLocationAllowed(uri)) throw const FormatException('Enter an HTTP or HTTPS address');
+    if (!browserLocationAllowed(address)) throw const FormatException('Enter an HTTP or HTTPS address');
+    final uri = _preview?.localAddress(address) ?? address;
     _navigation?.cancel();
     _reopenOnConnect = false;
     _generation++;
