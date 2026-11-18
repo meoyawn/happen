@@ -207,7 +207,9 @@ SSH `daemon start` uses the selected service.
 child in one hot reloadable Dart VM process. Its native libraries and package
 map have stable paths outside the checkout, so a later `dart run` cannot make
 FFI bindings point into a deleted temporary directory. Hot reload retains the
-backend and gateway state and keeps the connector running. VM service metadata
-is in `~/.cache/happen/server-vm.json`; the debug port binds to loopback and is
-never routed through the public tunnel. `release` switches to the installed
+backend and gateway state and keeps the connector running. The VM serves the
+authenticated debugger directly on loopback port `8181`. Read the `uri` from
+`~/.cache/happen/server-vm.json`, change `http://` to `ws://` and append `ws` to
+the trailing slash. Pass that URI to Dart MCP `vm_service` with `command: connect`,
+then use `hot_reload` for the connected app. `release` switches to the installed
 AOT service. `verify` checks the public connection independently.

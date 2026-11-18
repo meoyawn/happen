@@ -72,8 +72,7 @@ class _DesktopViewState extends State<DesktopView> {
   ThreadMachineController? _projectSelection;
   bool _commandMenuOpen = false;
   bool get _homeOpen => !session.viewingConversation;
-  DesktopTask get _panelTask => (_homeOpen ? null : session.task) ?? session.browserWorkspace;
-  bool get _sidePanelOpen => session.panelLayouts[_panelTask.id]?.opened == true;
+  bool get _sidePanelOpen => session.panelLayoutFor(session.panelTask)?.opened == true;
   final _windowChrome = ValueNotifier((fullscreen: false, trafficLightsEnd: 85.0));
   String? _nativeLayout;
   final _sessionSearchFocus = FocusNode();
@@ -481,8 +480,8 @@ class _DesktopViewState extends State<DesktopView> {
     SingleActivator shortcut(LogicalKeyboardKey key, {bool shift = false, bool alt = false}) =>
       SingleActivator(key, meta: mac, control: !mac, shift: shift, alt: alt);
     final task = _homeOpen ? null : session.task;
-    final panelTask = _panelTask;
-    final panels = session.panelLayouts[panelTask.id];
+    final panelTask = session.panelTask;
+    final panels = session.panelLayoutFor(panelTask);
     final terminalFocused = !includeUnavailable && terminalHasFocus;
     return {
       shortcut(LogicalKeyboardKey.keyB): _toggleSidebar,
@@ -721,7 +720,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleBrowserPanel() {
-    final task = _panelTask;
+    final task = session.panelTask;
     final tab = session.panelsFor(task).tabs.where(isBrowserPanel).firstOrNull;
     if (tab == null) { session.openBrowserPanel(task); }
     else { session.openSessionPanel(task, tab, toggle: true); }
@@ -729,7 +728,7 @@ class _DesktopViewState extends State<DesktopView> {
   }
 
   void _toggleSidePanel() {
-    session.toggleSidePanel(_panelTask);
+    session.toggleSidePanel(session.panelTask);
     if (!_sidePanelOpen) _composer.currentState?._focus.requestFocus();
   }
 

@@ -506,7 +506,6 @@ void main() {
     session.notifyListeners();
     await tester.pump();
     await _shortcut(tester, LogicalKeyboardKey.keyT, settle: false);
-    expect(session.panelsFor(session.browserWorkspace).tabs.single, predicate<String>(isBrowserPanel));
     expect(find.byType(DesktopBrowser), findsOneWidget, reason: 'Cmd+T also works before a thread is selected');
     await _shortcut(tester, LogicalKeyboardKey.keyW, settle: false);
     expect(tester.takeException(), isNull);
@@ -514,6 +513,49 @@ void main() {
     await tester.pump();
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant({TargetPlatform.macOS, TargetPlatform.windows, TargetPlatform.linux}));
+
+  testWidgets('a draft browser follows the thread created from that draft', (tester) async {
+    late Directory root;
+    late DesktopSession session;
+    late Project project;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('desktop-draft-browser-');
+      session = DesktopSession(_GoalClient(), await openDesktopDatabase(root.path));
+      project = Project('checkout', 'project', root.path);
+      await callIsolate(session.database.port, 'project.add', {
+        'checkout_key': project.checkoutKey, 'identity': project.id, 'path': project.path,
+      });
+      session.projects.add(project);
+      session.newSession(project);
+      session.providers = [{'id': 'openai', 'status': 'signed_in', 'models': [
+        {'id': 'example', 'reasoning_levels': <String>[]},
+      ]}];
+      session.chooseModel('example');
+    });
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() async { await session.close(); await root.delete(recursive: true); });
+    });
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(MaterialApp(home: DesktopView(session: session)));
+    final draft = session.currentDraft;
+    final browser = find.byType(DesktopBrowser);
+    await _shortcut(tester, LogicalKeyboardKey.keyT, settle: false);
+    final page = tester.widget<DesktopBrowser>(browser).page;
+
+    expect(await tester.runAsync(() => session.send('Start the thread with this browser')), isTrue, reason: session.error);
+    await tester.pump();
+    expect(browser, findsOneWidget, reason: 'The submitted draft’s browser stays open in the created thread');
+    expect(tester.widget<DesktopBrowser>(browser).page, same(page));
+    expect(session.sessionDrafts, isNot(contains(draft)));
+
+    await tester.runAsync(() async { session.newSession(project); });
+    await tester.pump();
+    expect(browser, findsNothing, reason: 'Another draft in the same project starts with its own panel');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
 
   testWidgets('tool details remain readable through updates and expansion', (tester) async {
     late Directory root;
