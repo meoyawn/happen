@@ -181,7 +181,7 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
   final status = await runGit(root, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all'], cancellation);
   if (utf8.encode(status.output).length >= maxFrameBytes ~/ 2) throw StateError('Too many changed files to display');
   String? branch, head, upstream;
-  var ahead = 0, behind = 0;
+  int? ahead, behind;
   final files = <Json>[];
   final records = status.output.split('\u0000');
   for (var i = 0; i < records.length; i++) {
@@ -217,13 +217,16 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
   }
   final remotes = (await runGit(root, ['remote'], cancellation)).output.trim().split('\n').where((line) => line.isNotEmpty).toList();
   String? remote;
+  var pushUpToDate = false;
   if (branch != null) {
     final configured = await runGit(root, ['config', '--get', 'branch.$branch.pushRemote'], cancellation, accepted: {0, 1});
     final pushDefault = await runGit(root, ['config', '--get', 'remote.pushDefault'], cancellation, accepted: {0, 1});
-    final tracking = await runGit(root, ['config', '--get', 'branch.$branch.remote'], cancellation, accepted: {0, 1});
-    remote = [configured.output.trim(), pushDefault.output.trim(), tracking.output.trim(),
+    final tracking = (await runGit(root, ['config', '--get', 'branch.$branch.remote'], cancellation, accepted: {0, 1})).output.trim();
+    remote = [configured.output.trim(), pushDefault.output.trim(), tracking,
       if (remotes.contains('origin')) 'origin', if (remotes.length == 1) remotes.single]
       .where((name) => name.isNotEmpty && remotes.contains(name)).firstOrNull;
+    // Git omits ahead and behind counts when the upstream ref is missing.
+    pushUpToDate = remote != null && remote == tracking && ahead == 0 && behind == 0;
   }
   final counts = <String, (int, int, bool)>{};
   if (files.isNotEmpty && (head != null || !includeUnstaged || comparison != 'uncommitted')) {
@@ -257,7 +260,7 @@ Future<Json> gitStatus(String cwd, CancellationToken cancellation, {bool include
   final pullTarget = await gitPullTarget(root, cancellation);
   return {'isRepo': true, 'host': Platform.localHostname, 'root': root, 'branch': branch, 'head': head, 'upstream': upstream,
     'pullRemote': pullTarget?.remote, 'pullBranch': pullTarget?.branch,
-    'remote': remote, 'ahead': ahead, 'behind': behind, 'files': files,
+    'remote': remote, 'ahead': ahead ?? 0, 'behind': behind ?? 0, 'pushUpToDate': pushUpToDate, 'files': files,
     'additions': files.fold<int>(0, (sum, file) => sum + (file['additions'] as int)),
     'deletions': files.fold<int>(0, (sum, file) => sum + (file['deletions'] as int))};
 }

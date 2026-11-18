@@ -10,7 +10,7 @@ import 'package:desktop/project_icon.dart';
 import 'package:desktop/project_icon_picker.dart';
 import 'package:desktop/project_icon_state.dart';
 import 'package:desktop/session.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -224,6 +224,6 @@ class _Client implements AgentClient {
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Icons must not use the server');
 }
 class _Database implements IsolateOwner {
-  @override Future<void> close() async {}
+  @override Future<void> close({Json params = const {}}) async {}
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Icons must not use desktop preferences');
 }

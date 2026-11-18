@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:desktop/desktop_notifications.dart';
 import 'package:desktop/session.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -203,6 +203,6 @@ class _Client implements AgentClient {
 }
 
 class _Database implements IsolateOwner {
-  @override Future<void> close() async {}
+  @override Future<void> close({Json params = const {}}) async {}
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected database operation');
 }

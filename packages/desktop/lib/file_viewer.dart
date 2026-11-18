@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as p;
@@ -277,12 +277,13 @@ class _FileViewerState extends State<FileViewer> {
       return SingleChildScrollView(padding: const EdgeInsets.all(24),
         child: ConversationMarkdown(text: preview.text!, directory: kIsWeb ? p.posix.dirname(widget.path) : File(widget.path).parent.path));
     }
+    final selectionColor = DesktopAccent.of(context).selection;
     return RepaintBoundary(child: CodeEditor(key: const ValueKey('file-source'), controller: _code, scrollController: _scroll,
       readOnly: true, showCursorWhenReadOnly: false, autofocus: false, wordWrap: _wrap,
       chunkAnalyzer: const NonCodeChunkAnalyzer(), padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
       style: CodeEditorStyle(fontFamily: desktopMonoFamily, fontSize: 13, fontHeight: 20 / 13,
         textColor: desktopForeground, backgroundColor: desktopSurface, cursorLineColor: desktopMuted,
-        selectionColor: DesktopAccent.of(context).selection),
+        selectionColor: selectionColor, highlightColor: selectionColor),
       indicatorBuilder: (context, controller, _, notifier) => Padding(
         padding: const EdgeInsets.only(left: 8, right: 8),
         child: DefaultCodeLineNumber(controller: controller, notifier: notifier,

@@ -25,7 +25,7 @@ Json _catalogPage(TracedDatabase db, Json params) {
   if (filter['cwd'] case final String cwd) {
     conditions.add('cwd IS ?'); values.add(Directory(cwd).absolute.uri.normalizePath().toString());
   }
-  if (filter['modelProviders'] case final List providers) {
+  if (filter['modelProviders'] case final List<Object?> providers) {
     conditions.add(providers.isEmpty ? '0' : 'model_provider IN (${List.filled(providers.length, '?').join(',')})');
     values.addAll(providers);
   }
@@ -37,7 +37,7 @@ Json _catalogPage(TracedDatabase db, Json params) {
   }
   final created = filter['sortKey'] == 'created_at', column = created ? 'created_at' : 'updated_at';
   final sortKey = created ? 'createdAt' : 'updatedAt';
-  if (filter['anchor'] case final Map anchor) {
+  if (filter['anchor'] case final Map<Object?, Object?> anchor) {
     final comparison = direction == 'asc' ? '>' : '<';
     conditions.add('($column $comparison ? OR ($column IS ? AND id $comparison ?))');
     values.addAll([anchor[sortKey], anchor[sortKey], anchor['id']]);

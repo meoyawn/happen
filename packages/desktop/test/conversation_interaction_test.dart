@@ -12,7 +12,7 @@ import 'package:desktop/conversation_images.dart';
 import 'package:desktop/file_reference.dart';
 import 'package:desktop/generated_image_loading.dart';
 import 'package:desktop/session.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openai/src/tools.dart';

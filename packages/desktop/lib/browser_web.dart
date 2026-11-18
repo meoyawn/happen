@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:protocol/protocol.dart';
 import 'package:web/web.dart' as web;
 
@@ -147,8 +147,10 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none)),
           onTap: () => _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length))),
         const SizedBox(width: 6),
-        _button('Open in new tab', Icons.open_in_new_rounded, _page.loadAddress == null ? null
-          : () => web.window.open(_page.loadAddress.toString(), '_blank', 'noopener,noreferrer')),
+        _button('Open in new tab', Icons.open_in_new_rounded, switch (_page.loadAddress) {
+          final url? => () => web.window.open(url.toString(), '_blank', 'noopener,noreferrer'),
+          null => null,
+        }),
       ])),
     if (_addressError case final error?) Padding(padding: const EdgeInsets.all(8),
       child: Text(error, style: const TextStyle(fontSize: 12, color: desktopError))),

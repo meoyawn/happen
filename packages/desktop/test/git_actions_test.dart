@@ -4,25 +4,75 @@ import 'dart:io';
 import 'package:desktop/appearance.dart';
 import 'package:desktop/app.dart';
 import 'package:desktop/database.dart';
+import 'package:desktop/git_actions.dart';
 import 'package:desktop/git_actions_state.dart';
 import 'package:desktop/project_actions_state.dart';
 import 'package:desktop/session.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
 import 'package:server/server.dart';
 
+Future<String> _git(Directory repo, List<String> args) async {
+  final result = await Process.run('git', ['-c', 'core.hooksPath=/dev/null', ...args], workingDirectory: repo.path);
+  expect(result.exitCode, 0, reason: '${result.stderr}');
+  return (result.stdout as String).trim();
+}
+
 void main() {
+  testWidgets('clears a failed push after publishing outside the app', (tester) async {
+    final (repo, remote, controller) = (await tester.runAsync(() async {
+      final root = await Directory.systemTemp.createTemp('git-push-');
+      addTearDown(() => root.delete(recursive: true));
+      final repo = await Directory('${root.path}/repo').create();
+      final remote = '${root.path}/remote.git';
+      await _git(repo, ['init', '--initial-branch=main']);
+      await _git(repo, ['config', 'user.name', 'Fixture']);
+      await _git(repo, ['config', 'user.email', 'fixture@example.invalid']);
+      await _git(repo, ['commit', '--allow-empty', '-m', 'Initial history']);
+      await _git(repo, ['init', '--bare', remote]);
+      await _git(repo, ['remote', 'add', 'origin', remote]);
+      await _git(repo, ['push', '--set-upstream', 'origin', 'HEAD:refs/heads/main']);
+
+      final server = await AgentServer.startLocal(directory: '${root.path}/data',
+        skillsHome: '${root.path}/data', configPath: '${root.path}/config.yaml', telemetry: false);
+      addTearDown(server.close);
+      final client = AgentClient.local(server);
+      addTearDown(client.close);
+      final controller = GitActionsController(client, repo.path);
+      addTearDown(controller.close);
+
+      await _git(repo, ['remote', 'set-url', 'origin', '${root.path}/offline.git']);
+      await File('${repo.path}/change.txt').writeAsString('publish this\n');
+      await controller.refresh();
+      await controller.run('commit_push', message: 'Publish the new file');
+      await controller.refresh(force: true);
+      return (repo, remote, controller);
+    }))!;
+
+    await tester.pumpWidget(MaterialApp(
+      theme: desktopTheme(),
+      home: Scaffold(body: GitActionsControl(controller: controller)),
+    ));
+    expect(find.text('Push'), findsOneWidget);
+    expect(find.text('Git action failed · View details'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      await _git(repo, ['remote', 'set-url', 'origin', remote]);
+      await _git(repo, ['push', 'origin', 'HEAD:refs/heads/main']);
+      await controller.refresh(force: true);
+    });
+    await tester.pump();
+    expect(find.text('Up to date'), findsOneWidget);
+    expect(find.text('Git action failed · View details'), findsNothing);
+  });
+
   testWidgets('project details manages scripts, branches and commits through real services', (tester) async {
     tester.view.physicalSize = const Size(1440, 900); tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize); addTearDown(tester.view.resetDevicePixelRatio);
     late Directory root, repo;
-    Future<String> git(List<String> args) async {
-      final result = await Process.run('git', ['-c', 'core.hooksPath=/dev/null', ...args], workingDirectory: repo.path);
-      expect(result.exitCode, 0, reason: '${result.stderr}');
-      return (result.stdout as String).trim();
-    }
+    Future<String> git(List<String> args) => _git(repo, args);
     late AgentServer server;
     late AgentClient client;
     late GitActionsController controller;
@@ -231,7 +281,7 @@ void main() {
       expect(failed.commit!.sha, await git(['rev-parse', 'HEAD']));
       expect(await git(['log', '-1', '--format=%B']), 'Publish remaining file');
       await controller.refresh(force: true);
-      expect(controller.state, isA<GitFailed>(), reason: 'Status polling must retain the failed push until acknowledgement or retry');
+      expect(controller.state, isA<GitFailed>(), reason: 'The commit still needs to be pushed');
       expect((controller.state as GitFailed).commit, failed.commit);
       await reject.delete();
     });

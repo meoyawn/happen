@@ -5,12 +5,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
-import 'package:mermaid_core/mermaid_core.dart' as mermaid;
+import 'package:material_ui/material_ui.dart';
 import 'package:mermaid_flutter/mermaid_flutter.dart';
 import 'package:protocol/protocol.dart' show Json, jsonObject, attachmentDataUrl, CancellationToken;
 
@@ -24,6 +23,7 @@ import 'conversation_image_source.dart';
 import 'generated_image_loading.dart';
 import 'conversation_data.dart';
 import 'conversation_annotations.dart';
+import 'mermaid_theme.dart';
 import 'response_annotation_reference.dart';
 import 'desktop_toast.dart';
 import 'selectable_markdown.dart';
@@ -179,8 +179,9 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
       _styleState = styleKey;
       final body = theme.textTheme.bodyLarge!.copyWith(fontSize: fontSize,
         letterSpacing: 0, color: reasoning ? desktopSecondary : desktopForeground);
-      _styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+      _styleSheet = MarkdownStyleSheet(
         p: body,
+        pPadding: EdgeInsets.zero,
         a: body.copyWith(color: accent.reference, decoration: TextDecoration.none),
         h1: body.copyWith(fontSize: 20, height: 1.3, fontWeight: FontWeight.w600),
         h2: body.copyWith(fontSize: 18, height: 1.3, fontWeight: FontWeight.w600),
@@ -191,10 +192,18 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
         h1Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h2Padding: const EdgeInsets.only(top: 20, bottom: 8),
         h3Padding: const EdgeInsets.only(top: 20, bottom: 8),
+        h4Padding: EdgeInsets.zero,
+        h5Padding: EdgeInsets.zero,
+        h6Padding: EdgeInsets.zero,
         code: TextStyle(fontFamily: desktopMonoFamily, fontSize: fontSize * .875),
+        em: const TextStyle(fontStyle: FontStyle.italic),
         strong: const TextStyle(fontWeight: FontWeight.w600),
+        del: const TextStyle(decoration: TextDecoration.lineThrough),
+        img: theme.textTheme.bodyMedium,
+        checkbox: theme.textTheme.bodyMedium!.copyWith(color: theme.primaryColor),
         blockSpacing: 10.4,
         listBullet: body,
+        listBulletPadding: const EdgeInsets.only(right: 4),
         listIndent: 24,
         blockquote: body.copyWith(color: desktopSecondary),
         blockquotePadding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
@@ -204,11 +213,13 @@ class _ConversationMarkdownBodyState extends State<_ConversationMarkdownBody> im
         tableHead: body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
         tableBody: body.copyWith(fontSize: 13),
         tableHeadAlign: TextAlign.left,
+        tablePadding: const EdgeInsets.only(bottom: 4),
         tableColumnWidth: const FlexColumnWidth(),
         tableBorder: TableBorder.all(color: desktopBorder),
         tableCellsPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         tableHeadCellsDecoration: const BoxDecoration(color: desktopMuted),
         tableCellsDecoration: const BoxDecoration(color: desktopSurface),
+        codeblockPadding: const EdgeInsets.all(8),
         codeblockDecoration: const BoxDecoration(),
         horizontalRuleDecoration: const BoxDecoration(
           border: Border(top: BorderSide(color: desktopBorder)),
@@ -503,16 +514,6 @@ String _mermaidRenderSource(String source) {
   return rendered.toString();
 }
 
-mermaid.MermaidTheme _mermaidTheme(ThemeData theme) =>
-  MaterialMermaidTheme.fromTheme(theme).copyWith(
-    // Nested subgraph fills compound, making each level visible on the canvas.
-    clusterBkg: const mermaid.Color(0x28687991),
-    clusterBorder: const mermaid.Color(0xff697b8c),
-    nodeBorder: const mermaid.Color(0xff607a92),
-    lineColor: const mermaid.Color(0xff405163),
-    arrowheadColor: const mermaid.Color(0xff405163),
-  );
-
 class ConversationCode extends StatefulWidget {
   const ConversationCode({super.key, required this.source, this.language = '', this.output});
   final String source, language;
@@ -541,7 +542,7 @@ class _ConversationCodeState extends State<ConversationCode> {
         ])),
         const Divider(height: 1, color: desktopBorder),
         Expanded(child: MermaidView(source: _mermaidRenderSource(source),
-          theme: _mermaidTheme(Theme.of(context)),
+          theme: mermaidTheme(Theme.of(context)),
           semanticNodes: true, allowFullscreen: false, keepLastGoodSceneOnError: false,
           backgroundColor: desktopSurface)),
       ]),
@@ -579,7 +580,7 @@ class _ConversationCodeState extends State<ConversationCode> {
   Widget _diagramView(BuildContext context) => LayoutBuilder(builder: (context, constraints) =>
     Padding(padding: const EdgeInsets.all(14), child: FittedBox(fit: BoxFit.scaleDown,
       child: MermaidDiagram(source: _mermaidRenderSource(widget.source),
-        theme: _mermaidTheme(Theme.of(context)),
+        theme: mermaidTheme(Theme.of(context)),
         semanticNodes: true, keepLastGoodSceneOnError: false,
         errorBuilder: (context, error) => SizedBox(
           width: math.max(0, constraints.maxWidth - 28),

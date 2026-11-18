@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 // Harness desktop light palette, at its default contrast. Translucent neutrals
 // keep the same hierarchy on the canvas, message bubbles and raised surfaces.

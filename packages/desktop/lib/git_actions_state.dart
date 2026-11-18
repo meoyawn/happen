@@ -211,6 +211,9 @@ class GitActionsController extends ChangeNotifier {
       final updated = _repository(result);
       _set(switch (previous) {
         GitCompleted(:final operation, :final result) => GitCompleted(updated, operation, result),
+        GitFailed(operation: (action: GitAction.push, id: _)) ||
+        GitFailed(operation: (action: GitAction.commitPush, id: _), commit: _?)
+          when result['pushUpToDate'] == true => GitReady(updated),
         GitFailed(:final message, :final operation, :final commit) when operation != null =>
           GitFailed(updated, message, operation: operation, commit: commit),
         GitCancelled(:final operation, :final commit) => GitCancelled(updated, operation, commit),

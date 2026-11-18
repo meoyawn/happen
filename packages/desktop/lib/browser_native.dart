@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:protocol/protocol.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -197,11 +197,11 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
           _reconcileAnnotations();
           return;
         }
-        final rect = browser.target['rect'] as Map?;
+        final rect = browser.target['rect'] as Map<String, num>?;
         final box = _pageKey.currentContext?.findRenderObject();
         final anchor = box is RenderBox && box.hasSize ? box.localToGlobal(Offset(
-          ((rect?['x'] as num?)?.toDouble() ?? 16).clamp(0, box.size.width),
-          ((rect?['y'] as num?)?.toDouble() ?? 16).clamp(0, box.size.height))) : const Offset(24, 80);
+          (rect?['x']?.toDouble() ?? 16).clamp(0, box.size.width),
+          (rect?['y']?.toDouble() ?? 16).clamp(0, box.size.height))) : const Offset(24, 80);
         scope.onAdd(annotation, anchor);
       });
     } catch (_) { /* Page messages are optional, untrusted evidence. */ }
@@ -246,8 +246,8 @@ class _DesktopBrowserState extends State<DesktopBrowser> {
   }
 
   void _attachPage() {
-    _page = (widget.page ?? BrowserPage(initialUrl: widget.initialUrl,
-      toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory)) as PlatformBrowserPage;
+    _page = (widget.page as PlatformBrowserPage?) ?? PlatformBrowserPage(initialUrl: widget.initialUrl,
+      toolbar: widget.toolbar, navigationEnabled: widget.navigationEnabled, directory: widget.directory);
     _page.addListener(_pageChanged);
     _page.onExternalNavigation = _externalNavigation;
     _page.onAnnotationMessage = _annotationMessage;

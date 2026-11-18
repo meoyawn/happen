@@ -7,7 +7,7 @@ import 'package:desktop/pinned_sidebar_preferences.dart';
 import 'package:desktop/session.dart';
 import 'package:desktop/workspace_navigation.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protocol/protocol.dart';
@@ -439,6 +439,6 @@ class _Client implements AgentClient {
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected client operation');
 }
 class _Database implements IsolateOwner {
-  @override Future<void> close() async {}
+  @override Future<void> close({Json params = const {}}) async {}
   @override dynamic noSuchMethod(Invocation invocation) => throw StateError('Unexpected database operation');
 }

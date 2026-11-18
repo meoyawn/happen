@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// A reference is stored as one position and expanded by the virtual editor.
 @immutable
